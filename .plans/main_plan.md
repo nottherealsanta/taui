@@ -201,9 +201,12 @@ Depth 0 = root agent. Depth 1 = direct minion. Depth 2 = sub-minion. And so on u
     "tier": "mid",
     "tools_allowed": ["read", "write", "programmatic", "lsp"],  # tool groups
     "context_files": ["src/routes/auth.py", "src/models/user.py"],
+    "owned_files": ["src/routes/auth.py", "src/models/user.py"],  # exclusive write access
     "dependencies": [],                    # task IDs this depends on
 }
 ```
+
+- **`owned_files`:** Files this minion has **exclusive write access** to. A minion may only write to files it owns. Multiple minions may read any file, but no two concurrently running minions may own the same file. The scheduler enforces this — see §6.3.
 
 - **Fire-and-forget with monitoring:** The parent spawns and continues planning/working. It does not block.
 - **Halt capability:** Parent can call `halt_minion(minion_id)` at any time. This cancels the minion's current work and retrieves its current state as a partial Box.
@@ -217,6 +220,23 @@ Each minion gets:
 - Access only to the tool groups specified in `tools_allowed`
 - The model specified by its tier
 - A scoped working directory (same workspace, but the minion's context is limited to the files it's given + what it discovers)
+- **Exclusive ownership** of the files listed in `owned_files`
+
+### 5.6 File Ownership
+
+File ownership is the mechanism that prevents concurrent write conflicts between minions — and critically, prevents LSP from seeing inconsistent state across parallel edits.
+
+**Rules:**
+
+1. **Write-gating:** A minion's `edit_file` and `write_file` tools are restricted to its `owned_files` list. Writes to non-owned files are rejected by the tool executor (policy layer).
+2. **Read is unrestricted:** Any minion can `read_file` or run LSP queries (`diagnostics`, `references`, `definition`) on any file, regardless of ownership.
+3. **Ownership is exclusive:** No two **concurrently running** minions may own the same file. The DAG scheduler enforces this at spawn time (see §6.3).
+4. **Glob ownership:** Ownership entries support globs (e.g., `"src/routes/*.py"`). Two globs that overlap are treated as conflicting.
+5. **Ownership is declared, not discovered.** The parent declares `owned_files` at spawn time based on the plan. A minion cannot acquire ownership of new files at runtime — if it needs to create/modify an unexpected file, it must report this in its Box and let the parent handle it (or re-plan).
+
+**Why this matters for LSP:**
+
+Language servers maintain an in-memory model of the workspace. When two agents write to the same file concurrently, the LSP sees interleaved `didChange` notifications that corrupt its state — leading to phantom diagnostics, stale references, and invalid completions. File ownership ensures that at any point in time, each file has at most one writer, so the LSP's view stays consistent.
 
 ---
 
@@ -236,6 +256,7 @@ class TaskNode:
     tier: str                        # "junior", "mid", "senior", or custom
     tools_required: list[str]        # tool groups needed
     context_files: list[str]         # files to preload
+    owned_files: list[str]           # files this task has exclusive write access to
     dependencies: list[str]          # task IDs that must complete first
     estimated_complexity: str        # "trivial", "moderate", "complex"
     rationale: str                   # natural language: why this task, why this tier
@@ -250,14 +271,26 @@ class TaskGraph:
 
 ### 6.3 DAG Scheduling
 
-The system executes the task graph respecting dependencies:
+The system executes the task graph respecting dependencies **and file ownership constraints**:
 
-1. **Wave 0:** All tasks with no dependencies run in parallel (up to `max_concurrent`)
-2. **Wave 1:** Tasks whose dependencies are all complete run next
+1. **Wave 0:** All tasks with no dependencies run in parallel (up to `max_concurrent`), **provided their `owned_files` do not overlap**
+2. **Wave 1:** Tasks whose dependencies are all complete run next, subject to the same ownership constraint
 3. **Continue** until all tasks are done or a task fails
+
+**File ownership conflict detection:**
+
+Before spawning a task, the scheduler checks its `owned_files` against all currently running minions' `owned_files`. If any overlap is found (including glob expansion), the task is **held** until the conflicting minion completes and releases ownership. This means two tasks with no explicit `dependencies` between them will still be serialized if they own the same file.
+
+The scheduler maintains a **file ownership table** — a map from file path (or glob pattern) to the minion ID that currently owns it. Entries are added at spawn time and removed when the minion's Box is received.
+
+**Conflict at plan time vs. runtime:**
+
+- **Plan-time validation:** When the `plan` tool generates the `execution_order` waves, it should detect ownership overlaps and place conflicting tasks in separate waves. This is advisory — it produces a better plan but is not the enforcement point.
+- **Runtime enforcement:** The scheduler is the enforcement point. Even if the plan places two ownership-conflicting tasks in the same wave, the scheduler will hold one until the other completes.
 
 If a task fails:
 - The parent is notified via the Box (which includes error state)
+- Ownership of the failed task's files is released
 - The parent can re-plan, retry with a different tier, or absorb the task itself
 
 ### 6.4 Plan Visibility
@@ -365,6 +398,8 @@ The primary use of LSP in the agentic hierarchy:
 1. **Self-check:** A minion runs `diagnostics` on files it modified before packaging its Box
 2. **Parent review:** The parent runs `diagnostics` on files received in a Box before accepting
 3. **Pre-commit gate:** Before an autonomous commit, LSP diagnostics must be clean (configurable)
+
+**LSP and file ownership:** LSP reliability depends on file ownership (§5.6). Language servers track file state via `didOpen`/`didChange`/`didClose` notifications. If two minions write to the same file concurrently, the LSP's in-memory model diverges from disk — diagnostics become unreliable, references point to stale locations, and completions use wrong type information. The file ownership constraint (one writer per file at any time) guarantees the LSP sees a consistent, sequential stream of changes for every file.
 
 ---
 
@@ -550,6 +585,7 @@ These must hold at all times:
 5. **Minions cannot escalate privilege.** A minion's tool access is a subset of (never exceeds) its parent's policy.
 6. **Depth is bounded.** `max_depth` is always enforced. A minion at max depth cannot spawn.
 7. **Every tool call is logged.** Duration, arguments digest, result status — all captured for traceability.
+8. **File ownership is exclusive.** No two concurrently running minions may own the same file. The scheduler enforces this at spawn time. A minion may only write to files it owns. Violation is a hard error, not a warning.
 
 ---
 
@@ -566,3 +602,162 @@ These must hold at all times:
 5. **Steering race conditions.** Halt must be cancellation-safe. A minion mid-write could leave partial changes. The halt mechanism must handle graceful cleanup.
 
 6. **Context transfer to minions.** Whether minions load files fresh or receive pre-loaded content from the parent. Fresh is simpler; transfer is faster. Strategy TBD.
+
+---
+
+## 15. Spec-Driven Execution (Literate Programming Model)
+
+### 15.1 Concept
+
+Taui supports a **spec-driven interaction mode** inspired by literate programming. Instead of interpreting vague chat requests, agents execute against **living spec documents** — structured, natural-language-plus-code descriptions of what the system should do. The user writes clear specs; agents execute them and ask questions when something is ambiguous.
+
+This is complementary to chat, not a replacement. Chat is for exploration. Specs are for anything that matters — where you want traceability, where "why was this decision made" matters, where code review should check against requirements.
+
+The spec becomes the single source of truth. The code is the derived artifact.
+
+### 15.2 Spec Format
+
+Specs are Markdown files with conventions. They live in a configurable directory (default: `specs/`).
+
+```markdown
+<!-- filepath: specs/auth/registration.md -->
+# User Registration
+
+## Behavior
+- Accept email + password via POST /api/register
+- Validate email format (RFC 5322) and password strength (min 12 chars, 1 uppercase, 1 number)
+- Hash password with argon2id, cost factor 3
+- Store in `users` table, return 201 with user ID
+- On duplicate email, return 409
+
+## Constraints
+- No external validation libraries — use stdlib `re`
+- Must pass existing test suite in `tests/test_auth.py`
+
+## Files
+- `src/routes/auth.py` — endpoint handler
+- `src/models/user.py` — User model
+- `src/utils/validation.py` — validation helpers (new file)
+```
+
+### 15.3 Execution Loop
+
+The agent loop in spec mode differs from chat mode:
+
+```
+load spec → parse requirements → generate clarifications →
+wait for user answers → plan (TaskGraph mapped to spec sections) →
+execute via minions → verify against spec → report compliance
+```
+
+Key difference: there is a **formalized question phase** before execution begins. The agent reads the spec, identifies ambiguities and gaps, and batches questions to the user. Execution starts only after clarifications are resolved.
+
+### 15.4 Clarification Protocol
+
+Agents ask structured questions rather than guessing:
+
+```python
+@dataclass
+class Clarification:
+    spec_ref: str          # "registration.md#Constraints"
+    question: str          # "Should the 12-char minimum include or exclude whitespace?"
+    options: list[str]     # suggested answers
+    blocking: bool         # can we proceed without this?
+```
+
+The agent reads the spec, generates a batch of clarifications, the user answers them (updating the spec or answering inline), and then execution begins. This is fundamentally different from asking questions mid-execution.
+
+### 15.5 Spec-Driven Verification
+
+Instead of generic "does it compile?" verification, the Box includes **spec compliance**:
+
+```python
+@dataclass
+class SpecVerification:
+    spec_ref: str
+    requirement: str                    # extracted from spec
+    status: Literal["met", "unmet", "ambiguous"]
+    evidence: str                       # how it was verified (test, LSP, inspection)
+```
+
+The parent doesn't just check "did LSP diagnostics pass" — it checks "did the minion satisfy every stated requirement in the spec section it was assigned."
+
+### 15.6 Spec Amendments
+
+The agent may discover during implementation that the spec is incomplete or contradictory. Instead of guessing, it proposes **spec amendments**:
+
+```markdown
+<!-- agent-proposed addition to specs/auth/registration.md -->
+## Open Questions (Agent)
+- Spec says "return 201 with user ID" but doesn't specify response body format.
+  Proposed: `{"id": "uuid", "email": "string", "created_at": "iso8601"}`
+- Spec says "must pass existing test suite" but `tests/test_auth.py` expects
+  a `register_user()` function, not a route handler. Should tests be updated?
+```
+
+### 15.7 Spec Audit & Drift Detection
+
+Over time, specs and code can drift. An agent can be asked to **audit** — read the current spec and the current code, report divergences. This enables specs to function as invariant documentation that persists alongside the code.
+
+### 15.8 Spec Tool Group
+
+A new `spec` tool group:
+
+| Tool | Purpose |
+|---|---|
+| `parse_spec` | Extract requirements, constraints, file mappings from a spec document |
+| `ask_clarification` | Batch structured questions to user before execution |
+| `verify_spec` | Check implementation against spec requirements |
+| `propose_spec_amendment` | Suggest spec changes based on implementation discoveries |
+| `audit_spec` | Compare current code against spec, report drift |
+
+### 15.9 Integration with Existing Architecture
+
+The spec-driven model layers on top of the existing architecture without restructuring:
+
+- **Tool system, policy, LSP, Boxes** — unchanged. These are execution primitives that are interaction-model-agnostic.
+- **DAG scheduler** — maps naturally. Each `TaskNode` corresponds to a spec section. The spec itself provides the dependency structure (if "authentication" references "user model," there's a dependency).
+- **Plan tool** — now decomposes a spec rather than a chat request. Task graph nodes map back to spec sections.
+- **Minions** — receive spec-section-scoped tasks instead of chat-derived tasks.
+
+### 15.10 Configuration
+
+```toml
+[spec]
+spec_dir = "specs/"                  # where spec files live
+format = "markdown"                  # markdown with conventions
+ask_before_execute = true            # always run question phase first
+update_specs_on_completion = true    # agent updates spec with implementation notes
+```
+
+### 15.11 Spec-Driven Dev as a Product Feature
+
+Taui provides spec-driven development **to the user's project** — it is a core product capability, not just an internal methodology.
+
+**Onboarding flow:** When a user first runs Taui on their project, it creates a `specs/` folder with starter markdown files. This is the project's spec workspace — the primary surface through which the user drives development.
+
+**UI model:** The interface has two primary surfaces:
+
+1. **Spec editor panel.** The user views and edits spec documents directly in the UI. Each spec section can spawn agents — the user selects a section (or the whole spec) and triggers execution. Agents are born from specs, not from chat messages.
+
+2. **Agent chat panel.** A secondary panel for conversing with agents. The user can:
+   - Chat with already-spawned agents (ask questions, steer, give feedback)
+   - Spawn new agents ad-hoc via chat (the chat escape hatch from §15.11.3)
+   - See agent status, progress, and Boxes as they complete
+
+**The relationship:** Specs are the **source of work**. Chat is the **communication channel**. The spec editor is where you say "what to build." The chat panel is where you interact with the builders while they work.
+
+**Lifecycle:**
+1. User opens project in Taui → `specs/` folder exists (or is created)
+2. User writes/edits specs in the spec editor
+3. User triggers execution on a spec (or section)
+4. Agents spawn, appear in the agent panel, execute against the spec
+5. User can chat with running agents, steer, or let them finish
+6. Agents return Boxes, spec is updated with completion status
+7. User reviews, iterates on the spec, triggers next round
+
+### 15.12 Limitations & Escape Hatches
+
+1. **Spec quality is the bottleneck.** The model assumes the user can write clear specs. A **spec assistant mode** helps: the agent helps write the spec before executing it.
+2. **Chat escape hatch.** Sometimes you just want to say "fix this bug" without writing a formal spec. Both modes coexist — chat for exploration, specs for production work.
+3. **Granularity mismatch.** Some specs are too high-level, some too low-level. The spec parser must handle the full spectrum without rigid format requirements.
