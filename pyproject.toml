@@ -31,4 +31,6 @@ build-backend = "hatchling.build"
 packages = ["taui"]
 
 [dependency-groups]
-dev = []
+dev = [
+    "pytest>=8.0",
+]

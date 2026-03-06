@@ -12,12 +12,13 @@ import json
 import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from typing import Any, Literal
 
 import httpx
 
 # ── Types ──────────────────────────────────────────────────────────────────────
 
-Message = dict[str, str]  # {"role": "user"|"assistant"|"system", "content": str}
+Message = dict[str, Any]
 
 
 @dataclass
@@ -25,6 +26,21 @@ class LLMRequest:
     url: str
     headers: dict[str, str]
     body: dict  # JSON-serializable
+
+
+@dataclass(slots=True)
+class ProviderToolCall:
+    call_id: str
+    name: str
+    arguments: dict[str, Any]
+
+
+@dataclass(slots=True)
+class ProviderTurnResult:
+    response_id: str | None
+    text: str
+    tool_calls: list[ProviderToolCall]
+    assistant_metadata: dict[str, Any] | None = None
 
 
 # ── Retry config ───────────────────────────────────────────────────────────────
@@ -64,6 +80,9 @@ _OVERFLOW_PATTERNS = re.compile(
 
 
 class BaseLLMClient(ABC):
+    supports_tools: bool = False
+    tool_call_mode: Literal["none", "responses", "chat"] = "none"
+
     @abstractmethod
     def build_request(
         self, messages: list[Message], model: str, temperature: float
@@ -112,6 +131,25 @@ class BaseLLMClient(ABC):
         self.refresh_credentials()
         req = self.build_request(messages, model, temperature)
         return await self._stream_with_retry(req)
+
+    async def create_turn(
+        self,
+        messages: list[Message],
+        model: str,
+        *,
+        tools: list[dict[str, object]] | None = None,
+        input_items: list[dict[str, object]] | None = None,
+        previous_response_id: str | None = None,
+        temperature: float = 0.1,
+    ) -> ProviderTurnResult:
+        del tools, input_items, previous_response_id
+        text = await self.stream_chat(messages, model, temperature=temperature)
+        return ProviderTurnResult(
+            response_id=None,
+            text=text,
+            tool_calls=[],
+            assistant_metadata=None,
+        )
 
     async def _stream_with_retry(self, req: LLMRequest) -> str:
         last_exc: Exception | None = None
