@@ -1,0 +1,7 @@
+# keybindings
+
+## navigation
+- intent: up/down selection and edit controls.
+
+## tree_editing
+- intent: Enter creates node, Tab indents, Shift+Tab outdents.

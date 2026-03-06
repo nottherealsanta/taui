@@ -602,14 +602,14 @@ Roadmap uses **A-E as canonical ordering**, with prior numeric phase detail merg
 ### Phase E: Verification and UX
 
 - LSP-backed verification gates
-- spec-first TUI layout (spec navigator primary)
+- spec-first interface layout (spec navigator primary)
 - compliance-centric summaries and audit views
 
 Legacy phase mapping preserved as sub-deliverables:
 
 - `3a` tool-system core, `3b` built-in tools, `3c` single-agent loop
 - `4a` context management, `4b` plan tool, `4c` spawn system, `4d` DAG scheduler
-- `5` LSP integration, `6a` headless CLI, `6b` TUI, `7` skills system
+- `5` LSP integration, `6a` headless CLI, `6b` interface shell, `7` skills system
 
 Status note: `3a` is already implemented (`.plans/phase3a_tools.md`, dated 2026-03-06).
 
