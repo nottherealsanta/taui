@@ -19,6 +19,7 @@ Taui is spec-first. Projects are planned as a tree that starts at high-level int
   - file node: `specs/<child>.md`
   - folder node: `specs/<child>/_main.md`
 - Do not inline first-level siblings into a single large file.
+- child's md file should follow the same heading levels. for exmaple is _main.md of a level-1 child's folder contains level-2 heading for the child. and that child has a markdown file, it should also start with level-2 heading.
 
 ## Heading-driven tree depth
 
@@ -32,6 +33,7 @@ Taui is spec-first. Projects are planned as a tree that starts at high-level int
   - `######` level 6
 - When depth exceeds 6, continue structure with nested markdown lists under the nearest `h6` node.
 - Cross-references use markdown links (not wiki links).
+- usually, leaf nodes are at level 3 or 4, but this is flexible based on content needs.
 
 Example:
 

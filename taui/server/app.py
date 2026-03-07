@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
+import logging
 import os
 from pathlib import Path
+import time
 from typing import Any
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -11,6 +14,8 @@ from fastapi.staticfiles import StaticFiles
 
 from .handlers import MethodHandlers
 from .protocol import JsonRpcProtocolError, error_message, parse_request, result_message
+
+logger = logging.getLogger(__name__)
 
 
 class _ConnectionManager:
@@ -21,17 +26,22 @@ class _ConnectionManager:
     async def register(self, websocket: WebSocket) -> bool:
         async with self._lock:
             if self._active is not None:
+                logger.warning(
+                    "Rejecting websocket connection: single client limit hit"
+                )
                 await websocket.accept()
                 await websocket.close(code=1013, reason="single client only")
                 return False
             await websocket.accept()
             self._active = websocket
+            logger.info("Websocket client registered")
             return True
 
     async def unregister(self, websocket: WebSocket) -> None:
         async with self._lock:
             if self._active is websocket:
                 self._active = None
+                logger.info("Websocket client unregistered")
 
 
 def _latest_static_mtime_ns(static_root: Path) -> int:
@@ -45,9 +55,39 @@ def _latest_static_mtime_ns(static_root: Path) -> int:
     return latest
 
 
-def create_app(workspace: Path | str | None = None) -> FastAPI:
-    app = FastAPI(title="taui-server", version="0.1.0")
-    handlers = MethodHandlers(workspace=workspace)
+def create_app(
+    workspace: Path | str | None = None,
+    specs_path: Path | str | None = None,
+) -> FastAPI:
+    handlers = MethodHandlers(workspace=workspace, specs_path=specs_path)
+    logger.info(
+        "Creating FastAPI app workspace=%s specs_path=%s",
+        workspace or Path.cwd(),
+        specs_path or "specs",
+    )
+
+    @asynccontextmanager
+    async def lifespan(_: FastAPI):
+        started = time.perf_counter()
+        logger.info("Application startup: initializing spec service")
+        await handlers.specs.ensure_initialized()
+        logger.info(
+            "Application startup complete init_ms=%s",
+            int((time.perf_counter() - started) * 1000),
+        )
+        try:
+            yield
+        finally:
+            shutdown_started = time.perf_counter()
+            logger.info("Application shutdown: flushing writer and closing DB")
+            await handlers.specs.writer.flush()
+            await handlers.specs.db.close()
+            logger.info(
+                "Application shutdown complete duration_ms=%s",
+                int((time.perf_counter() - shutdown_started) * 1000),
+            )
+
+    app = FastAPI(title="taui-server", version="0.1.0", lifespan=lifespan)
     manager = _ConnectionManager()
     static_root = Path(__file__).resolve().parent.parent / "static"
 
@@ -61,24 +101,59 @@ def create_app(workspace: Path | str | None = None) -> FastAPI:
         if not registered:
             return
 
+        def send_notification(notification: dict[str, Any]) -> None:
+            asyncio.create_task(websocket.send_json(notification))
+
+        handlers.set_notification_callback(send_notification)
+
         try:
             while True:
                 raw = await websocket.receive_text()
+                logger.debug("RPC frame received bytes=%s", len(raw))
                 try:
                     request = parse_request(raw)
                 except JsonRpcProtocolError as exc:
+                    logger.warning(
+                        "RPC parse error code=%s message=%s", exc.code, exc.message
+                    )
                     await websocket.send_json(
-                        error_message(exc.request_id, exc.code, exc.message, data=exc.data)
+                        error_message(
+                            exc.request_id, exc.code, exc.message, data=exc.data
+                        )
                     )
                     continue
 
                 try:
+                    started = time.perf_counter()
                     dispatch = await handlers.dispatch(request)
+                    await handlers.drain_notifications()
+                    logger.debug(
+                        "RPC dispatch complete method=%s request_id=%s duration_ms=%s notifications=%s",
+                        request.method,
+                        request.request_id,
+                        int((time.perf_counter() - started) * 1000),
+                        len(dispatch.notifications),
+                    )
                 except JsonRpcProtocolError as exc:
                     if request.is_notification:
+                        logger.warning(
+                            "Notification handling error method=%s code=%s message=%s",
+                            request.method,
+                            exc.code,
+                            exc.message,
+                        )
                         continue
+                    logger.warning(
+                        "RPC error response method=%s request_id=%s code=%s message=%s",
+                        request.method,
+                        request.request_id,
+                        exc.code,
+                        exc.message,
+                    )
                     await websocket.send_json(
-                        error_message(exc.request_id, exc.code, exc.message, data=exc.data)
+                        error_message(
+                            exc.request_id, exc.code, exc.message, data=exc.data
+                        )
                     )
                     continue
 
@@ -91,8 +166,9 @@ def create_app(workspace: Path | str | None = None) -> FastAPI:
                 for notification in dispatch.notifications:
                     await websocket.send_json(notification)
         except WebSocketDisconnect:
-            pass
+            logger.info("Websocket disconnected")
         finally:
+            handlers.set_notification_callback(None)
             await manager.unregister(websocket)
 
     @app.get("/")

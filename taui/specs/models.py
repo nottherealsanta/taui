@@ -8,7 +8,17 @@ UNSET = object()
 
 
 @dataclass(slots=True)
+class SpecFile:
+    id: int
+    rel_path: str
+    content_hash: str
+    last_seen: float
+    mtime_ns: int
+
+
+@dataclass(slots=True)
 class SpecNode:
+    id: str
     spec_ref: str
     title: str
     depth: int
@@ -19,6 +29,7 @@ class SpecNode:
 
     def to_dict(self) -> dict[str, Any]:
         return {
+            "id": self.id,
             "spec_ref": self.spec_ref,
             "title": self.title,
             "depth": self.depth,
@@ -92,4 +103,3 @@ class SpecNodePatch:
     @property
     def has_changes(self) -> bool:
         return any(field is not UNSET for field in (self.title, self.intent, self.content))
-

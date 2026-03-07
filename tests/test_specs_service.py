@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
 
 from taui.specs import SpecNotFoundError, SpecService, SpecValidationError
+
+
+def _run(coro):
+    return asyncio.run(coro)
 
 
 def _write_specs(workspace: Path) -> None:
@@ -54,7 +59,7 @@ def _write_specs(workspace: Path) -> None:
 def test_get_tree_indexes_recursive_links(tmp_path: Path) -> None:
     _write_specs(tmp_path)
     service = SpecService(workspace=tmp_path)
-    refs = {node.spec_ref for node in service.get_tree()}
+    refs = {node.spec_ref for node in _run(service.get_tree())}
     assert "specs/_main.md#taui" in refs
     assert "specs/core.md#leaf" in refs
 
@@ -63,10 +68,13 @@ def test_update_node_title_and_intent(tmp_path: Path) -> None:
     _write_specs(tmp_path)
     service = SpecService(workspace=tmp_path)
 
-    update = service.update_node(
-        "specs/core.md#leaf",
-        {"title": "Leaf Updated", "intent": "Updated leaf intent."},
+    update = _run(
+        service.update_node(
+            "specs/core.md#leaf",
+            {"title": "Leaf Updated", "intent": "Updated leaf intent."},
+        )
     )
+    _run(service.writer.flush())
 
     assert update.previous_spec_ref == "specs/core.md#leaf"
     assert update.tree_changed is True
@@ -75,7 +83,7 @@ def test_update_node_title_and_intent(tmp_path: Path) -> None:
     assert "## Leaf Updated" in body
     assert "Updated leaf intent." in body
     with pytest.raises(SpecNotFoundError):
-        service.get_node("specs/core.md#leaf")
+        _run(service.get_node("specs/core.md#leaf"))
 
 
 def test_update_content_rejects_non_leaf_section(tmp_path: Path) -> None:
@@ -83,14 +91,15 @@ def test_update_content_rejects_non_leaf_section(tmp_path: Path) -> None:
     service = SpecService(workspace=tmp_path)
 
     with pytest.raises(SpecValidationError):
-        service.update_node("specs/core.md#core", {"content": "new body"})
+        _run(service.update_node("specs/core.md#core", {"content": "new body"}))
 
 
 def test_update_plain_document_title(tmp_path: Path) -> None:
     _write_specs(tmp_path)
     service = SpecService(workspace=tmp_path)
 
-    update = service.update_node("specs/_main.md#taui", {"title": "Taui Next"})
+    update = _run(service.update_node("specs/_main.md#taui", {"title": "Taui Next"}))
+    _run(service.writer.flush())
 
     assert update.node.spec_ref == "specs/_main.md#taui-next"
     main_content = (tmp_path / "specs" / "_main.md").read_text(encoding="utf-8")
@@ -113,7 +122,7 @@ def test_get_tree_includes_multiline_intent_text(tmp_path: Path) -> None:
     )
 
     service = SpecService(workspace=tmp_path)
-    tree = service.get_tree()
+    tree = _run(service.get_tree())
     root = next(node for node in tree if node.spec_ref == "specs/_main.md#taui")
     assert root.intent == "First intent line.\nSecond intent line."
 
@@ -153,8 +162,27 @@ def test_get_tree_includes_multiline_paragraph_intent(tmp_path: Path) -> None:
     )
 
     service = SpecService(workspace=tmp_path)
-    tree = service.get_tree()
+    tree = _run(service.get_tree())
     root = next(node for node in tree if node.spec_ref == "specs/_main.md#taui")
     leaf = next(node for node in tree if node.spec_ref == "specs/core.md#leaf")
     assert root.intent == "Primary line one.\n\nPrimary line two.\nPrimary line three."
     assert leaf.intent == "Leaf line."
+
+
+def test_get_tree_uses_custom_specs_path(tmp_path: Path) -> None:
+    specs_root = tmp_path / "tests" / "example_project" / "specs"
+    specs_root.mkdir(parents=True, exist_ok=True)
+    (specs_root / "_main.md").write_text(
+        "\n".join(
+            [
+                "Example Project",
+                "Example intent.",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    service = SpecService(workspace=tmp_path, specs_path="tests/example_project/specs")
+    refs = {node.spec_ref for node in _run(service.get_tree())}
+    assert "tests/example_project/specs/_main.md#example-project" in refs

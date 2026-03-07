@@ -7,7 +7,10 @@ if TYPE_CHECKING:
 __all__ = ["create_app"]
 
 
-def create_app(workspace: Path | str | None = None) -> "FastAPI":
+def create_app(
+    workspace: Path | str | None = None,
+    specs_path: Path | str | None = None,
+) -> "FastAPI":
     from .app import create_app as _create_app
 
-    return _create_app(workspace=workspace)
+    return _create_app(workspace=workspace, specs_path=specs_path)

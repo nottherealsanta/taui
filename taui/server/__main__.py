@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import logging
 from pathlib import Path
 import socket
 import sys
+
+from taui.logging import configure_logging
+
+logger = logging.getLogger(__name__)
 
 
 def _bind_free_socket() -> socket.socket:
@@ -19,7 +24,7 @@ def _bind_free_socket() -> socket.socket:
     return sock
 
 
-def _serve(workspace: Path) -> int:
+def _serve(workspace: Path, specs_path: Path | str | None = None) -> int:
     try:
         from .app import create_app
         import uvicorn
@@ -32,7 +37,10 @@ def _serve(workspace: Path) -> int:
     bound_sock = _bind_free_socket()
     port = bound_sock.getsockname()[1]
 
-    app = create_app(workspace=workspace)
+    app = create_app(workspace=workspace, specs_path=specs_path)
+    logger.info(
+        "Starting Taui IPC server workspace=%s specs_path=%s", workspace, specs_path
+    )
 
     # Subclass Server so we can print PORT: only after startup() has finished
     # (i.e. the socket is already in the accept() backlog and ready for
@@ -42,6 +50,7 @@ def _serve(workspace: Path) -> int:
         async def startup(self, sockets=None):  # type: ignore[override]
             await super().startup(sockets=sockets)
             if self.started:
+                logger.info("Taui IPC server started on 127.0.0.1:%s", port)
                 print(f"PORT:{port}", flush=True)
 
     config = uvicorn.Config(
@@ -58,6 +67,7 @@ def _serve(workspace: Path) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    configure_logging()
     parser = argparse.ArgumentParser(description="Taui FastAPI server")
     subparsers = parser.add_subparsers(dest="command")
 
@@ -67,11 +77,18 @@ def main(argv: list[str] | None = None) -> int:
         default=".",
         help="Workspace root that contains specs/",
     )
+    serve_parser.add_argument(
+        "--path",
+        "--specs-path",
+        dest="specs_path",
+        default="specs",
+        help="Path to the specs root directory (relative to workspace by default)",
+    )
 
     args = parser.parse_args(argv)
     if args.command == "serve":
         workspace = Path(args.workspace).resolve()
-        return _serve(workspace)
+        return _serve(workspace, specs_path=args.specs_path)
 
     parser.print_help()
     return 2

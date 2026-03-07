@@ -1,7 +1,38 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import asyncio
+from dataclasses import dataclass, field
+import logging
+from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass(slots=True)
+class RunProcess:
+    run_id: int
+    spec_ref: str
+    command: str
+    workdir: str
+    process: asyncio.subprocess.Process | None = None
+    status: str = "running"
+    exit_code: int | None = None
+    output_buffer: list[str] = field(default_factory=list)
+    started_at: float = 0.0
+    finished_at: float | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "run_id": self.run_id,
+            "spec_ref": self.spec_ref,
+            "command": self.command,
+            "workdir": self.workdir,
+            "status": self.status,
+            "exit_code": self.exit_code,
+            "started_at": self.started_at,
+            "finished_at": self.finished_at,
+        }
 
 
 @dataclass(slots=True)
@@ -10,6 +41,8 @@ class RunState:
     status: str = "idle"
     run_id: int | None = None
     spec_ref: str | None = None
+    current_process: RunProcess | None = None
+    notification_queue: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -17,4 +50,3 @@ class RunState:
             "run_id": self.run_id,
             "spec_ref": self.spec_ref,
         }
-

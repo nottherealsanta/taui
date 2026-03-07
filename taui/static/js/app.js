@@ -6,7 +6,6 @@ import { syncTheme } from "./theme.js";
 
 const stateHolder = { value: createInitialState() };
 const treeElement = document.getElementById("spec-tree");
-const connectionElement = document.getElementById("connection-status");
 const wsProtocol = window.location.protocol === "https:" ? "wss" : "ws";
 const rpc = new RpcClient(`${wsProtocol}://${window.location.host}/ws`);
 let lastReloadToken = null;
@@ -18,7 +17,6 @@ function dispatch(action) {
 
 function render() {
   const state = stateHolder.value;
-  connectionElement.textContent = state.connected ? "Connected" : "Disconnected";
 
   renderTree({
     state,
@@ -65,7 +63,7 @@ async function bootstrap() {
     await rpc.request("initialize", { workspace: window.location.pathname });
     await loadTree();
   } catch (error) {
-    connectionElement.textContent = String(error);
+    console.error(error);
     return;
   }
 

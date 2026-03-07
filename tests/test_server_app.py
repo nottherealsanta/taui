@@ -130,3 +130,38 @@ def test_reload_token_endpoint(tmp_path: Path) -> None:
         payload = response.json()
         assert "token" in payload
         assert isinstance(payload["token"], int)
+
+
+def test_websocket_roundtrip_with_custom_specs_path(tmp_path: Path) -> None:
+    specs_root = tmp_path / "example_project" / "specs"
+    specs_root.mkdir(parents=True, exist_ok=True)
+    (specs_root / "_main.md").write_text(
+        "\n".join(
+            [
+                "Example Project",
+                "Example intent.",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    app = create_app(workspace=tmp_path, specs_path="example_project/specs")
+
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws") as ws:
+            ws.send_text(
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "spec/getTree",
+                        "params": {},
+                    }
+                )
+            )
+            tree_resp = json.loads(ws.receive_text())
+            nodes = tree_resp["result"]["nodes"]
+            assert any(
+                node["spec_ref"] == "example_project/specs/_main.md#example-project"
+                for node in nodes
+            )

@@ -9,12 +9,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, Literal
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 # ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -128,9 +131,17 @@ class BaseLLMClient(ABC):
         5. Print each token to stdout as it arrives
         6. Return joined response string
         """
+        logger.info(
+            "LLM stream_chat start model=%s messages=%s temperature=%s",
+            model,
+            len(messages),
+            temperature,
+        )
         self.refresh_credentials()
         req = self.build_request(messages, model, temperature)
-        return await self._stream_with_retry(req)
+        text = await self._stream_with_retry(req)
+        logger.info("LLM stream_chat complete model=%s output_chars=%s", model, len(text))
+        return text
 
     async def create_turn(
         self,
@@ -156,12 +167,20 @@ class BaseLLMClient(ABC):
 
         for attempt in range(MAX_RETRIES + 1):
             try:
+                logger.debug("LLM request attempt=%s url=%s", attempt + 1, req.url)
                 return await self._do_stream(req)
             except PermissionError:
+                logger.warning("LLM authentication failed, not retrying")
                 raise  # 401 — never retry auth failures
             except httpx.HTTPStatusError as exc:
                 status = exc.response.status_code
                 body = exc.response.text
+                logger.warning(
+                    "LLM HTTP error status=%s attempt=%s body_chars=%s",
+                    status,
+                    attempt + 1,
+                    len(body),
+                )
 
                 # Context overflow → fail immediately with a helpful message
                 if self.is_context_overflow(status, body):
@@ -199,23 +218,39 @@ class BaseLLMClient(ABC):
                     raise RuntimeError(
                         f"Server requested {delay:.0f}s retry delay. Try again later."
                     ) from exc
+                logger.info(
+                    "Retrying LLM request after HTTP error status=%s delay_sec=%.2f attempt=%s",
+                    status,
+                    delay,
+                    attempt + 1,
+                )
                 await asyncio.sleep(delay)
             except (httpx.TransportError, OSError) as exc:
                 # Network-level errors — always retryable
                 last_exc = exc
-                await asyncio.sleep(BASE_RETRY_DELAY * (2**attempt))
+                delay = BASE_RETRY_DELAY * (2**attempt)
+                logger.info(
+                    "Retrying LLM request after transport error delay_sec=%.2f attempt=%s error=%s",
+                    delay,
+                    attempt + 1,
+                    type(exc).__name__,
+                )
+                await asyncio.sleep(delay)
 
+        logger.error("LLM request exhausted retries max_retries=%s", MAX_RETRIES)
         raise RuntimeError(
             f"Request failed after {MAX_RETRIES} retries. Last error: {repr(last_exc)}"
         ) from last_exc
 
     async def _do_stream(self, req: LLMRequest) -> str:
         parts: list[str] = []
+        chunk_count = 0
 
         async with httpx.AsyncClient(timeout=120) as client:
             async with client.stream(
                 "POST", req.url, json=req.body, headers=req.headers
             ) as response:
+                logger.debug("LLM stream opened status=%s", response.status_code)
                 if response.status_code == 401:
                     raise PermissionError(
                         "Authentication failed (401). Delete ~/.config/taui/config.toml "
@@ -235,12 +270,17 @@ class BaseLLMClient(ABC):
                     try:
                         text = self.parse_chunk(data)
                     except (json.JSONDecodeError, KeyError, IndexError):
+                        logger.debug("Skipping malformed LLM stream chunk")
                         continue  # skip malformed chunks
                     if text:
+                        chunk_count += 1
                         parts.append(text)
                         print(text, end="", flush=True)
 
         print()
+        logger.debug(
+            "LLM stream closed chunks=%s output_chars=%s", chunk_count, len("".join(parts))
+        )
         return "".join(parts)
 
     @staticmethod

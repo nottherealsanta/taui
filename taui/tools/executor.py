@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import json
+import logging
 import time
 from typing import Literal
 import asyncio
@@ -36,6 +37,8 @@ class ExecutionDenied:
 
 ExecutionOutcome = ExecutionCompleted | ExecutionRequiresApproval | ExecutionDenied
 
+logger = logging.getLogger(__name__)
+
 
 class ToolExecutor:
     def __init__(self, registry: ToolRegistry, default_timeout_sec: int = 120) -> None:
@@ -53,25 +56,52 @@ class ToolExecutor:
         timeout_sec: int | None = None,
     ) -> ExecutionOutcome:
         start = time.perf_counter()
+        logger.info(
+            "Tool execution requested call_id=%s tool=%s approved=%s",
+            tool_call_id,
+            tool_name,
+            approved,
+        )
         try:
             tool = self._registry.get(tool_name)
         except ValueError as exc:
+            logger.warning(
+                "Tool not found call_id=%s tool=%s error=%s", tool_call_id, tool_name, exc
+            )
             return ExecutionCompleted(
                 state="completed", result=ToolResult.fail(str(exc))
             )
 
         validation_error = _validate_schema(tool.schema, arguments)
         if validation_error:
+            logger.warning(
+                "Tool argument validation failed call_id=%s tool=%s error=%s",
+                tool_call_id,
+                tool_name,
+                validation_error,
+            )
             return ExecutionCompleted(
                 state="completed", result=ToolResult.fail(validation_error)
             )
 
         decision = context.policy.evaluate(tool_name)
         if decision.decision == "deny":
+            logger.warning(
+                "Tool denied by policy call_id=%s tool=%s reason=%s",
+                tool_call_id,
+                tool_name,
+                decision.reason,
+            )
             return ExecutionDenied(
                 state="denied", result=ToolResult.fail(decision.reason)
             )
         if decision.decision == "confirm" and approved is None:
+            logger.info(
+                "Tool requires approval call_id=%s tool=%s reason=%s",
+                tool_call_id,
+                tool_name,
+                decision.reason,
+            )
             return ExecutionRequiresApproval(
                 state="approval_required",
                 tool_call_id=tool_call_id,
@@ -80,6 +110,7 @@ class ToolExecutor:
                 reason=decision.reason,
             )
         if decision.decision == "confirm" and approved is False:
+            logger.info("Tool rejected by user call_id=%s tool=%s", tool_call_id, tool_name)
             return ExecutionDenied(
                 state="denied",
                 result=ToolResult.fail("Tool execution rejected by user."),
@@ -91,11 +122,24 @@ class ToolExecutor:
             or self._default_timeout_sec
         )
         try:
+            logger.debug(
+                "Running tool call_id=%s tool=%s timeout_sec=%s",
+                tool_call_id,
+                tool_name,
+                limit,
+            )
             result = await asyncio.wait_for(
                 tool.execute(arguments, context), timeout=limit
             )
         except TimeoutError:
             elapsed_ms = int((time.perf_counter() - start) * 1000)
+            logger.warning(
+                "Tool timed out call_id=%s tool=%s timeout_sec=%s duration_ms=%s",
+                tool_call_id,
+                tool_name,
+                limit,
+                elapsed_ms,
+            )
             return ExecutionCompleted(
                 state="completed",
                 result=ToolResult.fail(
@@ -109,6 +153,12 @@ class ToolExecutor:
             )
         except Exception as exc:
             elapsed_ms = int((time.perf_counter() - start) * 1000)
+            logger.exception(
+                "Tool raised unexpected error call_id=%s tool=%s duration_ms=%s",
+                tool_call_id,
+                tool_name,
+                elapsed_ms,
+            )
             return ExecutionCompleted(
                 state="completed",
                 result=ToolResult.fail(
@@ -128,6 +178,13 @@ class ToolExecutor:
         metadata.setdefault("tool_name", tool_name)
         metadata.setdefault("arguments_digest", _digest(arguments))
         result.metadata = metadata
+        logger.info(
+            "Tool execution completed call_id=%s tool=%s error=%s duration_ms=%s",
+            tool_call_id,
+            tool_name,
+            result.error,
+            elapsed_ms,
+        )
         return ExecutionCompleted(state="completed", result=result)
 
 

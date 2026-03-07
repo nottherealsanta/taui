@@ -35,7 +35,7 @@ html,
 body {
   margin: 0;
   height: 100%;
-  background: var(--bg);
+  background: #ffffff;
   color: var(--text);
   font-family: "SF Pro Text", "Segoe UI", sans-serif;
 }
@@ -58,11 +58,6 @@ body {
   font-size: 28px;
   font-weight: 700;
   margin: 0;
-}
-
-.connection {
-  color: var(--text-muted);
-  font-size: 13px;
 }
 
 .pane {

@@ -5,6 +5,7 @@ Codex LLM client — OpenAI Responses API at chatgpt.com.
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
 import httpx
@@ -17,6 +18,8 @@ from taui.llms.base import (
     ProviderToolCall,
     ProviderTurnResult,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class CodexLLMClient(BaseLLMClient):
@@ -86,6 +89,13 @@ class CodexLLMClient(BaseLLMClient):
         temperature: float = 0.1,
     ) -> ProviderTurnResult:
         del temperature
+        logger.info(
+            "Codex create_response start model=%s messages=%s tools=%s previous_response=%s",
+            model,
+            len(messages),
+            len(tools or []),
+            bool(previous_response_id),
+        )
         self.refresh_credentials()
         system, converted_input = self._convert_messages(messages)
         body: dict[str, object] = {
@@ -122,6 +132,7 @@ class CodexLLMClient(BaseLLMClient):
                     "User-Agent": "taui (darwin; arm64)",
                 },
             ) as response:
+                logger.debug("Codex stream opened status=%s", response.status_code)
                 if response.status_code == 401:
                     raise PermissionError(
                         "Authentication failed (401). Delete ~/.config/taui/config.toml "
@@ -174,13 +185,21 @@ class CodexLLMClient(BaseLLMClient):
                         message = ""
                         if isinstance(err, dict):
                             message = str(err.get("message") or err.get("code") or "").strip()
+                        logger.warning("Codex error event message=%s", message or "<empty>")
                         raise RuntimeError(message or "Codex API returned an error event.")
 
-        return ProviderTurnResult(
+        result = ProviderTurnResult(
             response_id=response_id,
             text="".join(text_parts),
             tool_calls=list(tool_calls.values()),
         )
+        logger.info(
+            "Codex create_response complete response_id=%s output_chars=%s tool_calls=%s",
+            bool(result.response_id),
+            len(result.text),
+            len(result.tool_calls),
+        )
+        return result
 
     async def create_turn(
         self,
