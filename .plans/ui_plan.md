@@ -1,5 +1,7 @@
 # Taui UI Plan - Rust + GPUI
 
+> Superseded on 2026-03-07 by the web UI migration (`uv run taui` + `taui/static/*`).
+
 ## 1. Prime Goal
 
 Build a native Taui desktop UI in Rust using GPUI, with the spec tree as the primary user workflow and chat as a secondary escape hatch.
@@ -282,6 +284,7 @@ User themes loadable from `~/.config/taui/themes/*.json` following the `ThemeFam
   - `theme.md`
   - `backend_integration.md`
   - `keybindings.md`
+  - `spec_tree_interaction.md`
   - `testing.md`
 
 ### 6.2 `ui/specs/app_shell.md`
@@ -307,9 +310,21 @@ User themes loadable from `~/.config/taui/themes/*.json` following the `ThemeFam
   - central app state for current workspace, selected `spec_ref`, active run, and filter toggles
   - typed action/event model for pane communication
   - state management via GPUI `Model<AppState>` with `cx.observe()` for reactivity
+  - maintain spec-tree editor session state:
+    - active node identity and `spec_ref`
+    - caret position
+    - pending edits
+    - mode (`editing|selection`)
+    - navigation direction/context for boundary transitions
+  - provide deterministic visible-outline traversal contract for spec tree editing:
+    - `resolve_prev_visible_editable_node(...)`
+    - `resolve_next_visible_editable_node(...)`
+  - enforce commit boundaries before structural transitions (node switch, create/split, indent, exit edit mode)
 - Leaf functions/structs:
   - `struct AppState`
+  - `struct SpecTreeEditorSession`
   - `enum UiAction`
+  - `enum EditorMode`
   - `fn dispatch(state: &mut AppState, action: UiAction, cx: &mut ModelContext<AppState>)`
 
 ### 6.4 `ui/specs/spec_tree_pane.md`
@@ -424,7 +439,19 @@ User themes loadable from `~/.config/taui/themes/*.json` following the `ThemeFam
 - Files:
   - `ui/src/app/keybindings.rs`
 - Requirements:
-  - keyboard-first navigation for spec tree (up/down/expand/collapse/select)
+  - keyboard-first navigation for spec tree (up/down/expand/collapse/select) with explicit behavior contracts
+  - key resolution priority order:
+    - transient UI handlers (autocomplete, slash command menus, inline pickers)
+    - editor text handlers
+    - structural outline handlers
+  - Enter/Shift+Enter/Tab contracts:
+    - Enter performs structural create/split by default (not inline newline)
+    - Shift+Enter inserts newline within current node text
+    - Tab indents current node under nearest valid previous sibling
+  - Arrow contracts:
+    - ArrowUp/ArrowDown are text-first and cross-node only at top/bottom boundaries
+    - cross-node movement uses visible outline order and skips hidden descendants under collapsed parents
+    - ArrowLeft/ArrowRight stay text-first; at absolute boundaries they may transition editor state but must not create/delete nodes
   - command palette (`cmd+shift+p`) for all actions
   - pane focus cycling (`cmd+1..4`)
   - quick `spec_ref` jump (`cmd+p` fuzzy finder)
@@ -433,7 +460,53 @@ User themes loadable from `~/.config/taui/themes/*.json` following the `ThemeFam
   - `fn register_keybindings(cx: &mut AppContext)`
   - `struct CommandPalette`
 
-### 6.11 `ui/specs/testing.md`
+### 6.11 `ui/specs/spec_tree_interaction.md`
+
+- Files:
+  - `ui/src/panes/spec_tree.rs`
+  - `ui/src/app/state.rs`
+  - `ui/src/app/keybindings.rs`
+- Requirements:
+  - define interaction terminology for spec tree editor:
+    - node/block, editing mode, selection mode, sibling, child, visible outline order
+  - entering edit mode:
+    - trigger via click, keyboard navigation landing, or structural create/split actions
+    - initialize editor session with active node, context, caret position, and direction when relevant
+  - save and exit boundaries:
+    - persist/reconcile edits when focus changes, edit mode exits, structural action occurs, or command requires persisted content
+    - prevent silent edit loss during any structural transition
+  - Enter semantics (structural):
+    - finalize current node content
+    - create next editable node in outline flow (usually next sibling; split behavior allowed when caret is mid-text)
+    - move focus and caret into the new node
+  - child semantics:
+    - Tab indents current node into child position under nearest valid previous sibling
+    - creating a child that would be hidden by collapse must auto-expand parent or otherwise reveal insertion deterministically
+  - Shift+Enter semantics (text):
+    - insert newline in current node
+    - preserve node identity and tree depth
+  - Arrow semantics:
+    - ArrowUp/ArrowDown move within text first; at top/bottom boundaries they commit edits and move to previous/next visible editable node
+    - ArrowLeft/ArrowRight remain text-first and only participate in boundary-aware editor state transitions
+  - transient UI precedence:
+    - while autocomplete/command menus/pickers are active, Enter and arrows are handled by the transient UI before editor/structure rules
+  - focus and persistence guarantees:
+    - deterministic target resolution
+    - visible caret after movement
+    - outline consistency preserved across navigation and structural edits
+- Leaf functions/structs:
+  - `enum EditorMode`
+  - `enum NavigationDirection`
+  - `fn enter_edit_mode(...)`
+  - `fn commit_active_node_if_dirty(...)`
+  - `fn handle_enter(...)`
+  - `fn handle_shift_enter(...)`
+  - `fn handle_tab_indent(...)`
+  - `fn handle_arrow_navigation(...)`
+  - `fn resolve_next_visible_editable_node(...)`
+  - `fn resolve_prev_visible_editable_node(...)`
+
+### 6.12 `ui/specs/testing.md`
 
 - Files:
   - `ui/tests/smoke.rs`
@@ -451,7 +524,7 @@ User themes loadable from `~/.config/taui/themes/*.json` following the `ThemeFam
 3. **Spec tree** - spec index, tree rendering, `spec_ref` selection, status display.
 4. **Backend integration** - API client, event stream, reconnect logic.
 5. **Execution + plan** - Box inspector, TaskGraph visualization, live updates.
-6. **Steering + keybindings** - chat panel, command palette, keyboard navigation.
+6. **Steering + keybindings** - chat panel, command palette, keyboard navigation, and outline interaction semantics parity with behavior-level keyboard UX verification.
 7. **Verification UX** - clarification gate, amendment flow, compliance display.
 8. **Tests + polish** - smoke tests, state tests, service tests, theme polish.
 
@@ -468,4 +541,11 @@ Dependency notes: milestones 1-2 are sequential. Milestones 3 and 4 can overlap.
 - User can send steering messages to root or targeted minion.
 - Theme system loads bundled + user themes, supports refinement overrides.
 - All panes navigable via keyboard; command palette provides action discovery.
+- Enter on a non-empty spec node creates the next editable node in outline flow and focuses it.
+- Shift+Enter inserts a newline in the same node without changing node identity or depth.
+- Tab indents the current node under the nearest valid previous sibling and keeps focus on the moved node.
+- ArrowUp/ArrowDown at node boundaries persist pending edits and move to previous/next visible editable node.
+- Arrow traversal skips hidden descendants of collapsed parents unless revealed.
+- While transient UI is active (autocomplete/menu/picker), Enter and arrows are consumed by transient UI handlers first.
+- Structural transitions guarantee no silent edit loss and always end with a deterministic, visible caret target.
 - Core flows are covered by smoke + state/service/theme tests.

@@ -1,5 +1,7 @@
 # Rust-Python IPC Plan — WebSocket Bridge
 
+> Superseded on 2026-03-07 for UI runtime ownership. The WebSocket JSON-RPC protocol remains active for the browser UI.
+
 **Goal:** Establish a reliable, bidirectional communication layer between the GPUI/Rust frontend and the Python backend, so the UI can display live state (spec tree, agent events, Box results) and the user can drive agent execution from the native UI.
 
 **Preconditions:** The `ui/` Rust crate exists with GPUI shell scaffolding. The `taui/` Python package has the tool system (Phase 3a), agent loop primitives, and spec tree model. The two are currently unconnected.
@@ -62,7 +64,7 @@ Rust owns the process lifecycle. Python runs as a managed child process serving 
 
 ```
 1. Resolve Python binary path (from config or `python3` / `.venv/bin/python`)
-2. Spawn: `python -m taui.bridge serve`
+2. Spawn: `python -m taui.server serve`
    - Capture stdout (for port), stderr (for logs)
    - Set working directory to project workspace
 3. Read first line from stdout: `PORT:{port}\n`
@@ -76,10 +78,10 @@ Rust owns the process lifecycle. Python runs as a managed child process serving 
 ### 2.2 Python Side
 
 ```
-1. `taui.bridge.serve` entry point
+1. `python -m taui.server serve` entry point
 2. Find a free port: `sock.bind(("127.0.0.1", 0))` → extract port
 3. Print `PORT:{port}\n` to stdout, flush
-4. Start asyncio WebSocket server on 127.0.0.1:{port}
+4. Start FastAPI + Uvicorn server on 127.0.0.1:{port}
 5. Accept single connection from Rust
 6. Enter message dispatch loop
 ```
@@ -272,53 +274,42 @@ If the WebSocket disconnects (Python crash, network issue):
 
 ## 6. Implementation Plan
 
-### 6.1 Python Side — `taui/bridge/`
+### 6.1 Python Side — `taui/server/`
 
-New module: `taui/bridge/`
+New module: `taui/server/`
 
 | File | Purpose |
 |---|---|
-| `taui/bridge/__init__.py` | Re-exports |
-| `taui/bridge/server.py` | WebSocket server: port discovery, connection accept, message dispatch |
-| `taui/bridge/protocol.py` | JSON-RPC 2.0 message types, serialization, validation |
-| `taui/bridge/handlers.py` | Method handlers: maps method names to handler functions |
-| `taui/bridge/state.py` | State snapshot builders (spec tree → JSON, run status → JSON) |
-| `taui/bridge/__main__.py` | `python -m taui.bridge` entry point |
+| `taui/server/__init__.py` | Re-exports |
+| `taui/server/app.py` | FastAPI app with `/ws` endpoint and single-client connection management |
+| `taui/server/server.py` | Compatibility wrapper for app creation |
+| `taui/server/protocol.py` | JSON-RPC 2.0 message types, serialization, validation |
+| `taui/server/handlers.py` | Method handlers: maps method names to handler functions |
+| `taui/server/state.py` | Run state models and serialization |
+| `taui/server/__main__.py` | `python -m taui.server serve` entry point |
 
 **Dependencies:**
-- `websockets` — lightweight async WebSocket server (add to `pyproject.toml`)
-- `pydantic` — message validation (already likely available, or use dataclasses)
+- `fastapi` — WebSocket endpoint hosting + app lifecycle
+- `uvicorn` — ASGI server process for localhost bridge
+- `pydantic` — message validation where strict typed payload models are needed
 
 **Server skeleton:**
 
 ```python
-# taui/bridge/server.py
-import asyncio
-import json
+# taui/server/__main__.py
 import socket
-import sys
-from websockets.asyncio.server import serve
 
-async def handle_connection(websocket):
-    async for raw in websocket:
-        msg = json.loads(raw)
-        response = await dispatch(msg)
-        if response is not None:  # requests get responses; notifications don't
-            await websocket.send(json.dumps(response))
+import uvicorn
+from taui.server.app import create_app
 
-async def run_server():
-    # Find free port
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.bind(("127.0.0.1", 0))
-    port = sock.getsockname()[1]
-    sock.close()
+def free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
 
-    # Announce port
-    print(f"PORT:{port}", flush=True)
-
-    # Start server
-    async with serve(handle_connection, "127.0.0.1", port) as server:
-        await server.serve_forever()
+port = free_port()
+print(f"PORT:{port}", flush=True)
+uvicorn.run(create_app(), host="127.0.0.1", port=port)
 ```
 
 ### 6.2 Rust Side — `ui/src/services/`
@@ -333,53 +324,58 @@ async def run_server():
 | `ui/src/services/state_cache.rs` | Local state cache: spec tree, run status, pending approvals |
 
 **Crate dependencies (add to `ui/Cargo.toml`):**
-- `tokio-tungstenite` — async WebSocket client
 - `serde_json` — JSON serialization
 - `serde` (with derive) — struct serialization
-- `tokio` (with `process`, `io`, `time` features) — async runtime, child process
+- `tungstenite` (dev) — Rust smoke-test WebSocket client
 
 **Process manager skeleton:**
 
 ```rust
 // ui/src/services/process_manager.rs
-use tokio::process::Command;
-use tokio::io::{AsyncBufReadExt, BufReader};
+use std::io::{BufRead, BufReader};
+use std::process::{Command, Stdio};
+use std::sync::mpsc;
+use std::thread;
+use std::time::Duration;
 
 pub struct PythonProcess {
-    child: tokio::process::Child,
+    child: std::process::Child,
     port: u16,
 }
 
 impl PythonProcess {
-    pub async fn spawn(workspace: &Path) -> Result<Self, BridgeError> {
+    pub fn spawn(workspace: &Path) -> Result<Self, BridgeError> {
         let mut child = Command::new("python3")
-            .args(["-m", "taui.bridge", "serve"])
+            .args(["-m", "taui.server", "serve", "--workspace"])
+            .arg(workspace)
             .current_dir(workspace)
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
             .spawn()?;
 
         let stdout = child.stdout.take().unwrap();
-        let mut reader = BufReader::new(stdout).lines();
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || {
+            let mut reader = BufReader::new(stdout);
+            let mut line = String::new();
+            let _ = reader.read_line(&mut line);
+            let _ = tx.send(line);
+        });
 
-        // Read port with timeout
-        let port = tokio::time::timeout(Duration::from_secs(10), async {
-            while let Some(line) = reader.next_line().await? {
-                if let Some(port_str) = line.strip_prefix("PORT:") {
-                    return Ok(port_str.parse::<u16>()?);
-                }
-            }
-            Err(BridgeError::NoPortReceived)
-        }).await??;
+        let line = rx.recv_timeout(Duration::from_secs(10))?;
+        let port = line
+            .strip_prefix("PORT:")
+            .ok_or(BridgeError::NoPortReceived)?
+            .trim()
+            .parse::<u16>()?;
 
         Ok(Self { child, port })
     }
 
     pub fn port(&self) -> u16 { self.port }
 
-    pub async fn shutdown(&mut self) -> Result<(), BridgeError> {
-        // Send SIGTERM, wait, then SIGKILL if needed
-        self.child.kill().await?;
+    pub fn shutdown(&mut self) -> Result<(), BridgeError> {
+        self.child.kill()?;
         Ok(())
     }
 }
@@ -532,14 +528,16 @@ These types are defined in both Rust (serde structs) and Python (dataclasses/pyd
 
 | # | File | Purpose |
 |---|---|---|
-| 1 | `taui/bridge/__init__.py` | Re-exports |
-| 2 | `taui/bridge/__main__.py` | `python -m taui.bridge` entry point |
-| 3 | `taui/bridge/server.py` | WebSocket server, port discovery, connection management |
-| 4 | `taui/bridge/protocol.py` | JSON-RPC 2.0 message types and helpers |
-| 5 | `taui/bridge/handlers.py` | Method dispatch table and handler implementations |
-| 6 | `taui/bridge/state.py` | State snapshot serialization (spec tree, run status) |
-| 7 | `tests/test_bridge_protocol.py` | Protocol serialization and dispatch tests |
-| 8 | `tests/test_bridge_server.py` | Server startup, port discovery, basic round-trip |
+| 1 | `taui/server/__init__.py` | Re-exports |
+| 2 | `taui/server/__main__.py` | `python -m taui.server serve` entry point |
+| 3 | `taui/server/app.py` | FastAPI app and `/ws` endpoint |
+| 4 | `taui/server/server.py` | Compatibility wrapper for app creation |
+| 5 | `taui/server/protocol.py` | JSON-RPC 2.0 message types and helpers |
+| 6 | `taui/server/handlers.py` | Method dispatch table and handler implementations |
+| 7 | `taui/server/state.py` | Runtime state models (run status, ids) |
+| 8 | `tests/test_server_protocol.py` | Protocol serialization and dispatch tests |
+| 9 | `tests/test_server_startup.py` | Server startup, port discovery, WS round-trip |
+| 10 | `tests/test_server_app.py` | FastAPI WebSocket integration tests |
 
 ### Rust Side
 
@@ -559,8 +557,8 @@ These types are defined in both Rust (serde structs) and Python (dataclasses/pyd
 
 | File | Change |
 |---|---|
-| `pyproject.toml` | Add `websockets` dependency |
-| `ui/Cargo.toml` | Add `tokio-tungstenite`, `serde_json`, `tokio` dependencies |
+| `pyproject.toml` | Add `fastapi`, `uvicorn`, `pydantic`, and `websockets` |
+| `ui/Cargo.toml` | Add `serde_json`, `serde`, and `tungstenite` |
 | `ui/src/main.rs` | Wire up backend spawn on app start |
 | `ui/src/app/state.rs` | Add spec tree cache, notification application |
 
@@ -570,19 +568,19 @@ These types are defined in both Rust (serde structs) and Python (dataclasses/pyd
 
 ```
 Phase 1: Protocol Foundation
-  1. taui/bridge/protocol.py          — JSON-RPC types
+  1. taui/server/protocol.py          — JSON-RPC types
   2. ui/src/services/rpc.rs           — JSON-RPC types (Rust mirror)
-  3. tests/test_bridge_protocol.py    — protocol round-trip tests
+  3. tests/test_server_protocol.py    — protocol round-trip tests
 
 Phase 2: Server + Client
-  4. taui/bridge/server.py            — WebSocket server + port discovery
-  5. taui/bridge/__main__.py          — entry point
+  4. taui/server/app.py               — FastAPI WebSocket server
+  5. taui/server/__main__.py          — entry point
   6. ui/src/services/process_manager.rs — spawn Python, read port
   7. ui/src/services/ws_client.rs     — WebSocket connect + reconnect
 
 Phase 3: Method Handlers
-  8. taui/bridge/handlers.py          — initialize, spec/getTree, run/start
-  9. taui/bridge/state.py             — state snapshot builders
+  8. taui/server/handlers.py          — initialize, spec/getTree, run/start
+  9. taui/server/state.py             — state snapshot builders
   10. ui/src/services/backend_client.rs — typed request wrappers
   11. ui/src/services/types.rs         — shared wire types
 
@@ -593,7 +591,7 @@ Phase 4: Event Streaming
 Phase 5: Integration
   14. ui/src/main.rs                   — wire backend into app startup
   15. ui/tests/bridge_smoke.rs         — end-to-end test
-  16. tests/test_bridge_server.py      — Python server tests
+  16. tests/test_server_startup.py     — Python server startup + WS tests
 ```
 
 ---
@@ -602,7 +600,7 @@ Phase 5: Integration
 
 This plan is complete when:
 
-1. `python -m taui.bridge serve` starts a WebSocket server and prints `PORT:{port}` to stdout
+1. `python -m taui.server serve` starts a WebSocket server and prints `PORT:{port}` to stdout
 2. Rust can spawn the Python process, read the port, and connect via WebSocket
 3. `initialize` handshake completes successfully
 4. `spec/getTree` returns a valid spec tree snapshot
@@ -610,7 +608,7 @@ This plan is complete when:
 6. `approval/request` from Python surfaces in the UI; user response flows back
 7. Reconnection works: kill Python, Rust restarts it and re-syncs state
 8. Token streaming (`agent/token`) renders in the UI without visible lag
-9. All protocol tests pass (`tests/test_bridge_protocol.py`)
+9. All protocol tests pass (`tests/test_server_protocol.py`)
 10. Smoke test passes: spawn → connect → request → notification → shutdown
 
 ---
@@ -622,7 +620,7 @@ This plan is complete when:
 | Token streaming overwhelms UI | Batch tokens on Python side (50ms / 10 tokens); Rust buffers before render |
 | Python crash loses in-flight state | Session persistence (SQLite) survives crashes; Rust re-syncs on reconnect |
 | Port collision on startup | `sock.bind(("127.0.0.1", 0))` lets OS pick a free port; no hardcoded ports |
-| WebSocket library mismatch | Pin `websockets` version in `pyproject.toml`; use `tokio-tungstenite` (mature, well-maintained) |
+| WebSocket library mismatch | Pin `fastapi`/`uvicorn`/`websockets` versions in `pyproject.toml`; use `tungstenite` for Rust smoke checks |
 | Latency for approval round-trips | Approval requests block the agent; UI renders them with high priority; no queuing delay |
 | GPUI thread safety | All `cx.update_model()` calls happen from `cx.spawn()` async tasks; GPUI handles the dispatch |
 | Multiple UI clients (future) | Current design is single-client. If needed later, Python server can accept multiple connections with session isolation |
