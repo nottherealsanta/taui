@@ -1,0 +1,13 @@
+[package]
+name = "taui_ui"
+version = "0.1.0"
+edition = "2021"
+description = "Taui desktop UI"
+license = "MIT"
+
+[dependencies]
+anyhow = "1.0"
+gpui = { version = "0.2.2", features = ["runtime_shaders"] }
+
+[dev-dependencies]
+pretty_assertions = "1.4"

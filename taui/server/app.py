@@ -3,14 +3,11 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 import logging
-import os
 from pathlib import Path
 import time
 from typing import Any
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
-from fastapi.staticfiles import StaticFiles
 
 from .handlers import MethodHandlers
 from .protocol import JsonRpcProtocolError, error_message, parse_request, result_message
@@ -42,17 +39,6 @@ class _ConnectionManager:
             if self._active is websocket:
                 self._active = None
                 logger.info("Websocket client unregistered")
-
-
-def _latest_static_mtime_ns(static_root: Path) -> int:
-    latest = 0
-    for root, _, files in os.walk(static_root):
-        for name in files:
-            path = Path(root) / name
-            mtime = path.stat().st_mtime_ns
-            if mtime > latest:
-                latest = mtime
-    return latest
 
 
 def create_app(
@@ -89,7 +75,6 @@ def create_app(
 
     app = FastAPI(title="taui-server", version="0.1.0", lifespan=lifespan)
     manager = _ConnectionManager()
-    static_root = Path(__file__).resolve().parent.parent / "static"
 
     @app.get("/healthz")
     async def healthz() -> dict[str, str]:
@@ -170,15 +155,5 @@ def create_app(
         finally:
             handlers.set_notification_callback(None)
             await manager.unregister(websocket)
-
-    @app.get("/")
-    async def index() -> FileResponse:
-        return FileResponse(static_root / "index.html")
-
-    @app.get("/__reload_token")
-    async def reload_token() -> dict[str, int]:
-        return {"token": _latest_static_mtime_ns(static_root)}
-
-    app.mount("/static", StaticFiles(directory=static_root), name="static")
 
     return app

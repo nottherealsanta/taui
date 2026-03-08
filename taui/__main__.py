@@ -43,14 +43,14 @@ def _run_serve(args: argparse.Namespace) -> None:
     port = args.port if args.port > 0 else _find_free_port(host)
 
     logger.info(
-        "Starting Taui UI server workspace=%s specs_path=%s host=%s port=%s",
+        "Starting Taui backend server workspace=%s specs_path=%s host=%s port=%s",
         workspace,
         args.specs_path,
         host,
         port,
     )
     app = create_app(workspace=workspace, specs_path=args.specs_path)
-    print(f"Taui running at http://{host}:{port}", flush=True)
+    print(f"Taui backend running at ws://{host}:{port}/ws", flush=True)
     uvicorn.run(app, host=host, port=port, log_level="warning", access_log=False)
 
 
@@ -62,10 +62,10 @@ def _run_reinit_db(args: argparse.Namespace) -> None:
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="taui web UI")
+    parser = argparse.ArgumentParser(description="taui backend server")
     subparsers = parser.add_subparsers(dest="command")
 
-    serve_parser = subparsers.add_parser("serve", help="Run Taui web UI server")
+    serve_parser = subparsers.add_parser("serve", help="Run Taui backend server")
     serve_parser.add_argument(
         "--workspace",
         default=".",

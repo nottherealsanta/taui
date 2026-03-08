@@ -212,3 +212,5 @@ node_modules/
 package-lock.json
 
 taui/static/
+
+.DS_Store

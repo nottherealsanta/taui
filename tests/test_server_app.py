@@ -175,27 +175,13 @@ def test_get_node_code_refs_reads_workspace_files(tmp_path: Path) -> None:
             assert refs[1]["error"] == "file not found"
 
 
-def test_static_root_serves_web_ui(tmp_path: Path) -> None:
+def test_root_path_is_not_served(tmp_path: Path) -> None:
     _write_specs(tmp_path)
     app = create_app(workspace=tmp_path)
 
     with TestClient(app) as client:
         response = client.get("/")
-        assert response.status_code == 200
-        assert "text/html" in response.headers["content-type"]
-        assert "<div id=\"spec-tree\" class=\"tree\"></div>" in response.text
-
-
-def test_reload_token_endpoint(tmp_path: Path) -> None:
-    _write_specs(tmp_path)
-    app = create_app(workspace=tmp_path)
-
-    with TestClient(app) as client:
-        response = client.get("/__reload_token")
-        assert response.status_code == 200
-        payload = response.json()
-        assert "token" in payload
-        assert isinstance(payload["token"], int)
+        assert response.status_code == 404
 
 
 def test_websocket_roundtrip_with_custom_specs_path(tmp_path: Path) -> None:

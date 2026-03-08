@@ -35,9 +35,6 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["taui"]
-include = [
-    "taui/static/**",
-]
 
 [dependency-groups]
 dev = [
