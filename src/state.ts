@@ -15,34 +15,15 @@ export interface SpecNode {
 export interface State {
   nodes: SpecNode[];
   selectedNodeId: number | null;
-  editing: boolean;
-  editText: string;
   connected: boolean;
-  activeTab: 'code' | 'terminal';
-  codeExpanded: boolean;
-  nodeContent: string;
-  nodeDirty: boolean;
-  codeContent: string;
-  codeRange: { file_path: string; line_start: number; line_end: number } | null;
-  terminalOutput: string[];
-  runStatus: 'idle' | 'running' | 'stopped';
+  // Note: Per-node editor state is managed by PerNodeEditorManager in editors.ts
 }
 
 export function createInitialState(): State {
   return {
     nodes: [],
     selectedNodeId: null,
-    editing: false,
-    editText: '',
     connected: false,
-    activeTab: 'code',
-    codeExpanded: false,
-    nodeContent: '',
-    nodeDirty: false,
-    codeContent: '',
-    codeRange: null,
-    terminalOutput: [],
-    runStatus: 'idle',
   };
 }
 
@@ -99,31 +80,23 @@ export function reduce(state: State, action: any): State {
     return { ...state, connected: action.value };
   }
 
-  if (action.type === 'SET_ACTIVE_TAB') {
-    return { ...state, activeTab: action.tab };
-  }
-
-  if (action.type === 'TOGGLE_CODE_EXPANDED') {
-    return { ...state, codeExpanded: !state.codeExpanded };
-  }
-
-  if (action.type === 'SET_RUN_STATUS') {
-    return { ...state, runStatus: action.status };
-  }
-
-  if (action.type === 'APPEND_TERMINAL_OUTPUT') {
-    return { ...state, terminalOutput: [...state.terminalOutput, action.line] };
-  }
-
   if (action.type === 'LOAD_TREE') {
     const nodes = buildTree(action.nodes, action.foldState || {});
-    const selectedNodeId = nodes.length > 0 ? nodes[0].id : null;
+    // Preserve selection by spec_ref if possible
+    let selectedNodeId: number | null = null;
+    if (action.preserveSelection && action.previousSelectedSpecRef) {
+      const found = nodes.find(n => n.spec_ref === action.previousSelectedSpecRef);
+      if (found) {
+        selectedNodeId = found.id;
+      }
+    }
+    if (selectedNodeId === null && nodes.length > 0) {
+      selectedNodeId = nodes[0].id;
+    }
     return {
       ...state,
       nodes,
       selectedNodeId,
-      editing: false,
-      editText: selectedNodeId === null ? '' : nodes[selectedNodeId].title,
     };
   }
 
@@ -141,9 +114,6 @@ export function reduce(state: State, action: any): State {
     return {
       ...state,
       selectedNodeId: action.nodeId,
-      editing: false,
-      editText: selected.title,
-      nodeDirty: false,
     };
   }
 
@@ -157,13 +127,9 @@ export function reduce(state: State, action: any): State {
     if (nextIdx < 0 || nextIdx >= flat.length) {
       return state;
     }
-    const selected = flat[nextIdx];
     return {
       ...state,
-      selectedNodeId: selected.id,
-      editing: false,
-      editText: selected.title,
-      nodeDirty: false,
+      selectedNodeId: flat[nextIdx].id,
     };
   }
 
@@ -190,25 +156,6 @@ export function reduce(state: State, action: any): State {
     return { ...state, nodes };
   }
 
-  if (action.type === 'START_EDITING') {
-    return { ...state, editing: true, editText: node.title };
-  }
-
-  if (action.type === 'SET_EDIT_TEXT') {
-    if (!state.editing) {
-      return state;
-    }
-    return { ...state, editText: action.value };
-  }
-
-  if (action.type === 'STOP_EDITING') {
-    return { ...state, editing: false };
-  }
-
-  if (action.type === 'SET_NODE_DIRTY') {
-    return { ...state, nodeDirty: action.value };
-  }
-
   if (action.type === 'EXPAND_OR_PARENT') {
     if (node.children.length > 0 && node.collapsed) {
       const nodes = state.nodes.slice();
@@ -216,13 +163,9 @@ export function reduce(state: State, action: any): State {
       return { ...state, nodes };
     }
     if (node.parentId !== null) {
-      const parent = state.nodes[node.parentId];
       return {
         ...state,
-        selectedNodeId: parent.id,
-        editing: false,
-        editText: parent.title,
-        nodeDirty: false,
+        selectedNodeId: node.parentId,
       };
     }
     return state;
@@ -235,13 +178,9 @@ export function reduce(state: State, action: any): State {
       return { ...state, nodes };
     }
     if (node.children.length > 0) {
-      const child = state.nodes[node.children[0]];
       return {
         ...state,
-        selectedNodeId: child.id,
-        editing: false,
-        editText: child.title,
-        nodeDirty: false,
+        selectedNodeId: node.children[0],
       };
     }
     return state;

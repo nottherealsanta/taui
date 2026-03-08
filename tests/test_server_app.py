@@ -109,6 +109,72 @@ def test_websocket_roundtrip_and_spec_update_notifications(tmp_path: Path) -> No
             assert tree_changed["params"]["spec_ref"] == "specs/core.md#core-updated"
 
 
+def test_get_node_code_refs_reads_workspace_files(tmp_path: Path) -> None:
+    specs_root = tmp_path / "specs"
+    src_root = tmp_path / "src"
+    specs_root.mkdir(parents=True, exist_ok=True)
+    src_root.mkdir(parents=True, exist_ok=True)
+
+    (src_root / "worker.py").write_text(
+        "\n".join(
+            [
+                "def run_task(name: str) -> str:",
+                "    trimmed = name.strip()",
+                "    if not trimmed:",
+                "        raise ValueError('name is required')",
+                "    return trimmed.upper()",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (specs_root / "_main.md").write_text(
+        "\n".join(
+            [
+                "Taui",
+                "Spec root.",
+                "",
+                "- [Core](core.md#core)",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (specs_root / "core.md").write_text(
+        "\n".join(
+            [
+                "# Core",
+                "{{code\\_ref: `src/worker.py#L1-L3`}}",
+                "{{code\\_ref: `src/missing.py#L1-L2`}}",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    app = create_app(workspace=tmp_path)
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws") as ws:
+            ws.send_text(
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "spec/getNodeCodeRefs",
+                        "params": {"spec_ref": "specs/core.md#core", "max_lines": 50},
+                    }
+                )
+            )
+            resp = json.loads(ws.receive_text())
+            refs = resp["result"]["refs"]
+
+            assert len(refs) == 2
+            assert refs[0]["file_path"] == "src/worker.py"
+            assert refs[0]["preview_start"] == 1
+            assert refs[0]["preview_end"] == 3
+            assert "def run_task" in refs[0]["content"]
+            assert refs[1]["file_path"] == "src/missing.py"
+            assert refs[1]["error"] == "file not found"
+
+
 def test_static_root_serves_web_ui(tmp_path: Path) -> None:
     _write_specs(tmp_path)
     app = create_app(workspace=tmp_path)

@@ -4,6 +4,7 @@ import asyncio
 from dataclasses import dataclass
 import logging
 from pathlib import Path
+import re
 import time
 from typing import Any, Callable
 
@@ -26,6 +27,11 @@ from .state import RunState, RunProcess
 
 logger = logging.getLogger(__name__)
 
+CODE_REF_MARKER_RE = re.compile(
+    r"\{\{\s*code\\?_ref\s*:\s*`([^`]+)`\s*\}\}", re.IGNORECASE
+)
+CODE_REF_RANGE_RE = re.compile(r"^L(?P<start>\d+)(?:-L?(?P<end>\d+))?$", re.IGNORECASE)
+
 
 NotificationCallback = Callable[[dict[str, Any]], None]
 
@@ -45,19 +51,16 @@ class MethodHandlers:
         self.specs = SpecService(workspace=workspace, specs_path=specs_path)
         self.run_state = RunState()
         self._notification_callback: NotificationCallback | None = None
-        self._notification_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
 
     def set_notification_callback(self, callback: NotificationCallback | None) -> None:
         self._notification_callback = callback
 
     async def drain_notifications(self) -> None:
-        while True:
-            try:
-                notification = self._notification_queue.get_nowait()
-                if self._notification_callback:
-                    self._notification_callback(notification)
-            except asyncio.QueueEmpty:
-                break
+        return
+
+    def _emit_notification(self, notification: dict[str, Any]) -> None:
+        if self._notification_callback:
+            self._notification_callback(notification)
 
     async def dispatch(self, request: JsonRpcRequest) -> DispatchResult:
         method = request.method
@@ -92,6 +95,11 @@ class MethodHandlers:
             if method == "spec/getNodeSourceRange":
                 return DispatchResult(
                     result=await self._handle_spec_get_node_source_range(params),
+                    notifications=[],
+                )
+            if method == "spec/getNodeCodeRefs":
+                return DispatchResult(
+                    result=await self._handle_spec_get_node_code_refs(params),
                     notifications=[],
                 )
             if method == "run/start":
@@ -163,6 +171,7 @@ class MethodHandlers:
                 "spec/getNode",
                 "spec/updateNode",
                 "spec/getNodeSourceRange",
+                "spec/getNodeCodeRefs",
                 "run/start",
                 "run/stop",
                 "run/status",
@@ -302,6 +311,187 @@ class MethodHandlers:
             "truncated": truncated,
         }
 
+    async def _handle_spec_get_node_code_refs(
+        self, params: dict[str, Any]
+    ) -> dict[str, Any]:
+        spec_ref = self._require_str(params, "spec_ref")
+        max_lines = int(params.get("max_lines", 200))
+        if max_lines < 1:
+            max_lines = 200
+
+        node = await self.specs.get_node(spec_ref)
+        refs: list[dict[str, Any]] = []
+        spec_file = (self.specs.workspace / node.file_path).resolve()
+        raw_content = node.content or ""
+
+        for marker in CODE_REF_MARKER_RE.finditer(raw_content):
+            raw_ref = marker.group(1).strip()
+            refs.append(
+                self._resolve_code_reference(
+                    raw_ref=raw_ref,
+                    spec_file=spec_file,
+                    max_lines=max_lines,
+                )
+            )
+
+        return {"refs": refs}
+
+    def _resolve_code_reference(
+        self,
+        *,
+        raw_ref: str,
+        spec_file: Path,
+        max_lines: int,
+    ) -> dict[str, Any]:
+        # Keep markdown-escaped underscores usable in file paths.
+        cleaned_ref = raw_ref.replace("\\_", "_").strip()
+        path_part, _, line_part = cleaned_ref.partition("#")
+        raw_path = path_part.strip()
+
+        if not raw_path:
+            return {
+                "raw_ref": raw_ref,
+                "file_path": "",
+                "line_start": None,
+                "line_end": None,
+                "preview_start": None,
+                "preview_end": None,
+                "content": "",
+                "truncated": False,
+                "error": "invalid code_ref path",
+            }
+
+        line_start: int | None = None
+        line_end: int | None = None
+        if line_part:
+            match = CODE_REF_RANGE_RE.fullmatch(line_part.strip())
+            if not match:
+                return {
+                    "raw_ref": raw_ref,
+                    "file_path": raw_path,
+                    "line_start": None,
+                    "line_end": None,
+                    "preview_start": None,
+                    "preview_end": None,
+                    "content": "",
+                    "truncated": False,
+                    "error": "invalid line range",
+                }
+            line_start = int(match.group("start"))
+            line_end = int(match.group("end") or match.group("start"))
+            if line_start <= 0:
+                line_start = 1
+            if line_end < line_start:
+                line_end = line_start
+
+        resolved, rel_path, resolve_error = self._resolve_workspace_file(
+            raw_path=raw_path,
+            spec_file=spec_file,
+        )
+        if resolved is None:
+            return {
+                "raw_ref": raw_ref,
+                "file_path": rel_path,
+                "line_start": line_start,
+                "line_end": line_end,
+                "preview_start": None,
+                "preview_end": None,
+                "content": "",
+                "truncated": False,
+                "error": resolve_error or "path resolution failed",
+            }
+
+        try:
+            content = resolved.read_text(encoding="utf-8")
+        except OSError as exc:
+            return {
+                "raw_ref": raw_ref,
+                "file_path": rel_path,
+                "line_start": line_start,
+                "line_end": line_end,
+                "preview_start": None,
+                "preview_end": None,
+                "content": "",
+                "truncated": False,
+                "error": str(exc),
+            }
+
+        lines = content.splitlines()
+        if not lines:
+            return {
+                "raw_ref": raw_ref,
+                "file_path": rel_path,
+                "line_start": 1 if line_start is None else line_start,
+                "line_end": 1 if line_end is None else line_end,
+                "preview_start": 1,
+                "preview_end": 1,
+                "content": "",
+                "truncated": False,
+            }
+
+        if line_start is None or line_end is None:
+            line_start = 1
+            line_end = len(lines)
+
+        line_start = min(max(1, line_start), len(lines))
+        line_end = min(max(line_start, line_end), len(lines))
+        preview_end = min(line_end, line_start + max_lines - 1)
+        preview_start = line_start
+        truncated = preview_end < line_end
+        selected_content = "\n".join(lines[preview_start - 1 : preview_end])
+
+        return {
+            "raw_ref": raw_ref,
+            "file_path": rel_path,
+            "line_start": line_start,
+            "line_end": line_end,
+            "preview_start": preview_start,
+            "preview_end": preview_end,
+            "content": selected_content,
+            "truncated": truncated,
+        }
+
+    def _resolve_workspace_file(
+        self, *, raw_path: str, spec_file: Path
+    ) -> tuple[Path | None, str, str | None]:
+        workspace = self.specs.workspace.resolve()
+        path_obj = Path(raw_path)
+        candidates: list[Path] = []
+        if path_obj.is_absolute():
+            candidates.append(path_obj)
+        else:
+            candidates.append((spec_file.parent / path_obj))
+            workspace_candidate = workspace / path_obj
+            if workspace_candidate not in candidates:
+                candidates.append(workspace_candidate)
+
+        safe_candidate: Path | None = None
+        safe_rel_path = raw_path
+
+        for candidate in candidates:
+            try:
+                resolved = candidate.resolve()
+            except OSError:
+                continue
+
+            if not str(resolved).startswith(str(workspace)):
+                continue
+
+            try:
+                relative = str(resolved.relative_to(workspace))
+            except ValueError:
+                relative = raw_path
+
+            safe_candidate = resolved
+            safe_rel_path = relative
+            if resolved.exists() and resolved.is_file():
+                return resolved, relative, None
+
+        if safe_candidate is None:
+            return None, raw_path, "path escapes workspace"
+
+        return None, safe_rel_path, "file not found"
+
     async def _handle_run_start(self, params: dict[str, Any]) -> DispatchResult:
         spec_ref = self._require_str(params, "spec_ref")
         command = self._require_str(params, "command")
@@ -375,7 +565,7 @@ class MethodHandlers:
                         "run/output",
                         {"run_id": run.run_id, "stream": stream_name, "line": text},
                     )
-                    await self._notification_queue.put(notification)
+                    self._emit_notification(notification)
 
             await asyncio.gather(
                 read_stream(run.process.stdout, "stdout"),
@@ -395,7 +585,7 @@ class MethodHandlers:
                 "run/output",
                 {"run_id": run.run_id, "stream": "stderr", "line": str(exc)},
             )
-            await self._notification_queue.put(notification)
+            self._emit_notification(notification)
         finally:
             if self.run_state.current_process is run:
                 self.run_state.status = "idle"
@@ -412,7 +602,7 @@ class MethodHandlers:
                     * 1000,
                 },
             )
-            await self._notification_queue.put(notification)
+            self._emit_notification(notification)
 
     async def _handle_run_stop(self) -> DispatchResult:
         run = self.run_state.current_process

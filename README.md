@@ -1,15 +1,34 @@
-# taui
+# Taui
 
-Run the web UI:
+An agentic coding interface from the future.
 
+## Development
+
+1. Install Python dependencies:
 ```bash
-uv run taui
+uv sync
 ```
 
-`uv run taui` starts the FastAPI server, serves the browser UI, and prints the local URL.
+2. Install Node.js dependencies:
+```bash
+npm install
+```
 
-Use a custom spec root:
+3. Build the frontend:
+```bash
+npm run build
+```
 
+4. Run the server:
 ```bash
 uv run taui --path tests/example_project/specs
 ```
+
+## Architecture
+
+- Single-pane tree-first interface
+- Inline Milkdown editor for node content
+- CodeMirror code preview in bottom drawer
+- xterm terminal in bottom drawer
+- Tree folding with localStorage persistence
+- Auto-save on editor blur
