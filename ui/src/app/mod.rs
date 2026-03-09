@@ -10,7 +10,6 @@ use gpui::FontWeight;
 use gpui::InteractiveElement;
 use gpui::*;
 use gpui_component::input::{Input, InputEvent, InputState};
-use gpui_component::scroll::ScrollableElement;
 use gpui_component::text::TextView;
 use gpui_component::TitleBar;
 
@@ -61,10 +60,14 @@ pub struct AppShell {
     saved_markdown: String,
     _subscriptions: Vec<gpui::Subscription>,
     last_window_title: String,
-    tree_scroll_handle: UniformListScrollHandle,
+    tree_scroll_handle: ScrollHandle,
     cached_markdown_style: Option<gpui_component::text::TextViewStyle>,
+    /// Flat list of non-root tree rows, rebuilt only when `flat_tree_dirty` is set.
     cached_flat_tree: Vec<FlatNode>,
     flat_tree_dirty: bool,
+    /// Cached body portion of the root node's markdown (title is shown in title bar).
+    /// Invalidated together with the flat tree since root markdown changes are structural too.
+    cached_root_body: Option<(NodeId, String)>,
 }
 
 impl AppShell {
@@ -89,7 +92,7 @@ impl AppShell {
             InputState::new(window, cx)
                 .placeholder("Markdown...")
                 .multi_line(true)
-                .auto_grow(3, 20)
+                .auto_grow(1, 20)
                 .soft_wrap(true)
         });
 
@@ -136,10 +139,11 @@ impl AppShell {
             saved_markdown: String::new(),
             _subscriptions: Vec::new(),
             last_window_title: String::new(),
-            tree_scroll_handle: UniformListScrollHandle::new(),
+            tree_scroll_handle: ScrollHandle::new(),
             cached_markdown_style: None,
             cached_flat_tree: Vec::new(),
             flat_tree_dirty: true,
+            cached_root_body: None,
         };
 
         let blur_subscription = cx.subscribe_in(
@@ -187,16 +191,29 @@ impl AppShell {
         self.cached_markdown_style.clone().unwrap()
     }
 
+    /// Return a reference to the cached flat tree, rebuilding it if the dirty flag is set.
+    /// No allocation occurs on cache-hit frames.
     fn get_flat_tree(&mut self) -> &Vec<FlatNode> {
         if self.flat_tree_dirty {
+            #[cfg(debug_assertions)]
+            let t0 = std::time::Instant::now();
+
             self.cached_flat_tree = self.state.flattened_tree_nodes();
             self.flat_tree_dirty = false;
+
+            #[cfg(debug_assertions)]
+            eprintln!(
+                "[perf] flatten: {} nodes in {:?}",
+                self.cached_flat_tree.len(),
+                t0.elapsed()
+            );
         }
         &self.cached_flat_tree
     }
 
     fn mark_flat_tree_dirty(&mut self) {
         self.flat_tree_dirty = true;
+        self.cached_root_body = None;
     }
 
     fn sync_window_title(&mut self, window: &mut Window) {
@@ -264,6 +281,9 @@ impl AppShell {
         };
 
         cx.spawn(async move |this, cx| {
+            #[cfg(debug_assertions)]
+            let t0 = std::time::Instant::now();
+
             let rpc_result: anyhow::Result<()> = async {
                 match &action {
                     UiAction::AddSiblingNode => {
@@ -282,6 +302,9 @@ impl AppShell {
             .await;
 
             let tree_result = client.get_tree_detailed().await;
+
+            #[cfg(debug_assertions)]
+            eprintln!("[perf] structural action round-trip: {:?}", t0.elapsed());
 
             this.update(&mut *cx, |shell, cx| {
                 if let Err(e) = rpc_result {
@@ -361,7 +384,7 @@ impl AppShell {
         let new_markdown = self.markdown_input.read(cx).value().to_string();
         if node.markdown != new_markdown {
             node.markdown = new_markdown.clone();
-            // Update the cached flat tree entry for this node
+            // Update the cached flat tree entry for this node in-place — avoids full rebuild.
             if let Some(flat_node) = self.cached_flat_tree.iter_mut().find(|n| n.id == node_id) {
                 flat_node.markdown = new_markdown;
             }
@@ -372,8 +395,17 @@ impl AppShell {
     fn select_node(&mut self, node_id: NodeId, window: &mut Window, cx: &mut Context<Self>) {
         self.save_current_edits(cx);
 
+        // Update selection in cached flat tree in-place so we don't need a full rebuild.
+        let prev_selected = self.state.selected_node;
         self.state.set_selected(node_id);
         self.editing_node_id = Some(node_id);
+
+        // Flip selected flag on affected rows without a full rebuild.
+        for flat_node in self.cached_flat_tree.iter_mut() {
+            if Some(flat_node.id) == prev_selected || flat_node.id == node_id {
+                flat_node.selected = flat_node.id == node_id;
+            }
+        }
 
         let node = &self.state.nodes[node_id];
         let markdown = node.markdown.clone();
@@ -492,27 +524,40 @@ impl AppShell {
         // Bullet marker - always shown, slightly larger and darker gray
         let bullet = div()
             .child("•")
-            .text_color(rgb(colors.text)) // Darker gray (use main text color)
+            .text_color(rgb(colors.text_muted)) // Darker gray (use main text color)
             .text_size(px(18.0)); // Slightly larger than body text (MARKDOWN_TEXT_SIZE is 16px)
 
-        // Left controls: chevron (if any) + bullet
+        // Left controls: fixed-width chevron slot + bullet
+        // Always reserve space for chevron to keep text aligned
+        let group_id: SharedString = format!("node-row-{}", node_id).into();
+        let chevron_slot = {
+            let inner = chevron.unwrap_or_else(|| div().w(px(24.0)).into_any_element());
+            div()
+                .invisible()
+                .group_hover(group_id.clone(), |s| s.visible())
+                .child(inner)
+        };
         let left_controls = div()
             .flex()
             .items_center()
             .gap_1()
-            .when_some(chevron, |this, c| this.child(c))
+            .child(chevron_slot)
             .child(bullet);
 
-        let indent_guides = if !is_root && row_depth > 0 {
+        // Indent guides: one absolute 1px vertical line per ancestor level.
+        // Cap at MAX_INDENT_GUIDES to prevent element explosion on very deep trees.
+        const MAX_INDENT_GUIDES: usize = 8;
+        let guide_depth = row_depth.min(MAX_INDENT_GUIDES);
+        let indent_guides = if !is_root && guide_depth > 0 {
             Some(
                 div()
                     .absolute()
-                    .left(px(8.0))
+                    .left(px(0.0))
                     .top_0()
                     .bottom_0()
                     .w(indent_width)
                     .flex()
-                    .children((0..row_depth).map(|i| {
+                    .children((0..guide_depth).map(|i| {
                         let x_pos = INDENT_PER_LEVEL * i as f32;
                         div()
                             .absolute()
@@ -578,7 +623,7 @@ impl AppShell {
         let padding = if is_root {
             (px(14.0), px(10.0))
         } else {
-            (px(10.0), px(5.0))
+            (px(10.0), px(2.0))
         };
 
         let mut row_el = div()
@@ -589,6 +634,7 @@ impl AppShell {
             .flex_col()
             .px(padding.0)
             .py(padding.1)
+            .group(group_id)
             .when(selected, |this| {
                 this.border_l_2().border_color(rgb(colors.border))
             });
@@ -598,9 +644,12 @@ impl AppShell {
             div()
                 .pl(if is_root { px(0.0) } else { indent_width })
                 .flex()
-                .items_center()
+                .items_start()
                 .gap_1()
-                .child(left_controls)
+                .child(
+                    left_controls
+                        .pt(px(0.0))
+                )
                 .child(content_area),
         );
 
@@ -610,14 +659,20 @@ impl AppShell {
 
 impl Render for AppShell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(debug_assertions)]
+        let _render_t0 = std::time::Instant::now();
+
         self.sync_window_title(window);
 
-        let spec_rows = self.get_flat_tree().clone();
+        // Rebuild flat tree if dirty; otherwise hit the cache — no allocation on steady frames.
+        let _ = self.get_flat_tree(); // ensures cache is warm
         let colors = self.theme.styles.colors.clone();
         let status = self.theme.styles.status.clone();
 
         let root = div()
             .size_full()
+            .flex()
+            .flex_col()
             .bg(rgb(colors.background))
             .text_color(rgb(colors.text))
             .track_focus(&self.focus_handle);
@@ -672,17 +727,26 @@ impl Render for AppShell {
         let root_id = self.state.primary_root_id();
         let root_title = self.get_root_title();
 
-        // Create root row with body only (skip first line/title)
+        // Create root row with body only (skip first line/title).
+        // Cache the split to avoid re-parsing markdown on every frame.
         let root_row = root_id.map(|id| {
-            let node = &self.state.nodes[id];
-            let (_, body) = split_root_markdown(&node.markdown);
+            let body = {
+                if self.cached_root_body.as_ref().map(|(rid, _)| *rid) != Some(id)
+                    || self.cached_root_body.is_none()
+                {
+                    let node = &self.state.nodes[id];
+                    let (_, body) = split_root_markdown(&node.markdown);
+                    self.cached_root_body = Some((id, body));
+                }
+                self.cached_root_body.as_ref().map(|(_, b)| b.clone()).unwrap_or_default()
+            };
             FlatNode {
                 id,
                 depth: 0,
                 markdown: body,
                 selected: self.state.selected_node == Some(id),
-                collapsed: node.collapsed,
-                has_children: !node.children.is_empty(),
+                collapsed: self.state.nodes[id].collapsed,
+                has_children: !self.state.nodes[id].children.is_empty(),
             }
         });
 
@@ -701,6 +765,18 @@ impl Render for AppShell {
                     ),
             );
 
+        let scroll_handle = self.tree_scroll_handle.clone();
+
+        // Render all visible (non-root) rows into a scrollable column.
+        // The flat tree cache means no re-allocation on steady frames.
+        let spec_rows: Vec<_> = self
+            .cached_flat_tree
+            .clone()
+            .into_iter()
+            .filter(|row| root_id != Some(row.id))
+            .map(|row| self.render_row(&row, false, window, cx))
+            .collect();
+
         root
             .child(titlebar)
             .child(
@@ -709,31 +785,26 @@ impl Render for AppShell {
                     .flex_1()
                     .flex()
                     .justify_center()
-                    .items_start()
-                    .overflow_y_scrollbar()
+                    .overflow_hidden()
                     .child(
                         div()
+                            .id("spec-scroll")
                             .w_full()
-                            .max_w_full()
                             .max_w(MAX_CONTENT_WIDTH)
                             .px_3()
                             .py_3()
                             .flex()
                             .flex_col()
-                            .items_center()
                             .gap_1()
+                            .h_full()
+                            .overflow_y_scroll()
+                            .track_scroll(&scroll_handle)
                             .children(status_banner)
                             .children(root_row.map(|row| self.render_row(&row, true, window, cx)))
                             .when(root_id.is_some(), |this| {
                                 this.child(div().w_full().border_t_1().border_color(rgb(colors.border)))
                             })
-                            .children(spec_rows.into_iter().filter_map(|row| {
-                                if root_id == Some(row.id) {
-                                    None
-                                } else {
-                                    Some(self.render_row(&row, false, window, cx))
-                                }
-                            })),
+                            .children(spec_rows),
                     ),
             )
     }

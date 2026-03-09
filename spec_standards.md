@@ -35,8 +35,8 @@ Example:
     - # Feature A
         Feature A intent.
         - ## Leaf task
-            - behavior: ...
-            - constraints: ...
+            - {{code_ref: `src/feature.py`}}
+            - {{verification: pytest tests/test.py -q}}
 ```
 
 ## Node content vs child nodes
@@ -98,14 +98,22 @@ There are two link semantics:
 
 - Machine-parseable metadata uses `{{key: value}}`.
 - `status` is required for every actionable node in normal workflows.
-- Supported styles:
-  - inline with title: `- Feature {{status: draft}}`
-  - content line under node:
+- Metadata should be child list items (not content lines):
 
 ```md
-- Feature
-    {{status: draft}}
+- Feature {{status: draft}}
+    Feature description.
+    - {{code_ref: `src/feature.py`}}
+    - {{verification: pytest tests/test_feature.py -q}}
 ```
+
+Examples of supported metadata:
+
+    - {{status: value}}
+    - {{depends_on: [Reference](file.md#section)}}
+    - {{code_ref: `src/file.py#L10-L20`}}
+    - {{verification: pytest tests/test.py -q}}
+    - {{collapsed: true}}
 
 Recommended keys:
 
@@ -113,8 +121,6 @@ Recommended keys:
 - `depends_on`
 - `code_ref`
 - `verification`
-- `question`
-- `answer`
 - `collapsed`
 
 ## Status model
@@ -149,46 +155,25 @@ Node intent is derived from the first prose-like content lines under a node.
 
 ## Code references
 
-Use `{{code_ref: ...}}`.
+Use `{{code_ref: ...}}` as a child list item.
 
-Examples:
+Example:
 
 ```md
-{{code_ref: `src/server.py`}}
-{{code_ref: `src/server.py#L34-L45`}}
+- ## Feature implementation
+    - {{code_ref: `src/server.py`}}
+    - {{code_ref: `src/server.py#L34-L45`}}
 ```
 
 ## Verification evidence
 
-Use `{{verification: ...}}` to record how completion was validated.
+Use `{{verification: ...}}` as a child list item.
 
 Example:
 
 ```md
-{{verification: pytest tests/test_auth.py -q}}
-```
-
-## Clarification flow
-
-When blocked by ambiguity:
-
-1. Set `{{status: blocked}}`
-2. Add `{{question: ...}}` with options (including custom-answer option)
-3. Record decision in `{{answer: ...}}`
-4. Integrate decision into node content
-5. Move status back to `in-progress`
-
-Example:
-
-```md
-{{question:
-Should session expiry be fixed or sliding?
-1) Fixed 24h TTL
-2) Sliding window on activity
-3) Per-project configurable TTL
-4) User can type a custom answer
-}}
-{{answer: 1) Fixed 24h TTL}}
+- ## Feature implementation
+    - {{verification: pytest tests/test_auth.py -q}}
 ```
 
 ## Dependencies and traversal
@@ -221,18 +206,8 @@ Should session expiry be fixed or sliding?
 
 ```md
 - # Server {{status: in-progress}}
-    - ## List sharing endpoint {{status: blocked}}
-        {{depends_on: [Auth model](server.md#auth-model)}}
-        {{question:
-        How should anonymous users access shared lists?
-        1) Read-only via signed links
-        2) No anonymous access
-        3) Optional by project setting
-        4) User can type a custom answer
-        }}
-        {{answer: 1) Read-only via signed links, 48h expiry}}
-        - behavior: signed links provide read-only access for 48h.
-        - constraints: revoked links must fail immediately.
-        {{code_ref: `taui/server/routes/lists.py#L88-L170`}}
-        {{verification: pytest tests/test_shared_links.py -q}}
+    - ## List sharing endpoint {{status: in-progress}}
+        - {{depends_on: [Auth model](server.md#auth-model)}}
+        - {{code_ref: `taui/server/routes/lists.py#L88-L170`}}
+        - {{verification: pytest tests/test_shared_links.py -q}}
 ```

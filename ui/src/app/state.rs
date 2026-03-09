@@ -192,7 +192,7 @@ impl AppState {
         let mut out = Vec::new();
         if let Some(root_id) = self.primary_root_id() {
             for child_id in &self.nodes[root_id].children {
-                self.collect_flat(*child_id, 0, &mut out);
+                self.collect_flat(*child_id, 1, &mut out);
             }
         }
         out

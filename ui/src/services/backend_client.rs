@@ -1,8 +1,9 @@
 use anyhow::Result;
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio_tungstenite::{connect_async, tungstenite::Message as WsMessage};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -69,12 +70,24 @@ pub struct UpdateNodeResponse {
     pub tree_changed: bool,
 }
 
+/// Type alias for the pending-requests map shared between the call site and the read task.
+type PendingMap = Arc<Mutex<HashMap<u64, oneshot::Sender<Result<serde_json::Value>>>>>;
+
+/// Live state of the persistent WebSocket connection.
+#[derive(Debug)]
+struct Connection {
+    /// Send serialised JSON strings to the write task.
+    sender: mpsc::Sender<String>,
+    /// Correlates in-flight request IDs to their response channels.
+    pending: PendingMap,
+}
+
 #[derive(Clone, Debug)]
 pub struct BackendClient {
     pub endpoint: String,
     request_id: Arc<Mutex<u64>>,
-    #[allow(dead_code)]
-    sender: Arc<Mutex<Option<mpsc::Sender<String>>>>,
+    /// Established lazily on first call; reused for all subsequent calls.
+    connection: Arc<Mutex<Option<Connection>>>,
 }
 
 impl BackendClient {
@@ -82,37 +95,8 @@ impl BackendClient {
         Self {
             endpoint: endpoint.into(),
             request_id: Arc::new(Mutex::new(1)),
-            sender: Arc::new(Mutex::new(None)),
+            connection: Arc::new(Mutex::new(None)),
         }
-    }
-
-    pub async fn connect(&self) -> Result<mpsc::Sender<String>> {
-        let (ws_stream, _) = connect_async(&self.endpoint).await?;
-        let (write, mut read) = ws_stream.split();
-
-        let (tx, mut rx) = mpsc::channel::<String>(32);
-
-        let write = Arc::new(Mutex::new(write));
-        let write_clone = write.clone();
-
-        tokio::spawn(async move {
-            while let Some(msg) = rx.recv().await {
-                let mut writer = write_clone.lock().await;
-                if writer.send(WsMessage::Text(msg)).await.is_err() {
-                    break;
-                }
-            }
-        });
-
-        tokio::spawn(async move {
-            while let Some(msg) = read.next().await {
-                if let Ok(WsMessage::Text(text)) = msg {
-                    println!("Received: {}", text);
-                }
-            }
-        });
-
-        Ok(tx)
     }
 
     async fn next_id(&self) -> u64 {
@@ -120,6 +104,115 @@ impl BackendClient {
         let next = *id;
         *id += 1;
         next
+    }
+
+    /// Return a reference to the live connection, creating it when necessary.
+    /// If the existing connection's write channel is closed we reconnect.
+    async fn get_connection(&self) -> Result<(mpsc::Sender<String>, PendingMap)> {
+        let mut guard = self.connection.lock().await;
+
+        // Reuse existing connection if the write side is still open.
+        if let Some(ref conn) = *guard {
+            if !conn.sender.is_closed() {
+                return Ok((conn.sender.clone(), conn.pending.clone()));
+            }
+        }
+
+        // Establish a fresh connection.
+        let (ws_stream, _) = connect_async(&self.endpoint).await?;
+        let (write, mut read) = ws_stream.split();
+
+        let (tx, mut rx) = mpsc::channel::<String>(64);
+        let pending: PendingMap = Arc::new(Mutex::new(HashMap::new()));
+
+        // Write task — forward queued messages to the WebSocket sink.
+        let write = Arc::new(Mutex::new(write));
+        {
+            let write = write.clone();
+            tokio::spawn(async move {
+                while let Some(msg) = rx.recv().await {
+                    let mut w = write.lock().await;
+                    if w.send(WsMessage::Text(msg)).await.is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+
+        // Read task — route each response to the correct pending oneshot.
+        {
+            let pending_read = pending.clone();
+            tokio::spawn(async move {
+                while let Some(msg) = read.next().await {
+                    let Ok(WsMessage::Text(text)) = msg else {
+                        continue;
+                    };
+                    let Ok(response) = serde_json::from_str::<JsonRpcResponse>(&text) else {
+                        continue;
+                    };
+                    if let Some(id) = response.id {
+                        let mut map = pending_read.lock().await;
+                        if let Some(responder) = map.remove(&id) {
+                            let result = if let Some(err) = response.error {
+                                Err(anyhow::anyhow!(
+                                    "RPC error {}: {}",
+                                    err.code,
+                                    err.message
+                                ))
+                            } else {
+                                response
+                                    .result
+                                    .ok_or_else(|| anyhow::anyhow!("No result in response"))
+                            };
+                            let _ = responder.send(result);
+                        }
+                    }
+                }
+                // Connection lost — fail all in-flight requests.
+                let mut map = pending_read.lock().await;
+                for (_, responder) in map.drain() {
+                    let _ =
+                        responder.send(Err(anyhow::anyhow!("WebSocket connection closed")));
+                }
+            });
+        }
+
+        *guard = Some(Connection {
+            sender: tx.clone(),
+            pending: pending.clone(),
+        });
+
+        Ok((tx, pending))
+    }
+
+    async fn call_method(
+        &self,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let id = self.next_id().await;
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0",
+            id,
+            method: method.to_string(),
+            params,
+        };
+        let request_json = serde_json::to_string(&request)?;
+
+        let (sender, pending) = self.get_connection().await?;
+
+        // Register the response channel *before* sending so we cannot miss a fast reply.
+        let (resp_tx, resp_rx) = oneshot::channel();
+        pending.lock().await.insert(id, resp_tx);
+
+        sender
+            .send(request_json)
+            .await
+            .map_err(|_| anyhow::anyhow!("WebSocket write channel closed"))?;
+
+        resp_rx
+            .await
+            .map_err(|_| anyhow::anyhow!("Response channel dropped"))?
     }
 
     pub async fn initialize(&self, workspace: Option<&str>) -> Result<InitializeResponse> {
@@ -203,45 +296,6 @@ impl BackendClient {
 
         let result: UpdateNodeResponse = serde_json::from_value(response)?;
         Ok(result)
-    }
-
-    async fn call_method(
-        &self,
-        method: &str,
-        params: serde_json::Value,
-    ) -> Result<serde_json::Value> {
-        let id = self.next_id().await;
-        let request = JsonRpcRequest {
-            jsonrpc: "2.0",
-            id,
-            method: method.to_string(),
-            params,
-        };
-
-        let request_json = serde_json::to_string(&request)?;
-        println!("Sending: {}", request_json);
-
-        let (ws_stream, _) = connect_async(&self.endpoint).await?;
-        let (mut write, mut read) = ws_stream.split();
-
-        write.send(WsMessage::Text(request_json)).await?;
-
-        while let Some(msg) = read.next().await {
-            if let Ok(WsMessage::Text(text)) = msg {
-                let response: JsonRpcResponse = serde_json::from_str(&text)?;
-
-                if response.id == Some(id) {
-                    if let Some(error) = response.error {
-                        anyhow::bail!("RPC error {}: {}", error.code, error.message);
-                    }
-                    return response
-                        .result
-                        .ok_or_else(|| anyhow::anyhow!("No result in response"));
-                }
-            }
-        }
-
-        anyhow::bail!("No response received")
     }
 
     pub fn start_run(&self, spec_ref: &str) -> Result<RunId> {
