@@ -60,6 +60,34 @@ impl ThemeRegistry {
             .find(|theme| theme.appearance == Appearance::Dark)
             .cloned()
     }
+
+    pub fn default_light(&self) -> Option<Theme> {
+        if let Some(light_theme) = self
+            .families
+            .iter()
+            .flat_map(|family| family.themes.iter())
+            .find(|theme| {
+                theme.appearance == Appearance::Light
+                    && theme.name.to_ascii_lowercase().contains("light")
+            })
+        {
+            return Some(light_theme.clone());
+        }
+
+        self.families
+            .iter()
+            .flat_map(|family| family.themes.iter())
+            .find(|theme| theme.appearance == Appearance::Light)
+            .cloned()
+    }
+
+    pub fn default_for_dark_mode(&self, dark_mode: bool) -> Option<Theme> {
+        if dark_mode {
+            self.default_dark()
+        } else {
+            self.default_light()
+        }
+    }
 }
 
 pub fn load_bundled_themes() -> Vec<ThemeFamily> {

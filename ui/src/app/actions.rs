@@ -1,4 +1,4 @@
-use super::state::{AppState, NodeId, NodeStatus};
+use super::state::{AppState, NodeId, SpecRef};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum UiAction {
@@ -8,12 +8,7 @@ pub enum UiAction {
     AddSiblingNode,
     IndentNode,
     OutdentNode,
-    StartEditing,
-    StopEditing,
-    InsertText(String),
-    Backspace,
-    CycleStatus,
-    SetChatDraft(String),
+    ToggleCollapse,
 }
 
 pub fn dispatch(state: &mut AppState, action: UiAction) -> bool {
@@ -30,56 +25,7 @@ pub fn dispatch(state: &mut AppState, action: UiAction) -> bool {
         UiAction::AddSiblingNode => add_sibling_node(state),
         UiAction::IndentNode => indent_selected(state),
         UiAction::OutdentNode => outdent_selected(state),
-        UiAction::StartEditing => {
-            if state.edit_mode {
-                return false;
-            }
-            state.edit_mode = true;
-            true
-        }
-        UiAction::StopEditing => {
-            if !state.edit_mode {
-                return false;
-            }
-            state.edit_mode = false;
-            true
-        }
-        UiAction::InsertText(text) => {
-            if text.is_empty() {
-                return false;
-            }
-            state.edit_mode = true;
-            if let Some(title) = state.selected_title_mut() {
-                title.push_str(&text);
-                state.recompute_spec_ref();
-                return true;
-            }
-            false
-        }
-        UiAction::Backspace => {
-            if let Some(title) = state.selected_title_mut() {
-                if title.pop().is_some() {
-                    state.recompute_spec_ref();
-                    return true;
-                }
-            }
-            false
-        }
-        UiAction::CycleStatus => {
-            let Some(selected) = state.selected_node else {
-                return false;
-            };
-            let next = state.nodes[selected].status.next();
-            state.nodes[selected].status = next;
-            true
-        }
-        UiAction::SetChatDraft(new_value) => {
-            if state.chat_draft == new_value {
-                return false;
-            }
-            state.chat_draft = new_value;
-            true
-        }
+        UiAction::ToggleCollapse => state.toggle_collapse(),
     }
 }
 
@@ -114,12 +60,10 @@ fn add_sibling_node(state: &mut AppState) -> bool {
         .selected_node
         .and_then(|selected| state.nodes[selected].parent);
 
-    let new_id = state.create_node(
-        "New Node".to_string(),
-        "Describe intent".to_string(),
-        NodeStatus::Draft,
-        parent,
-    );
+    // Generate a temporary spec_ref; will be replaced by backend on next sync.
+    let tmp_ref: SpecRef = format!("local/new-{}", state.nodes.len());
+
+    let new_id = state.create_node(tmp_ref, String::new(), parent);
 
     let insertion_index = if let Some(selected) = state.selected_node {
         state
@@ -134,8 +78,6 @@ fn add_sibling_node(state: &mut AppState) -> bool {
 
     state.siblings_mut(parent).insert(insertion_index, new_id);
     state.selected_node = Some(new_id);
-    state.edit_mode = true;
-    state.recompute_spec_ref();
     true
 }
 
@@ -160,7 +102,6 @@ fn indent_selected(state: &mut AppState) -> bool {
     state.siblings_mut(parent).remove(index);
     state.nodes[selected].parent = Some(new_parent);
     state.nodes[new_parent].children.push(selected);
-    state.recompute_spec_ref();
     true
 }
 
@@ -196,6 +137,5 @@ fn outdent_selected(state: &mut AppState) -> bool {
         .siblings_mut(grand_parent)
         .insert(parent_index, selected);
     state.nodes[selected].parent = grand_parent;
-    state.recompute_spec_ref();
     true
 }

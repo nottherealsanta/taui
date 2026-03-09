@@ -20,29 +20,24 @@ class SpecFile:
 class SpecNode:
     id: str
     spec_ref: str
-    title: str
     depth: int
     file_path: str
     anchor: str
-    intent: str | None = None
-    status: str | None = None
+    markdown: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
             "spec_ref": self.spec_ref,
-            "title": self.title,
             "depth": self.depth,
             "file_path": self.file_path,
             "anchor": self.anchor,
-            "intent": self.intent,
-            "status": self.status,
+            "markdown": self.markdown,
         }
 
 
 @dataclass(slots=True)
 class SpecNodeDetail(SpecNode):
-    content: str = ""
     line_start: int | None = None
     line_end: int | None = None
 
@@ -50,7 +45,6 @@ class SpecNodeDetail(SpecNode):
         out = super(SpecNodeDetail, self).to_dict()
         out.update(
             {
-                "content": self.content,
                 "line_start": self.line_start,
                 "line_end": self.line_end,
             }
@@ -74,20 +68,18 @@ class SpecUpdateResult:
 
 @dataclass(slots=True)
 class SpecNodePatch:
-    title: str | None | object = UNSET
-    intent: str | None | object = UNSET
-    content: str | None | object = UNSET
+    markdown: str | None | object = UNSET
 
     @classmethod
     def from_mapping(cls, raw: dict[str, object]) -> "SpecNodePatch":
-        allowed = {"title", "intent", "content"}
+        allowed = {"markdown"}
         extra = sorted(set(raw.keys()) - allowed)
         if extra:
             joined = ", ".join(extra)
             raise ValueError(f"unsupported patch fields: {joined}")
 
         kwargs: dict[str, object] = {}
-        for key in ("title", "intent", "content"):
+        for key in ("markdown",):
             if key not in raw:
                 continue
             value = raw[key]
@@ -102,4 +94,4 @@ class SpecNodePatch:
 
     @property
     def has_changes(self) -> bool:
-        return any(field is not UNSET for field in (self.title, self.intent, self.content))
+        return self.markdown is not UNSET

@@ -3,12 +3,9 @@ from __future__ import annotations
 import asyncio
 from hashlib import sha256
 from pathlib import Path
-import re
 import time
 
 from .db import SpecDB
-
-STATUS_RE = re.compile(r"\{\{status:\s*([a-zA-Z0-9_ -]+)\}\}")
 
 
 class SpecMarkdownWriter:
@@ -46,28 +43,22 @@ class SpecMarkdownWriter:
         path.parent.mkdir(parents=True, exist_ok=True)
 
         lines: list[str] = []
-        if nodes and nodes[0].line_start is not None and nodes[0].line_start > 1 and nodes[0].content:
-            # no special preface handling today; keeps parser-compatible output
-            pass
-
-        if nodes and nodes[0].line_start is not None and nodes[0].line_start > 0 and nodes[0].anchor:
-            pass
 
         for idx, node in enumerate(nodes):
-            if node.line_start is None:
-                lines.append(node.title)
-            else:
-                # Plain-document nodes have no heading level in DB.
-                heading_level = await self._node_heading_level(node.id)
-                if heading_level is None:
-                    lines.append(node.title)
-                else:
-                    lines.append(f"{'#' * heading_level} {node.title}")
+            heading_level = await self._node_heading_level(node.id)
+            level = heading_level or 1
+            indent = " " * max(0, (level - 1) * 4)
+            markdown_lines = node.markdown.splitlines() if node.markdown else []
+            first_line = markdown_lines[0].strip() if markdown_lines else ""
+            lines.append(f"{indent}- {first_line}" if first_line else f"{indent}- ")
 
-            section_lines = node.content.splitlines() if node.content else []
-            section_lines = self._inject_metadata(section_lines, node.id, node.status)
-            if section_lines:
-                lines.extend(section_lines)
+            continuation_lines = markdown_lines[1:] if len(markdown_lines) > 1 else []
+            if continuation_lines:
+                content_indent = " " * (max(0, (level - 1) * 4) + 4)
+                lines.extend(
+                    f"{content_indent}{line}" if line else ""
+                    for line in continuation_lines
+                )
             if idx != len(nodes) - 1:
                 lines.append("")
 
@@ -98,41 +89,9 @@ class SpecMarkdownWriter:
         node = await self.db.get_node(node_id)
         if node is None or node.line_start is None:
             return None
-        row = await self.db._one("SELECT heading_level FROM nodes WHERE id = ?", (node_id,))
+        row = await self.db._one(
+            "SELECT heading_level FROM nodes WHERE id = ?", (node_id,)
+        )
         if row is None:
             return None
         return row.get("heading_level")
-
-    async def _node_metadata_lines(self, node_id: str) -> list[str]:
-        metadata = await self.db.get_node_metadata(node_id)
-        out: list[str] = []
-        for key, value in metadata:
-            out.append(f"{{{{{key}: {value}}}}}")
-        return out
-
-    def _has_status(self, lines: list[str]) -> bool:
-        scan_end = min(8, len(lines))
-        for line in lines[:scan_end]:
-            if STATUS_RE.search(line):
-                return True
-        return False
-
-    def _has_metadata(self, lines: list[str], key: str) -> bool:
-        needle = f"{{{{{key}:"
-        scan_end = min(12, len(lines))
-        for line in lines[:scan_end]:
-            if needle in line:
-                return True
-        return False
-
-    def _inject_status(self, lines: list[str], status: str | None) -> list[str]:
-        if not status:
-            return lines
-        if self._has_status(lines):
-            return lines
-        return [f"{{{{status: {status}}}}}", *lines]
-
-    def _inject_metadata(self, lines: list[str], node_id: str, status: str | None) -> list[str]:
-        # status is always represented directly in-section for readability.
-        out = self._inject_status(lines, status)
-        return out

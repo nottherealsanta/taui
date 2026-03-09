@@ -15,11 +15,10 @@ impl ChatPane {
                     .font_weight(FontWeight::SEMIBOLD)
                     .child("Chat / Steering"),
             )
-            .child(
-                div()
-                    .text_sm()
-                    .child(format!("target: {}", state.chat_target)),
-            )
+            .child(div().text_sm().child(format!(
+                "target: {}",
+                state.selected_spec_ref().unwrap_or("none")
+            )))
             .child(
                 div()
                     .text_sm()

@@ -44,8 +44,11 @@ class _ConnectionManager:
 def create_app(
     workspace: Path | str | None = None,
     specs_path: Path | str | None = None,
+    dev_mode: bool = False,
 ) -> FastAPI:
-    handlers = MethodHandlers(workspace=workspace, specs_path=specs_path)
+    handlers = MethodHandlers(
+        workspace=workspace, specs_path=specs_path, dev_mode=dev_mode
+    )
     logger.info(
         "Creating FastAPI app workspace=%s specs_path=%s",
         workspace or Path.cwd(),

@@ -1,9 +1,22 @@
 from __future__ import annotations
 
+import argparse
 import asyncio
 from pathlib import Path
 
-from taui.__main__ import _reinitialize_sqlite_cache
+from taui.__main__ import _build_parser, _reinitialize_sqlite_cache
+
+
+def test_serve_parser_accepts_dev_flag() -> None:
+    parser = _build_parser()
+    args = parser.parse_args(["serve", "--dev"])
+    assert args.dev is True
+
+
+def test_serve_parser_default_dev_is_false() -> None:
+    parser = _build_parser()
+    args = parser.parse_args(["serve"])
+    assert args.dev is False
 
 
 def test_reinitialize_sqlite_cache_recreates_db_file(tmp_path: Path) -> None:

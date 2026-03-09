@@ -5,6 +5,9 @@ import re
 
 STATUS_RE = re.compile(r"\{\{status:\s*([a-zA-Z0-9_ -]+)\}\}")
 ORDERED_LIST_RE = re.compile(r"^\d+\.\s+")
+LIST_ITEM_RE = re.compile(r"^( *)([-*+])\s+(.*\S)?\s*$")
+WIKI_LINK_RE = re.compile(r"^\[\[([^\]]+)\]\]$")
+INLINE_METADATA_RE = re.compile(r"\{\{[^}]+\}\}")
 
 
 @dataclass(slots=True)
@@ -12,6 +15,15 @@ class Heading:
     level: int
     title: str
     line_index: int
+
+
+@dataclass(slots=True)
+class ListItem:
+    depth: int
+    title: str
+    line_index: int
+    parent_index: int | None
+    content_lines: list[str]
 
 
 def slugify(value: str) -> str:
@@ -44,6 +56,81 @@ def parse_markdown_link(line: str) -> tuple[str, str] | None:
         return None
     target = target_rest[:target_end]
     return text, target
+
+
+def parse_wiki_link(value: str) -> str | None:
+    match = WIKI_LINK_RE.match(value.strip())
+    if match is None:
+        return None
+    target = match.group(1).strip()
+    if not target:
+        return None
+    return target
+
+
+def strip_inline_metadata(value: str) -> str:
+    stripped = INLINE_METADATA_RE.sub("", value)
+    return " ".join(stripped.split())
+
+
+def markdown_first_line(markdown: str) -> str:
+    if not markdown:
+        return ""
+    return markdown.splitlines()[0].strip()
+
+
+def markdown_anchor_text(markdown: str) -> str:
+    return strip_inline_metadata(markdown_first_line(markdown))
+
+
+def parse_list_items(lines: list[str], *, indent_size: int = 4) -> list[ListItem]:
+    items: list[ListItem] = []
+    stack: list[int] = []
+    current_idx: int | None = None
+
+    for line_index, raw_line in enumerate(lines):
+        match = LIST_ITEM_RE.match(raw_line)
+        if match is not None:
+            indent = len(match.group(1))
+            if indent_size <= 0:
+                depth = 0
+            else:
+                depth = indent // indent_size
+
+            title = (match.group(3) or "").strip()
+            while len(stack) > depth:
+                stack.pop()
+
+            parent_index = stack[-1] if stack else None
+            items.append(
+                ListItem(
+                    depth=depth,
+                    title=title,
+                    line_index=line_index,
+                    parent_index=parent_index,
+                    content_lines=[],
+                )
+            )
+            current_idx = len(items) - 1
+
+            if len(stack) == depth:
+                stack.append(current_idx)
+            else:
+                stack[depth] = current_idx
+            continue
+
+        if current_idx is None:
+            continue
+
+        current = items[current_idx]
+        required_indent = (current.depth + 1) * indent_size
+        if raw_line.strip() and len(raw_line) >= required_indent:
+            content_line = raw_line[required_indent:]
+        else:
+            content_line = raw_line.strip()
+        current.content_lines.append(content_line.rstrip())
+
+    return items
 
 
 def extract_headings(lines: list[str]) -> list[Heading]:
@@ -129,6 +216,18 @@ def extract_status(lines: list[str], start: int, end: int) -> str | None:
     return None
 
 
+def extract_status_from_block(title: str, lines: list[str]) -> str | None:
+    title_match = STATUS_RE.search(title)
+    if title_match:
+        return title_match.group(1).strip()
+    scan_end = min(8, len(lines))
+    for line in lines[:scan_end]:
+        match = STATUS_RE.search(line)
+        if match:
+            return match.group(1).strip()
+    return None
+
+
 def find_intent_line(lines: list[str], start: int, end: int) -> int | None:
     for idx in range(start, end):
         stripped = lines[idx].strip()
@@ -142,6 +241,10 @@ def find_intent_line(lines: list[str], start: int, end: int) -> int | None:
             return None
         if stripped.startswith("[") and "](" in stripped:
             return None
+        if parse_wiki_link(stripped) is not None:
+            return None
+        if stripped.startswith("{{") and stripped.endswith("}}"):
+            continue
         return idx
     return None
 
@@ -165,6 +268,10 @@ def extract_intent_text(lines: list[str], start: int, end: int) -> str | None:
             break
         if stripped.startswith("[") and "](" in stripped:
             break
+        if parse_wiki_link(stripped) is not None:
+            break
+        if stripped.startswith("{{") and stripped.endswith("}}"):
+            continue
         collected.append(raw_line.rstrip())
         started = True
 

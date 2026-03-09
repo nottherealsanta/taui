@@ -9,6 +9,10 @@ pub fn map_key_to_action(keystroke: &Keystroke) -> Option<UiAction> {
     match key.as_str() {
         "arrowdown" | "down" => Some(UiAction::SelectNext),
         "arrowup" | "up" => Some(UiAction::SelectPrevious),
+        "arrowleft" | "left" => None,
+        "arrowright" | "right" => None,
+        "home" => None,
+        "end" => None,
         "tab" => {
             if keystroke.modifiers.shift {
                 Some(UiAction::OutdentNode)
@@ -16,22 +20,18 @@ pub fn map_key_to_action(keystroke: &Keystroke) -> Option<UiAction> {
                 Some(UiAction::IndentNode)
             }
         }
-        "enter" => Some(UiAction::AddSiblingNode),
-        "escape" => Some(UiAction::StopEditing),
-        "f2" => Some(UiAction::StartEditing),
-        "backspace" => Some(UiAction::Backspace),
-        " " => Some(UiAction::InsertText(" ".to_string())),
-        "s" if keystroke.modifiers.control => Some(UiAction::CycleStatus),
-        _ => {
-            if keystroke.modifiers.control || keystroke.modifiers.alt {
-                return None;
+        "enter" => {
+            if keystroke.modifiers.control || keystroke.modifiers.platform {
+                Some(UiAction::AddSiblingNode)
+            } else {
+                None
             }
-
-            if raw_key.chars().count() == 1 {
-                return Some(UiAction::InsertText(raw_key));
-            }
-
-            None
         }
+        "escape" => None,
+        "f2" => None,
+        "backspace" => None,
+        "delete" => None,
+        " " => None,
+        _ => None,
     }
 }

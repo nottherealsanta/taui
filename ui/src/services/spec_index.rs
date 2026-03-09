@@ -15,17 +15,17 @@ impl SpecIndex {
         let mut nodes = Vec::new();
 
         for line in markdown.lines() {
+            let indent = line.chars().take_while(|ch| *ch == ' ').count();
             let trimmed = line.trim_start();
-            if !trimmed.starts_with('#') {
+            if !(trimmed.starts_with("- ")
+                || trimmed.starts_with("* ")
+                || trimmed.starts_with("+ "))
+            {
                 continue;
             }
 
-            let depth = trimmed.chars().take_while(|ch| *ch == '#').count();
-            if depth == 0 {
-                continue;
-            }
-
-            let title = trimmed[depth..].trim();
+            let depth = (indent / 4) + 1;
+            let title = trimmed[2..].trim();
             if title.is_empty() {
                 continue;
             }

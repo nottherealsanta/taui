@@ -41,15 +41,17 @@ def _run_serve(args: argparse.Namespace) -> None:
     workspace = Path(args.workspace).resolve()
     host = args.host
     port = args.port if args.port > 0 else _find_free_port(host)
+    dev_mode = getattr(args, "dev", False)
 
     logger.info(
-        "Starting Taui backend server workspace=%s specs_path=%s host=%s port=%s",
+        "Starting Taui backend server workspace=%s specs_path=%s host=%s port=%s dev_mode=%s",
         workspace,
         args.specs_path,
         host,
         port,
+        dev_mode,
     )
-    app = create_app(workspace=workspace, specs_path=args.specs_path)
+    app = create_app(workspace=workspace, specs_path=args.specs_path, dev_mode=dev_mode)
     print(f"Taui backend running at ws://{host}:{port}/ws", flush=True)
     uvicorn.run(app, host=host, port=port, log_level="warning", access_log=False)
 
@@ -88,6 +90,11 @@ def _build_parser() -> argparse.ArgumentParser:
         type=int,
         default=8000,
         help="Port to bind (0 picks a free port)",
+    )
+    serve_parser.add_argument(
+        "--dev",
+        action="store_true",
+        help="Disable SQLite cache read/write; rebuild DB from markdown files each run",
     )
     serve_parser.set_defaults(func=_run_serve)
 

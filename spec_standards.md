@@ -1,67 +1,123 @@
 # Spec Tree Standards
 
-This document defines how the `specs/` tree is authored in Taui.
+This document is the canonical specification for Taui's spec system.
 
-Taui is spec-first. Projects are planned as a tree that starts at high-level intent and narrows down to implementation notes and code references. Agents and users collaborate in the same tree: agents expand details, ask clarifications, and can interleave code work with spec updates.
+Taui is spec-first. Projects are authored as a tree that starts at high-level intent and narrows down to implementation details, verification, and code references. Agents and users collaborate in the same tree.
 
-## Directory and root contract
+## Core model
 
-- All specs live under `specs/`.
-- Root file is always `specs/_main.md`.
-- `specs/_main.md` must include:
-  - project name as first line
-  - short project description
-  - first-level child index as markdown links
+- Spec files live under `specs/`.
+- Root entry file is `specs/_main.md`.
+- The tree is list-driven: every node is a markdown list item.
+- Nodes can include heading prefixes (`#`, `##`, etc.) in the list-item text.
+- Heading prefixes are part of node markdown and do not create nodes on their own.
+- L0 (project name) does not use a heading prefix.
 
-## First-level separation rule
+- ## Tree syntax (list of list)
 
-- Every first-level child is its own file or folder:
-  - file node: `specs/<child>.md`
-  - folder node: `specs/<child>/_main.md`
-- Do not inline first-level siblings into a single large file.
-- child's md file should follow the same heading levels. for exmaple is _main.md of a level-1 child's folder contains level-2 heading for the child. and that child has a markdown file, it should also start with level-2 heading.
+Each node is a list item. Nesting is represented by indentation.
 
-## Heading-driven tree depth
-
-- Hierarchy is represented by headings.
-- Level mapping:
-  - `#` level 1
-  - `##` level 2
-  - `###` level 3
-  - `####` level 4
-  - `#####` level 5
-  - `######` level 6
-- When depth exceeds 6, continue structure with nested markdown lists under the nearest `h6` node.
-- Cross-references use markdown links (not wiki links).
-- usually, leaf nodes are at level 3 or 4, but this is flexible based on content needs.
+- Use **4 spaces per level**.
+- Use `- ` for list items (parser also accepts `*` and `+`).
+- Heading convention:
+  - L0 project node: plain text (`- Example Project`)
+  - L1 node text starts with `# `
+  - L2 node text starts with `## `
+  - L3 node text starts with `### `
+  - and so on
 
 Example:
 
 ```md
-[Server auth flow](specs/server.md#auth-flow)
+- Project
+    Project intent paragraph line 1.
+    Project intent paragraph line 2.
+    - # Feature A
+        Feature A intent.
+        - ## Leaf task
+            - behavior: ...
+            - constraints: ...
 ```
+
+## Node content vs child nodes
+
+Each node is a single markdown block:
+
+1. **First line**: the list item line itself (`- # Node heading`)
+2. **Continuation lines**: indented lines under that item that do not start a child list item
+
+Rules:
+
+- Continuation text (indented, no new list marker) belongs to the same node markdown block.
+- A nested list item at the next indent level is a child node.
+- Empty lines are allowed inside node content.
+
+Example:
+
+```md
+- # Task Board
+    Build a small board with columns and cards.
+
+    This second paragraph is still Task Board content.
+    - ## Create card workflow
+        Define fields and validation.
+```
+
+## Cross-file composition and references
+
+There are two link semantics:
+
+1. **Tree expansion (composition)** via wiki-link syntax:
+
+```md
+- [[task_board.md]]
+```
+
+- `[[file.md]]` means "inline that spec file's tree here".
+- Expansion happens at the same tree level position.
+- This is how multi-file trees are composed.
+
+2. **Reference links** via normal markdown links:
+
+```md
+[Task Board](task_board.md#task-board)
+```
+
+- Regular `[text](target)` links are references only.
+- They do not inline/expand tree structure.
+
+## Directory contract
+
+- Root file: `specs/_main.md`.
+- First-level children should be split into separate files/folders where practical:
+  - file node: `specs/<child>.md`
+  - folder node: `specs/<child>/_main.md`
+- Use `[[...]]` from parent files to compose child files into one tree.
 
 ## Metadata format (`{{key: value}}`)
 
-- All machine-parseable metadata uses `{{key: value}}` blocks.
-- `status` is the only required metadata key for every node.
-- Recommended keys:
-  - `depends_on`
-  - `code_ref`
-  - `verification`
-  - `question`
-  - `answer`
-
-Examples:
+- Machine-parseable metadata uses `{{key: value}}`.
+- `status` is required for every actionable node in normal workflows.
+- Supported styles:
+  - inline with title: `- Feature {{status: draft}}`
+  - content line under node:
 
 ```md
-{{status: draft}}
-{{status: in-progress}}
-{{depends_on: [specs/server.md#auth-flow](specs/server.md#auth-flow)}}
-{{verification: pytest tests/test_auth.py -q}}
+- Feature
+    {{status: draft}}
 ```
 
-## Status model and transitions
+Recommended keys:
+
+- `status`
+- `depends_on`
+- `code_ref`
+- `verification`
+- `question`
+- `answer`
+- `collapsed`
+
+## Status model
 
 Allowed statuses:
 
@@ -71,59 +127,58 @@ Allowed statuses:
 - `done`
 - `blocked`
 
-Transition rules:
+Transitions:
 
-1. `draft -> ready`: user (or explicit product decision) marks scope actionable.
-2. `ready -> in-progress`: an agent picks up execution.
-3. `in-progress -> done`: agent finishes work and records strict completion evidence.
-4. `in-progress -> blocked`: agent hits blocking ambiguity and must ask a clarification.
-5. `blocked -> in-progress`: clarification is answered and integrated.
+1. `draft -> ready`
+2. `ready -> in-progress`
+3. `in-progress -> done`
+4. `in-progress -> blocked`
+5. `blocked -> in-progress`
 
 Notes:
 
-- `blocked` means no further code implementation on that node until clarified.
-- Legacy `in_progress` may exist in older docs; use `in-progress` for new or updated nodes.
+- `blocked` means execution should pause until clarified.
+- Legacy `in_progress` may appear; write new status as `in-progress`.
 
-## Code reference format
+## Intent extraction
 
-- Code anchors use `{{code_ref: ...}}`.
-- Format is path-first with optional line span.
+Node intent is derived from the first prose-like content lines under a node.
+
+- Metadata lines and pure links are ignored for intent.
+- Intent may span multiple lines/paragraphs.
+
+## Code references
+
+Use `{{code_ref: ...}}`.
 
 Examples:
 
 ```md
 {{code_ref: `src/server.py`}}
 {{code_ref: `src/server.py#L34-L45`}}
-{{code_ref: `taui/agent/loop.py#L120-L169`}}
 ```
 
-## Leaf node termination (flexible)
+## Verification evidence
 
-A leaf can end in either:
+Use `{{verification: ...}}` to record how completion was validated.
 
-1. Detailed notes (recommended: behavior, constraints, files, tests, verification)
-2. One or more `code_ref` anchors
-
-Detailed leaves are intentionally flexible. Use the recommended structure when it helps clarity, but do not require every field if it adds noise.
-
-Example detailed leaf:
+Example:
 
 ```md
-#### Session expiration policy
-{{status: in-progress}}
-
-- behavior: access token expires at fixed TTL.
-- constraints: must not break websocket reconnect.
-- tests: add expiry boundary tests.
+{{verification: pytest tests/test_auth.py -q}}
 ```
 
-## Clarifications (`{{question: ...}}`)
+## Clarification flow
 
-- Agents ask clarifications inline on the relevant node.
-- Question format is a multi-line `{{question: ...}}` block.
-- Each question includes 3 concrete options and a 4th free-text path for user input.
+When blocked by ambiguity:
 
-Question format:
+1. Set `{{status: blocked}}`
+2. Add `{{question: ...}}` with options (including custom-answer option)
+3. Record decision in `{{answer: ...}}`
+4. Integrate decision into node content
+5. Move status back to `in-progress`
+
+Example:
 
 ```md
 {{question:
@@ -133,94 +188,51 @@ Should session expiry be fixed or sliding?
 3) Per-project configurable TTL
 4) User can type a custom answer
 }}
-```
-
-Resolution flow:
-
-1. Record user response in `{{answer: ...}}` directly below the question.
-2. Integrate the decision into the node's spec text.
-3. Keep question+answer for traceability unless intentionally cleaned in a follow-up pass.
-
-Example:
-
-```md
-{{question:
-How should failed invites be retried?
-1) Retry 3 times with backoff
-2) Retry once only
-3) No retry; manual resend only
-4) User can type a custom answer
-}}
-{{answer: 1) Retry 3 times with backoff, cap at 30s}}
-
-- behavior: invite delivery retries 3 times with exponential backoff up to 30s.
+{{answer: 1) Fixed 24h TTL}}
 ```
 
 ## Dependencies and traversal
 
-- Traversal order is deterministic:
-  1. heading/tree edges
-  2. dependency edges via `{{depends_on: ...}}`
-- Do not create dependency cycles.
+- Primary traversal follows tree edges (list nesting + `[[...]]` expansion).
+- Dependency edges from `{{depends_on: ...}}` are secondary constraints.
+- Do not introduce dependency cycles.
 
 ## Traceability tiers
 
 - `done` nodes are strict:
-  - must include relevant `code_ref` entries for implemented behavior
-  - must include verification evidence (`{{verification: ...}}`, test output refs, or equivalent)
-- `draft`, `ready`, `in-progress`, and `blocked` have no strict traceability requirement.
-
-## Clarification and amendment rules
-
-- If ambiguity blocks execution, mark `{{status: blocked}}` and ask a `{{question: ...}}`.
-- Do not continue coding a blocked node.
-- If implementation reality conflicts with spec intent, propose an explicit amendment in-spec.
-- Never silently mutate spec intent during execution.
+  - include relevant `code_ref`
+  - include verification evidence
+- Other statuses are flexible.
 
 ## Non-negotiable invariants
 
-1. No major coding task without a target node in `specs/`.
-2. No silent spec drift; use amendment flow.
+1. No major coding task without target node(s) in `specs/`.
+2. No silent spec drift; use explicit amendment/clarification.
 3. `done` requires verification-level evidence and code references.
 
 ## End-to-end example
 
 ```md
-# Shared Lists App
-{{status: ready}}
+- Shared Lists App {{status: ready}}
+    Build a collaborative app where many users share lists.
+    - [[server.md]]
+    - [[client.md]]
+```
 
-- Build a collaborative app where many users share lists.
-- Child index:
-  - [Server](specs/server.md#server)
-  - [Client](specs/client.md#client)
-
-## Server
-{{status: in-progress}}
-
-### FastAPI stack
-{{status: in-progress}}
-
-#### List sharing endpoint
-{{status: blocked}}
-{{depends_on: [specs/server.md#auth-model](specs/server.md#auth-model)}}
-
-{{question:
-How should anonymous users access shared lists?
-1) Read-only via signed links
-2) No anonymous access
-3) Optional by project setting
-4) User can type a custom answer
-}}
-{{answer: 1) Read-only via signed links, 48h expiry}}
-
-- behavior: signed links provide read-only access for 48h.
-- constraints: revoked links must fail immediately.
-- tests: add signed-link expiry and revocation tests.
-{{code_ref: `taui/server/routes/lists.py#L88-L170`}}
-{{verification: pytest tests/test_shared_links.py -q}}
-
-#### Auth model
-{{status: done}}
-{{code_ref: `taui/server/auth.py#L1-L120`}}
-{{verification: pytest tests/test_auth.py -q}}
+```md
+- # Server {{status: in-progress}}
+    - ## List sharing endpoint {{status: blocked}}
+        {{depends_on: [Auth model](server.md#auth-model)}}
+        {{question:
+        How should anonymous users access shared lists?
+        1) Read-only via signed links
+        2) No anonymous access
+        3) Optional by project setting
+        4) User can type a custom answer
+        }}
+        {{answer: 1) Read-only via signed links, 48h expiry}}
+        - behavior: signed links provide read-only access for 48h.
+        - constraints: revoked links must fail immediately.
+        {{code_ref: `taui/server/routes/lists.py#L88-L170`}}
+        {{verification: pytest tests/test_shared_links.py -q}}
 ```

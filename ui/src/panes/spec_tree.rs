@@ -1,24 +1,14 @@
-use crate::app::state::{AppState, FlatNode, NodeStatus};
+use crate::app::state::{AppState, FlatNode};
 
 pub struct SpecTreePane;
 
 impl SpecTreePane {
     pub fn render_tree(state: &AppState) -> Vec<FlatNode> {
-        state.flattened_nodes()
+        state.flattened_tree_nodes()
     }
 
     pub fn select_spec_ref(state: &AppState) -> Option<String> {
         state.selected_spec_ref().map(ToString::to_string)
-    }
-
-    pub fn render_node_status(status: NodeStatus) -> &'static str {
-        match status {
-            NodeStatus::Draft => "draft",
-            NodeStatus::Ready => "ready",
-            NodeStatus::InProgress => "in_progress",
-            NodeStatus::Done => "done",
-            NodeStatus::Blocked => "blocked",
-        }
     }
 
     pub fn render_clarification(blocking: bool) -> &'static str {

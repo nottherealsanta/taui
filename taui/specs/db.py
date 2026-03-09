@@ -26,7 +26,9 @@ class _SQLiteRow(dict[str, Any]):
 
 
 class _FallbackCursor:
-    def __init__(self, rows: list[sqlite3.Row] | None = None, lastrowid: int | None = None) -> None:
+    def __init__(
+        self, rows: list[sqlite3.Row] | None = None, lastrowid: int | None = None
+    ) -> None:
         self._rows = rows or []
         self.lastrowid = lastrowid
 
@@ -54,7 +56,11 @@ class _FallbackConnection:
             cur = self._conn.execute(sql, params)
             rows = None
             first = sql.lstrip().upper()
-            if first.startswith("SELECT") or first.startswith("WITH") or first.startswith("PRAGMA"):
+            if (
+                first.startswith("SELECT")
+                or first.startswith("WITH")
+                or first.startswith("PRAGMA")
+            ):
                 rows = cur.fetchall()
             return _FallbackCursor(rows=rows, lastrowid=cur.lastrowid)
 
@@ -81,14 +87,11 @@ class NodeUpsert:
     file_id: int
     spec_ref: str
     anchor: str
-    title: str
     depth: int
     heading_level: int | None
     line_start: int | None
     line_end: int | None
-    intent: str | None
-    status: str | None
-    content: str
+    markdown: str
     sort_order: int
 
 
@@ -98,10 +101,12 @@ class SpecDB:
         workspace: Path,
         *,
         db_path: Path | None = None,
-        snapshot_interval_sec: float = 3.0,
+        snapshot_interval_sec: float = 30.0,
+        persist_snapshot: bool = True,
     ) -> None:
         self.workspace = workspace
         self.db_path = db_path or self._default_db_path(workspace)
+        self._persist_snapshot = persist_snapshot
         self._conn: Any | None = None
         self._conn_lock = asyncio.Lock()
         self._persist_lock = asyncio.Lock()
@@ -117,16 +122,19 @@ class SpecDB:
         async with self._conn_lock:
             if self._conn is not None:
                 return
-            self.db_path.parent.mkdir(parents=True, exist_ok=True)
+            if self._persist_snapshot:
+                self.db_path.parent.mkdir(parents=True, exist_ok=True)
             if _aiosqlite is not None:
                 conn = await _aiosqlite.connect(":memory:")
                 conn.row_factory = _aiosqlite.Row
                 self._conn = conn
             else:
                 self._conn = _FallbackConnection(":memory:")
-            await self._load_snapshot_from_disk()
+            if self._persist_snapshot:
+                await self._load_snapshot_from_disk()
             await self._migrate()
-            self._start_snapshot_loop()
+            if self._persist_snapshot:
+                self._start_snapshot_loop()
 
     async def close(self) -> None:
         if self._snapshot_task is not None:
@@ -136,7 +144,8 @@ class SpecDB:
             self._snapshot_task = None
         if self._conn is None:
             return
-        await self.flush_snapshot_to_disk()
+        if self._persist_snapshot:
+            await self.flush_snapshot_to_disk()
         await self._conn.close()
         self._conn = None
 
@@ -169,7 +178,7 @@ class SpecDB:
                 disk.close()
 
     async def flush_snapshot_to_disk(self) -> None:
-        if self._conn is None:
+        if self._conn is None or not self._persist_snapshot:
             return
         async with self._persist_lock:
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -214,14 +223,11 @@ CREATE TABLE IF NOT EXISTS nodes (
     file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
     spec_ref TEXT NOT NULL UNIQUE,
     anchor TEXT NOT NULL,
-    title TEXT NOT NULL,
     depth INTEGER NOT NULL,
     heading_level INTEGER,
     line_start INTEGER,
     line_end INTEGER,
-    intent TEXT,
-    status TEXT,
-    content TEXT NOT NULL DEFAULT '',
+    markdown TEXT NOT NULL DEFAULT '',
     sort_order INTEGER NOT NULL DEFAULT 0,
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL
@@ -229,7 +235,6 @@ CREATE TABLE IF NOT EXISTS nodes (
 
 CREATE INDEX IF NOT EXISTS idx_nodes_file_id ON nodes(file_id);
 CREATE INDEX IF NOT EXISTS idx_nodes_depth ON nodes(depth);
-CREATE INDEX IF NOT EXISTS idx_nodes_status ON nodes(status);
 
 CREATE TABLE IF NOT EXISTS edges (
     parent_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
@@ -342,25 +347,49 @@ CREATE INDEX IF NOT EXISTS idx_spawns_parent ON subagent_spawns(parent_session_i
 CREATE INDEX IF NOT EXISTS idx_spawns_child ON subagent_spawns(child_session_id);
 """
         )
+        node_columns = {
+            str(row["name"])
+            for row in await self._all("PRAGMA table_info(nodes)")
+        }
+        if "markdown" not in node_columns:
+            await self._execute(
+                "ALTER TABLE nodes ADD COLUMN markdown TEXT NOT NULL DEFAULT ''"
+            )
+            await self._execute(
+                """
+UPDATE nodes
+SET markdown = CASE
+    WHEN TRIM(COALESCE(title, '')) = '' THEN COALESCE(content, '')
+    WHEN TRIM(COALESCE(content, '')) = '' THEN COALESCE(title, '')
+    ELSE title || char(10) || content
+END
+"""
+            )
         await self._conn.commit()
 
     async def _execute(self, sql: str, params: tuple[Any, ...] = ()) -> Any:
         assert self._conn is not None
         return await self._conn.execute(sql, params)
 
-    async def _one(self, sql: str, params: tuple[Any, ...] = ()) -> dict[str, Any] | None:
+    async def _one(
+        self, sql: str, params: tuple[Any, ...] = ()
+    ) -> dict[str, Any] | None:
         cur = await self._execute(sql, params)
         row = await cur.fetchone()
         if row is None:
             return None
         return dict(row)
 
-    async def _all(self, sql: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
+    async def _all(
+        self, sql: str, params: tuple[Any, ...] = ()
+    ) -> list[dict[str, Any]]:
         cur = await self._execute(sql, params)
         rows = await cur.fetchall()
         return [dict(row) for row in rows]
 
-    async def upsert_file(self, rel_path: str, content_hash: str, mtime_ns: int, now_ts: float) -> SpecFile:
+    async def upsert_file(
+        self, rel_path: str, content_hash: str, mtime_ns: int, now_ts: float
+    ) -> SpecFile:
         await self._execute(
             """
 INSERT INTO files(rel_path, content_hash, last_seen, mtime_ns)
@@ -380,7 +409,9 @@ ON CONFLICT(rel_path) DO UPDATE SET
         assert row is not None
         return SpecFile(**row)
 
-    async def update_file_tracking(self, file_id: int, *, content_hash: str, mtime_ns: int, last_seen: float) -> None:
+    async def update_file_tracking(
+        self, file_id: int, *, content_hash: str, mtime_ns: int, last_seen: float
+    ) -> None:
         await self._execute(
             "UPDATE files SET content_hash = ?, mtime_ns = ?, last_seen = ? WHERE id = ?",
             (content_hash, mtime_ns, last_seen, file_id),
@@ -410,39 +441,43 @@ ON CONFLICT(rel_path) DO UPDATE SET
     async def delete_missing_files(self, rel_paths: set[str]) -> None:
         if rel_paths:
             placeholders = ",".join("?" for _ in rel_paths)
-            await self._execute(f"DELETE FROM files WHERE rel_path NOT IN ({placeholders})", tuple(sorted(rel_paths)))
+            await self._execute(
+                f"DELETE FROM files WHERE rel_path NOT IN ({placeholders})",
+                tuple(sorted(rel_paths)),
+            )
         else:
             await self._execute("DELETE FROM files")
         await self._conn.commit()
 
     async def list_node_ids_by_file(self, file_id: int) -> dict[str, str]:
-        rows = await self._all("SELECT id, anchor FROM nodes WHERE file_id = ?", (file_id,))
+        rows = await self._all(
+            "SELECT id, anchor FROM nodes WHERE file_id = ?", (file_id,)
+        )
         return {row["anchor"]: row["id"] for row in rows}
 
-    async def replace_nodes_for_file(self, file_id: int, nodes: list[NodeUpsert]) -> None:
+    async def replace_nodes_for_file(
+        self, file_id: int, nodes: list[NodeUpsert]
+    ) -> None:
         now_ts = time.time()
         await self._execute("DELETE FROM nodes WHERE file_id = ?", (file_id,))
         for node in nodes:
             await self._execute(
                 """
 INSERT INTO nodes(
-    id, file_id, spec_ref, anchor, title, depth, heading_level,
-    line_start, line_end, intent, status, content, sort_order, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    id, file_id, spec_ref, anchor, depth, heading_level,
+    line_start, line_end, markdown, sort_order, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 """,
                 (
                     node.id,
                     file_id,
                     node.spec_ref,
                     node.anchor,
-                    node.title,
                     node.depth,
                     node.heading_level,
                     node.line_start,
                     node.line_end,
-                    node.intent,
-                    node.status,
-                    node.content,
+                    node.markdown,
                     node.sort_order,
                     now_ts,
                     now_ts,
@@ -481,25 +516,20 @@ INSERT INTO nodes(
         return SpecNode(
             id=row["id"],
             spec_ref=row["spec_ref"],
-            title=row["title"],
             depth=row["depth"],
             file_path=row["rel_path"],
             anchor=row["anchor"],
-            intent=row["intent"],
-            status=row["status"],
+            markdown=row.get("markdown") or "",
         )
 
     def _row_to_detail(self, row: dict[str, Any]) -> SpecNodeDetail:
         return SpecNodeDetail(
             id=row["id"],
             spec_ref=row["spec_ref"],
-            title=row["title"],
             depth=row["depth"],
             file_path=row["rel_path"],
             anchor=row["anchor"],
-            intent=row["intent"],
-            status=row["status"],
-            content=row.get("content") or "",
+            markdown=row.get("markdown") or "",
             line_start=row.get("line_start"),
             line_end=row.get("line_end"),
         )
@@ -663,18 +693,15 @@ ORDER BY n.sort_order
         *,
         spec_ref: str,
         anchor: str,
-        title: str,
-        intent: str | None,
-        status: str | None,
-        content: str,
+        markdown: str,
     ) -> None:
         await self._execute(
             """
 UPDATE nodes
-SET spec_ref = ?, anchor = ?, title = ?, intent = ?, status = ?, content = ?, updated_at = ?
+SET spec_ref = ?, anchor = ?, markdown = ?, updated_at = ?
 WHERE id = ?
 """,
-            (spec_ref, anchor, title, intent, status, content, time.time(), node_id),
+            (spec_ref, anchor, markdown, time.time(), node_id),
         )
         await self._conn.commit()
 
@@ -704,7 +731,17 @@ WHERE id = ?
 INSERT INTO sessions(id, spec_ref, node_id, parent_session_id, status, model, provider, created_at, updated_at)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 """,
-            (sid, spec_ref, node_id, parent_session_id, status, model, provider, now_ts, now_ts),
+            (
+                sid,
+                spec_ref,
+                node_id,
+                parent_session_id,
+                status,
+                model,
+                provider,
+                now_ts,
+                now_ts,
+            ),
         )
         await self._conn.commit()
         return sid
@@ -732,7 +769,10 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         cost_usd: float | None = None,
         message_id: str | None = None,
     ) -> str:
-        row = await self._one("SELECT COALESCE(MAX(seq), 0) AS seq FROM messages WHERE session_id = ?", (session_id,))
+        row = await self._one(
+            "SELECT COALESCE(MAX(seq), 0) AS seq FROM messages WHERE session_id = ?",
+            (session_id,),
+        )
         next_seq = int(row["seq"]) + 1 if row is not None else 1
         mid = message_id or str(uuid4())
         await self._execute(
@@ -758,9 +798,13 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         return mid
 
     async def get_messages(self, session_id: str) -> list[dict[str, Any]]:
-        return await self._all("SELECT * FROM messages WHERE session_id = ? ORDER BY seq", (session_id,))
+        return await self._all(
+            "SELECT * FROM messages WHERE session_id = ? ORDER BY seq", (session_id,)
+        )
 
-    async def record_tool_call(self, *, call_id: str, message_id: str, tool_name: str, arguments: str) -> None:
+    async def record_tool_call(
+        self, *, call_id: str, message_id: str, tool_name: str, arguments: str
+    ) -> None:
         await self._execute(
             "INSERT INTO tool_calls(id, message_id, tool_name, arguments, created_at) VALUES (?, ?, ?, ?, ?)",
             (call_id, message_id, tool_name, arguments, time.time()),
@@ -809,7 +853,9 @@ VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)
         )
         await self._conn.commit()
 
-    async def record_subagent_spawn(self, *, parent_session_id: str, child_session_id: str, purpose: str | None) -> None:
+    async def record_subagent_spawn(
+        self, *, parent_session_id: str, child_session_id: str, purpose: str | None
+    ) -> None:
         await self._execute(
             """
 INSERT OR IGNORE INTO subagent_spawns(parent_session_id, child_session_id, purpose, created_at)

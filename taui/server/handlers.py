@@ -47,8 +47,11 @@ class MethodHandlers:
         self,
         workspace: Path | str | None = None,
         specs_path: Path | str | None = None,
+        dev_mode: bool = False,
     ) -> None:
-        self.specs = SpecService(workspace=workspace, specs_path=specs_path)
+        self.specs = SpecService(
+            workspace=workspace, specs_path=specs_path, dev_mode=dev_mode
+        )
         self.run_state = RunState()
         self._notification_callback: NotificationCallback | None = None
 
@@ -86,12 +89,22 @@ class MethodHandlers:
                 return DispatchResult(
                     result=await self._handle_spec_get_tree(), notifications=[]
                 )
+            if method == "spec/getTreeDetailed":
+                return DispatchResult(
+                    result=await self._handle_spec_get_tree_detailed(), notifications=[]
+                )
             if method == "spec/getNode":
                 return DispatchResult(
                     result=await self._handle_spec_get_node(params), notifications=[]
                 )
             if method == "spec/updateNode":
                 return await self._handle_spec_update_node(params)
+            if method == "spec/createSiblingNode":
+                return await self._handle_spec_create_sibling_node(params)
+            if method == "spec/indentNode":
+                return await self._handle_spec_indent_node(params)
+            if method == "spec/outdentNode":
+                return await self._handle_spec_outdent_node(params)
             if method == "spec/getNodeSourceRange":
                 return DispatchResult(
                     result=await self._handle_spec_get_node_source_range(params),
@@ -168,8 +181,12 @@ class MethodHandlers:
                 "shutdown",
                 "exit",
                 "spec/getTree",
+                "spec/getTreeDetailed",
                 "spec/getNode",
                 "spec/updateNode",
+                "spec/createSiblingNode",
+                "spec/indentNode",
+                "spec/outdentNode",
                 "spec/getNodeSourceRange",
                 "spec/getNodeCodeRefs",
                 "run/start",
@@ -199,6 +216,18 @@ class MethodHandlers:
         nodes = [node.to_dict() for node in await self.specs.get_tree()]
         return {"nodes": nodes}
 
+    async def _handle_spec_get_tree_detailed(self) -> dict[str, Any]:
+        nodes = await self.specs.get_tree()
+        detailed_nodes = []
+        for node in nodes:
+            try:
+                detailed_node = await self.specs.get_node(node.spec_ref)
+                node_dict = detailed_node.to_dict()
+            except SpecServiceError:
+                node_dict = node.to_dict()
+            detailed_nodes.append(node_dict)
+        return {"nodes": detailed_nodes}
+
     async def _handle_spec_get_node(self, params: dict[str, Any]) -> dict[str, Any]:
         spec_ref = self._require_str(params, "spec_ref")
         node = await self.specs.get_node(spec_ref)
@@ -226,6 +255,53 @@ class MethodHandlers:
                 )
             )
 
+        return DispatchResult(result=update.to_dict(), notifications=notifications)
+
+    async def _handle_spec_create_sibling_node(
+        self, params: dict[str, Any]
+    ) -> DispatchResult:
+        spec_ref = self._require_str(params, "spec_ref")
+        update = await self.specs.create_sibling_node(spec_ref)
+        notifications: list[dict[str, Any]] = [
+            notification_message(
+                "spec/treeChanged",
+                {
+                    "previous_spec_ref": update.previous_spec_ref,
+                    "spec_ref": update.node.spec_ref,
+                },
+            ),
+            notification_message("spec/nodeChanged", {"node": update.node.to_dict()}),
+        ]
+        return DispatchResult(result=update.to_dict(), notifications=notifications)
+
+    async def _handle_spec_indent_node(self, params: dict[str, Any]) -> DispatchResult:
+        spec_ref = self._require_str(params, "spec_ref")
+        update = await self.specs.indent_node(spec_ref)
+        notifications: list[dict[str, Any]] = [
+            notification_message(
+                "spec/treeChanged",
+                {
+                    "previous_spec_ref": update.previous_spec_ref,
+                    "spec_ref": update.node.spec_ref,
+                },
+            ),
+            notification_message("spec/nodeChanged", {"node": update.node.to_dict()}),
+        ]
+        return DispatchResult(result=update.to_dict(), notifications=notifications)
+
+    async def _handle_spec_outdent_node(self, params: dict[str, Any]) -> DispatchResult:
+        spec_ref = self._require_str(params, "spec_ref")
+        update = await self.specs.outdent_node(spec_ref)
+        notifications: list[dict[str, Any]] = [
+            notification_message(
+                "spec/treeChanged",
+                {
+                    "previous_spec_ref": update.previous_spec_ref,
+                    "spec_ref": update.node.spec_ref,
+                },
+            ),
+            notification_message("spec/nodeChanged", {"node": update.node.to_dict()}),
+        ]
         return DispatchResult(result=update.to_dict(), notifications=notifications)
 
     async def _handle_spec_get_node_source_range(
@@ -322,7 +398,7 @@ class MethodHandlers:
         node = await self.specs.get_node(spec_ref)
         refs: list[dict[str, Any]] = []
         spec_file = (self.specs.workspace / node.file_path).resolve()
-        raw_content = node.content or ""
+        raw_content = node.markdown or ""
 
         for marker in CODE_REF_MARKER_RE.finditer(raw_content):
             raw_ref = marker.group(1).strip()

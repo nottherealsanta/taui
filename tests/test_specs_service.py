@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from taui.specs import SpecNotFoundError, SpecService, SpecValidationError
+from taui.specs import SpecNotFoundError, SpecService
 
 
 def _run(coro):
@@ -19,11 +19,11 @@ def _write_specs(workspace: Path) -> None:
     (specs_root / "_main.md").write_text(
         "\n".join(
             [
-                "Taui",
-                "Agentic Coding Interface.",
+                "- Taui",
+                "    Agentic Coding Interface.",
                 "",
-                "- [Core](core.md#core)",
-                "- [UI](ui/_main.md#taui-ui)",
+                "    - [[core.md]]",
+                "    - [[ui/_main.md]]",
                 "",
             ]
         ),
@@ -33,11 +33,11 @@ def _write_specs(workspace: Path) -> None:
     (specs_root / "core.md").write_text(
         "\n".join(
             [
-                "# Core",
-                "Core engine behaviors.{{status: ready}}",
+                "- # Core {{status: ready}}",
+                "    Core engine behaviors.",
                 "",
-                "## Leaf",
-                "Leaf implementation details.",
+                "    - ## Leaf",
+                "        Leaf implementation details.",
                 "",
             ]
         ),
@@ -47,8 +47,8 @@ def _write_specs(workspace: Path) -> None:
     (specs_root / "ui" / "_main.md").write_text(
         "\n".join(
             [
-                "# Taui UI",
-                "Define the desktop interface contract.{{status: draft}}",
+                "- # Taui UI {{status: draft}}",
+                "    Define the desktop interface contract.",
                 "",
             ]
         ),
@@ -64,14 +64,14 @@ def test_get_tree_indexes_recursive_links(tmp_path: Path) -> None:
     assert "specs/core.md#leaf" in refs
 
 
-def test_update_node_title_and_intent(tmp_path: Path) -> None:
+def test_update_node_markdown_renames_anchor(tmp_path: Path) -> None:
     _write_specs(tmp_path)
     service = SpecService(workspace=tmp_path)
 
     update = _run(
         service.update_node(
             "specs/core.md#leaf",
-            {"title": "Leaf Updated", "intent": "Updated leaf intent."},
+            {"markdown": "Leaf Updated\nUpdated leaf intent."},
         )
     )
     _run(service.writer.flush())
@@ -80,41 +80,60 @@ def test_update_node_title_and_intent(tmp_path: Path) -> None:
     assert update.tree_changed is True
     assert update.node.spec_ref == "specs/core.md#leaf-updated"
     body = (tmp_path / "specs" / "core.md").read_text(encoding="utf-8")
-    assert "## Leaf Updated" in body
+    assert "- Leaf Updated" in body
     assert "Updated leaf intent." in body
     with pytest.raises(SpecNotFoundError):
         _run(service.get_node("specs/core.md#leaf"))
 
 
-def test_update_content_rejects_non_leaf_section(tmp_path: Path) -> None:
+def test_update_markdown_allows_parent_section(tmp_path: Path) -> None:
     _write_specs(tmp_path)
     service = SpecService(workspace=tmp_path)
 
-    with pytest.raises(SpecValidationError):
-        _run(service.update_node("specs/core.md#core", {"content": "new body"}))
+    update = _run(service.update_node("specs/core.md#core", {"markdown": "new body"}))
+    assert update.node.markdown == "new body"
 
 
-def test_update_plain_document_title(tmp_path: Path) -> None:
+def test_update_root_list_title(tmp_path: Path) -> None:
     _write_specs(tmp_path)
     service = SpecService(workspace=tmp_path)
 
-    update = _run(service.update_node("specs/_main.md#taui", {"title": "Taui Next"}))
+    update = _run(service.update_node("specs/_main.md#taui", {"markdown": "Taui Next"}))
     _run(service.writer.flush())
 
     assert update.node.spec_ref == "specs/_main.md#taui-next"
     main_content = (tmp_path / "specs" / "_main.md").read_text(encoding="utf-8")
-    assert main_content.splitlines()[0] == "Taui Next"
+    assert main_content.splitlines()[0] == "- Taui Next"
 
 
-def test_get_tree_includes_multiline_intent_text(tmp_path: Path) -> None:
+def test_update_node_rejects_legacy_patch_fields(tmp_path: Path) -> None:
+    _write_specs(tmp_path)
+    service = SpecService(workspace=tmp_path)
+
+    with pytest.raises(ValueError, match="unsupported patch fields"):
+        _run(service.update_node("specs/core.md#leaf", {"title": "No longer valid"}))
+
+
+def test_empty_markdown_uses_unique_untitled_anchors(tmp_path: Path) -> None:
+    _write_specs(tmp_path)
+    service = SpecService(workspace=tmp_path)
+
+    first = _run(service.update_node("specs/core.md#core", {"markdown": ""}))
+    second = _run(service.update_node("specs/core.md#leaf", {"markdown": ""}))
+
+    assert first.node.spec_ref == "specs/core.md#untitled"
+    assert second.node.spec_ref == "specs/core.md#untitled-1"
+
+
+def test_get_tree_includes_multiline_markdown_text(tmp_path: Path) -> None:
     specs_root = tmp_path / "specs"
     specs_root.mkdir(parents=True, exist_ok=True)
     (specs_root / "_main.md").write_text(
         "\n".join(
             [
-                "Taui",
-                "First intent line.",
-                "Second intent line.",
+                "- Taui",
+                "    First intent line.",
+                "    Second intent line.",
                 "",
             ]
         ),
@@ -124,22 +143,22 @@ def test_get_tree_includes_multiline_intent_text(tmp_path: Path) -> None:
     service = SpecService(workspace=tmp_path)
     tree = _run(service.get_tree())
     root = next(node for node in tree if node.spec_ref == "specs/_main.md#taui")
-    assert root.intent == "First intent line.\nSecond intent line."
+    assert root.markdown == "Taui\nFirst intent line.\nSecond intent line."
 
 
-def test_get_tree_includes_multiline_paragraph_intent(tmp_path: Path) -> None:
+def test_get_tree_includes_multiline_paragraph_markdown(tmp_path: Path) -> None:
     specs_root = tmp_path / "specs"
     specs_root.mkdir(parents=True, exist_ok=True)
     (specs_root / "_main.md").write_text(
         "\n".join(
             [
-                "Taui",
-                "Primary line one.",
+                "- Taui",
+                "    Primary line one.",
                 "",
-                "Primary line two.",
-                "Primary line three.",
+                "    Primary line two.",
+                "    Primary line three.",
                 "",
-                "- [Core](core.md#core)",
+                "    - [[core.md]]",
                 "",
             ]
         ),
@@ -148,13 +167,13 @@ def test_get_tree_includes_multiline_paragraph_intent(tmp_path: Path) -> None:
     (specs_root / "core.md").write_text(
         "\n".join(
             [
-                "# Core",
-                "Core top line.",
+                "- # Core",
+                "    Core top line.",
                 "",
-                "Core second paragraph line.",
+                "    Core second paragraph line.",
                 "",
-                "## Leaf",
-                "Leaf line.",
+                "    - ## Leaf",
+                "        Leaf line.",
                 "",
             ]
         ),
@@ -165,8 +184,63 @@ def test_get_tree_includes_multiline_paragraph_intent(tmp_path: Path) -> None:
     tree = _run(service.get_tree())
     root = next(node for node in tree if node.spec_ref == "specs/_main.md#taui")
     leaf = next(node for node in tree if node.spec_ref == "specs/core.md#leaf")
-    assert root.intent == "Primary line one.\n\nPrimary line two.\nPrimary line three."
-    assert leaf.intent == "Leaf line."
+    assert (
+        root.markdown
+        == "Taui\nPrimary line one.\n\nPrimary line two.\nPrimary line three."
+    )
+    assert leaf.markdown == "## Leaf\nLeaf line."
+
+
+def test_metadata_only_list_item_creates_node(tmp_path: Path) -> None:
+    specs_root = tmp_path / "specs"
+    specs_root.mkdir(parents=True, exist_ok=True)
+    (specs_root / "_main.md").write_text(
+        "\n".join(
+            [
+                "- Root",
+                "",
+                "    - {{status: ready}}",
+                "        {{verification: met}}",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    service = SpecService(workspace=tmp_path)
+    tree = _run(service.get_tree())
+
+    refs = {node.spec_ref for node in tree}
+    assert "specs/_main.md#root" in refs
+    assert "specs/_main.md#status-ready" in refs
+
+    metadata_node = next(
+        node for node in tree if node.spec_ref == "specs/_main.md#status-ready"
+    )
+    assert metadata_node.markdown == "{{status: ready}}\n{{verification: met}}"
+
+
+def test_metadata_only_siblings_use_unique_anchors(tmp_path: Path) -> None:
+    specs_root = tmp_path / "specs"
+    specs_root.mkdir(parents=True, exist_ok=True)
+    (specs_root / "_main.md").write_text(
+        "\n".join(
+            [
+                "- Root",
+                "",
+                "    - {{status: ready}}",
+                "    - {{status: ready}}",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    service = SpecService(workspace=tmp_path)
+    refs = {node.spec_ref for node in _run(service.get_tree())}
+
+    assert "specs/_main.md#status-ready" in refs
+    assert "specs/_main.md#status-ready-1" in refs
 
 
 def test_get_tree_uses_custom_specs_path(tmp_path: Path) -> None:
@@ -175,8 +249,8 @@ def test_get_tree_uses_custom_specs_path(tmp_path: Path) -> None:
     (specs_root / "_main.md").write_text(
         "\n".join(
             [
-                "Example Project",
-                "Example intent.",
+                "- Example Project",
+                "    Example intent.",
                 "",
             ]
         ),
@@ -186,3 +260,48 @@ def test_get_tree_uses_custom_specs_path(tmp_path: Path) -> None:
     service = SpecService(workspace=tmp_path, specs_path="tests/example_project/specs")
     refs = {node.spec_ref for node in _run(service.get_tree())}
     assert "tests/example_project/specs/_main.md#example-project" in refs
+
+
+def test_dev_mode_does_not_create_cache_file(tmp_path: Path) -> None:
+    """When dev_mode=True, SpecService should not create a SQLite cache file."""
+    _write_specs(tmp_path)
+    service = SpecService(workspace=tmp_path, dev_mode=True)
+
+    # Initialize and load tree
+    refs = {node.spec_ref for node in _run(service.get_tree())}
+    assert "specs/_main.md#taui" in refs
+    assert "specs/core.md#leaf" in refs
+
+    # Close the service
+    _run(service.writer.flush())
+    _run(service.db.close())
+
+    # Cache file should not exist when dev_mode=True
+    assert not service.db.db_path.exists()
+
+
+def test_dev_mode_still_builds_db_from_markdown(tmp_path: Path) -> None:
+    """Even in dev_mode, the DB should be built from markdown files."""
+    _write_specs(tmp_path)
+    service = SpecService(workspace=tmp_path, dev_mode=True)
+
+    # Initialize and verify nodes are loaded from markdown
+    tree = _run(service.get_tree())
+    assert len(tree) > 0
+
+    # Verify specific nodes exist
+    refs = {node.spec_ref for node in tree}
+    assert "specs/_main.md#taui" in refs
+    assert "specs/core.md#core" in refs
+    assert "specs/core.md#leaf" in refs
+    assert "specs/ui/_main.md#taui-ui" in refs
+
+    # Verify node details are correct
+    core_node = next(node for node in tree if node.spec_ref == "specs/core.md#core")
+    assert core_node.markdown == "# Core {{status: ready}}\nCore engine behaviors."
+
+    _run(service.writer.flush())
+    _run(service.db.close())
+
+    # No cache file should exist
+    assert not service.db.db_path.exists()
