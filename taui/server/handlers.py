@@ -27,9 +27,6 @@ from .state import RunState, RunProcess
 
 logger = logging.getLogger(__name__)
 
-CODE_REF_MARKER_RE = re.compile(
-    r"\{\{\s*code\\?_ref\s*:\s*`([^`]+)`\s*\}\}", re.IGNORECASE
-)
 CODE_REF_RANGE_RE = re.compile(r"^L(?P<start>\d+)(?:-L?(?P<end>\d+))?$", re.IGNORECASE)
 
 
@@ -69,11 +66,10 @@ class MethodHandlers:
         method = request.method
         params = request.params
         started = time.perf_counter()
-        logger.debug(
-            "Dispatching method=%s request_id=%s notification=%s",
+        logger.info(
+            "RPC → method=%s request_id=%s",
             method,
             request.request_id,
-            request.is_notification,
         )
 
         try:
@@ -113,6 +109,11 @@ class MethodHandlers:
             if method == "spec/getNodeCodeRefs":
                 return DispatchResult(
                     result=await self._handle_spec_get_node_code_refs(params),
+                    notifications=[],
+                )
+            if method == "spec/setNodeCollapsed":
+                return DispatchResult(
+                    result=await self._handle_spec_set_node_collapsed(params),
                     notifications=[],
                 )
             if method == "run/start":
@@ -164,8 +165,8 @@ class MethodHandlers:
                 INVALID_PARAMS, str(exc), request_id=request.request_id
             ) from exc
         finally:
-            logger.debug(
-                "Dispatch complete method=%s request_id=%s duration_ms=%s",
+            logger.info(
+                "RPC ✓ method=%s request_id=%s duration_ms=%s",
                 method,
                 request.request_id,
                 int((time.perf_counter() - started) * 1000),
@@ -189,6 +190,7 @@ class MethodHandlers:
                 "spec/outdentNode",
                 "spec/getNodeSourceRange",
                 "spec/getNodeCodeRefs",
+                "spec/setNodeCollapsed",
                 "run/start",
                 "run/stop",
                 "run/status",
@@ -398,10 +400,7 @@ class MethodHandlers:
         node = await self.specs.get_node(spec_ref)
         refs: list[dict[str, Any]] = []
         spec_file = (self.specs.workspace / node.file_path).resolve()
-        raw_content = node.markdown or ""
-
-        for marker in CODE_REF_MARKER_RE.finditer(raw_content):
-            raw_ref = marker.group(1).strip()
+        for raw_ref in node.code_refs:
             refs.append(
                 self._resolve_code_reference(
                     raw_ref=raw_ref,
@@ -411,6 +410,14 @@ class MethodHandlers:
             )
 
         return {"refs": refs}
+
+    async def _handle_spec_set_node_collapsed(
+        self, params: dict[str, Any]
+    ) -> dict[str, Any]:
+        spec_ref = self._require_str(params, "spec_ref")
+        collapsed = bool(params.get("collapsed", False))
+        node = await self.specs.set_node_collapsed(spec_ref, collapsed)
+        return {"node": node.to_dict()}
 
     def _resolve_code_reference(
         self,
@@ -531,12 +538,18 @@ class MethodHandlers:
         self, *, raw_path: str, spec_file: Path
     ) -> tuple[Path | None, str, str | None]:
         workspace = self.specs.workspace.resolve()
+        # Project root is the spec_root itself (the directory passed via --path,
+        # which is the parent of the specs/ subdirectory).  All relative code-ref
+        # paths are resolved against it first so that `src/foo.py` always means
+        # <project_root>/src/foo.py regardless of which spec file contains the ref.
+        project_root = self.specs.spec_root.resolve()
         path_obj = Path(raw_path)
         candidates: list[Path] = []
         if path_obj.is_absolute():
             candidates.append(path_obj)
         else:
-            candidates.append((spec_file.parent / path_obj))
+            project_candidate = project_root / path_obj
+            candidates.append(project_candidate)
             workspace_candidate = workspace / path_obj
             if workspace_candidate not in candidates:
                 candidates.append(workspace_candidate)

@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import asyncio
 from hashlib import sha256
+import os
 from pathlib import Path
 import time
 
 from .db import SpecDB
+from .markdown import markdown_first_line, strip_inline_metadata
 
 
 class SpecMarkdownWriter:
@@ -59,6 +61,38 @@ class SpecMarkdownWriter:
                     f"{content_indent}{line}" if line else ""
                     for line in continuation_lines
                 )
+
+            metadata_indent = " " * (max(0, (level - 1) * 4) + 4)
+            if node.status:
+                lines.append(f"{metadata_indent}- {{{{status: {node.status}}}}}")
+            for code_ref in node.code_refs:
+                lines.append(f"{metadata_indent}- {{{{code_ref: `{code_ref}`}}}}")
+            if node.verification:
+                lines.append(
+                    f"{metadata_indent}- {{{{verification: {node.verification}}}}}"
+                )
+
+            depends_on = await self.db.get_depends_on(node.id)
+            for target in depends_on:
+                ref = self._format_node_ref(
+                    current_file=file_row.rel_path, target=target
+                )
+                lines.append(f"{metadata_indent}- {{{{depends_on: {ref}}}}}")
+
+            related = await self.db.get_related_to(node.id)
+            for target in related:
+                ref = self._format_node_ref(
+                    current_file=file_row.rel_path, target=target
+                )
+                lines.append(f"{metadata_indent}- {{{{related_to: {ref}}}}}")
+
+            cross_file_children = await self.db.get_cross_file_children(node.id)
+            for child in cross_file_children:
+                ref = self._format_tree_ref(
+                    current_file=file_row.rel_path, target=child
+                )
+                lines.append(f"{metadata_indent}- {{{{tree: {ref}}}}}")
+
             if idx != len(nodes) - 1:
                 lines.append("")
 
@@ -95,3 +129,42 @@ class SpecMarkdownWriter:
         if row is None:
             return None
         return row.get("heading_level")
+
+    def _format_node_ref(self, *, current_file: str, target: object) -> str:
+        file_path = getattr(target, "file_path")
+        anchor = getattr(target, "anchor")
+        markdown = getattr(target, "markdown")
+
+        current_path = Path(current_file)
+        target_path = Path(file_path)
+        relative_str = target_path.as_posix()
+        try:
+            relative_str = os.path.relpath(
+                target_path.as_posix(), start=current_path.parent.as_posix()
+            )
+        except ValueError:
+            relative_str = target_path.as_posix()
+
+        title = strip_inline_metadata(markdown_first_line(markdown)).strip()
+        title = title.lstrip("#").strip() or anchor.replace("-", " ")
+        return f"[{title}]({relative_str}#{anchor})"
+
+    def _format_tree_ref(self, *, current_file: str, target: object) -> str:
+        """Format a {{tree: [Title](./path.md)}} link for cross-file expansion."""
+        file_path = getattr(target, "file_path")
+        markdown = getattr(target, "markdown")
+
+        current_path = Path(current_file)
+        target_path = Path(file_path)
+        relative_str = target_path.as_posix()
+        try:
+            relative_str = os.path.relpath(
+                target_path.as_posix(), start=current_path.parent.as_posix()
+            )
+        except ValueError:
+            relative_str = target_path.as_posix()
+
+        title = strip_inline_metadata(markdown_first_line(markdown)).strip()
+        anchor = getattr(target, "anchor")
+        title = title.lstrip("#").strip() or anchor.replace("-", " ")
+        return f"[{title}]({relative_str})"

@@ -20,13 +20,7 @@ pub fn map_key_to_action(keystroke: &Keystroke) -> Option<UiAction> {
                 Some(UiAction::IndentNode)
             }
         }
-        "enter" => {
-            if keystroke.modifiers.control || keystroke.modifiers.platform {
-                Some(UiAction::AddSiblingNode)
-            } else {
-                None
-            }
-        }
+        "enter" => None, // handled directly in handle_key_down before input focus check
         "escape" => None,
         "f2" => None,
         "backspace" => None,

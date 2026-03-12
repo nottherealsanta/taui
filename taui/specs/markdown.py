@@ -3,10 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 import re
 
-STATUS_RE = re.compile(r"\{\{status:\s*([a-zA-Z0-9_ -]+)\}\}")
 ORDERED_LIST_RE = re.compile(r"^\d+\.\s+")
 LIST_ITEM_RE = re.compile(r"^( *)([-*+])\s+(.*\S)?\s*$")
-WIKI_LINK_RE = re.compile(r"^\[\[([^\]]+)\]\]$")
 INLINE_METADATA_RE = re.compile(r"\{\{[^}]+\}\}")
 
 
@@ -56,16 +54,6 @@ def parse_markdown_link(line: str) -> tuple[str, str] | None:
         return None
     target = target_rest[:target_end]
     return text, target
-
-
-def parse_wiki_link(value: str) -> str | None:
-    match = WIKI_LINK_RE.match(value.strip())
-    if match is None:
-        return None
-    target = match.group(1).strip()
-    if not target:
-        return None
-    return target
 
 
 def strip_inline_metadata(value: str) -> str:
@@ -207,27 +195,6 @@ def section_end_index(
     return total_lines
 
 
-def extract_status(lines: list[str], start: int, end: int) -> str | None:
-    scan_end = min(end, start + 8)
-    for idx in range(start, scan_end):
-        match = STATUS_RE.search(lines[idx])
-        if match:
-            return match.group(1).strip()
-    return None
-
-
-def extract_status_from_block(title: str, lines: list[str]) -> str | None:
-    title_match = STATUS_RE.search(title)
-    if title_match:
-        return title_match.group(1).strip()
-    scan_end = min(8, len(lines))
-    for line in lines[:scan_end]:
-        match = STATUS_RE.search(line)
-        if match:
-            return match.group(1).strip()
-    return None
-
-
 def find_intent_line(lines: list[str], start: int, end: int) -> int | None:
     for idx in range(start, end):
         stripped = lines[idx].strip()
@@ -240,8 +207,6 @@ def find_intent_line(lines: list[str], start: int, end: int) -> int | None:
         if ORDERED_LIST_RE.match(stripped):
             return None
         if stripped.startswith("[") and "](" in stripped:
-            return None
-        if parse_wiki_link(stripped) is not None:
             return None
         if stripped.startswith("{{") and stripped.endswith("}}"):
             continue
@@ -267,8 +232,6 @@ def extract_intent_text(lines: list[str], start: int, end: int) -> str | None:
         if ORDERED_LIST_RE.match(stripped):
             break
         if stripped.startswith("[") and "](" in stripped:
-            break
-        if parse_wiki_link(stripped) is not None:
             break
         if stripped.startswith("{{") and stripped.endswith("}}"):
             continue

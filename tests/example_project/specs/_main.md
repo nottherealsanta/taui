@@ -1,39 +1,51 @@
+- 
+
+- 
+
+- 
+
 - Example Project Simple
     A simplified spec demonstrating all scenarios from spec_standards.md.
-    
-    - # Task Management {{status: ready}}
+
+    - # Task Management
         Basic task tracking with boards and cards.
-        
-        - ## Create Task {{status: done}}
-            Add new tasks to a board.
-            
-            - {{code_ref: `tests/example_project/src/task_board.py#L1-L20`}}
-            - {{verification: pytest tests/example_project/tests/test_task_board.py -q}}
-        
-        - ## Edit Task {{status: in-progress}}
+        - {{status: ready}}
+
+        - ## Create Task
+            Add new tasks to a board. `knmlw`
+            - {{status: done}}
+            - {{code_ref: `./src/task_board.py#L1-L20`}}
+            - {{verification: pytest ./tests/test_task_board.py -q}}
+
+            - ability to create a task with title and _description_
+
+        - ## Edit Task
             Modify existing tasks.
-            
-            - {{depends_on: [Create Task](task_board.md#create-task)}}
-        
-        - ## Delete Task {{status: draft}}
+            - {{status: in_progress}}
+            - {{depends_on: [Create Task](_main.md#create-task)}}
+
+        - ## Delete Task
             Remove tasks from the board.
-        
-        - ## Organize Tasks {{status: draft}}
-            Arrange tasks in columns.
-    
-    - # Authentication {{status: ready}}
+            - {{status: draft}}
+
+            - fef
+                - {{status: draft}}
+
+    - # Authentication
         User authentication system.
-        
-        - ## Login {{status: done}}
+        - {{status: ready}}
+
+        - ## Login
             User login with credentials.
-            
-            - {{code_ref: `tests/example_project/src/auth.py#L1-L30`}}
+            - {{status: done}}
+            - {{code_ref: `./src/auth.py#L1-L30`}}
             - {{verification: Manual testing with valid credentials}}
-        
-        - ## Logout {{status: draft}}
+
+        - ## Logout
             End user session.
-    
-    - # Data Layer {{status: ready}}
+            - {{status: draft}}
+
+    - # Data Layer
         Database abstraction and operations.
-        
-        - [[database_schema.md]]
+        - {{status: ready}}
+        - {{tree: [Database Schema](database_schema.md)}}

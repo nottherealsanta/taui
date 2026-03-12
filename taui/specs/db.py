@@ -4,6 +4,7 @@ import asyncio
 from contextlib import suppress
 from dataclasses import dataclass
 from hashlib import sha256
+import json
 from pathlib import Path
 import sqlite3
 import time
@@ -93,6 +94,10 @@ class NodeUpsert:
     line_end: int | None
     markdown: str
     sort_order: int
+    status: str | None = None
+    code_refs: str | None = None
+    verification: str | None = None
+    collapsed: int = 0
 
 
 class SpecDB:
@@ -228,6 +233,10 @@ CREATE TABLE IF NOT EXISTS nodes (
     line_start INTEGER,
     line_end INTEGER,
     markdown TEXT NOT NULL DEFAULT '',
+    status TEXT,
+    code_refs TEXT,
+    verification TEXT,
+    collapsed INTEGER NOT NULL DEFAULT 0,
     sort_order INTEGER NOT NULL DEFAULT 0,
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL
@@ -248,21 +257,12 @@ CREATE INDEX IF NOT EXISTS idx_edges_child ON edges(child_id);
 CREATE TABLE IF NOT EXISTS node_refs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     from_node TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
-    to_node TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
-    UNIQUE(from_node, to_node)
+    to_node TEXT REFERENCES nodes(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL DEFAULT 'depends_on',
+    UNIQUE(from_node, to_node, kind)
 );
 
 CREATE INDEX IF NOT EXISTS idx_node_refs_to ON node_refs(to_node);
-
-CREATE TABLE IF NOT EXISTS node_metadata (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    node_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
-    key TEXT NOT NULL,
-    value TEXT NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_node_metadata_node ON node_metadata(node_id);
-CREATE INDEX IF NOT EXISTS idx_node_metadata_key ON node_metadata(node_id, key);
 
 CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY,
@@ -348,8 +348,7 @@ CREATE INDEX IF NOT EXISTS idx_spawns_child ON subagent_spawns(child_session_id)
 """
         )
         node_columns = {
-            str(row["name"])
-            for row in await self._all("PRAGMA table_info(nodes)")
+            str(row["name"]) for row in await self._all("PRAGMA table_info(nodes)")
         }
         if "markdown" not in node_columns:
             await self._execute(
@@ -365,6 +364,31 @@ SET markdown = CASE
 END
 """
             )
+        if "status" not in node_columns:
+            await self._execute("ALTER TABLE nodes ADD COLUMN status TEXT")
+        if "code_refs" not in node_columns:
+            await self._execute("ALTER TABLE nodes ADD COLUMN code_refs TEXT")
+        if "verification" not in node_columns:
+            await self._execute("ALTER TABLE nodes ADD COLUMN verification TEXT")
+        if "collapsed" not in node_columns:
+            await self._execute(
+                "ALTER TABLE nodes ADD COLUMN collapsed INTEGER NOT NULL DEFAULT 0"
+            )
+
+        ref_columns = {
+            str(row["name"]) for row in await self._all("PRAGMA table_info(node_refs)")
+        }
+        if "kind" not in ref_columns:
+            await self._execute(
+                "ALTER TABLE node_refs ADD COLUMN kind TEXT NOT NULL DEFAULT 'depends_on'"
+            )
+
+        metadata_exists = await self._one(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='node_metadata'"
+        )
+        if metadata_exists is not None:
+            await self._execute("DROP TABLE IF EXISTS node_metadata")
+
         await self._conn.commit()
 
     async def _execute(self, sql: str, params: tuple[Any, ...] = ()) -> Any:
@@ -465,8 +489,9 @@ ON CONFLICT(rel_path) DO UPDATE SET
                 """
 INSERT INTO nodes(
     id, file_id, spec_ref, anchor, depth, heading_level,
-    line_start, line_end, markdown, sort_order, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    line_start, line_end, markdown, status, code_refs, verification, collapsed,
+    sort_order, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 """,
                 (
                     node.id,
@@ -478,6 +503,10 @@ INSERT INTO nodes(
                     node.line_start,
                     node.line_end,
                     node.markdown,
+                    node.status,
+                    node.code_refs,
+                    node.verification,
+                    node.collapsed,
                     node.sort_order,
                     now_ts,
                     now_ts,
@@ -494,23 +523,26 @@ INSERT INTO nodes(
             )
         await self._conn.commit()
 
-    async def replace_node_refs(self, refs: list[tuple[str, str]]) -> None:
+    async def replace_node_refs(self, refs: list[tuple[str, str, str]]) -> None:
         await self._execute("DELETE FROM node_refs")
-        for from_node, to_node in refs:
+        for from_node, to_node, kind in refs:
             await self._execute(
-                "INSERT OR IGNORE INTO node_refs(from_node, to_node) VALUES (?, ?)",
-                (from_node, to_node),
+                "INSERT OR IGNORE INTO node_refs(from_node, to_node, kind) VALUES (?, ?, ?)",
+                (from_node, to_node, kind),
             )
         await self._conn.commit()
 
-    async def replace_node_metadata(self, metadata: list[tuple[str, str, str]]) -> None:
-        await self._execute("DELETE FROM node_metadata")
-        for node_id, key, value in metadata:
-            await self._execute(
-                "INSERT INTO node_metadata(node_id, key, value) VALUES (?, ?, ?)",
-                (node_id, key, value),
-            )
-        await self._conn.commit()
+    def _load_json_list(self, raw: Any) -> list[str]:
+        if raw in (None, ""):
+            return []
+        if isinstance(raw, str):
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError:
+                return []
+            if isinstance(parsed, list):
+                return [str(item) for item in parsed]
+        return []
 
     def _row_to_node(self, row: dict[str, Any]) -> SpecNode:
         return SpecNode(
@@ -520,6 +552,10 @@ INSERT INTO nodes(
             file_path=row["rel_path"],
             anchor=row["anchor"],
             markdown=row.get("markdown") or "",
+            status=row.get("status"),
+            code_refs=self._load_json_list(row.get("code_refs")),
+            verification=row.get("verification"),
+            collapsed=bool(row.get("collapsed") or 0),
         )
 
     def _row_to_detail(self, row: dict[str, Any]) -> SpecNodeDetail:
@@ -530,6 +566,10 @@ INSERT INTO nodes(
             file_path=row["rel_path"],
             anchor=row["anchor"],
             markdown=row.get("markdown") or "",
+            status=row.get("status"),
+            code_refs=self._load_json_list(row.get("code_refs")),
+            verification=row.get("verification"),
+            collapsed=bool(row.get("collapsed") or 0),
             line_start=row.get("line_start"),
             line_end=row.get("line_end"),
         )
@@ -557,13 +597,6 @@ ORDER BY n.line_start, n.sort_order
             (file_id,),
         )
         return [self._row_to_detail(row) for row in rows]
-
-    async def get_node_metadata(self, node_id: str) -> list[tuple[str, str]]:
-        rows = await self._all(
-            "SELECT key, value FROM node_metadata WHERE node_id = ? ORDER BY id",
-            (node_id,),
-        )
-        return [(row["key"], row["value"]) for row in rows]
 
     async def get_node(self, node_id: str) -> SpecNodeDetail | None:
         row = await self._one(
@@ -687,6 +720,50 @@ ORDER BY n.sort_order
         )
         return [self._row_to_node(row) for row in rows]
 
+    async def get_depends_on(self, node_id: str) -> list[SpecNode]:
+        rows = await self._all(
+            """
+SELECT n.*, f.rel_path
+FROM node_refs r
+JOIN nodes n ON n.id = r.to_node
+JOIN files f ON f.id = n.file_id
+WHERE r.from_node = ? AND r.kind = 'depends_on'
+ORDER BY n.sort_order
+""",
+            (node_id,),
+        )
+        return [self._row_to_node(row) for row in rows]
+
+    async def get_related_to(self, node_id: str) -> list[SpecNode]:
+        rows = await self._all(
+            """
+SELECT n.*, f.rel_path
+FROM node_refs r
+JOIN nodes n ON n.id = CASE WHEN r.from_node = ? THEN r.to_node ELSE r.from_node END
+JOIN files f ON f.id = n.file_id
+WHERE (r.from_node = ? OR r.to_node = ?) AND r.kind = 'related_to'
+ORDER BY n.sort_order
+""",
+            (node_id, node_id, node_id),
+        )
+        return [self._row_to_node(row) for row in rows]
+
+    async def get_cross_file_children(self, node_id: str) -> list[SpecNode]:
+        """Return direct children of node_id that live in a different file."""
+        rows = await self._all(
+            """
+SELECT n.*, f.rel_path
+FROM edges e
+JOIN nodes n ON n.id = e.child_id
+JOIN files f ON f.id = n.file_id
+WHERE e.parent_id = ?
+  AND n.file_id != (SELECT file_id FROM nodes WHERE id = ?)
+ORDER BY e.sort_order
+""",
+            (node_id, node_id),
+        )
+        return [self._row_to_node(row) for row in rows]
+
     async def update_node(
         self,
         node_id: str,
@@ -702,6 +779,13 @@ SET spec_ref = ?, anchor = ?, markdown = ?, updated_at = ?
 WHERE id = ?
 """,
             (spec_ref, anchor, markdown, time.time(), node_id),
+        )
+        await self._conn.commit()
+
+    async def set_node_collapsed(self, node_id: str, collapsed: bool) -> None:
+        await self._execute(
+            "UPDATE nodes SET collapsed = ?, updated_at = ? WHERE id = ?",
+            (1 if collapsed else 0, time.time(), node_id),
         )
         await self._conn.commit()
 

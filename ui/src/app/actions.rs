@@ -55,7 +55,7 @@ fn move_selection(state: &mut AppState, delta: isize) -> bool {
     true
 }
 
-fn add_sibling_node(state: &mut AppState) -> bool {
+pub fn add_sibling_node(state: &mut AppState) -> bool {
     let parent = state
         .selected_node
         .and_then(|selected| state.nodes[selected].parent);

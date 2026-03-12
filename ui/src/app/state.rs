@@ -4,6 +4,26 @@ pub type NodeId = usize;
 
 pub type SpecRef = String;
 
+/// The two interactive modes of the spec tree editor, plus an idle state.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EditorMode {
+    /// No node is focused or selected.
+    Normal,
+    /// A node is highlighted (blue background) but the text cursor is not active.
+    Selection,
+    /// The text cursor is active inside a node's input area.
+    Editing,
+}
+
+/// Identifies which metadata item is currently being edited inline.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MetadataEditTarget {
+    CodeRef { node_id: NodeId, ref_index: usize },
+    Verification { node_id: NodeId },
+    DependsOn { node_id: NodeId, index: usize },
+    RelatedTo { node_id: NodeId, index: usize },
+}
+
 #[derive(Clone, Debug)]
 pub struct SpecNode {
     pub id: NodeId,
@@ -12,6 +32,11 @@ pub struct SpecNode {
     pub parent: Option<NodeId>,
     pub children: Vec<NodeId>,
     pub collapsed: bool,
+    pub status: Option<String>,
+    pub code_refs: Vec<String>,
+    pub verification: Option<String>,
+    pub depends_on: Vec<String>,
+    pub related_to: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -20,8 +45,15 @@ pub struct FlatNode {
     pub depth: usize,
     pub markdown: String,
     pub selected: bool,
+    /// True when this node should receive a selection-mode blue highlight
+    /// (i.e. it is the selected node or a visible descendant of it).
+    pub selection_highlighted: bool,
     pub collapsed: bool,
     pub has_children: bool,
+    pub code_refs: Vec<String>,
+    pub verification: Option<String>,
+    pub depends_on: Vec<String>,
+    pub related_to: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -103,21 +135,27 @@ impl AppState {
         self.root_nodes.clear();
         self.spec_ref_index.clear();
 
+        // The backend may start depths at 1 (or any positive value). Normalise
+        // so that the shallowest node is always at depth 0, making it a root.
+        let min_depth = nodes.iter().map(|n| n.depth).min().unwrap_or(0);
+
         let mut depth_stack: Vec<Option<NodeId>> = Vec::new();
 
         for bn in nodes {
-            let depth = bn.depth;
+            let depth = bn.depth.saturating_sub(min_depth);
             let parent_id = if depth == 0 {
                 None
             } else {
                 depth_stack.get(depth.saturating_sub(1)).copied().flatten()
             };
 
-            let collapsed = parse_collapsed_metadata(&bn.markdown);
-
             let id = self.create_node(bn.spec_ref.clone(), bn.markdown, parent_id);
-
-            self.nodes[id].collapsed = collapsed;
+            self.nodes[id].collapsed = bn.collapsed;
+            self.nodes[id].status = bn.status;
+            self.nodes[id].code_refs = bn.code_refs;
+            self.nodes[id].verification = bn.verification;
+            self.nodes[id].depends_on = bn.depends_on;
+            self.nodes[id].related_to = bn.related_to;
 
             if let Some(p) = parent_id {
                 self.nodes[p].children.push(id);
@@ -142,6 +180,13 @@ impl AppState {
             .map(|id| self.nodes[id].spec_ref.clone())
             .or(prev_selected_ref);
 
+        // Drop root nodes that are empty placeholders (no markdown, no children).
+        // The backend parser can produce these as artifacts of blank lines or
+        // the implicit list-item wrapping at the top of a spec file.
+        self.root_nodes.retain(|&id| {
+            !self.nodes[id].markdown.trim().is_empty() || !self.nodes[id].children.is_empty()
+        });
+
         if let Some(root_id) = self.primary_root_id() {
             self.nodes[root_id].collapsed = false;
         }
@@ -164,6 +209,11 @@ impl AppState {
             parent,
             children: Vec::new(),
             collapsed: false,
+            status: None,
+            code_refs: Vec::new(),
+            verification: None,
+            depends_on: Vec::new(),
+            related_to: Vec::new(),
         });
         id
     }
@@ -171,7 +221,7 @@ impl AppState {
     pub fn flattened_nodes(&self) -> Vec<FlatNode> {
         let mut out = Vec::new();
         for root in &self.root_nodes {
-            self.collect_flat(*root, 0, &mut out);
+            self.collect_flat(*root, 0, false, &mut out);
         }
         out
     }
@@ -190,9 +240,16 @@ impl AppState {
 
     pub fn flattened_tree_nodes(&self) -> Vec<FlatNode> {
         let mut out = Vec::new();
-        if let Some(root_id) = self.primary_root_id() {
-            for child_id in &self.nodes[root_id].children {
-                self.collect_flat(*child_id, 1, &mut out);
+        let root_id = self.primary_root_id();
+        for &rid in &self.root_nodes {
+            if Some(rid) == root_id {
+                // Primary root: render its children at depth 1.
+                for child_id in &self.nodes[rid].children {
+                    self.collect_flat(*child_id, 1, false, &mut out);
+                }
+            } else {
+                // Additional roots (e.g. from linked spec files): render at depth 1.
+                self.collect_flat(rid, 1, false, &mut out);
             }
         }
         out
@@ -226,22 +283,38 @@ impl AppState {
         self.selected_spec_ref.as_deref()
     }
 
-    fn collect_flat(&self, node_id: NodeId, depth: usize, out: &mut Vec<FlatNode>) {
+    /// Collect the node and its visible descendants into `out`.
+    /// `ancestor_selected` is true when an ancestor is the selected node,
+    /// meaning all visible descendants should be selection-highlighted.
+    fn collect_flat(
+        &self,
+        node_id: NodeId,
+        depth: usize,
+        ancestor_selected: bool,
+        out: &mut Vec<FlatNode>,
+    ) {
         let node = &self.nodes[node_id];
         let has_children = !node.children.is_empty();
+        let is_selected = self.selected_node == Some(node.id);
+        let selection_highlighted = is_selected || ancestor_selected;
 
         out.push(FlatNode {
             id: node.id,
             depth,
             markdown: node.markdown.clone(),
-            selected: self.selected_node == Some(node.id),
+            selected: is_selected,
+            selection_highlighted,
             collapsed: node.collapsed,
             has_children,
+            code_refs: node.code_refs.clone(),
+            verification: node.verification.clone(),
+            depends_on: node.depends_on.clone(),
+            related_to: node.related_to.clone(),
         });
 
         if !node.collapsed {
             for child_id in &node.children {
-                self.collect_flat(*child_id, depth + 1, out);
+                self.collect_flat(*child_id, depth + 1, selection_highlighted, out);
             }
         }
     }
@@ -253,53 +326,152 @@ impl AppState {
             }
             if !self.nodes[selected].children.is_empty() {
                 self.nodes[selected].collapsed = !self.nodes[selected].collapsed;
-
-                let collapsed = self.nodes[selected].collapsed;
-                let markdown = &mut self.nodes[selected].markdown;
-                *markdown = update_collapsed_metadata(markdown, collapsed);
-
                 return true;
             }
         }
         false
     }
-}
 
-fn parse_collapsed_metadata(markdown: &str) -> bool {
-    for line in markdown.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with("{{") && trimmed.ends_with("}}") {
-            if trimmed.contains("collapsed:") {
-                return trimmed.contains("true");
+    // -------------------------------------------------------------------------
+    // Tree mutation helpers (used by editor key handlers)
+    // -------------------------------------------------------------------------
+
+    /// Split the currently selected node at `byte_offset`.
+    ///
+    /// Returns `(new_node_id, insert_as_first_child)` where `insert_as_first_child`
+    /// indicates whether the new node was placed as a first child (true) or next
+    /// sibling (false).
+    ///
+    /// The caller is responsible for updating the flat-tree cache.
+    pub fn split_selected_at(&mut self, byte_offset: usize) -> Option<NodeId> {
+        let selected = self.selected_node?;
+        let text = self.nodes[selected].markdown.clone();
+
+        // Clamp offset to valid UTF-8 boundary
+        let byte_offset = byte_offset.min(text.len());
+        // Walk forward until we're on a char boundary
+        let byte_offset = {
+            let mut o = byte_offset;
+            while o < text.len() && !text.is_char_boundary(o) {
+                o += 1;
             }
-        }
-    }
-    false
-}
+            o
+        };
 
-fn update_collapsed_metadata(markdown: &str, collapsed: bool) -> String {
-    let mut lines: Vec<String> = markdown.lines().map(|s| s.to_string()).collect();
-    let mut found = false;
+        let fst = text[..byte_offset].to_string();
+        let snd = text[byte_offset..].trim_start_matches('\n').to_string();
 
-    for line in &mut lines {
-        let trimmed = line.trim();
-        if trimmed.starts_with("{{") && trimmed.ends_with("}}") && trimmed.contains("collapsed:") {
-            *line = format!("{{{{collapsed: {}}}}}", collapsed);
-            found = true;
-            break;
-        }
-    }
+        let parent = self.nodes[selected].parent;
+        let has_children = !self.nodes[selected].children.is_empty();
 
-    if !found {
-        let metadata_line = format!("{{{{collapsed: {}}}}}", collapsed);
-        if lines.is_empty() {
-            lines.push(metadata_line);
+        // Update the current node's text to the first half.
+        self.nodes[selected].markdown = fst;
+
+        // Generate a temporary spec_ref for the new node.
+        let tmp_ref: SpecRef = format!("local/new-{}", self.nodes.len());
+        let new_parent = if has_children { Some(selected) } else { parent };
+        let new_id = self.create_node(tmp_ref, snd, new_parent);
+
+        if has_children {
+            // Insert as first child of the current node so tree structure is preserved.
+            self.nodes[selected].children.insert(0, new_id);
         } else {
-            lines.insert(1, metadata_line);
+            // Insert as next sibling.
+            let insertion_index = self
+                .siblings(parent)
+                .iter()
+                .position(|id| *id == selected)
+                .map(|i| i + 1)
+                .unwrap_or_else(|| self.siblings(parent).len());
+            self.siblings_mut(parent).insert(insertion_index, new_id);
         }
+
+        self.set_selected(new_id);
+        Some(new_id)
     }
 
-    lines.join("\n")
+    /// Merge the currently selected node's text onto the end of the previous
+    /// visible node, re-parent current node's children to that previous node,
+    /// and remove the current node from the tree.
+    ///
+    /// Returns `(target_node_id, join_byte_offset)` – the node that absorbs the
+    /// content and the byte offset within its (new) markdown where the two texts
+    /// were joined.  The caller should position the cursor there.
+    pub fn merge_selected_into_previous(&mut self) -> Option<(NodeId, usize)> {
+        let selected = self.selected_node?;
+
+        // Find the previous visible node from the full flattened list.
+        let flat = self.flattened_nodes();
+        let current_idx = flat.iter().position(|n| n.id == selected)?;
+        if current_idx == 0 {
+            return None;
+        }
+        let prev_id = flat[current_idx - 1].id;
+
+        // We cannot merge into the primary root.
+        if self.is_primary_root(prev_id) {
+            return None;
+        }
+
+        let join_offset = self.nodes[prev_id].markdown.len();
+        let current_text = self.nodes[selected].markdown.clone();
+
+        // Append current text to previous node.
+        self.nodes[prev_id].markdown.push_str(&current_text);
+
+        // Re-parent children of the deleted node to the previous node.
+        let children: Vec<NodeId> = self.nodes[selected].children.clone();
+        for &child_id in &children {
+            self.nodes[child_id].parent = Some(prev_id);
+        }
+        self.nodes[prev_id].children.extend(children);
+        self.nodes[selected].children.clear();
+
+        // Remove current node from its parent's child list.
+        let parent = self.nodes[selected].parent;
+        self.siblings_mut(parent).retain(|&id| id != selected);
+
+        self.set_selected(prev_id);
+        Some((prev_id, join_offset))
+    }
+
+    /// Merge the next visible node's text into the currently selected node,
+    /// re-parent its children, and remove the next node from the tree.
+    ///
+    /// Returns the byte offset of the cursor after the merge (end of the
+    /// original selected node's text, before the appended content).
+    pub fn merge_next_into_selected(&mut self) -> Option<usize> {
+        let selected = self.selected_node?;
+
+        let flat = self.flattened_nodes();
+        let current_idx = flat.iter().position(|n| n.id == selected)?;
+        let next_id = flat.get(current_idx + 1)?.id;
+
+        // We cannot merge the primary root.
+        if self.is_primary_root(next_id) {
+            return None;
+        }
+
+        let join_offset = self.nodes[selected].markdown.len();
+        let next_text = self.nodes[next_id].markdown.clone();
+
+        // Append next node's text to the selected node.
+        self.nodes[selected].markdown.push_str(&next_text);
+
+        // Re-parent children.
+        let children: Vec<NodeId> = self.nodes[next_id].children.clone();
+        for &child_id in &children {
+            self.nodes[child_id].parent = Some(selected);
+        }
+        self.nodes[selected].children.extend(children);
+        self.nodes[next_id].children.clear();
+
+        // Remove next node from its parent.
+        let next_parent = self.nodes[next_id].parent;
+        self.siblings_mut(next_parent).retain(|&id| id != next_id);
+
+        Some(join_offset)
+    }
 }
 
 /// A node payload arriving from the backend.
@@ -308,6 +480,12 @@ pub struct BackendNode {
     pub spec_ref: SpecRef,
     pub depth: usize,
     pub markdown: String,
+    pub status: Option<String>,
+    pub collapsed: bool,
+    pub code_refs: Vec<String>,
+    pub verification: Option<String>,
+    pub depends_on: Vec<String>,
+    pub related_to: Vec<String>,
 }
 
 #[cfg(test)]
@@ -323,6 +501,12 @@ mod tests {
             spec_ref: spec_ref.to_string(),
             depth,
             markdown: markdown.to_string(),
+            status: None,
+            collapsed: false,
+            code_refs: Vec::new(),
+            verification: None,
+            depends_on: Vec::new(),
+            related_to: Vec::new(),
         }
     }
 
@@ -355,28 +539,6 @@ mod tests {
 
         let flat_after = state.flattened_nodes();
         assert!(flat_after.len() < count_before);
-    }
-
-    #[test]
-    fn test_parse_collapsed_metadata() {
-        assert!(parse_collapsed_metadata("{{collapsed: true}}"));
-        assert!(!parse_collapsed_metadata("{{collapsed: false}}"));
-        assert!(!parse_collapsed_metadata("Some content"));
-        assert!(parse_collapsed_metadata(
-            "Line 1\n{{collapsed: true}}\nLine 2"
-        ));
-    }
-
-    #[test]
-    fn test_update_collapsed_metadata() {
-        let content = "Some content";
-        let updated = update_collapsed_metadata(content, true);
-        assert!(updated.contains("{{collapsed: true}}"));
-
-        let content_with_meta = "{{collapsed: false}}\nSome content";
-        let updated = update_collapsed_metadata(content_with_meta, true);
-        assert!(updated.contains("{{collapsed: true}}"));
-        assert!(!updated.contains("{{collapsed: false}}"));
     }
 
     #[test]
@@ -523,12 +685,24 @@ mod tests {
             BackendNode {
                 spec_ref: "a".to_string(),
                 depth: 0,
-                markdown: "Root\n{{collapsed: true}}".to_string(),
+                markdown: "Root".to_string(),
+                status: None,
+                collapsed: true,
+                code_refs: Vec::new(),
+                verification: None,
+                depends_on: Vec::new(),
+                related_to: Vec::new(),
             },
             BackendNode {
                 spec_ref: "b".to_string(),
                 depth: 1,
                 markdown: "Child".to_string(),
+                status: None,
+                collapsed: false,
+                code_refs: Vec::new(),
+                verification: None,
+                depends_on: Vec::new(),
+                related_to: Vec::new(),
             },
         ]);
 

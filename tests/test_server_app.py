@@ -20,7 +20,7 @@ def _write_specs(workspace: Path) -> None:
                 "- Taui",
                 "    Agentic Coding Interface.",
                 "",
-                "    - [[core.md]]",
+                "    - {{tree: [Core](./core.md)}}",
                 "",
             ]
         ),
@@ -133,7 +133,7 @@ def test_get_node_code_refs_reads_workspace_files(tmp_path: Path) -> None:
                 "- Taui",
                 "    Spec root.",
                 "",
-                "    - [[core.md]]",
+                "    - {{tree: [Core](./core.md)}}",
             ]
         ),
         encoding="utf-8",
@@ -277,7 +277,7 @@ def test_indent_node_makes_node_child_of_prev_sibling(tmp_path: Path) -> None:
                 "- Taui",
                 "    Root.",
                 "",
-                "    - [[core.md]]",
+                "    - {{tree: [Core](./core.md)}}",
                 "",
             ]
         ),
@@ -344,6 +344,249 @@ def test_indent_node_makes_node_child_of_prev_sibling(tmp_path: Path) -> None:
             )
 
 
+def test_indent_node_after_create_sibling_uses_correct_edge_order(
+    tmp_path: Path,
+) -> None:
+    """Regression: createSiblingNode then indentNode must succeed.
+
+    Before the fix, the new sibling's edge sort_order was set to len(siblings)
+    (appended last) rather than anchor_edge_sort + 1 (inserted after anchor).
+    get_children() orders by edge sort_order, so the new node appeared last
+    and any previous sibling was the wrong node — or the node appeared at
+    index 0, causing indent_node to reject with "no previous sibling".
+    """
+    specs_root = tmp_path / "specs"
+    specs_root.mkdir(parents=True, exist_ok=True)
+    (specs_root / "_main.md").write_text(
+        "\n".join(
+            [
+                "- Taui",
+                "    Root.",
+                "",
+                "    - {{tree: [Core](./core.md)}}",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (specs_root / "core.md").write_text(
+        "\n".join(
+            [
+                "- # Core",
+                "    Core body.",
+                "",
+                "    - ## Alpha",
+                "        Alpha body.",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    app = create_app(workspace=tmp_path)
+
+    def rpc(ws, id_, method, params):
+        ws.send_text(
+            json.dumps(
+                {"jsonrpc": "2.0", "id": id_, "method": method, "params": params}
+            )
+        )
+        # Drain until we get the response for this id.
+        while True:
+            msg = json.loads(ws.receive_text())
+            if msg.get("id") == id_:
+                return msg
+            # Notifications (no id) are discarded.
+
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws") as ws:
+            # 1. Create a sibling after Alpha.
+            create_resp = rpc(
+                ws, 1, "spec/createSiblingNode", {"spec_ref": "specs/core.md#alpha"}
+            )
+            assert "error" not in create_resp, create_resp
+            new_ref = create_resp["result"]["node"]["spec_ref"]
+
+            # 2. Immediately indent the new sibling — it should become a child of Alpha.
+            indent_resp = rpc(ws, 2, "spec/indentNode", {"spec_ref": new_ref})
+            assert "error" not in indent_resp, indent_resp
+            assert indent_resp["result"]["tree_changed"] is True
+
+            # 3. Verify the new node is now deeper than Alpha.
+            tree_resp = rpc(ws, 3, "spec/getTree", {})
+            nodes_by_ref = {n["spec_ref"]: n for n in tree_resp["result"]["nodes"]}
+            assert new_ref in nodes_by_ref, f"{new_ref!r} not in tree"
+            assert (
+                nodes_by_ref[new_ref]["depth"]
+                > nodes_by_ref["specs/core.md#alpha"]["depth"]
+            ), "new sibling should be a child of alpha after indent"
+
+
+def test_indent_node_moves_children_with_parent(tmp_path: Path) -> None:
+    """Regression: indenting a node must also increment depth of all descendants."""
+    specs_root = tmp_path / "specs"
+    specs_root.mkdir(parents=True, exist_ok=True)
+    (specs_root / "_main.md").write_text(
+        "\n".join(
+            [
+                "- Taui",
+                "    Root.",
+                "",
+                "    - {{tree: [Core](./core.md)}}",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    # Alpha → Beta (child of Alpha) → Gamma (child of Beta)
+    # Charlie is a sibling of Alpha — pressing Tab on Alpha makes it child of Charlie.
+    (specs_root / "core.md").write_text(
+        "\n".join(
+            [
+                "- # Core",
+                "    Core body.",
+                "",
+                "    - ## Charlie",
+                "        Charlie body.",
+                "",
+                "    - ## Alpha",
+                "        Alpha body.",
+                "",
+                "        - ### Beta",
+                "            Beta body.",
+                "",
+                "            - #### Gamma",
+                "                Gamma body.",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    app = create_app(workspace=tmp_path)
+
+    def rpc(ws, id_, method, params):
+        ws.send_text(
+            json.dumps(
+                {"jsonrpc": "2.0", "id": id_, "method": method, "params": params}
+            )
+        )
+        while True:
+            msg = json.loads(ws.receive_text())
+            if msg.get("id") == id_:
+                return msg
+
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws") as ws:
+            # Get baseline depths.
+            tree0 = rpc(ws, 1, "spec/getTree", {})
+            nodes0 = {n["spec_ref"]: n for n in tree0["result"]["nodes"]}
+            alpha_depth0 = nodes0["specs/core.md#alpha"]["depth"]
+            beta_depth0 = nodes0["specs/core.md#beta"]["depth"]
+            gamma_depth0 = nodes0["specs/core.md#gamma"]["depth"]
+
+            # Indent Alpha (makes it a child of Charlie).
+            resp = rpc(ws, 2, "spec/indentNode", {"spec_ref": "specs/core.md#alpha"})
+            assert "error" not in resp, resp
+
+            # Verify all three nodes shifted by +1.
+            tree1 = rpc(ws, 3, "spec/getTree", {})
+            nodes1 = {n["spec_ref"]: n for n in tree1["result"]["nodes"]}
+            assert nodes1["specs/core.md#alpha"]["depth"] == alpha_depth0 + 1, (
+                "alpha depth +1"
+            )
+            assert nodes1["specs/core.md#beta"]["depth"] == beta_depth0 + 1, (
+                "beta depth +1"
+            )
+            assert nodes1["specs/core.md#gamma"]["depth"] == gamma_depth0 + 1, (
+                "gamma depth +1"
+            )
+
+
+def test_outdent_node_moves_children_with_parent(tmp_path: Path) -> None:
+    """Regression: outdenting a node must also decrement depth of all descendants."""
+    specs_root = tmp_path / "specs"
+    specs_root.mkdir(parents=True, exist_ok=True)
+    (specs_root / "_main.md").write_text(
+        "\n".join(
+            [
+                "- Taui",
+                "    Root.",
+                "",
+                "    - {{tree: [Core](./core.md)}}",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    # Core → Alpha → Beta → Gamma
+    # Outdenting Alpha makes it a sibling of Core; Beta and Gamma follow.
+    (specs_root / "core.md").write_text(
+        "\n".join(
+            [
+                "- # Core",
+                "    Core body.",
+                "",
+                "    - ## Alpha",
+                "        Alpha body.",
+                "",
+                "        - ### Beta",
+                "            Beta body.",
+                "",
+                "            - #### Gamma",
+                "                Gamma body.",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    app = create_app(workspace=tmp_path)
+
+    def rpc(ws, id_, method, params):
+        ws.send_text(
+            json.dumps(
+                {"jsonrpc": "2.0", "id": id_, "method": method, "params": params}
+            )
+        )
+        while True:
+            msg = json.loads(ws.receive_text())
+            if msg.get("id") == id_:
+                return msg
+
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws") as ws:
+            # Get baseline depths.
+            tree0 = rpc(ws, 1, "spec/getTree", {})
+            nodes0 = {n["spec_ref"]: n for n in tree0["result"]["nodes"]}
+            alpha_depth0 = nodes0["specs/core.md#alpha"]["depth"]
+            beta_depth0 = nodes0["specs/core.md#beta"]["depth"]
+            gamma_depth0 = nodes0["specs/core.md#gamma"]["depth"]
+
+            # Outdent Alpha (makes it a sibling of Core).
+            resp = rpc(ws, 2, "spec/outdentNode", {"spec_ref": "specs/core.md#alpha"})
+            assert "error" not in resp, resp
+
+            # Verify all three nodes shifted by -1.
+            tree1 = rpc(ws, 3, "spec/getTree", {})
+            nodes1 = {n["spec_ref"]: n for n in tree1["result"]["nodes"]}
+            assert nodes1["specs/core.md#alpha"]["depth"] == alpha_depth0 - 1, (
+                "alpha depth -1"
+            )
+            assert nodes1["specs/core.md#beta"]["depth"] == beta_depth0 - 1, (
+                "beta depth -1"
+            )
+            assert nodes1["specs/core.md#gamma"]["depth"] == gamma_depth0 - 1, (
+                "gamma depth -1"
+            )
+            # Alpha's children must still be nested under Alpha (not under Core).
+            assert (
+                nodes1["specs/core.md#beta"]["depth"]
+                > nodes1["specs/core.md#alpha"]["depth"]
+            )
+            assert (
+                nodes1["specs/core.md#gamma"]["depth"]
+                > nodes1["specs/core.md#beta"]["depth"]
+            )
+
+
 def test_outdent_node_raises_error_at_top_level(tmp_path: Path) -> None:
     _write_specs(tmp_path)
     app = create_app(workspace=tmp_path)
@@ -370,7 +613,7 @@ def test_outdent_node_moves_up_one_level(tmp_path: Path) -> None:
     specs_root = tmp_path / "specs"
     specs_root.mkdir(parents=True, exist_ok=True)
     (specs_root / "_main.md").write_text(
-        "\n".join(["- Taui", "    Root.", "", "    - [[core.md]]", ""]),
+        "\n".join(["- Taui", "    Root.", "", "    - {{tree: [Core](./core.md)}}", ""]),
         encoding="utf-8",
     )
     (specs_root / "core.md").write_text(

@@ -44,6 +44,38 @@ pub struct TreeNode {
     pub spec_ref: String,
     pub depth: usize,
     pub markdown: String,
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub collapsed: bool,
+    #[serde(default)]
+    pub code_refs: Vec<String>,
+    #[serde(default)]
+    pub verification: Option<String>,
+    #[serde(default)]
+    pub depends_on: Vec<String>,
+    #[serde(default)]
+    pub related_to: Vec<String>,
+}
+
+/// Resolved code reference preview returned by `spec/getNodeCodeRefs`.
+#[derive(Clone, Debug, Deserialize)]
+pub struct CodeRefPreview {
+    pub raw_ref: String,
+    pub file_path: String,
+    pub line_start: Option<i64>,
+    pub line_end: Option<i64>,
+    pub preview_start: Option<i64>,
+    pub preview_end: Option<i64>,
+    pub content: String,
+    pub truncated: bool,
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct CodeRefsResponse {
+    pub refs: Vec<CodeRefPreview>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -295,6 +327,40 @@ impl BackendClient {
             .await?;
 
         let result: UpdateNodeResponse = serde_json::from_value(response)?;
+        Ok(result)
+    }
+
+    pub async fn set_node_collapsed(&self, spec_ref: &str, collapsed: bool) -> Result<TreeNode> {
+        let response = self
+            .call_method(
+                "spec/setNodeCollapsed",
+                serde_json::json!({
+                    "spec_ref": spec_ref,
+                    "collapsed": collapsed,
+                }),
+            )
+            .await?;
+
+        #[derive(Deserialize)]
+        struct SetCollapsedResponse {
+            node: TreeNode,
+        }
+
+        let result: SetCollapsedResponse = serde_json::from_value(response)?;
+        Ok(result.node)
+    }
+
+    pub async fn get_node_code_refs(
+        &self,
+        spec_ref: &str,
+        max_lines: Option<u32>,
+    ) -> Result<CodeRefsResponse> {
+        let mut params = serde_json::json!({ "spec_ref": spec_ref });
+        if let Some(ml) = max_lines {
+            params["max_lines"] = serde_json::json!(ml);
+        }
+        let response = self.call_method("spec/getNodeCodeRefs", params).await?;
+        let result: CodeRefsResponse = serde_json::from_value(response)?;
         Ok(result)
     }
 

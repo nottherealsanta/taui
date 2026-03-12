@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from hashlib import sha256
+import json
 from pathlib import Path
 import re
 import time
@@ -11,12 +12,12 @@ from .errors import SpecNotFoundError, SpecValidationError
 from .markdown import (
     parse_list_items,
     parse_markdown_link,
-    parse_wiki_link,
     slugify,
     strip_inline_metadata,
 )
 
-METADATA_RE = re.compile(r"\{\{\s*([a-zA-Z0-9_\-]+)\s*:\s*([^}]+)\}\}")
+METADATA_RE = re.compile(r"\{\{\s*([a-zA-Z0-9_\\\-]+)\s*:\s*([^}]+)\}\}")
+METADATA_ITEM_RE = re.compile(r"^\{\{\s*([a-zA-Z0-9_\\\-]+)\s*:\s*(.+?)\s*\}\}$")
 
 
 @dataclass(slots=True)
@@ -31,6 +32,12 @@ class ParsedNode:
     line_end: int | None
     markdown: str
     lines: list[str]
+    status: str | None = None
+    code_refs: list[str] = field(default_factory=list)
+    verification: str | None = None
+    collapsed: bool = False
+    depends_on_targets: list[str] = field(default_factory=list)
+    related_to_targets: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -99,6 +106,12 @@ class SpecSync:
                         line_end=node.line_end,
                         markdown=node.markdown,
                         sort_order=0,
+                        status=node.status,
+                        code_refs=(
+                            json.dumps(node.code_refs) if node.code_refs else None
+                        ),
+                        verification=node.verification,
+                        collapsed=1 if node.collapsed else 0,
                     )
                     for node in nodes
                 ],
@@ -122,8 +135,7 @@ class SpecSync:
             first_node_by_file.setdefault(node.file_path, node.id)
 
         edges: list[tuple[str, str, int]] = []
-        refs: list[tuple[str, str]] = []
-        metadata: list[tuple[str, str, str]] = []
+        refs: list[tuple[str, str, str]] = []
         edge_sort = 0
 
         for pfile in parsed.values():
@@ -132,39 +144,27 @@ class SpecSync:
                 edge_sort += 1
 
             for node in pfile.nodes:
-                scan_lines = node.lines
-                for line in scan_lines[:12]:
-                    for key, value in METADATA_RE.findall(line):
-                        metadata.append((node.id, key.strip(), value.strip()))
+                for target in node.depends_on_targets:
+                    target_node_id = self._resolve_ref_target(
+                        target=target,
+                        file_abs_path=pfile.abs_path,
+                        parsed=parsed,
+                        by_ref=by_ref,
+                        first_node_by_file=first_node_by_file,
+                    )
+                    if target_node_id is not None:
+                        refs.append((node.id, target_node_id, "depends_on"))
 
-            for node in pfile.nodes:
-                scan_lines = node.lines
-                for line in scan_lines:
-                    parsed_link = parse_markdown_link(line)
-                    if parsed_link is None:
-                        continue
-                    _, target = parsed_link
-                    target_file_rel, _, target_anchor = target.partition("#")
-                    target_file_rel = target_file_rel.strip()
-                    target_anchor = target_anchor.strip()
-                    if not target_file_rel.endswith(".md"):
-                        continue
-                    resolved = (pfile.abs_path.parent / target_file_rel).resolve()
-                    if not self._is_within_spec_root(resolved):
-                        continue
-                    target_rel = self._to_rel_path(resolved)
-                    if target_rel not in parsed:
-                        continue
-
-                    if target_anchor:
-                        target_ref = f"{target_rel}#{target_anchor}"
-                        target_node_id = by_ref.get(target_ref)
-                    else:
-                        target_node_id = first_node_by_file.get(target_rel)
-
-                    if target_node_id is None:
-                        continue
-                    refs.append((node.id, target_node_id))
+                for target in node.related_to_targets:
+                    target_node_id = self._resolve_ref_target(
+                        target=target,
+                        file_abs_path=pfile.abs_path,
+                        parsed=parsed,
+                        by_ref=by_ref,
+                        first_node_by_file=first_node_by_file,
+                    )
+                    if target_node_id is not None:
+                        refs.append((node.id, target_node_id, "related_to"))
 
             for include in pfile.includes:
                 target_file_rel, _, target_anchor = include.target.partition("#")
@@ -191,7 +191,6 @@ class SpecSync:
                     edges.append((include.parent_node_id, target_node_id, edge_sort))
                     edge_sort += 1
 
-        await self.db.replace_node_metadata(metadata)
         await self.db.replace_node_refs(refs)
         await self.db.replace_edges(edges)
 
@@ -296,27 +295,62 @@ class SpecSync:
         }
         used_anchors: set[str] = set()
 
+        node_by_id: dict[str, ParsedNode] = {}
+
+        def nearest_parent_node_id(item_index: int) -> str | None:
+            parent_idx = item_parent_index.get(item_index)
+            while parent_idx is not None:
+                parent_node_id = item_to_node_id.get(parent_idx)
+                if parent_node_id is not None:
+                    return parent_node_id
+                parent_idx = item_parent_index.get(parent_idx)
+            return None
+
         for idx, item in enumerate(list_items):
-            include_target = parse_wiki_link(item.title)
-            if include_target is not None:
-                parent_idx = item.parent_index
-                parent_node_id: str | None = None
-                while parent_idx is not None:
-                    parent_node_id = item_to_node_id.get(parent_idx)
-                    if parent_node_id is not None:
-                        break
-                    parent_idx = item_parent_index.get(parent_idx)
-                includes.append(
-                    ParsedInclude(
-                        line_index=item.line_index,
-                        heading_level=item.depth + 1,
-                        parent_node_id=parent_node_id,
-                        target=include_target,
-                    )
+            # Check for {{tree: [Title](./file.md)}} tree expansion metadata
+            tree_match = METADATA_ITEM_RE.match(item.title.strip())
+            if tree_match is not None and tree_match.group(1).strip().lower() == "tree":
+                parent_node_id = nearest_parent_node_id(idx)
+                tree_value = tree_match.group(2).strip()
+                parsed_link = parse_markdown_link(tree_value)
+                include_target = (
+                    parsed_link[1] if parsed_link is not None else tree_value
                 )
+                if include_target:
+                    includes.append(
+                        ParsedInclude(
+                            line_index=item.line_index,
+                            heading_level=item.depth + 1,
+                            parent_node_id=parent_node_id,
+                            target=include_target,
+                        )
+                    )
                 continue
 
-            title = strip_inline_metadata(item.title)
+            metadata_match = METADATA_ITEM_RE.match(item.title.strip())
+            if metadata_match is not None:
+                parent_node_id = nearest_parent_node_id(idx)
+                if parent_node_id is not None:
+                    parent_node = node_by_id[parent_node_id]
+                    self._apply_metadata(
+                        node=parent_node,
+                        key=metadata_match.group(1),
+                        value=metadata_match.group(2),
+                    )
+                    for raw_line in item.content_lines:
+                        nested = METADATA_ITEM_RE.match(raw_line.strip())
+                        if nested is None:
+                            continue
+                        self._apply_metadata(
+                            node=parent_node,
+                            key=nested.group(1),
+                            value=nested.group(2),
+                        )
+                continue
+
+            title, inline_metadata = self._strip_title_metadata(item.title.strip())
+            if not title:
+                title = strip_inline_metadata(item.title)
             if not title:
                 title = item.title.strip()
 
@@ -331,7 +365,8 @@ class SpecSync:
             item_to_node_id[idx] = node_id
 
             end = next_break_by_index[idx]
-            node_lines = [item.title.strip(), *item.content_lines]
+            node_lines: list[str] = [title]
+
             parsed_node = ParsedNode(
                 id=node_id,
                 file_id=file_id,
@@ -341,9 +376,28 @@ class SpecSync:
                 heading_level=item.depth + 1,
                 line_start=item.line_index + 1,
                 line_end=end,
-                markdown="\n".join(node_lines).strip("\n"),
-                lines=node_lines,
+                markdown="",
+                lines=[],
             )
+            node_by_id[node_id] = parsed_node
+
+            for key, value in inline_metadata:
+                self._apply_metadata(node=parsed_node, key=key, value=value)
+
+            for raw_line in item.content_lines:
+                content_line = raw_line.strip()
+                metadata_line = METADATA_ITEM_RE.match(content_line)
+                if metadata_line is not None:
+                    self._apply_metadata(
+                        node=parsed_node,
+                        key=metadata_line.group(1),
+                        value=metadata_line.group(2),
+                    )
+                    continue
+                node_lines.append(raw_line)
+
+            parsed_node.markdown = "\n".join(node_lines).strip("\n")
+            parsed_node.lines = node_lines
             out.append(parsed_node)
 
             parent_idx = item.parent_index
@@ -355,6 +409,69 @@ class SpecSync:
                 parent_idx = item_parent_index.get(parent_idx)
 
         return out, includes, in_file_edges
+
+    def _strip_title_metadata(self, title: str) -> tuple[str, list[tuple[str, str]]]:
+        extracted = [(k.strip(), v.strip()) for k, v in METADATA_RE.findall(title)]
+        clean = strip_inline_metadata(title)
+        return clean, extracted
+
+    def _normalize_status(self, value: str) -> str:
+        normalized = value.strip().replace("-", "_")
+        return normalized
+
+    def _apply_metadata(self, *, node: ParsedNode, key: str, value: str) -> None:
+        key_name = key.strip().lower().replace("\\", "")
+        value_text = value.strip()
+        if key_name == "status":
+            node.status = self._normalize_status(value_text)
+            return
+        if key_name == "code_ref":
+            cleaned = value_text.strip("`").replace("\\_", "_")
+            if cleaned:
+                node.code_refs.append(cleaned)
+            return
+        if key_name == "verification":
+            node.verification = value_text
+            return
+        if key_name == "collapsed":
+            node.collapsed = value_text.lower() in {"true", "1", "yes"}
+            return
+        if key_name in {"depends_on", "related_to"}:
+            parsed = parse_markdown_link(value_text)
+            target = parsed[1] if parsed is not None else value_text
+            if not target:
+                return
+            if key_name == "depends_on":
+                node.depends_on_targets.append(target)
+            else:
+                node.related_to_targets.append(target)
+
+    def _resolve_ref_target(
+        self,
+        *,
+        target: str,
+        file_abs_path: Path,
+        parsed: dict[str, ParsedFile],
+        by_ref: dict[str, str],
+        first_node_by_file: dict[str, str],
+    ) -> str | None:
+        target_file_rel, _, target_anchor = target.partition("#")
+        target_file_rel = target_file_rel.strip()
+        target_anchor = target_anchor.strip()
+        if not target_file_rel and target_anchor:
+            target_rel = self._to_rel_path(file_abs_path)
+            return by_ref.get(f"{target_rel}#{target_anchor}")
+        if not target_file_rel.endswith(".md"):
+            return None
+        resolved = (file_abs_path.parent / target_file_rel).resolve()
+        if not self._is_within_spec_root(resolved):
+            return None
+        target_rel = self._to_rel_path(resolved)
+        if target_rel not in parsed:
+            return None
+        if target_anchor:
+            return by_ref.get(f"{target_rel}#{target_anchor}")
+        return first_node_by_file.get(target_rel)
 
     def _is_within_spec_root(self, path: Path) -> bool:
         try:

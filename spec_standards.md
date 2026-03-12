@@ -67,13 +67,14 @@ Example:
 
 There are two link semantics:
 
-1. **Tree expansion (composition)** via wiki-link syntax:
+1. **Tree expansion (composition)** via `{{tree: ...}}` metadata:
 
 ```md
-- [[task_board.md]]
+- {{tree: [Task Board](./task_board.md)}}
 ```
 
-- `[[file.md]]` means "inline that spec file's tree here".
+- `{{tree: [Title](./file.md)}}` means "inline that spec file's tree here".
+- The value is a standard markdown link — clickable in any markdown viewer.
 - Expansion happens at the same tree level position.
 - This is how multi-file trees are composed.
 
@@ -92,17 +93,19 @@ There are two link semantics:
 - First-level children should be split into separate files/folders where practical:
   - file node: `specs/<child>.md`
   - folder node: `specs/<child>/_main.md`
-- Use `[[...]]` from parent files to compose child files into one tree.
+- Use `{{tree: [Title](./path)}}` from parent files to compose child files into one tree.
 
 ## Metadata format (`{{key: value}}`)
 
 - Machine-parseable metadata uses `{{key: value}}`.
 - `status` is required for every actionable node in normal workflows.
+- Canonical status representation is a child metadata item (`- {{status: ...}}`). Inline status on the title line is legacy-compatible but should not be authored in new specs.
 - Metadata should be child list items (not content lines):
 
 ```md
-- Feature {{status: draft}}
+- Feature
     Feature description.
+    - {{status: draft}}
     - {{code_ref: `src/feature.py`}}
     - {{verification: pytest tests/test_feature.py -q}}
 ```
@@ -110,18 +113,20 @@ There are two link semantics:
 Examples of supported metadata:
 
     - {{status: value}}
+    - {{tree: [Child File](./child.md)}}
     - {{depends_on: [Reference](file.md#section)}}
+    - {{related_to: [Reference](file.md#section)}}
     - {{code_ref: `src/file.py#L10-L20`}}
     - {{verification: pytest tests/test.py -q}}
-    - {{collapsed: true}}
 
 Recommended keys:
 
 - `status`
+- `tree`
 - `depends_on`
+- `related_to`
 - `code_ref`
 - `verification`
-- `collapsed`
 
 ## Status model
 
@@ -129,22 +134,27 @@ Allowed statuses:
 
 - `draft`
 - `ready`
-- `in-progress`
+- `in_progress`
+- `to_review`
 - `done`
 - `blocked`
 
 Transitions:
 
 1. `draft -> ready`
-2. `ready -> in-progress`
-3. `in-progress -> done`
-4. `in-progress -> blocked`
-5. `blocked -> in-progress`
+2. `ready -> in_progress`
+3. `in_progress -> done`
+4. `in_progress -> blocked`
+5. `in_progress -> to_review`
+6. `to_review -> done`
+7. `to_review -> in_progress`
+8. `blocked -> in_progress`
 
 Notes:
 
 - `blocked` means execution should pause until clarified.
-- Legacy `in_progress` may appear; write new status as `in-progress`.
+- Legacy `in-progress` may appear; write new status as `in_progress`.
+- `collapsed` is UI state only and should not be written to markdown.
 
 ## Intent extraction
 
@@ -178,7 +188,7 @@ Example:
 
 ## Dependencies and traversal
 
-- Primary traversal follows tree edges (list nesting + `[[...]]` expansion).
+- Primary traversal follows tree edges (list nesting + `{{tree: ...}}` expansion).
 - Dependency edges from `{{depends_on: ...}}` are secondary constraints.
 - Do not introduce dependency cycles.
 
@@ -198,15 +208,18 @@ Example:
 ## End-to-end example
 
 ```md
-- Shared Lists App {{status: ready}}
+- Shared Lists App
     Build a collaborative app where many users share lists.
-    - [[server.md]]
-    - [[client.md]]
+    - {{status: ready}}
+    - {{tree: [Server](./server.md)}}
+    - {{tree: [Client](./client.md)}}
 ```
 
 ```md
-- # Server {{status: in-progress}}
-    - ## List sharing endpoint {{status: in-progress}}
+- # Server
+    - {{status: in_progress}}
+    - ## List sharing endpoint
+        - {{status: in_progress}}
         - {{depends_on: [Auth model](server.md#auth-model)}}
         - {{code_ref: `taui/server/routes/lists.py#L88-L170`}}
         - {{verification: pytest tests/test_shared_links.py -q}}

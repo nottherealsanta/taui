@@ -1,13 +1,13 @@
 - Taui UI
     - intent: Native GPUI desktop interface with spec tree as primary workflow.
     - status: in-progress
-    - [[app_shell.md]]
-    - [[state_and_events.md]]
-    - [[spec_tree_pane.md]]
-    - [[execution_pane.md]]
-    - [[plan_status_pane.md]]
-    - [[chat_pane.md]]
-    - [[theme.md]]
-    - [[backend_integration.md]]
-    - [[keybindings.md]]
-    - [[testing.md]]
+    - {{tree: [app_shell](./app_shell.md)}}
+    - {{tree: [state_and_events](./state_and_events.md)}}
+    - {{tree: [spec_tree_pane](./spec_tree_pane.md)}}
+    - {{tree: [execution_pane](./execution_pane.md)}}
+    - {{tree: [plan_status_pane](./plan_status_pane.md)}}
+    - {{tree: [chat_pane](./chat_pane.md)}}
+    - {{tree: [theme](./theme.md)}}
+    - {{tree: [backend_integration](./backend_integration.md)}}
+    - {{tree: [keybindings](./keybindings.md)}}
+    - {{tree: [testing](./testing.md)}}

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 
@@ -24,6 +24,12 @@ class SpecNode:
     file_path: str
     anchor: str
     markdown: str = ""
+    status: str | None = None
+    code_refs: list[str] = field(default_factory=list)
+    verification: str | None = None
+    collapsed: bool = False
+    depends_on: list[str] = field(default_factory=list)
+    related_to: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -33,6 +39,12 @@ class SpecNode:
             "file_path": self.file_path,
             "anchor": self.anchor,
             "markdown": self.markdown,
+            "status": self.status,
+            "code_refs": self.code_refs,
+            "verification": self.verification,
+            "collapsed": self.collapsed,
+            "depends_on": self.depends_on,
+            "related_to": self.related_to,
         }
 
 

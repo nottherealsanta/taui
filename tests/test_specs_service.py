@@ -22,8 +22,8 @@ def _write_specs(workspace: Path) -> None:
                 "- Taui",
                 "    Agentic Coding Interface.",
                 "",
-                "    - [[core.md]]",
-                "    - [[ui/_main.md]]",
+                "    - {{tree: [Core](./core.md)}}",
+                "    - {{tree: [Taui UI](./ui/_main.md)}}",
                 "",
             ]
         ),
@@ -33,8 +33,9 @@ def _write_specs(workspace: Path) -> None:
     (specs_root / "core.md").write_text(
         "\n".join(
             [
-                "- # Core {{status: ready}}",
+                "- # Core",
                 "    Core engine behaviors.",
+                "    - {{status: ready}}",
                 "",
                 "    - ## Leaf",
                 "        Leaf implementation details.",
@@ -47,8 +48,9 @@ def _write_specs(workspace: Path) -> None:
     (specs_root / "ui" / "_main.md").write_text(
         "\n".join(
             [
-                "- # Taui UI {{status: draft}}",
+                "- # Taui UI",
                 "    Define the desktop interface contract.",
+                "    - {{status: draft}}",
                 "",
             ]
         ),
@@ -158,7 +160,7 @@ def test_get_tree_includes_multiline_paragraph_markdown(tmp_path: Path) -> None:
                 "    Primary line two.",
                 "    Primary line three.",
                 "",
-                "    - [[core.md]]",
+                "    - {{tree: [Core](./core.md)}}",
                 "",
             ]
         ),
@@ -211,16 +213,13 @@ def test_metadata_only_list_item_creates_node(tmp_path: Path) -> None:
     tree = _run(service.get_tree())
 
     refs = {node.spec_ref for node in tree}
-    assert "specs/_main.md#root" in refs
-    assert "specs/_main.md#status-ready" in refs
-
-    metadata_node = next(
-        node for node in tree if node.spec_ref == "specs/_main.md#status-ready"
-    )
-    assert metadata_node.markdown == "{{status: ready}}\n{{verification: met}}"
+    assert refs == {"specs/_main.md#root"}
+    root = next(node for node in tree if node.spec_ref == "specs/_main.md#root")
+    assert root.status == "ready"
+    assert root.verification == "met"
 
 
-def test_metadata_only_siblings_use_unique_anchors(tmp_path: Path) -> None:
+def test_metadata_only_siblings_do_not_create_nodes(tmp_path: Path) -> None:
     specs_root = tmp_path / "specs"
     specs_root.mkdir(parents=True, exist_ok=True)
     (specs_root / "_main.md").write_text(
@@ -237,10 +236,11 @@ def test_metadata_only_siblings_use_unique_anchors(tmp_path: Path) -> None:
     )
 
     service = SpecService(workspace=tmp_path)
-    refs = {node.spec_ref for node in _run(service.get_tree())}
-
-    assert "specs/_main.md#status-ready" in refs
-    assert "specs/_main.md#status-ready-1" in refs
+    tree = _run(service.get_tree())
+    refs = {node.spec_ref for node in tree}
+    assert refs == {"specs/_main.md#root"}
+    root = tree[0]
+    assert root.status == "ready"
 
 
 def test_get_tree_uses_custom_specs_path(tmp_path: Path) -> None:
@@ -298,10 +298,26 @@ def test_dev_mode_still_builds_db_from_markdown(tmp_path: Path) -> None:
 
     # Verify node details are correct
     core_node = next(node for node in tree if node.spec_ref == "specs/core.md#core")
-    assert core_node.markdown == "# Core {{status: ready}}\nCore engine behaviors."
+    assert core_node.markdown == "# Core\nCore engine behaviors."
+    assert core_node.status == "ready"
 
-    _run(service.writer.flush())
-    _run(service.db.close())
 
-    # No cache file should exist
-    assert not service.db.db_path.exists()
+def test_legacy_inline_status_still_parses(tmp_path: Path) -> None:
+    specs_root = tmp_path / "specs"
+    specs_root.mkdir(parents=True, exist_ok=True)
+    (specs_root / "_main.md").write_text(
+        "\n".join(
+            [
+                "- Root",
+                "    - # Core {{status: in-progress}}",
+                "        Body text.",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    service = SpecService(workspace=tmp_path)
+    tree = _run(service.get_tree())
+    core_node = next(node for node in tree if node.spec_ref == "specs/_main.md#core")
+    assert core_node.status == "in_progress"

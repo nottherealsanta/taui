@@ -86,6 +86,18 @@ class SpecService:
         logger.debug("Spec node loaded spec_ref=%s node_id=%s", spec_ref, node.id)
         return node
 
+    async def set_node_collapsed(
+        self, spec_ref: str, collapsed: bool
+    ) -> SpecNodeDetail:
+        await self.ensure_initialized()
+        node = await self.db.get_node_by_ref(spec_ref)
+        if node is None:
+            raise SpecNotFoundError(f"no node found for spec_ref: {spec_ref}")
+        await self.db.set_node_collapsed(node.id, collapsed)
+        updated = await self.db.get_node(node.id)
+        assert updated is not None
+        return updated
+
     async def update_node(
         self, spec_ref: str, patch: SpecNodePatch | dict[str, object]
     ) -> SpecUpdateResult:
@@ -312,13 +324,21 @@ INSERT INTO nodes(
         )
         await self.db._conn.commit()
 
-        # Wire edge to same parent as anchor node.
+        # Wire edge to same parent as anchor node, inserted immediately after the anchor.
         if parent_id is not None:
-            siblings = await self.db.get_children(parent_id)
-            next_sibling_sort = len(siblings)
+            anchor_edge = await self.db._one(
+                "SELECT sort_order FROM edges WHERE parent_id = ? AND child_id = ?",
+                (parent_id, anchor_node.id),
+            )
+            anchor_edge_sort = int(anchor_edge["sort_order"]) if anchor_edge else 0
+            # Shift all edges after the anchor position down by 1 to make room.
+            await self.db._execute(
+                "UPDATE edges SET sort_order = sort_order + 1 WHERE parent_id = ? AND sort_order > ?",
+                (parent_id, anchor_edge_sort),
+            )
             await self.db._execute(
                 "INSERT OR IGNORE INTO edges(parent_id, child_id, sort_order) VALUES (?, ?, ?)",
-                (parent_id, new_id, next_sibling_sort),
+                (parent_id, new_id, anchor_edge_sort + 1),
             )
             await self.db._conn.commit()
 
@@ -395,10 +415,28 @@ INSERT INTO nodes(
 
         new_heading_level = heading_level + 1
 
+        now = time.time()
         await self.db._execute(
             "UPDATE nodes SET heading_level = ?, depth = depth + 1, updated_at = ? WHERE id = ?",
-            (new_heading_level, time.time(), node.id),
+            (new_heading_level, now, node.id),
         )
+
+        # Recursively update all descendants: depth +1, heading_level +1 (if heading).
+        descendants = await self.db.get_subtree(node.id)
+        for desc in descendants:
+            desc_raw = await self.db._one(
+                "SELECT heading_level FROM nodes WHERE id = ?", (desc.id,)
+            )
+            if desc_raw and desc_raw["heading_level"] is not None:
+                await self.db._execute(
+                    "UPDATE nodes SET depth = depth + 1, heading_level = heading_level + 1, updated_at = ? WHERE id = ?",
+                    (now, desc.id),
+                )
+            else:
+                await self.db._execute(
+                    "UPDATE nodes SET depth = depth + 1, updated_at = ? WHERE id = ?",
+                    (now, desc.id),
+                )
 
         # Re-wire edge: remove old parent edge, add new one under new_parent.
         if parent_edge:
@@ -477,10 +515,28 @@ INSERT INTO nodes(
         )
 
         new_heading_level = heading_level - 1
+        now = time.time()
         await self.db._execute(
             "UPDATE nodes SET heading_level = ?, depth = depth - 1, updated_at = ? WHERE id = ?",
-            (new_heading_level, time.time(), node.id),
+            (new_heading_level, now, node.id),
         )
+
+        # Recursively update all descendants: depth -1, heading_level -1 (if heading).
+        descendants = await self.db.get_subtree(node.id)
+        for desc in descendants:
+            desc_raw = await self.db._one(
+                "SELECT heading_level FROM nodes WHERE id = ?", (desc.id,)
+            )
+            if desc_raw and desc_raw["heading_level"] is not None:
+                await self.db._execute(
+                    "UPDATE nodes SET depth = depth - 1, heading_level = heading_level - 1, updated_at = ? WHERE id = ?",
+                    (now, desc.id),
+                )
+            else:
+                await self.db._execute(
+                    "UPDATE nodes SET depth = depth - 1, updated_at = ? WHERE id = ?",
+                    (now, desc.id),
+                )
 
         # Remove old parent edge.
         await self.db._execute(
@@ -489,17 +545,27 @@ INSERT INTO nodes(
         )
 
         # Attach to grandparent (or root) after the parent node.
+        # Use proper edge sort_order insertion (shift siblings to make room).
         if grand_edge:
-            grand_children = await self.db.get_children(grand_edge["parent_id"])
-            parent_index = next(
-                (i for i, c in enumerate(grand_children) if c.id == parent_id), None
+            grand_parent_id = grand_edge["parent_id"]
+            grand_children = await self.db.get_children(grand_parent_id)
+            parent_edge_row = await self.db._one(
+                "SELECT sort_order FROM edges WHERE parent_id = ? AND child_id = ?",
+                (grand_parent_id, parent_id),
             )
-            insert_sort = (
-                (parent_index + 1) if parent_index is not None else len(grand_children)
+            parent_edge_sort = (
+                int(parent_edge_row["sort_order"])
+                if parent_edge_row
+                else len(grand_children) - 1
+            )
+            # Shift all edges after parent's position to make room.
+            await self.db._execute(
+                "UPDATE edges SET sort_order = sort_order + 1 WHERE parent_id = ? AND sort_order > ?",
+                (grand_parent_id, parent_edge_sort),
             )
             await self.db._execute(
                 "INSERT OR IGNORE INTO edges(parent_id, child_id, sort_order) VALUES (?, ?, ?)",
-                (grand_edge["parent_id"], node.id, insert_sort),
+                (grand_parent_id, node.id, parent_edge_sort + 1),
             )
 
         await self.db._conn.commit()
