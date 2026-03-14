@@ -3,7 +3,8 @@ use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::{mpsc, oneshot, Mutex};
+use std::time::Duration;
+use tokio::sync::{broadcast, mpsc, oneshot, Mutex};
 use tokio_tungstenite::{connect_async, tungstenite::Message as WsMessage};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -27,6 +28,11 @@ struct JsonRpcResponse {
     result: Option<serde_json::Value>,
     #[serde(default)]
     error: Option<JsonRpcError>,
+    /// Present on server-initiated notifications (no `id`).
+    #[serde(default)]
+    method: Option<String>,
+    #[serde(default)]
+    params: Option<serde_json::Value>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -102,6 +108,13 @@ pub struct UpdateNodeResponse {
     pub tree_changed: bool,
 }
 
+/// A server-initiated notification (no `id`, only `method` + `params`).
+#[derive(Clone, Debug)]
+pub struct ServerNotification {
+    pub method: String,
+    pub params: serde_json::Value,
+}
+
 /// Type alias for the pending-requests map shared between the call site and the read task.
 type PendingMap = Arc<Mutex<HashMap<u64, oneshot::Sender<Result<serde_json::Value>>>>>;
 
@@ -120,15 +133,26 @@ pub struct BackendClient {
     request_id: Arc<Mutex<u64>>,
     /// Established lazily on first call; reused for all subsequent calls.
     connection: Arc<Mutex<Option<Connection>>>,
+    /// Broadcast channel for server-initiated notifications.
+    notification_tx: broadcast::Sender<ServerNotification>,
 }
 
 impl BackendClient {
     pub fn new(endpoint: impl Into<String>) -> Self {
+        let (notification_tx, _) = broadcast::channel(256);
         Self {
             endpoint: endpoint.into(),
             request_id: Arc::new(Mutex::new(1)),
             connection: Arc::new(Mutex::new(None)),
+            notification_tx,
         }
+    }
+
+    /// Subscribe to server-initiated notifications.
+    /// Returns a receiver that will receive all `spec/*`, `agent/*`, etc. notifications
+    /// pushed by the server without a corresponding request.
+    pub fn subscribe_notifications(&self) -> broadcast::Receiver<ServerNotification> {
+        self.notification_tx.subscribe()
     }
 
     async fn next_id(&self) -> u64 {
@@ -139,7 +163,7 @@ impl BackendClient {
     }
 
     /// Return a reference to the live connection, creating it when necessary.
-    /// If the existing connection's write channel is closed we reconnect.
+    /// Uses exponential backoff on reconnect (max 30 s).
     async fn get_connection(&self) -> Result<(mpsc::Sender<String>, PendingMap)> {
         let mut guard = self.connection.lock().await;
 
@@ -150,71 +174,96 @@ impl BackendClient {
             }
         }
 
-        // Establish a fresh connection.
-        let (ws_stream, _) = connect_async(&self.endpoint).await?;
-        let (write, mut read) = ws_stream.split();
+        // Establish a fresh connection with exponential backoff.
+        let mut backoff_ms: u64 = 250;
+        loop {
+            match connect_async(&self.endpoint).await {
+                Ok((ws_stream, _)) => {
+                    let (write, mut read) = ws_stream.split();
+                    let (tx, mut rx) = mpsc::channel::<String>(64);
+                    let pending: PendingMap = Arc::new(Mutex::new(HashMap::new()));
 
-        let (tx, mut rx) = mpsc::channel::<String>(64);
-        let pending: PendingMap = Arc::new(Mutex::new(HashMap::new()));
-
-        // Write task — forward queued messages to the WebSocket sink.
-        let write = Arc::new(Mutex::new(write));
-        {
-            let write = write.clone();
-            tokio::spawn(async move {
-                while let Some(msg) = rx.recv().await {
-                    let mut w = write.lock().await;
-                    if w.send(WsMessage::Text(msg)).await.is_err() {
-                        break;
+                    // Write task — forward queued messages to the WebSocket sink.
+                    let write = Arc::new(Mutex::new(write));
+                    {
+                        let write = write.clone();
+                        tokio::spawn(async move {
+                            while let Some(msg) = rx.recv().await {
+                                let mut w = write.lock().await;
+                                if w.send(WsMessage::Text(msg)).await.is_err() {
+                                    break;
+                                }
+                            }
+                        });
                     }
-                }
-            });
-        }
 
-        // Read task — route each response to the correct pending oneshot.
-        {
-            let pending_read = pending.clone();
-            tokio::spawn(async move {
-                while let Some(msg) = read.next().await {
-                    let Ok(WsMessage::Text(text)) = msg else {
-                        continue;
-                    };
-                    let Ok(response) = serde_json::from_str::<JsonRpcResponse>(&text) else {
-                        continue;
-                    };
-                    if let Some(id) = response.id {
-                        let mut map = pending_read.lock().await;
-                        if let Some(responder) = map.remove(&id) {
-                            let result = if let Some(err) = response.error {
-                                Err(anyhow::anyhow!(
-                                    "RPC error {}: {}",
-                                    err.code,
-                                    err.message
-                                ))
-                            } else {
-                                response
-                                    .result
-                                    .ok_or_else(|| anyhow::anyhow!("No result in response"))
-                            };
-                            let _ = responder.send(result);
-                        }
+                    // Read task — route responses to pending oneshots; broadcast notifications.
+                    {
+                        let pending_read = pending.clone();
+                        let notification_tx = self.notification_tx.clone();
+                        tokio::spawn(async move {
+                            while let Some(msg) = read.next().await {
+                                let Ok(WsMessage::Text(text)) = msg else {
+                                    continue;
+                                };
+                                let Ok(response) =
+                                    serde_json::from_str::<JsonRpcResponse>(&text)
+                                else {
+                                    continue;
+                                };
+
+                                if let Some(id) = response.id {
+                                    // This is a response to an outstanding request.
+                                    let mut map = pending_read.lock().await;
+                                    if let Some(responder) = map.remove(&id) {
+                                        let result = if let Some(err) = response.error {
+                                            Err(anyhow::anyhow!(
+                                                "RPC error {}: {}",
+                                                err.code,
+                                                err.message
+                                            ))
+                                        } else {
+                                            response.result.ok_or_else(|| {
+                                                anyhow::anyhow!("No result in response")
+                                            })
+                                        };
+                                        let _ = responder.send(result);
+                                    }
+                                } else if let Some(method) = response.method {
+                                    // Server-initiated notification — broadcast to subscribers.
+                                    let params =
+                                        response.params.unwrap_or(serde_json::Value::Null);
+                                    let _ =
+                                        notification_tx.send(ServerNotification { method, params });
+                                }
+                            }
+                            // Connection lost — fail all in-flight requests.
+                            let mut map = pending_read.lock().await;
+                            for (_, responder) in map.drain() {
+                                let _ = responder.send(Err(anyhow::anyhow!(
+                                    "WebSocket connection closed"
+                                )));
+                            }
+                        });
                     }
+
+                    *guard = Some(Connection {
+                        sender: tx.clone(),
+                        pending: pending.clone(),
+                    });
+
+                    return Ok((tx, pending));
                 }
-                // Connection lost — fail all in-flight requests.
-                let mut map = pending_read.lock().await;
-                for (_, responder) in map.drain() {
-                    let _ =
-                        responder.send(Err(anyhow::anyhow!("WebSocket connection closed")));
+                Err(e) => {
+                    eprintln!(
+                        "BackendClient: connection to {} failed ({e}), retrying in {backoff_ms}ms",
+                        self.endpoint
+                    );
+                    tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
+                    backoff_ms = (backoff_ms * 2).min(30_000);
                 }
-            });
+            }
         }
-
-        *guard = Some(Connection {
-            sender: tx.clone(),
-            pending: pending.clone(),
-        });
-
-        Ok((tx, pending))
     }
 
     async fn call_method(
@@ -370,5 +419,130 @@ impl BackendClient {
         }
 
         Ok(RunId(1))
+    }
+
+    // -------------------------------------------------------------------------
+    // Agent lifecycle RPCs
+    // -------------------------------------------------------------------------
+
+    /// Launch a root agent on a branch. Returns `(agent_id, session_id)`.
+    pub async fn agent_launch(
+        &self,
+        spec_ref: &str,
+        task: &str,
+        tier: &str,
+    ) -> Result<(String, String)> {
+        let response = self
+            .call_method(
+                "agent/launch",
+                serde_json::json!({
+                    "spec_ref": spec_ref,
+                    "task": task,
+                    "tier": tier,
+                }),
+            )
+            .await?;
+        let agent_id = response["agent_id"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("missing agent_id"))?
+            .to_string();
+        let session_id = response["session_id"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("missing session_id"))?
+            .to_string();
+        Ok((agent_id, session_id))
+    }
+
+    /// Safely stop a running agent.
+    pub async fn agent_stop(&self, agent_id: &str) -> Result<()> {
+        self.call_method(
+            "agent/stop",
+            serde_json::json!({ "agent_id": agent_id }),
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Send a steer message to a running agent (immediate context injection).
+    pub async fn agent_steer(&self, agent_id: &str, message: &str) -> Result<()> {
+        self.call_method(
+            "agent/steer",
+            serde_json::json!({ "agent_id": agent_id, "message": message }),
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Queue a follow-up task for an agent.
+    pub async fn agent_queue(&self, agent_id: &str, message: &str) -> Result<()> {
+        self.call_method(
+            "agent/queue",
+            serde_json::json!({ "agent_id": agent_id, "message": message }),
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Subscribe to an agent's detail stream. Returns the backlog of buffered events.
+    pub async fn agent_subscribe(&self, agent_id: &str) -> Result<Vec<serde_json::Value>> {
+        let response = self
+            .call_method(
+                "agent/subscribe",
+                serde_json::json!({ "agent_id": agent_id }),
+            )
+            .await?;
+        let backlog = response["backlog"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        Ok(backlog)
+    }
+
+    /// Unsubscribe from an agent's detail stream.
+    pub async fn agent_unsubscribe(&self, agent_id: &str) -> Result<()> {
+        self.call_method(
+            "agent/unsubscribe",
+            serde_json::json!({ "agent_id": agent_id }),
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Answer a pending question from an agent.
+    pub async fn agent_answer_question(
+        &self,
+        question_node_ref: &str,
+        answer: &str,
+    ) -> Result<()> {
+        self.call_method(
+            "agent/answerQuestion",
+            serde_json::json!({
+                "question_node_ref": question_node_ref,
+                "answer": answer,
+            }),
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Notify the server that the user edited a locked node (fire-and-forget notification).
+    /// This is sent as a JSON-RPC notification (no id), but we use call_method for simplicity
+    /// since the server handles it as a method too.
+    pub async fn ui_node_edited(
+        &self,
+        spec_ref: &str,
+        old_markdown: &str,
+        new_markdown: &str,
+    ) -> Result<()> {
+        self.call_method(
+            "ui/nodeEdited",
+            serde_json::json!({
+                "spec_ref": spec_ref,
+                "old_markdown": old_markdown,
+                "new_markdown": new_markdown,
+            }),
+        )
+        .await?;
+        Ok(())
     }
 }

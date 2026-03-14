@@ -31,7 +31,7 @@ pub struct ThemeColorsRefinement {
 impl ThemeColors {
     pub fn taui_dark() -> Self {
         Self {
-            background: 0x0b0e12,
+            background: 0x000000,
             panel_background: 0x121822,
             elevated_surface_background: 0x1b2432,
             border: 0x2d3749,

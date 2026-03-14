@@ -7,6 +7,9 @@ pub const INDENT_PER_LEVEL: Pixels = px(24.0);
 pub const MARKDOWN_TEXT_SIZE: Pixels = px(16.0);
 pub const MARKDOWN_LINE_HEIGHT: f32 = 1.45;
 
+pub const BODY_FONT_FAMILY: &str = "IBM Plex Sans";
+pub const CODE_FONT_FAMILY: &str = "JetBrains Mono";
+
 pub struct HeadingStyle {
     pub font_size: Pixels,
     pub font_weight: FontWeight,
@@ -22,27 +25,19 @@ pub struct ContentStyle {
 pub fn depth_to_heading_style(depth: usize) -> HeadingStyle {
     match depth {
         0 => HeadingStyle {
-            font_size: px(35.0),
-            font_weight: FontWeight::SEMIBOLD,
+            font_size: px(16.0),
+            font_weight: FontWeight::NORMAL,
         },
         1 => HeadingStyle {
-            font_size: px(31.0),
+            font_size: px(22.0),
             font_weight: FontWeight::SEMIBOLD,
         },
         2 => HeadingStyle {
-            font_size: px(27.0),
-            font_weight: FontWeight::SEMIBOLD,
-        },
-        3 => HeadingStyle {
-            font_size: px(24.0),
-            font_weight: FontWeight::MEDIUM,
-        },
-        4 => HeadingStyle {
-            font_size: px(21.0),
+            font_size: px(18.0),
             font_weight: FontWeight::MEDIUM,
         },
         _ => HeadingStyle {
-            font_size: px(19.0),
+            font_size: MARKDOWN_TEXT_SIZE,
             font_weight: FontWeight::NORMAL,
         },
     }
@@ -53,7 +48,7 @@ pub fn content_style() -> ContentStyle {
         font_size: MARKDOWN_TEXT_SIZE,
         font_weight: FontWeight::NORMAL,
         line_height_value: MARKDOWN_LINE_HEIGHT,
-        font_family: "monospace",
+        font_family: CODE_FONT_FAMILY,
     }
 }
 
@@ -128,43 +123,43 @@ mod tests {
     #[test]
     fn test_depth_0_is_h1() {
         let style = depth_to_heading_style(0);
-        assert_eq!(style.font_size, px(35.0));
-        assert_eq!(style.font_weight, FontWeight::SEMIBOLD);
+        assert_eq!(style.font_size, px(16.0));
+        assert_eq!(style.font_weight, FontWeight::NORMAL);
     }
 
     #[test]
     fn test_depth_1_is_h2() {
         let style = depth_to_heading_style(1);
-        assert_eq!(style.font_size, px(31.0));
+        assert_eq!(style.font_size, px(22.0));
         assert_eq!(style.font_weight, FontWeight::SEMIBOLD);
     }
 
     #[test]
     fn test_depth_2_is_h3() {
         let style = depth_to_heading_style(2);
-        assert_eq!(style.font_size, px(27.0));
-        assert_eq!(style.font_weight, FontWeight::SEMIBOLD);
+        assert_eq!(style.font_size, px(18.0));
+        assert_eq!(style.font_weight, FontWeight::MEDIUM);
     }
 
     #[test]
     fn test_depth_3_is_h4() {
         let style = depth_to_heading_style(3);
-        assert_eq!(style.font_size, px(24.0));
-        assert_eq!(style.font_weight, FontWeight::MEDIUM);
+        assert_eq!(style.font_size, MARKDOWN_TEXT_SIZE);
+        assert_eq!(style.font_weight, FontWeight::NORMAL);
     }
 
     #[test]
     fn test_depth_4_is_h5() {
         let style = depth_to_heading_style(4);
-        assert_eq!(style.font_size, px(21.0));
-        assert_eq!(style.font_weight, FontWeight::MEDIUM);
+        assert_eq!(style.font_size, MARKDOWN_TEXT_SIZE);
+        assert_eq!(style.font_weight, FontWeight::NORMAL);
     }
 
     #[test]
     fn test_depth_5_and_beyond_is_h6() {
         for depth in 5..10 {
             let style = depth_to_heading_style(depth);
-            assert_eq!(style.font_size, px(19.0));
+            assert_eq!(style.font_size, MARKDOWN_TEXT_SIZE);
             assert_eq!(style.font_weight, FontWeight::NORMAL);
         }
     }
@@ -193,7 +188,7 @@ mod tests {
         assert_eq!(style.font_size, MARKDOWN_TEXT_SIZE);
         assert_eq!(style.font_weight, FontWeight::NORMAL);
         assert_eq!(style.line_height_value, MARKDOWN_LINE_HEIGHT);
-        assert_eq!(style.font_family, "monospace");
+        assert_eq!(style.font_family, CODE_FONT_FAMILY);
     }
 
     #[test]
@@ -212,8 +207,8 @@ mod tests {
     #[test]
     fn test_depth_0_heading_matches_read_mode() {
         let style = depth_to_heading_style(0);
-        assert_eq!(style.font_size, px(35.0));
-        assert_eq!(style.font_weight, FontWeight::SEMIBOLD);
+        assert_eq!(style.font_size, px(16.0));
+        assert_eq!(style.font_weight, FontWeight::NORMAL);
     }
 
     #[test]
@@ -224,13 +219,14 @@ mod tests {
     }
 
     #[test]
-    fn test_heading_styles_decrease_monotonically() {
+    fn test_heading_styles_decrease_from_depth_1() {
         let mut prev_size = px(100.0);
-        for depth in 0..=6 {
+        for depth in 1..=6 {
             let style = depth_to_heading_style(depth);
             assert!(
                 style.font_size <= prev_size,
-                "Heading font size should decrease or stay same as depth increases"
+                "Heading font size should decrease or stay same as depth increases (depth {})",
+                depth
             );
             prev_size = style.font_size;
         }

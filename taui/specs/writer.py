@@ -17,9 +17,16 @@ class SpecMarkdownWriter:
         self.debounce_ms = debounce_ms
         self._tasks: dict[int, asyncio.Task[None]] = {}
         self._pending: set[int] = set()
+        # When True, schedule_writeback() only marks the file dirty without
+        # starting a debounced task. The caller is responsible for calling
+        # flush_all_files() (or flush()) when it is ready to write.
+        self._deferred: bool = False
 
     def schedule_writeback(self, file_id: int) -> None:
         self._pending.add(file_id)
+        if self._deferred:
+            # Deferred mode: don't start a background task; collect and batch.
+            return
         task = self._tasks.get(file_id)
         if task is not None and not task.done():
             task.cancel()
@@ -118,6 +125,23 @@ class SpecMarkdownWriter:
             for file_id in list(self._pending):
                 await self.write_file(file_id)
                 self._pending.discard(file_id)
+
+    async def flush_all_files(self) -> None:
+        """Write all dirty files immediately, cancelling any pending debounced tasks.
+
+        Intended for use after an agent task completes so that all mutations
+        accumulated during the task are flushed in one batch instead of many
+        individual debounced writes.
+        """
+        # Cancel pending debounced tasks first
+        for task in list(self._tasks.values()):
+            if not task.done():
+                task.cancel()
+        self._tasks.clear()
+        # Write everything that is still dirty
+        for file_id in list(self._pending):
+            await self.write_file(file_id)
+            self._pending.discard(file_id)
 
     async def _node_heading_level(self, node_id: str) -> int | None:
         node = await self.db.get_node(node_id)

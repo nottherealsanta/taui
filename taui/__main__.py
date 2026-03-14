@@ -44,14 +44,13 @@ def _run_serve(args: argparse.Namespace) -> None:
     dev_mode = getattr(args, "dev", False)
 
     logger.info(
-        "Starting Taui backend server workspace=%s specs_path=%s host=%s port=%s dev_mode=%s",
+        "Starting Taui backend server workspace=%s host=%s port=%s dev_mode=%s",
         workspace,
-        args.specs_path,
         host,
         port,
         dev_mode,
     )
-    app = create_app(workspace=workspace, specs_path=args.specs_path, dev_mode=dev_mode)
+    app = create_app(workspace=workspace, dev_mode=dev_mode)
     print(f"Taui backend running at ws://{host}:{port}/ws", flush=True)
     uvicorn.run(app, host=host, port=port, log_level="warning", access_log=False)
 
@@ -63,6 +62,13 @@ def _run_reinit_db(args: argparse.Namespace) -> None:
     print(f"{action} Taui cache DB at {db_path}", flush=True)
 
 
+def _run_login(args: argparse.Namespace) -> None:
+    from taui.auth.copilot import login
+
+    enterprise_domain = getattr(args, "enterprise_domain", None) or None
+    login(enterprise_domain=enterprise_domain)
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="taui backend server")
     subparsers = parser.add_subparsers(dest="command")
@@ -70,15 +76,10 @@ def _build_parser() -> argparse.ArgumentParser:
     serve_parser = subparsers.add_parser("serve", help="Run Taui backend server")
     serve_parser.add_argument(
         "--workspace",
+        "--path",
+        dest="workspace",
         default=".",
         help="Workspace root that contains specs/",
-    )
-    serve_parser.add_argument(
-        "--path",
-        "--specs-path",
-        dest="specs_path",
-        default="specs",
-        help="Path to the specs root directory (relative to workspace by default)",
     )
     serve_parser.add_argument(
         "--host",
@@ -108,6 +109,19 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Workspace root used to derive cache DB location",
     )
     reinit_parser.set_defaults(func=_run_reinit_db)
+
+    login_parser = subparsers.add_parser(
+        "login",
+        help="Authenticate with GitHub Copilot via device flow",
+    )
+    login_parser.add_argument(
+        "--enterprise-domain",
+        dest="enterprise_domain",
+        default="",
+        help="GitHub Enterprise Server domain (e.g. github.example.com); omit for github.com",
+    )
+    login_parser.set_defaults(func=_run_login)
+
     return parser
 
 
@@ -118,7 +132,7 @@ def main() -> None:
     if argv and argv[0] in {"-h", "--help"}:
         parser.parse_args(argv)
         return
-    if not argv or argv[0] not in {"serve", "reinit-db"}:
+    if not argv or argv[0] not in {"serve", "reinit-db", "login"}:
         argv = ["serve", *argv]
     args = parser.parse_args(argv)
     args.func(args)

@@ -50,9 +50,8 @@ def create_app(
         workspace=workspace, specs_path=specs_path, dev_mode=dev_mode
     )
     logger.info(
-        "Creating FastAPI app workspace=%s specs_path=%s",
+        "Creating FastAPI app workspace=%s",
         workspace or Path.cwd(),
-        specs_path or "specs",
     )
 
     @asynccontextmanager
@@ -61,6 +60,10 @@ def create_app(
         logger.info("Application startup: initializing spec service")
         await handlers.specs.ensure_initialized()
         logger.info(
+            "Application startup: running persistence recovery",
+        )
+        await handlers.agent_manager.startup_recovery()
+        logger.info(
             "Application startup complete init_ms=%s",
             int((time.perf_counter() - started) * 1000),
         )
@@ -68,7 +71,10 @@ def create_app(
             yield
         finally:
             shutdown_started = time.perf_counter()
-            logger.info("Application shutdown: flushing writer and closing DB")
+            logger.info(
+                "Application shutdown: stopping agents, flushing writer and closing DB"
+            )
+            await handlers.agent_manager.shutdown()
             await handlers.specs.writer.flush()
             await handlers.specs.db.close()
             logger.info(

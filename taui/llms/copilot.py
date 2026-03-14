@@ -177,6 +177,15 @@ class CopilotLLMClient(BaseLLMClient):
                 "Authentication failed (401). Delete ~/.config/taui/config.toml "
                 "and re-run to log in again."
             )
+        if not response.is_success:
+            import logging as _logging
+
+            _logging.getLogger(__name__).error(
+                "Copilot API error status=%s model=%s body=%s",
+                response.status_code,
+                model,
+                response.text[:2000],
+            )
         response.raise_for_status()
 
         payload = response.json()

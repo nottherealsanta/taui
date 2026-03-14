@@ -1,8 +1,126 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 pub type NodeId = usize;
 
 pub type SpecRef = String;
+
+// ---------------------------------------------------------------------------
+// Agent types
+// ---------------------------------------------------------------------------
+
+/// The agent's state machine state as reported by the backend.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AgentState {
+    Idle,
+    Running,
+    Thinking,
+    ToolExecution,
+    AskingQuestion,
+    WaitingForAnswer,
+    Stopping,
+    Done,
+    Unknown(String),
+}
+
+impl AgentState {
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "idle" => Self::Idle,
+            "running" => Self::Running,
+            "thinking" => Self::Thinking,
+            "tool_execution" => Self::ToolExecution,
+            "asking_question" => Self::AskingQuestion,
+            "waiting_for_answer" => Self::WaitingForAnswer,
+            "stopping" => Self::Stopping,
+            "done" => Self::Done,
+            other => Self::Unknown(other.to_string()),
+        }
+    }
+
+    /// Returns true if the agent is actively doing work (not idle/done/stopping).
+    pub fn is_active(&self) -> bool {
+        matches!(
+            self,
+            Self::Running
+                | Self::Thinking
+                | Self::ToolExecution
+                | Self::AskingQuestion
+                | Self::WaitingForAnswer
+        )
+    }
+}
+
+/// Tier of the agent (maps to model/provider via user config).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AgentTier {
+    Senior,
+    Mid,
+    Junior,
+}
+
+impl AgentTier {
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "senior" => Self::Senior,
+            "junior" => Self::Junior,
+            _ => Self::Mid,
+        }
+    }
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Senior => "senior",
+            Self::Mid => "mid",
+            Self::Junior => "junior",
+        }
+    }
+}
+
+/// Summary of a running or completed agent, updated from `agent/stateChanged`.
+#[derive(Clone, Debug)]
+pub struct AgentInfo {
+    pub agent_id: String,
+    pub spec_ref: SpecRef,
+    pub state: AgentState,
+    pub tier: AgentTier,
+    /// Most recent ephemeral tool brief (shown above the message bar).
+    pub tool_brief: Option<String>,
+}
+
+/// A pending question from an agent, rendered as an overlay on the relevant node.
+#[derive(Clone, Debug)]
+pub struct PendingQuestion {
+    pub agent_id: String,
+    pub question_node_ref: SpecRef,
+    pub question: String,
+    pub options: Vec<String>,
+}
+
+/// An event from the agent detail stream (for the side panel).
+#[derive(Clone, Debug)]
+pub enum AgentDetailEvent {
+    Message {
+        role: String,
+        content: String,
+    },
+    ToolCall {
+        call_id: String,
+        tool_name: String,
+        arguments: serde_json::Value,
+    },
+    ToolResult {
+        call_id: String,
+        output: Option<String>,
+        error: Option<String>,
+        duration_ms: Option<u64>,
+    },
+    Token {
+        text: String,
+    },
+    StateChange {
+        state: AgentState,
+    },
+}
 
 /// The two interactive modes of the spec tree editor, plus an idle state.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -54,6 +172,12 @@ pub struct FlatNode {
     pub verification: Option<String>,
     pub depends_on: Vec<String>,
     pub related_to: Vec<String>,
+    /// Agent ID currently working on this node (for indicator dot).
+    pub agent_id: Option<String>,
+    /// True if this node is inside a branch locked by a root agent.
+    pub locked: bool,
+    /// True if this node has a pending question overlay.
+    pub has_question: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -73,6 +197,21 @@ pub struct AppState {
     pub selected_spec_ref: Option<SpecRef>,
     pub chat_draft: String,
     pub backend_state: BackendState,
+    // ---- Agent tracking ----
+    /// All known agents, keyed by agent_id.
+    pub agents: HashMap<String, AgentInfo>,
+    /// spec_refs that are currently locked by a root agent.
+    pub locked_branches: HashSet<SpecRef>,
+    /// Pending question overlays from agents.
+    pub pending_questions: Vec<PendingQuestion>,
+    /// Buffered detail events for the open detail panel (agent_id → events).
+    pub detail_events: HashMap<String, Vec<AgentDetailEvent>>,
+    /// Which agent's detail panel is open, if any.
+    pub detail_agent_id: Option<String>,
+    /// Which node's "launch agent" dialog is open (spec_ref), if any.
+    pub launch_dialog_node: Option<SpecRef>,
+    /// Selected tier for the launch dialog.
+    pub launch_dialog_tier: AgentTier,
 }
 
 impl AppState {
@@ -85,6 +224,13 @@ impl AppState {
             selected_spec_ref: None,
             chat_draft: String::new(),
             backend_state: BackendState::Offline,
+            agents: HashMap::new(),
+            locked_branches: HashSet::new(),
+            pending_questions: Vec::new(),
+            detail_events: HashMap::new(),
+            detail_agent_id: None,
+            launch_dialog_node: None,
+            launch_dialog_tier: AgentTier::Mid,
         };
 
         let root = state.create_node(
@@ -150,7 +296,9 @@ impl AppState {
             };
 
             let id = self.create_node(bn.spec_ref.clone(), bn.markdown, parent_id);
-            self.nodes[id].collapsed = bn.collapsed;
+            // Default: collapse everything except root-level nodes so the tree
+            // starts fully collapsed and the user expands what they need.
+            self.nodes[id].collapsed = depth > 0;
             self.nodes[id].status = bn.status;
             self.nodes[id].code_refs = bn.code_refs;
             self.nodes[id].verification = bn.verification;
@@ -298,6 +446,21 @@ impl AppState {
         let is_selected = self.selected_node == Some(node.id);
         let selection_highlighted = is_selected || ancestor_selected;
 
+        // Determine agent annotation for this node.
+        let spec_ref = &node.spec_ref;
+        let agent_id = self.agents.values().find_map(|a| {
+            if a.spec_ref == *spec_ref && a.state.is_active() {
+                Some(a.agent_id.clone())
+            } else {
+                None
+            }
+        });
+        let locked = self.locked_branches.contains(spec_ref);
+        let has_question = self
+            .pending_questions
+            .iter()
+            .any(|q| q.question_node_ref == *spec_ref);
+
         out.push(FlatNode {
             id: node.id,
             depth,
@@ -310,6 +473,9 @@ impl AppState {
             verification: node.verification.clone(),
             depends_on: node.depends_on.clone(),
             related_to: node.related_to.clone(),
+            agent_id,
+            locked,
+            has_question,
         });
 
         if !node.collapsed {
@@ -486,6 +652,117 @@ pub struct BackendNode {
     pub verification: Option<String>,
     pub depends_on: Vec<String>,
     pub related_to: Vec<String>,
+}
+
+impl AppState {
+    /// Patch a single node's content in-place from a backend notification.
+    /// Returns the NodeId if found, `None` otherwise.
+    pub fn patch_node_from_backend(&mut self, backend: &BackendNode) -> Option<NodeId> {
+        let id = self.spec_ref_index.get(&backend.spec_ref).copied()?;
+        let node = &mut self.nodes[id];
+        node.markdown = backend.markdown.clone();
+        node.status = backend.status.clone();
+        node.collapsed = backend.collapsed;
+        node.code_refs = backend.code_refs.clone();
+        node.verification = backend.verification.clone();
+        node.depends_on = backend.depends_on.clone();
+        node.related_to = backend.related_to.clone();
+        Some(id)
+    }
+
+    /// Rename a node's spec_ref in the index (used when a node gets a new anchor).
+    /// Returns the NodeId if found.
+    pub fn rename_node_spec_ref(&mut self, old_ref: &str, new_ref: &str) -> Option<NodeId> {
+        let id = self.spec_ref_index.remove(old_ref)?;
+        self.spec_ref_index.insert(new_ref.to_string(), id);
+        self.nodes[id].spec_ref = new_ref.to_string();
+        // Also update selected_spec_ref if it pointed at the old ref.
+        if self.selected_spec_ref.as_deref() == Some(old_ref) {
+            self.selected_spec_ref = Some(new_ref.to_string());
+        }
+        Some(id)
+    }
+
+    // -------------------------------------------------------------------------
+    // Agent helpers
+    // -------------------------------------------------------------------------
+
+    /// Update or insert agent info from a `agent/stateChanged` notification.
+    pub fn upsert_agent(
+        &mut self,
+        agent_id: String,
+        spec_ref: SpecRef,
+        state: AgentState,
+        tier: AgentTier,
+    ) {
+        let entry = self
+            .agents
+            .entry(agent_id.clone())
+            .or_insert_with(|| AgentInfo {
+                agent_id: agent_id.clone(),
+                spec_ref: spec_ref.clone(),
+                state: AgentState::Idle,
+                tier,
+                tool_brief: None,
+            });
+        entry.spec_ref = spec_ref;
+        entry.state = state;
+    }
+
+    /// Remove an agent that has finished (Done) and is no longer needed in the map.
+    pub fn remove_agent(&mut self, agent_id: &str) {
+        self.agents.remove(agent_id);
+        // Clean up associated pending questions.
+        self.pending_questions.retain(|q| q.agent_id != agent_id);
+    }
+
+    /// Update the tool brief for an agent.
+    pub fn set_agent_tool_brief(&mut self, agent_id: &str, tool_name: String) {
+        if let Some(agent) = self.agents.get_mut(agent_id) {
+            agent.tool_brief = Some(tool_name);
+        }
+    }
+
+    /// Clear the tool brief for an agent.
+    pub fn clear_agent_tool_brief(&mut self, agent_id: &str) {
+        if let Some(agent) = self.agents.get_mut(agent_id) {
+            agent.tool_brief = None;
+        }
+    }
+
+    /// Add a pending question overlay.
+    pub fn add_question(&mut self, question: PendingQuestion) {
+        // Replace existing question for same node ref.
+        self.pending_questions
+            .retain(|q| q.question_node_ref != question.question_node_ref);
+        self.pending_questions.push(question);
+    }
+
+    /// Remove pending question(s) for a given question_node_ref.
+    pub fn remove_question(&mut self, question_node_ref: &str) {
+        self.pending_questions
+            .retain(|q| q.question_node_ref != question_node_ref);
+    }
+
+    /// Return the active root agent for a given spec_ref, if any.
+    pub fn agent_for_spec_ref(&self, spec_ref: &str) -> Option<&AgentInfo> {
+        self.agents
+            .values()
+            .find(|a| a.spec_ref == spec_ref && a.state.is_active())
+    }
+
+    /// Return any active agent's info (root agent working on or locking a node's branch).
+    pub fn active_agents(&self) -> impl Iterator<Item = &AgentInfo> {
+        self.agents.values().filter(|a| a.state.is_active())
+    }
+
+    /// Append a detail event for the given agent.
+    pub fn push_detail_event(&mut self, agent_id: &str, event: AgentDetailEvent) {
+        self.detail_events
+            .entry(agent_id.to_string())
+            .or_default()
+            .push(event);
+    }
 }
 
 #[cfg(test)]

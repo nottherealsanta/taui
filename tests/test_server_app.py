@@ -236,15 +236,15 @@ def test_create_sibling_node_inserts_and_notifies(tmp_path: Path) -> None:
             new_ref = result["node"]["spec_ref"]
             assert new_ref.startswith("specs/core.md#")
 
-            # Next messages: treeChanged then nodeChanged notifications
+            # Next messages: treeChanged then nodeCreated notifications
             tree_changed = json.loads(ws.receive_text())
             assert tree_changed["method"] == "spec/treeChanged"
             assert tree_changed["params"]["previous_spec_ref"] == "specs/core.md#leaf"
             assert tree_changed["params"]["spec_ref"] == new_ref
 
-            node_changed = json.loads(ws.receive_text())
-            assert node_changed["method"] == "spec/nodeChanged"
-            assert node_changed["params"]["node"]["spec_ref"] == new_ref
+            node_created = json.loads(ws.receive_text())
+            assert node_created["method"] == "spec/nodeCreated"
+            assert node_created["params"]["node"]["spec_ref"] == new_ref
 
 
 def test_create_sibling_node_missing_spec_ref_returns_error(tmp_path: Path) -> None:

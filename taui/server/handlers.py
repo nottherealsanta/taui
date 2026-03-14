@@ -14,6 +14,7 @@ from taui.specs import (
     SpecServiceError,
     SpecValidationError,
 )
+from taui.agent.manager import AgentManager
 
 from .protocol import (
     INVALID_PARAMS,
@@ -31,6 +32,29 @@ CODE_REF_RANGE_RE = re.compile(r"^L(?P<start>\d+)(?:-L?(?P<end>\d+))?$", re.IGNO
 
 
 NotificationCallback = Callable[[dict[str, Any]], None]
+
+
+class _NoOpLLMClient:
+    """Stub LLM client that immediately finishes with no tool calls.
+
+    Used when no real LLM provider is configured (e.g. in tests or when
+    credentials are unavailable).
+    """
+
+    async def create_turn(
+        self,
+        messages: list[Any],
+        model: str,
+        tools: list[Any] | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        from taui.llms.base import ProviderTurnResult
+
+        return ProviderTurnResult(
+            response_id=None,
+            text="Task complete (no-op).",
+            tool_calls=[],
+        )
 
 
 @dataclass(slots=True)
@@ -51,9 +75,11 @@ class MethodHandlers:
         )
         self.run_state = RunState()
         self._notification_callback: NotificationCallback | None = None
+        self.agent_manager = AgentManager(db=self.specs.db)
 
     def set_notification_callback(self, callback: NotificationCallback | None) -> None:
         self._notification_callback = callback
+        self.agent_manager.set_notification_callback(callback)
 
     async def drain_notifications(self) -> None:
         return
@@ -122,6 +148,24 @@ class MethodHandlers:
                 return await self._handle_run_stop()
             if method == "run/status":
                 return DispatchResult(result=self.run_state.to_dict(), notifications=[])
+            if method == "agent/launch":
+                return await self._handle_agent_launch(params)
+            if method == "agent/stop":
+                return await self._handle_agent_stop(params)
+            if method == "agent/list":
+                return await self._handle_agent_list()
+            if method == "agent/steer":
+                return await self._handle_agent_steer(params)
+            if method == "agent/queue":
+                return await self._handle_agent_queue(params)
+            if method == "agent/subscribe":
+                return await self._handle_agent_subscribe(params)
+            if method == "agent/unsubscribe":
+                return await self._handle_agent_unsubscribe(params)
+            if method == "agent/answerQuestion":
+                return await self._handle_agent_answer_question(params)
+            if method == "ui/nodeEdited":
+                return await self._handle_ui_node_edited(params)
             logger.warning(
                 "Unknown method=%s request_id=%s", method, request.request_id
             )
@@ -194,10 +238,28 @@ class MethodHandlers:
                 "run/start",
                 "run/stop",
                 "run/status",
+                "agent/launch",
+                "agent/stop",
+                "agent/list",
+                "agent/steer",
+                "agent/queue",
+                "agent/subscribe",
+                "agent/unsubscribe",
+                "agent/answerQuestion",
+                "ui/nodeEdited",
             ],
             "notifications": [
+                "spec/nodeCreated",
                 "spec/nodeChanged",
+                "spec/nodeDeleted",
                 "spec/treeChanged",
+                "agent/stateChanged",
+                "agent/toolBrief",
+                "agent/toolCall",
+                "agent/toolResult",
+                "agent/message",
+                "agent/questionAsked",
+                "agent/lockChanged",
                 "agent/event",
                 "agent/token",
                 "approval/request",
@@ -272,7 +334,7 @@ class MethodHandlers:
                     "spec_ref": update.node.spec_ref,
                 },
             ),
-            notification_message("spec/nodeChanged", {"node": update.node.to_dict()}),
+            notification_message("spec/nodeCreated", {"node": update.node.to_dict()}),
         ]
         return DispatchResult(result=update.to_dict(), notifications=notifications)
 
@@ -567,9 +629,12 @@ class MethodHandlers:
                 continue
 
             try:
-                relative = str(resolved.relative_to(workspace))
+                relative = str(resolved.relative_to(project_root))
             except ValueError:
-                relative = raw_path
+                try:
+                    relative = str(resolved.relative_to(workspace))
+                except ValueError:
+                    relative = raw_path
 
             safe_candidate = resolved
             safe_rel_path = relative
@@ -742,3 +807,211 @@ class MethodHandlers:
         if not isinstance(value, str) or not value.strip():
             raise ValueError(f"{field} must be a non-empty string")
         return value
+
+    # ── Agent RPC handlers ─────────────────────────────────────────────────────
+
+    async def _handle_agent_launch(self, params: dict[str, Any]) -> DispatchResult:
+        """Launch a root agent on a spec branch.
+
+        Required params: spec_ref, task
+        Optional params: tier (default "mid"), model, provider
+
+        Returns: {agent_id, session_id}
+        """
+        spec_ref = self._require_str(params, "spec_ref")
+        task = self._require_str(params, "task")
+        tier = str(params.get("tier", "mid"))
+        if tier not in ("senior", "mid", "junior"):
+            raise ValueError("tier must be 'senior', 'mid', or 'junior'")
+
+        # Ensure DB is initialized
+        await self.specs.ensure_initialized()
+
+        # Resolve LLM from tier — for now use a stub/None when no LLM is configured
+        llm, model = self._resolve_llm_for_tier(tier, params)
+
+        # Build a minimal ToolRegistry with spec-tree tools
+        from taui.tools.registry import ToolRegistry
+        from taui.tools.builtins.spec_tree import register_spec_tree_tools
+
+        registry = ToolRegistry()
+        register_spec_tree_tools(registry)
+
+        runner = await self.agent_manager.launch(
+            spec_ref=spec_ref,
+            task=task,
+            tier=tier,
+            llm=llm,
+            model=model,
+            tool_registry=registry,
+            spec_service=self.specs,
+        )
+
+        # Notify that a new agent started
+        self._emit_notification(
+            notification_message(
+                "agent/stateChanged",
+                {
+                    "agent_id": runner.agent_id,
+                    "state": "running",
+                    "spec_ref": spec_ref,
+                },
+            )
+        )
+
+        return DispatchResult(
+            result={"agent_id": runner.agent_id, "session_id": runner.session_id},
+            notifications=[],
+        )
+
+    def _resolve_llm_for_tier(
+        self, tier: str, params: dict[str, Any]
+    ) -> tuple[Any, str]:
+        """Resolve LLM client + model string for the given tier.
+
+        Falls back to a no-op stub if no provider is configured.
+        """
+        model = str(params.get("model", ""))
+        provider = str(params.get("provider", ""))
+
+        # Try to load configured LLM tier settings (ModelSettings may not have tier
+        # attributes in all versions — use getattr to stay forward-compatible).
+        try:
+            from taui.config.settings import load_settings
+
+            settings = load_settings()
+            tier_cfg = getattr(settings.model, tier, None)
+            if tier_cfg and not model:
+                model = getattr(tier_cfg, "model", "") or model
+            if tier_cfg and not provider:
+                provider = getattr(tier_cfg, "provider", "") or provider
+        except Exception:
+            pass
+
+        if not model:
+            model = "claude-haiku-4.5"
+
+        # Try to instantiate a real LLM client
+        if provider == "copilot" or not provider:
+            try:
+                from taui.auth.copilot import get_copilot_credentials
+                from taui.llms.copilot import CopilotLLMClient
+
+                creds = get_copilot_credentials()
+                return CopilotLLMClient(creds), model
+            except Exception:
+                pass
+
+        # Fall back to a no-op stub that immediately returns "done"
+        return _NoOpLLMClient(), model
+
+    async def _handle_agent_stop(self, params: dict[str, Any]) -> DispatchResult:
+        agent_id = self._require_str(params, "agent_id")
+        await self.agent_manager.stop(agent_id)
+        return DispatchResult(result={"ok": True}, notifications=[])
+
+    async def _handle_agent_list(self) -> DispatchResult:
+        await self.specs.ensure_initialized()
+        agents = self.agent_manager.list_active()
+        return DispatchResult(result={"agents": agents}, notifications=[])
+
+    async def _handle_agent_steer(self, params: dict[str, Any]) -> DispatchResult:
+        """Inject a steer message into an active agent's queue.
+
+        Required params: agent_id, message
+        Returns: {ok: True}
+        """
+        agent_id = self._require_str(params, "agent_id")
+        message = self._require_str(params, "message")
+        await self.agent_manager.steer(agent_id, message)
+        return DispatchResult(result={"ok": True}, notifications=[])
+
+    async def _handle_agent_queue(self, params: dict[str, Any]) -> DispatchResult:
+        """Enqueue a follow-up task for an agent to pick up after current task.
+
+        Required params: agent_id, message
+        Returns: {ok: True}
+        """
+        agent_id = self._require_str(params, "agent_id")
+        message = self._require_str(params, "message")
+        await self.agent_manager.queue(agent_id, message)
+        return DispatchResult(result={"ok": True}, notifications=[])
+
+    async def _handle_agent_subscribe(self, params: dict[str, Any]) -> DispatchResult:
+        """Subscribe to detail events for an agent. Returns the event backlog.
+
+        Required params: agent_id
+        Returns: {backlog: [{agent_id, event_type, payload}, ...]}
+        """
+        agent_id = self._require_str(params, "agent_id")
+        backlog = self.agent_manager.subscribe(agent_id)
+        return DispatchResult(result={"backlog": backlog}, notifications=[])
+
+    async def _handle_agent_unsubscribe(self, params: dict[str, Any]) -> DispatchResult:
+        """Unsubscribe from detail events for an agent.
+
+        Required params: agent_id
+        Returns: {ok: True}
+        """
+        agent_id = self._require_str(params, "agent_id")
+        self.agent_manager.unsubscribe(agent_id)
+        return DispatchResult(result={"ok": True}, notifications=[])
+
+    async def _handle_agent_answer_question(
+        self, params: dict[str, Any]
+    ) -> DispatchResult:
+        """Answer a pending agent question, unblocking the runner.
+
+        Required params: question_node_ref, answer
+        Returns: {ok: True, handled: bool}  — handled=True if a live runner processed it
+        """
+        question_node_ref = self._require_str(params, "question_node_ref")
+        answer = self._require_str(params, "answer")
+        handled = await self.agent_manager.answer_question(question_node_ref, answer)
+        return DispatchResult(result={"ok": True, "handled": handled}, notifications=[])
+
+    async def _handle_ui_node_edited(self, params: dict[str, Any]) -> DispatchResult:
+        """Apply a user edit to a spec node and steer any agent holding the lock.
+
+        Required params: spec_ref, new_markdown
+        Optional params: old_markdown
+        Returns: {ok: True}
+        Notifications: spec/nodeChanged (always), plus steer injected into locked agent
+        """
+        spec_ref = self._require_str(params, "spec_ref")
+        old_markdown = params.get("old_markdown", "")
+        new_markdown = self._require_str(params, "new_markdown")
+
+        # Apply edit to spec tree
+        patch = SpecNodePatch.from_mapping({"markdown": new_markdown})
+        update = await self.specs.update_node(spec_ref, patch)
+
+        # Find if any active agent holds a lock on this branch
+        lock = await self.agent_manager.db.get_branch_lock(spec_ref)
+        if lock is not None:
+            locked_agent_id = lock["agent_id"]
+            steer_msg = (
+                f"<<USER_EDIT>> Node '{spec_ref}' was edited by the user.\n"
+                f"Previous content:\n{old_markdown}\n"
+                f"New content:\n{new_markdown}\n"
+                f"Adjust your work accordingly."
+            )
+            try:
+                await self.agent_manager.steer(locked_agent_id, steer_msg)
+            except ValueError:
+                pass  # Agent no longer active — lock is stale
+
+        notifications: list[dict[str, Any]] = [
+            notification_message("spec/nodeChanged", {"node": update.node.to_dict()})
+        ]
+        if update.tree_changed:
+            notifications.append(
+                notification_message(
+                    "spec/treeChanged",
+                    {
+                        "previous_spec_ref": update.previous_spec_ref,
+                        "spec_ref": update.node.spec_ref,
+                    },
+                )
+            )
+        return DispatchResult(result={"ok": True}, notifications=notifications)

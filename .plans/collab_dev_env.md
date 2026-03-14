@@ -2,7 +2,7 @@
 
 ## Overview
 
-Taui is a collaborative spec-authoring environment where humans and agents co-edit a spec tree in real time. The primary communication surface is the tree itself — agents edit nodes, ask questions as temporary child nodes, and show their status inline. A persistent WebSocket replaces the current per-call connection model. The backend buffers all agent detail events and streams them to the frontend on demand.
+Taui is a collaborative spec-authoring environment where humans and agents co-edit a spec tree in real time. The primary communication surface is the tree itself — agents edit nodes, ask questions via ephemeral UI elements (not actual tree nodes), and show their status inline. A persistent WebSocket replaces the current per-call connection model. The backend buffers all agent detail events and streams them to the frontend on demand.
 
 This plan covers: protocol redesign, agent session architecture, spec-tree abstraction, UI interaction model, persistence schema, and phased implementation.
 
@@ -45,7 +45,7 @@ User
 ```
 
 - **Root Agent**: bound to a spec-tree branch. Locks the branch exclusively. Receives steer/queue messages from user. Orchestrates sub-agents.
-- **SubAgent**: spawned autonomously by a root agent via the `spawn_subagent` tool to work on a sub-branch or do focused work (e.g., research, code execution). The user can steer sub-agents via the detail panel.
+- **SubAgent**: spawned autonomously by a root agent via the `spawn_subagent` tool. The root gives the sub-agent a **context box** (mandate: task description + relevant spec content + constraints). The sub-agent works independently and returns a **result context box** (findings, proposed edits, research results) back to the root. The root is responsible for integrating sub-agent results and preventing conflicts — sub-agents do **not** acquire branch locks. The user can steer sub-agents via the detail panel.
 - Sub-agent cap: **2 per root agent** (user-configurable in settings).
 - Multiple root agents can be active simultaneously on **non-overlapping** branches.
 
@@ -63,14 +63,16 @@ Additional states:
 - `Paused` — future (worktree phase)
 
 ### Branch Locking
-- When a root agent starts a task on a branch, it acquires an **exclusive lock** on that branch (the node + all descendants).
-- **Exclusive among agents**: if another root agent tries to lock an overlapping branch, it must wait. The UI shows a "waiting for lock" indicator on the blocked agent. First-come-first-served.
+- When a root agent starts a task on a branch, it acquires an **exclusive lock** on that branch (the node + all descendants). Only root agents acquire locks — sub-agents operate under the root's authority via the context box pattern.
+- **Exclusive among root agents**: if another root agent tries to lock an overlapping branch, it must wait. The UI shows a "waiting for lock" indicator on the blocked agent. First-come-first-served.
+- **User override**: the user can **nudge** a waiting agent to start anyway (e.g., if the user is just asking a general question about the project, the agent should be able to proceed). Nudged agents get read-only access to the locked branch.
+- **Read-only access always allowed**: `spec_get_tree`, `spec_get_node`, and `spec_get_branch` are never blocked by locks. Any agent can read the full tree at any time. Locks only gate write operations.
 - **User can still edit**: the lock is only enforced between agents, not against the user. When the user edits a locked node, two things happen:
   1. The tree updates visually (user sees their edit immediately)
   2. The edit is automatically sent to the root agent as a **steer message** (so the agent knows the user changed something)
 - Before writing to a node, the agent always fetches the latest version to avoid overwriting user edits.
-- Lock metadata: `{agent_id, root_agent_id, locked_at}` stored per node in the DB.
-- Lock contention is surfaced in the UI: blocked agents show a "waiting" badge on their branch.
+- Lock metadata: `{agent_id, locked_at}` stored per node in the DB (root agents only).
+- Lock contention is surfaced in the UI: blocked agents show a "waiting" badge on their branch, with a "Start anyway" button for user override.
 
 ### Agent Tools (spec-tree abstraction)
 The agent operates on the spec-tree abstraction only. It is **not allowed** to modify spec markdown files directly. Available tools:
@@ -83,7 +85,7 @@ The agent operates on the spec-tree abstraction only. It is **not allowed** to m
 - `spec_update_node(spec_ref, patch)` — edit node content
 - `spec_delete_node(spec_ref)` — remove a node (with confirmation policy)
 - `spec_move_node(spec_ref, new_parent_ref)` — reparent
-- `spec_ask_question(spec_ref, question, options?)` — create a question node under spec_ref
+- `spec_ask_question(spec_ref, question, options?)` — ask user a question (rendered as ephemeral UI overlay on spec_ref, not a real tree node)
 - `spec_get_branch(spec_ref)` — get the full subtree rooted at spec_ref
 
 **Code/execution tools (existing, unchanged):**
@@ -92,14 +94,14 @@ The agent operates on the spec-tree abstraction only. It is **not allowed** to m
 - `glob`, `grep` — search
 
 **Sub-agent spawning tool:**
-- `spawn_subagent(spec_ref, task)` — root agent spawns a sub-agent on a sub-branch (respects sub-agent cap)
+- `spawn_subagent(task, context_box)` — root agent spawns a sub-agent with a context box (task description + relevant spec content + constraints). Sub-agent returns a result context box when done. Respects sub-agent cap.
 
 **MCP tools:**
 - All MCP server tools (`mcp:<server>`) are available to agents, subject to the same policy system (auto-approve / confirm / deny)
 
 All spec-tree mutations go through the `SpecService` which handles:
-1. Updating the SQLite-backed tree
-2. Writing the tree back to markdown files (system-managed, not agent-managed)
+1. Updating the SQLite-backed tree (source of truth)
+2. Writing the tree back to markdown files on task completion (automatic, not per-mutation)
 
 ### Spec-Tree to File Mapping (revised)
 ```
@@ -130,7 +132,8 @@ specs/
 | `agent/list` | `{}` | `{agents: AgentInfo[]}` | List all active agents |
 | `agent/history` | `{spec_ref?, limit?}` | `{sessions: SessionSummary[]}` | List past completed sessions (filterable by branch) |
 | `agent/getSession` | `{agent_id}` | `{session: SessionDetail}` | Get full session detail for a past or active agent (messages, tool calls, events) |
-| `agent/resume` | `{agent_id, task?}` | `{ok}` | Resume a previously completed root agent session with an optional new task |
+| `agent/resume` | `{agent_id, task}` | `{new_agent_id, session_id}` | Start a **new** session that loads context (summary of messages, tool calls, outcomes) from a previous session. `task` is the user's query explaining why they're resuming. Returns a new agent_id — the old session is not mutated. |
+| `agent/forceStart` | `{agent_id}` | `{ok}` | Override lock contention — allow a waiting agent to start with read-only access to the locked branch |
 
 ### Server → Client Notifications
 
@@ -144,8 +147,8 @@ specs/
 | `agent/stateChanged` | `{agent_id, state, spec_ref}` | Agent entered new state |
 | `agent/questionAsked` | `{agent_id, question_node}` | Agent created a question node |
 | `agent/lockChanged` | `{spec_ref, agent_id?, locked}` | Branch lock acquired/released |
-| `agent/lockContention` | `{agent_id, waiting_for_agent_id, spec_ref}` | Agent blocked waiting for a branch lock |
-| `agent/toolBrief` | `{agent_id, tool_name, summary}` | Brief ephemeral tool indicator (for showing above message bar) |
+| `agent/lockContention` | `{agent_id, waiting_for_agent_id, spec_ref}` | Agent blocked waiting for a branch lock. UI shows "Start anyway" button for user override |
+| `agent/toolBrief` | `{agent_id, tool_name}` | Brief ephemeral tool indicator (agent name + tool name, shown above message bar) |
 
 **Pushed only when subscribed (detail stream):**
 | Notification | Params | Description |
@@ -198,16 +201,18 @@ class AgentRunner:
     parent_agent_id: str | None         # None for root agents
     state: AgentState                   # enum
     tier: str                           # "senior" | "mid" | "junior"
-    steer_queue: asyncio.Queue          # incoming steer messages
+    steer_queue: asyncio.Queue          # incoming steer messages (delivered with next tool result)
     task_queue: asyncio.Queue           # queued follow-up tasks
     sub_agents: list[AgentRunner]       # spawned sub-agents (max from config)
+    context_box: dict | None            # for sub-agents: mandate from root
+    result_box: dict | None             # for sub-agents: findings returned to root
     event_callback: Callable            # emit events to manager
     llm: BaseLLM                        # resolved from tier → model config
     tools: ToolRegistry                 # builtins + MCP tools
     
     async def run(task: str) -> None    # main loop
-    async def stop_safely() -> None     # finish current tool, then stop
-    async def spawn_subagent(spec_ref, task) -> AgentRunner  # respects cap
+    async def stop_safely() -> None     # finish current tool, then stop, cleanup questions
+    async def spawn_subagent(task, context_box) -> AgentRunner  # respects cap, returns result_box
 ```
 
 The runner emits `AgentEvent` objects for every action (token, tool call, tool result, state change, question). The manager buffers these and forwards to subscribers.
@@ -215,18 +220,19 @@ The runner emits `AgentEvent` objects for every action (token, tool call, tool r
 ### 4.3 Spec-Tree Agent Tools (new: `taui/tools/builtins/spec_tree.py`)
 Agent-facing tools that call `SpecService` methods:
 
-- `spec_get_tree`, `spec_get_node`, `spec_get_branch`
+- `spec_get_tree`, `spec_get_node`, `spec_get_branch` — read-only, never blocked by locks
 - `spec_create_node`, `spec_create_sibling`, `spec_update_node`, `spec_delete_node`, `spec_move_node`
-- `spec_ask_question` — creates a child node with `type: question`, `status: pending`, `options: [...]`
-- `spawn_subagent(spec_ref, task)` — root agent only, spawns a sub-agent (respects configurable cap, default 2)
+- `spec_ask_question` — sends a question to the user as an ephemeral UI element (overlay on the relevant node). Not a tree node. The question only exists while the root agent is alive. On answer: response is injected into the agent's conversation. On dismiss: agent proceeds without an answer.
+- `spawn_subagent(task, context_box)` — root agent only, creates a sub-agent with a context box (mandate). Sub-agent returns a result context box. Respects configurable cap (default 2).
 
 All are auto-approve policy except `spec_delete_node` (confirm).
 
 ### 4.4 Revised SpecService
-- Add node types: `spec` (default), `question`
-- Add lock tracking: `lock_branch(spec_ref, agent_id)`, `unlock_branch(spec_ref, agent_id)`
-- Lock is **exclusive among agents**: `lock_branch` blocks (async wait) if another agent holds an overlapping lock. First-come-first-served.
-- Question nodes: created with `type=question`. On answer: question node is deleted, a regular `spec` child node is created with the Q&A as a note. On dismiss: question node is deleted, no note.
+- Add lock tracking: `lock_branch(spec_ref, agent_id)`, `unlock_branch(spec_ref, agent_id)` — root agents only
+- Lock is **exclusive among root agents**: `lock_branch` blocks (async wait) if another root agent holds an overlapping lock. First-come-first-served. User can override via `agent/forceStart`.
+- Read-only operations (`spec_get_tree`, `spec_get_node`, `spec_get_branch`) are never blocked by locks.
+- Questions: handled as ephemeral agent-process state (stored in `agent_questions` table), rendered as UI overlays on the tree. Not stored as tree nodes. Cleaned up when root agent stops.
+- **File writeback**: triggered automatically when a root agent finishes a task (state → Done). Not debounced per-mutation — the tree is the source of truth in SQLite, files are written out as a batch on task completion.
 - After every mutation, emit notification via callback (not returned in DispatchResult — pushed directly on the WebSocket)
 
 ### 4.5 Revised WebSocket Server (`taui/server/app.py`)
@@ -245,6 +251,7 @@ All are auto-approve policy except `spec_delete_node` (confirm).
 **Agent indicators (right side of each node row):**
 - Small colored dot or icon on the rightmost side of a node row when an agent is working on it
 - Different indicators for: root agent active, sub-agent active, question pending
+- **Sub-agent current task**: each active sub-agent's current task description is shown in real time next to the relevant node. Updates live as the sub-agent progresses.
 - Tooltip on hover showing agent name/task
 
 **Real-time tree updates:**
@@ -254,12 +261,13 @@ All are auto-approve policy except `spec_delete_node` (confirm).
 - `spec/treeChanged` → rebuild affected subtree in arena
 - No full-tree re-fetch. Incremental patching only.
 
-**Question nodes:**
-- Rendered as a distinct visual element (different background, icon)
+**Question overlays (ephemeral, not tree nodes):**
+- Rendered as a floating overlay / inline card attached to the relevant node (distinct from actual tree nodes)
 - Shows the question text, optional answer buttons (for suggested options)
 - Text input for free-form answer
-- On answer: calls `agent/answerQuestion`, question node **vanishes from the tree** but the answer is recorded as a spec note (a regular child node with the Q&A content, so the insight is preserved)
-- If dismissed: question node vanishes, no spec note created, agent proceeds without an answer
+- On answer: calls `agent/answerQuestion`, overlay vanishes, answer is injected into agent's conversation as context
+- If dismissed: overlay vanishes, agent proceeds without an answer
+- **Questions only exist while their root agent is alive** — when the root agent stops or completes, all pending questions are automatically cleaned up
 
 **Locked branch visual:**
 - Subtle background tint or left-border on locked nodes
@@ -276,7 +284,7 @@ Appears below the branch where a root agent is active:
 └─────────────────────────────────────────────────────┘
 ```
 
-- **Ephemeral tool indicators**: appear above the input bar when agent runs tools. Shows tool name + brief summary. Right chevron `›` opens the agent detail panel. Auto-dismiss after a few seconds.
+- **Ephemeral tool indicators**: appear above the input bar when agent runs tools. Shows agent name + tool name. Right chevron `›` opens the agent detail panel. Auto-dismiss after a few seconds.
 - **Input bar**: text field with two send modes:
   - `Enter` → steer (default, configurable)
   - `Ctrl+Enter` → queue (configurable, can be swapped)
@@ -295,8 +303,8 @@ Slides in from the right when user clicks the `›` chevron on a tool indicator,
   - Tool results (collapsible)
   - State transitions
   - Questions asked and answers received
-- **Sub-agent list**: if root agent, shows active sub-agents. Clicking one switches the detail view.
-- **Session history**: user can browse past completed sessions for a root agent and view their full event timelines. Option to resume a past session with a new task.
+- **Sub-agent list**: if root agent, shows active sub-agents with their **current task in real time**. Clicking one switches the detail view to that sub-agent's full history and live updates.
+- **Session history**: user can browse past completed sessions for a root agent and view their full event timelines. Option to resume with a new task (creates a new session with context loaded from the old one).
 - **Message bar at bottom**: 
   - For sub-agents: steer only
   - For root agents: steer and queue (same Enter/Ctrl+Enter pattern)
@@ -395,11 +403,10 @@ CREATE TABLE agent_events (
     FOREIGN KEY (agent_id) REFERENCES agent_sessions(agent_id)
 );
 
--- Branch locks
+-- Branch locks (root agents only, sub-agents use context box pattern)
 CREATE TABLE branch_locks (
     spec_ref        TEXT NOT NULL,
-    agent_id        TEXT NOT NULL,
-    root_agent_id   TEXT NOT NULL,
+    agent_id        TEXT NOT NULL,            -- always a root agent
     locked_at       TEXT NOT NULL,
     PRIMARY KEY (spec_ref, agent_id),
     FOREIGN KEY (agent_id) REFERENCES agent_sessions(agent_id)
@@ -419,11 +426,10 @@ CREATE TABLE agent_task_queue (
 
 ### Spec nodes table — additions
 ```sql
-ALTER TABLE nodes ADD COLUMN node_type TEXT NOT NULL DEFAULT 'spec';  -- 'spec' | 'question'
-ALTER TABLE nodes ADD COLUMN question_options TEXT;  -- JSON, nullable
-ALTER TABLE nodes ADD COLUMN question_status TEXT;   -- 'pending' | 'answered' | 'dismissed', nullable
-ALTER TABLE nodes ADD COLUMN agent_id TEXT;          -- which agent created/owns this node, nullable
+ALTER TABLE nodes ADD COLUMN agent_id TEXT;  -- which agent created/owns this node, nullable
 ```
+
+Note: Questions are **not** stored as tree nodes. They are ephemeral agent-process state stored in the `agent_questions` table and rendered as UI overlays. They are cleaned up when the root agent stops.
 
 ---
 
@@ -434,9 +440,10 @@ ALTER TABLE nodes ADD COLUMN agent_id TEXT;          -- which agent created/owns
 User types "focus on error handling" + hits Enter
   → client sends agent/steer {agent_id, message: "focus on error handling"}
   → server pushes message into runner's steer_queue
-  → runner picks it up at next think cycle
-  → injects as a user message: "<<STEER>> focus on error handling"
-  → LLM sees it as a priority instruction mid-conversation
+  → runner waits for current operation to complete (LLM response or tool execution)
+  → steer message is delivered alongside the next tool call results
+  → injected as a user message: "<<STEER>> focus on error handling"
+  → LLM sees it as a priority instruction in the next think cycle
 ```
 
 ### Queue (deferred task)
@@ -472,6 +479,8 @@ User clicks interrupt (or sends agent/stop)
   → if in LLM streaming: cancel the stream, keep partial response
   → if in tool execution: let current tool finish, then stop
   → for sub-agents: propagate stop to all children, wait for them
+  → clean up all pending questions (dismiss ephemeral question overlays)
+  → trigger file writeback (write current tree state to markdown files)
   → once all stopped: state → Idle, release branch locks
   → emit agent/stateChanged notification
 ```
@@ -482,75 +491,90 @@ The agent does NOT discard work done so far — all completed edits remain in th
 
 ## 9. Implementation Phases
 
-### Phase 1: Foundation — Persistent WebSocket + Incremental Tree Updates
+### Phase 1: Foundation — Persistent WebSocket + Incremental Tree Updates ✅
 **Goal**: Real-time tree collaboration without agents
 
-- [ ] Refactor `app.py` to maintain a single persistent WebSocket
-- [ ] Frontend: persistent WS connection with reconnect logic
-- [ ] Frontend: listen for `spec/nodeChanged`, `spec/nodeCreated`, `spec/nodeDeleted`, `spec/treeChanged` — apply incremental patches to arena (no full re-fetch)
-- [ ] Backend: emit notifications directly on the WebSocket (not just returned in DispatchResult)
-- [ ] Add fade-in/fade-out animations for node changes
-- [ ] Tests: verify notification delivery, reconnect behavior
+- [x] Refactor `app.py` to maintain a single persistent WebSocket
+- [x] Frontend: persistent WS connection with reconnect logic
+- [x] Frontend: listen for `spec/nodeChanged`, `spec/nodeCreated`, `spec/nodeDeleted`, `spec/treeChanged` — apply incremental patches to arena (no full re-fetch)
+- [x] Backend: emit notifications directly on the WebSocket (not just returned in DispatchResult)
+- [x] Add fade-in/fade-out animations for node changes
+- [x] Tests: verify notification delivery, reconnect behavior
 
-### Phase 2: Agent Core — Runner, Manager, Persistence
+### Phase 2: Agent Core — Runner, Manager, Persistence ✅
 **Goal**: Agents can run and be observed
 
-- [ ] Create `agent_sessions`, `agent_messages`, `agent_tool_calls`, `agent_tool_results`, `agent_events` tables
-- [ ] Implement `AgentRunner` — async loop with LLM + tool execution
-- [ ] Implement `AgentManager` — launch, stop, event buffering
-- [ ] Wire agent RPC methods: `agent/launch`, `agent/stop`, `agent/list`
-- [ ] Implement spec-tree agent tools (`spec_tree.py`)
-- [ ] Agent events buffered to `agent_events` table
-- [ ] Tests: agent lifecycle, tool execution, persistence
+- [x] Create `agent_sessions`, `agent_messages`, `agent_tool_calls`, `agent_tool_results`, `agent_events` tables
+- [x] Implement `AgentRunner` — async loop with LLM + tool execution
+- [x] Implement `AgentManager` — launch, stop, event buffering
+- [x] Wire agent RPC methods: `agent/launch`, `agent/stop`, `agent/list`
+- [x] Implement spec-tree agent tools (`spec_tree.py`)
+- [x] Agent events buffered to `agent_events` table
+- [x] Tests: agent lifecycle, tool execution, persistence
 
-### Phase 3: User ↔ Agent Interaction
+### Phase 3: User ↔ Agent Interaction ✅
 **Goal**: Steer, queue, questions, and detail streaming
 
-- [ ] Implement `agent/steer`, `agent/queue` RPC methods
-- [ ] Implement steer/task queues in `AgentRunner`
-- [ ] Add question nodes: `node_type='question'` in spec tree
-- [ ] Implement `spec_ask_question` tool + `agent/answerQuestion` RPC
-- [ ] Implement `agent/subscribe` / `agent/unsubscribe` with backlog
-- [ ] Implement detail streaming: `agent/token`, `agent/toolCall`, `agent/toolResult`, `agent/message`
-- [ ] Branch locking: `branch_locks` table, `agent/lockChanged` notification
-- [ ] Auto-steer on user edits to locked nodes (`ui/nodeEdited`)
-- [ ] Tests: steer injection, queue ordering, question flow, subscription lifecycle
+- [x] Implement `agent/steer`, `agent/queue` RPC methods
+- [x] Implement steer/task queues in `AgentRunner`
+- [x] Questions are ephemeral overlays (not tree nodes) — stored in `agent_questions` table, cleaned up on agent stop
+- [x] Implement `spec_ask_question` tool + `agent/answerQuestion` RPC
+- [x] Implement `agent/subscribe` / `agent/unsubscribe` with backlog
+- [x] Implement detail streaming: `agent/toolCall`, `agent/toolResult`, `agent/message` (gated by subscription)
+- [x] Branch locking: `branch_locks` table, `agent/lockChanged` notification, `acquire_branch_lock`/`release_branch_lock` in `AgentManager`
+- [x] Auto-steer on user edits to locked nodes (`ui/nodeEdited`)
+- [x] Tests: steer injection, queue ordering, question flow, subscription lifecycle (`tests/test_phase3.py`, `tests/test_phase3_rpc.py`)
 
-### Phase 4: UI — Message Bar, Detail Panel, Indicators
+### Phase 4: UI — Message Bar, Detail Panel, Indicators ✅
 **Goal**: Full interactive UI
 
-- [ ] Agent indicators on tree node rows (right side)
-- [ ] Locked branch visual treatment (tint/border)
-- [ ] Question node rendering with answer options + text input
-- [ ] Message bar below active branch (steer/queue input, ephemeral tool indicators)
-- [ ] Agent detail side panel (event timeline, streaming, sub-agent list)
-- [ ] Message bar in detail panel (steer sub-agents, steer/queue root)
-- [ ] Interrupt button
-- [ ] Configurable Enter/Ctrl+Enter behavior
+- [x] Agent indicators on tree node rows (right side) — blue dot (active), amber dot (question), tool brief text
+- [x] Locked branch visual treatment — amber left border on locked nodes
+- [x] Question node rendering with answer options + dismiss button (inline card overlay)
+- [x] Message bar below tree (steer/queue input, tool brief indicator, stop button) — visible when any root agent is active
+- [x] Agent detail side panel (event timeline: messages, tool calls, tool results, state changes) — 320px right panel, opens on blue dot click
+- [x] Detail panel subscribe/unsubscribe lifecycle (agent_subscribe on open, agent_unsubscribe on close, backlog replay)
+- [x] Interrupt (⏹ Stop) button in message bar
+- [x] Enter → steer (default), Queue button for explicit queue
 
-### Phase 5: Persistence & Recovery
+### Phase 5: Persistence & Recovery ✅
 **Goal**: Survive restarts
 
-- [ ] On startup: reload active agent sessions from DB
-- [ ] Resume or mark-as-stopped agents that were running when app closed
-- [ ] Restore event buffers from `agent_events` table
-- [ ] Restore question states, branch locks
-- [ ] Test: kill server mid-task, restart, verify state recovery
+- [x] On startup: reload active agent sessions from DB
+- [x] Resume or mark-as-stopped agents that were running when app closed
+- [x] Restore event buffers from `agent_events` table
+- [x] Restore question states, branch locks
+- [x] Test: kill server mid-task, restart, verify state recovery
 
-### Phase 6: Revised Spec-Tree ↔ File Writeback
+### Phase 6: Revised Spec-Tree ↔ File Writeback ✅
 **Goal**: Clean file mapping
 
-- [ ] `_main.md` contains root + all L1 nodes
-- [ ] Each L1 node gets `<slug>.md` with its L2+ descendants
-- [ ] No folders, flat structure
-- [ ] Writeback triggered by spec-tree mutations (debounced)
-- [ ] Agent never touches files directly — only the spec-tree abstraction
+- [x] `_main.md` contains root + all L1 nodes
+- [x] Each L1 node gets `<slug>.md` with its L2+ descendants
+- [x] No folders, flat structure
+- [x] Writeback triggered automatically when root agent finishes a task (state → Done), not on every mutation
+- [x] Also triggered on agent stop (safe stop writes current state before releasing locks)
+- [x] Agent never touches files directly — only the spec-tree abstraction
 
 ### Future: Worktree Phase
 - Git worktree-like branching for agents: agent works on a "spec branch" that can be reviewed and merged back into the main tree
 - Enables parallel exploration without polluting the main spec
 - Related to git worktree concepts — full design deferred to a later plan
 - Current exclusive branch locking is the stepping stone: worktrees would allow overlapping work on the same branch via isolated copies
+
+### Future: Token & Cost Tracking
+- Per-session token usage tracking (input tokens, output tokens, total cost)
+- Column on `agent_sessions` for cumulative token usage
+- Budget/limit mechanism: configurable per-session or per-tier token caps
+- UI indicator showing token burn rate and remaining budget
+- Alerts when approaching limits; auto-stop when budget exceeded
+- Deferred until core agent loop is stable
+
+### Future: Git Integration
+- Auto-commit after root agent completes a task (spec writeback + code changes)
+- Configurable commit message templates
+- Branch-per-agent-session option
+- Deferred to a later plan
 
 ---
 
@@ -594,13 +618,18 @@ junior = { provider = "gemini", model = "gemini-2.5-flash" }
 | Single persistent WebSocket | Required for server-push (notifications, streaming) |
 | Incremental tree updates (no full re-fetch) | Performance at scale, smooth animations |
 | Agent operates on spec-tree abstraction, not files | Clean separation; file layout is a system concern |
-| Exclusive locks among agents, user can still edit | Prevents agent conflicts; user edits become steer |
+| Exclusive locks among root agents, user can still edit | Prevents agent conflicts; user edits become steer |
+| Sub-agents use context box, not locks | Root manages conflicts; sub-agents are stateless workers that receive mandates and return results |
+| User can override lock contention | Read-only tasks (e.g., Q&A) shouldn't be blocked by write locks |
 | Sub-agent spawning is autonomous (root decides) | Root agent manages complexity; user sets cap |
 | Events buffered, streamed on demand | Multiple agents generate lots of data; don't flood UI |
-| Question nodes vanish → spec notes | Transient interaction, permanent insight |
+| Questions are ephemeral overlays, not tree nodes | Part of agent process, not spec content. Cleaned up with agent. |
+| Steer waits for current op, delivered with next tool result | No mid-stream interruption; clean injection point |
 | Steer = Enter, Queue = Ctrl+Enter (configurable) | Steer is the common case during active agent work |
+| File writeback on task completion, not per-mutation | Tree in SQLite is source of truth; files are a batch export |
 | Safe stop (finish current tool, propagate to subs) | Prevents corrupted state from partial tool execution |
 | Model tiers (senior/mid/junior) | Simple UX; user doesn't pick models, picks capability level |
+| Resume creates new session with old context loaded | Clean separation; old sessions are immutable audit trail |
 | Session history persists, resumable | User can review and continue past agent work |
 | MCP tools available to agents | Extensibility via existing MCP server ecosystem |
 | Everything persists in SQLite | Survive restarts, full audit trail |

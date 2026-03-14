@@ -1,0 +1,11 @@
+- # Python Backend
+    FastAPI server exposing a WebSocket JSON-RPC 2.0 interface. Manages spec tree persistence, orchestrates agent sessions, executes tools, and streams run output to the UI.
+    - {{status: draft}}
+    - {{tree: [Entry Point](./entrypoint.md)}}
+    - {{tree: [Server](./server.md)}}
+    - {{tree: [Spec Module](./specs_module.md)}}
+    - {{tree: [Agent](./agent.md)}}
+    - {{tree: [Tools](./tools.md)}}
+    - {{tree: [LLM](./llm.md)}}
+    - {{tree: [Auth](./auth.md)}}
+    - {{tree: [Config](./config.md)}}

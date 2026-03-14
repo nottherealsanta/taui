@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from pathlib import Path
 import time
@@ -69,6 +70,34 @@ class SpecService:
             logger.info(
                 "SpecService initialization complete duration_ms=%s",
                 int((time.perf_counter() - started) * 1000),
+            )
+
+    @contextlib.asynccontextmanager
+    async def defer_writeback(self):
+        """Context manager: suppress debounced per-mutation writeback.
+
+        While active, all ``schedule_writeback()`` calls only mark files dirty.
+        On exit the context manager flushes all dirty files in one batch write.
+
+        Use this around agent task execution so that many spec mutations during
+        a single task are written out as one batch rather than many debounced
+        individual writes.
+
+        Example::
+
+            async with spec_service.defer_writeback():
+                # agent does many spec mutations here
+                ...
+            # all dirty files are now flushed
+        """
+        self.writer._deferred = True
+        try:
+            yield
+        finally:
+            self.writer._deferred = False
+            await self.writer.flush_all_files()
+            logger.info(
+                "SpecService.defer_writeback: flushed all dirty files after agent task"
             )
 
     async def get_tree(self) -> list[SpecNode]:

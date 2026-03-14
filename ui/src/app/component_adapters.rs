@@ -70,24 +70,20 @@ pub fn render_metadata_child(
 ) -> impl IntoElement {
     let bullet = meta_bullet(colors);
     let text_color = rgb(colors.text_muted);
-    let border_color = rgb(colors.border);
 
     let content: gpui::AnyElement = if is_editing {
         if let Some(input_entity) = markdown_input {
             div()
                 .flex_1()
-                .pt(px(1.0))
-                .border_l_2()
-                .border_color(border_color)
-                .pl(px(4.0))
+                .pt(px(3.0))
                 .child(
                     Input::new(input_entity)
                         .appearance(false)
                         .bordered(false)
                         .px(px(0.0))
                         .py(px(0.0))
-                        .text_size(px(12.0))
-                        .font_family("monospace"),
+                        .text_sm()
+                        .font_family(crate::app::typography::CODE_FONT_FAMILY),
                 )
                 .into_any_element()
         } else {
@@ -95,7 +91,7 @@ pub fn render_metadata_child(
             div()
                 .flex_1()
                 .text_sm()
-                .font_family("monospace")
+                .font_family(crate::app::typography::CODE_FONT_FAMILY)
                 .text_color(text_color)
                 .pt(px(3.0))
                 .child(text)
@@ -107,7 +103,7 @@ pub fn render_metadata_child(
             .flex_1()
             .cursor_pointer()
             .text_sm()
-            .font_family("monospace")
+            .font_family(crate::app::typography::CODE_FONT_FAMILY)
             .text_color(text_color)
             .pt(px(3.0))
             .on_mouse_down(
@@ -170,21 +166,17 @@ pub fn render_code_ref_child(
     let content: gpui::AnyElement = if is_editing {
         // ── Editing mode: inline Input ────────────────────────────────────────
         if let Some(input_entity) = markdown_input {
-            let border_color = rgb(colors.border);
             div()
                 .flex_1()
-                .pt(px(1.0))
-                .border_l_2()
-                .border_color(border_color)
-                .pl(px(4.0))
+                .pt(px(3.0))
                 .child(
                     Input::new(input_entity)
                         .appearance(false)
                         .bordered(false)
                         .px(px(0.0))
                         .py(px(0.0))
-                        .text_size(px(12.0))
-                        .font_family("monospace"),
+                        .text_sm()
+                        .font_family(crate::app::typography::CODE_FONT_FAMILY),
                 )
                 .into_any_element()
         } else {
@@ -193,7 +185,7 @@ pub fn render_code_ref_child(
             div()
                 .flex_1()
                 .text_sm()
-                .font_family("monospace")
+                .font_family(crate::app::typography::CODE_FONT_FAMILY)
                 .text_color(rgb(colors.text_muted))
                 .pt(px(3.0))
                 .child(raw_text)
@@ -314,7 +306,7 @@ fn render_code_ref_rich(
                 .py(px(6.0))
                 .bg(code_bg)
                 .text_xs()
-                .font_family("monospace")
+                .font_family(crate::app::typography::CODE_FONT_FAMILY)
                 .text_color(rgb(colors.text_muted))
                 .child(err_msg)
                 .into_any_element()
@@ -353,7 +345,7 @@ fn render_code_ref_rich(
                     let is_ellipsis = line.as_ref() == "…";
                     div()
                         .text_xs()
-                        .font_family("monospace")
+                        .font_family(crate::app::typography::CODE_FONT_FAMILY)
                         .text_color(if is_ellipsis {
                             rgb(colors.text_muted)
                         } else {

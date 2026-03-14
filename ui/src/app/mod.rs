@@ -14,14 +14,15 @@ use gpui_component::input::{
 use gpui_component::text::TextView;
 use gpui_component::TitleBar;
 
-use crate::services::backend_client::{BackendClient, CodeRefPreview};
+use crate::services::backend_client::{BackendClient, CodeRefPreview, ServerNotification};
 use crate::theme::ThemeRegistry;
 
 use self::actions::{dispatch, UiAction};
-use self::state::{AppState, BackendNode, BackendState, EditorMode, FlatNode, MetadataEditTarget, NodeId};
+use self::state::{AgentDetailEvent, AgentState, AgentTier, AppState, BackendNode, BackendState, EditorMode, FlatNode, MetadataEditTarget, NodeId, PendingQuestion};
 use self::typography::{
-    markdown_edit_style, markdown_view_style, split_root_markdown, INDENT_PER_LEVEL,
-    MARKDOWN_LINE_HEIGHT, MARKDOWN_TEXT_SIZE, MAX_CONTENT_WIDTH,
+    depth_to_heading_style, markdown_edit_style, markdown_view_style, split_root_markdown,
+    BODY_FONT_FAMILY, CODE_FONT_FAMILY, INDENT_PER_LEVEL, MARKDOWN_LINE_HEIGHT, MARKDOWN_TEXT_SIZE,
+    MAX_CONTENT_WIDTH,
 };
 
 pub fn run() {
@@ -33,9 +34,26 @@ pub fn run() {
     app.run(move |cx| {
         gpui_component::init(cx);
 
+        // Load custom fonts
+        let font_data: Vec<std::borrow::Cow<'static, [u8]>> = vec![
+            // IBM Plex Sans
+            std::borrow::Cow::Borrowed(include_bytes!("../../assets/fonts/ibm-plex-sans/IBMPlexSans-Regular.ttf")),
+            std::borrow::Cow::Borrowed(include_bytes!("../../assets/fonts/ibm-plex-sans/IBMPlexSans-Medium.ttf")),
+            std::borrow::Cow::Borrowed(include_bytes!("../../assets/fonts/ibm-plex-sans/IBMPlexSans-SemiBold.ttf")),
+            std::borrow::Cow::Borrowed(include_bytes!("../../assets/fonts/ibm-plex-sans/IBMPlexSans-Bold.ttf")),
+            std::borrow::Cow::Borrowed(include_bytes!("../../assets/fonts/ibm-plex-sans/IBMPlexSans-Italic.ttf")),
+            // JetBrains Mono
+            std::borrow::Cow::Borrowed(include_bytes!("../../assets/fonts/jetbrains-mono/JetBrainsMono-Regular.ttf")),
+            std::borrow::Cow::Borrowed(include_bytes!("../../assets/fonts/jetbrains-mono/JetBrainsMono-Medium.ttf")),
+            std::borrow::Cow::Borrowed(include_bytes!("../../assets/fonts/jetbrains-mono/JetBrainsMono-Bold.ttf")),
+            std::borrow::Cow::Borrowed(include_bytes!("../../assets/fonts/jetbrains-mono/JetBrainsMono-Italic.ttf")),
+        ];
+        cx.text_system().add_fonts(font_data).expect("failed to load custom fonts");
+
             cx.spawn(async move |cx| {
             let options = WindowOptions {
                 titlebar: Some(TitleBar::title_bar_options()),
+                focus: true,
                 ..Default::default()
             };
 
@@ -80,6 +98,15 @@ pub struct AppShell {
     editor_mode: EditorMode,
     /// Which metadata item (if any) is currently being edited inline.
     editing_metadata: Option<MetadataEditTarget>,
+    /// Set of spec_refs whose nodes recently changed (for fade-in animation).
+    /// Cleared after a short delay.
+    recently_changed: std::collections::HashSet<String>,
+    /// Input for the bottom message bar (steer/queue messages to the active root agent).
+    message_bar_input: Entity<InputState>,
+    /// Input for the launch-agent dialog (task description).
+    launch_dialog_input: Entity<InputState>,
+    /// Scroll handle for the agent detail side panel.
+    detail_scroll_handle: ScrollHandle,
 }
 
 impl AppShell {
@@ -99,6 +126,7 @@ impl AppShell {
 
         let client = BackendClient::new(ws_url.clone());
         let client_for_bootstrap = client.clone();
+        let notification_client = client.clone();
 
         let markdown_input = cx.new(|cx| {
             InputState::new(window, cx)
@@ -106,6 +134,18 @@ impl AppShell {
                 .multi_line(true)
                 .auto_grow(1, 20)
                 .soft_wrap(true)
+        });
+
+        let message_bar_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("Steer agent... (Enter to send)")
+                .multi_line(false)
+        });
+
+        let launch_dialog_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("Describe what you want the agent to do…")
+                .multi_line(false)
         });
 
         cx.spawn(async move |this, cx| {
@@ -176,6 +216,31 @@ impl AppShell {
         })
         .detach();
 
+        // Start background task: listen for server-initiated notifications and
+        // apply incremental patches to the tree without a full re-fetch.
+        cx.spawn(async move |this, cx| {
+            let mut notifications = notification_client.subscribe_notifications();
+            loop {
+                match notifications.recv().await {
+                    Ok(notif) => {
+                        let _ = this.update(cx, |shell, cx| {
+                            shell.apply_server_notification(notif, cx);
+                        });
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        eprintln!("[taui] notification channel lagged, skipped {n} messages");
+                        // Continue — we'll get the next one
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        // Sender dropped — client is gone, exit
+                        break;
+                    }
+                }
+            }
+            Ok::<_, anyhow::Error>(())
+        })
+        .detach();
+
         let mut shell = Self {
             state,
             focus_handle: cx.focus_handle(),
@@ -197,6 +262,10 @@ impl AppShell {
             expanded_code_refs: std::collections::HashSet::new(),
             editor_mode: EditorMode::Normal,
             editing_metadata: None,
+            recently_changed: std::collections::HashSet::new(),
+            message_bar_input: message_bar_input.clone(),
+            launch_dialog_input: launch_dialog_input.clone(),
+            detail_scroll_handle: ScrollHandle::new(),
         };
 
         let blur_subscription = cx.subscribe_in(
@@ -209,6 +278,30 @@ impl AppShell {
             },
         );
         shell._subscriptions.push(blur_subscription);
+
+        // Message bar: Enter triggers steer action.
+        let msg_bar_sub = cx.subscribe_in(
+            &message_bar_input,
+            window,
+            |this, _state, event, window, cx| {
+                if let InputEvent::PressEnter { secondary: false } = event {
+                    this.handle_message_bar_enter(window, cx);
+                }
+            },
+        );
+        shell._subscriptions.push(msg_bar_sub);
+
+        // Launch dialog: Enter confirms launch.
+        let launch_sub = cx.subscribe_in(
+            &launch_dialog_input,
+            window,
+            |this, _state, event, window, cx| {
+                if let InputEvent::PressEnter { secondary: false } = event {
+                    this.confirm_launch_dialog(window, cx);
+                }
+            },
+        );
+        shell._subscriptions.push(launch_sub);
 
         let appearance_subscription = cx.observe_window_appearance(window, |this, window, cx| {
             this.sync_theme_from_window_appearance(window.appearance());
@@ -354,43 +447,17 @@ impl AppShell {
             }
             .await;
 
-            let tree_result = client.get_tree_detailed().await;
-
             #[cfg(debug_assertions)]
             eprintln!("[perf] structural action round-trip: {:?}", t0.elapsed());
 
+            // Tree refresh is driven by the spec/treeChanged notification that the
+            // backend emits after every structural mutation — no explicit re-fetch needed.
             this.update(&mut *cx, |shell, cx| {
                 if let Err(e) = rpc_result {
                     shell.state.backend_state = BackendState::Error(e.to_string());
                     cx.notify();
-                    return;
                 }
-
-                match tree_result {
-                    Ok(tree_response) => {
-                        let backend_nodes: Vec<BackendNode> = tree_response
-                            .nodes
-                            .into_iter()
-                            .map(|n| BackendNode {
-                                spec_ref: n.spec_ref,
-                                depth: n.depth,
-                                markdown: n.markdown,
-                                status: n.status,
-                                collapsed: n.collapsed,
-                                code_refs: n.code_refs,
-                                verification: n.verification,
-                                depends_on: n.depends_on,
-                                related_to: n.related_to,
-                            })
-                            .collect();
-                        shell.state.hydrate_from_backend(backend_nodes);
-                        shell.mark_flat_tree_dirty();
-                    }
-                    Err(e) => {
-                        shell.state.backend_state = BackendState::Error(e.to_string());
-                    }
-                }
-                cx.notify();
+                Ok::<_, anyhow::Error>(())
             })
         })
         .detach();
@@ -410,18 +477,27 @@ impl AppShell {
 
         if new_markdown != self.saved_markdown {
             let markdown = new_markdown.clone();
+            let old_markdown = self.saved_markdown.clone();
 
             self.state.nodes[node_id].markdown = markdown.clone();
             self.saved_markdown = new_markdown;
 
             if let Some(client) = self.client.clone() {
                 let spec_ref = self.state.nodes[node_id].spec_ref.clone();
+                let is_locked = self.state.locked_branches.contains(&spec_ref);
 
                 cx.spawn(async move |this, cx| {
                     let patch = serde_json::json!({
                         "markdown": markdown
                     });
                     let result = client.update_node(&spec_ref, patch).await;
+
+                    // If the node is inside a locked branch, also send ui/nodeEdited
+                    // so the backend can inject it as a steer message to the root agent.
+                    if is_locked {
+                        let _ = client.ui_node_edited(&spec_ref, &old_markdown, &markdown).await;
+                    }
+
                     this.update(cx, |shell, cx| {
                         if let Err(e) = result {
                             shell.state.backend_state =
@@ -894,6 +970,16 @@ impl AppShell {
 
         // ── Keys handled only while the text cursor is active (Editing mode) ─
         if input_focused {
+            // If the launch dialog is open and focused, Escape closes it.
+            if self.state.launch_dialog_node.is_some() {
+                if key == "escape" {
+                    self.close_launch_dialog(cx);
+                    return true;
+                }
+                // All other keys in the dialog input pass through to it.
+                return false;
+            }
+
             match key.as_str() {
                 // ── Escape: Editing → Selection ──────────────────────────────
                 "escape" => {
@@ -1141,7 +1227,7 @@ impl AppShell {
     ) {
         let Some(client) = self.client.clone() else { return };
 
-        cx.spawn(async move |this, cx| {
+        cx.spawn(async move |_this, _cx| {
             // 1. Persist the truncated first-half content.
             let _ = client.update_node(
                 &fst_spec_ref,
@@ -1160,27 +1246,9 @@ impl AppShell {
                 ).await;
             }
 
-            // 4. Re-fetch tree so local optimistic state is reconciled.
-            if let Ok(tree) = client.get_tree_detailed().await {
-                this.update(&mut *cx, |shell, cx| {
-                    let backend_nodes: Vec<BackendNode> = tree.nodes.into_iter().map(|n| BackendNode {
-                        spec_ref: n.spec_ref,
-                        depth: n.depth,
-                        markdown: n.markdown,
-                        status: n.status,
-                        collapsed: n.collapsed,
-                        code_refs: n.code_refs,
-                        verification: n.verification,
-                        depends_on: n.depends_on,
-                        related_to: n.related_to,
-                    }).collect();
-                    shell.state.hydrate_from_backend(backend_nodes);
-                    shell.mark_flat_tree_dirty();
-                    cx.notify();
-                })
-            } else {
-                Ok(())
-            }
+            // Tree reconciliation is driven by spec/nodeCreated and spec/treeChanged
+            // notifications emitted by the backend — no explicit re-fetch needed here.
+            Ok::<_, anyhow::Error>(())
         })
         .detach();
     }
@@ -1192,33 +1260,1153 @@ impl AppShell {
         let spec_ref = self.state.nodes[selected].spec_ref.clone();
         let markdown = self.state.nodes[selected].markdown.clone();
 
-        cx.spawn(async move |this, cx| {
+        cx.spawn(async move |_this, _cx| {
             let _ = client.update_node(
                 &spec_ref,
                 serde_json::json!({ "markdown": markdown }),
             ).await;
-            if let Ok(tree) = client.get_tree_detailed().await {
-                this.update(&mut *cx, |shell, cx| {
-                    let backend_nodes: Vec<BackendNode> = tree.nodes.into_iter().map(|n| BackendNode {
-                        spec_ref: n.spec_ref,
-                        depth: n.depth,
-                        markdown: n.markdown,
-                        status: n.status,
-                        collapsed: n.collapsed,
-                        code_refs: n.code_refs,
-                        verification: n.verification,
-                        depends_on: n.depends_on,
-                        related_to: n.related_to,
-                    }).collect();
-                    shell.state.hydrate_from_backend(backend_nodes);
-                    shell.mark_flat_tree_dirty();
-                    cx.notify();
-                })
-            } else {
-                Ok(())
-            }
+            // Tree reconciliation is driven by spec/nodeChanged and spec/treeChanged
+            // notifications emitted by the backend — no explicit re-fetch needed here.
+            Ok::<_, anyhow::Error>(())
         })
         .detach();
+    }
+
+    // ── Server notification handler ───────────────────────────────────────────
+
+    /// Parse a `TreeNode` from a notification `params` dict (under `"node"` key).
+    fn parse_notification_node(params: &serde_json::Value) -> Option<BackendNode> {
+        let node = params.get("node")?;
+        Some(BackendNode {
+            spec_ref: node.get("spec_ref")?.as_str()?.to_string(),
+            depth: node.get("depth")?.as_u64()? as usize,
+            markdown: node.get("markdown")?.as_str()?.to_string(),
+            status: node.get("status").and_then(|v| v.as_str()).map(|s| s.to_string()),
+            collapsed: node.get("collapsed").and_then(|v| v.as_bool()).unwrap_or(false),
+            code_refs: node.get("code_refs")
+                .and_then(|v| v.as_array())
+                .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+                .unwrap_or_default(),
+            verification: node.get("verification").and_then(|v| v.as_str()).map(|s| s.to_string()),
+            depends_on: node.get("depends_on")
+                .and_then(|v| v.as_array())
+                .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+                .unwrap_or_default(),
+            related_to: node.get("related_to")
+                .and_then(|v| v.as_array())
+                .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+                .unwrap_or_default(),
+        })
+    }
+
+    /// Apply a server-initiated notification to the local state incrementally.
+    fn apply_server_notification(&mut self, notif: ServerNotification, cx: &mut Context<Self>) {
+        match notif.method.as_str() {
+            "spec/nodeChanged" => {
+                if let Some(backend_node) = Self::parse_notification_node(&notif.params) {
+                    let spec_ref = backend_node.spec_ref.clone();
+                    // Handle spec_ref rename: the node's anchor may have changed.
+                    // The params may include a `previous_spec_ref` at root level.
+                    let prev_ref = notif.params
+                        .get("previous_spec_ref")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
+                    if let Some(old_ref) = prev_ref {
+                        if old_ref != spec_ref {
+                            self.state.rename_node_spec_ref(&old_ref, &spec_ref);
+                        }
+                    }
+                    if self.state.patch_node_from_backend(&backend_node).is_some() {
+                        self.recently_changed.insert(spec_ref.clone());
+                        self.mark_flat_tree_dirty();
+                        // Schedule clearing the animation flag.
+                        let spec_ref_for_clear = spec_ref.clone();
+                        cx.spawn(async move |this, cx| {
+                            tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+                            let _ = this.update(cx, |shell, cx| {
+                                shell.recently_changed.remove(&spec_ref_for_clear);
+                                cx.notify();
+                            });
+                            Ok::<_, anyhow::Error>(())
+                        })
+                        .detach();
+                        cx.notify();
+                    }
+                }
+            }
+            "spec/nodeCreated" => {
+                if let Some(backend_node) = Self::parse_notification_node(&notif.params) {
+                    let spec_ref = backend_node.spec_ref.clone();
+                    // For a new node we need its parent to insert it correctly.
+                    // The backend sends depth — we do a full re-fetch for structure safety.
+                    // Mark as recently changed for animation.
+                    self.recently_changed.insert(spec_ref.clone());
+                    let spec_ref_for_clear = spec_ref.clone();
+                    cx.spawn(async move |this, cx| {
+                        tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+                        let _ = this.update(cx, |shell, cx| {
+                            shell.recently_changed.remove(&spec_ref_for_clear);
+                            cx.notify();
+                        });
+                        Ok::<_, anyhow::Error>(())
+                    })
+                    .detach();
+                    // Re-fetch the full tree to incorporate the new node.
+                    if let Some(client) = self.client.clone() {
+                        cx.spawn(async move |this, cx| {
+                            if let Ok(tree) = client.get_tree_detailed().await {
+                                this.update(&mut *cx, |shell, cx| {
+                                    let backend_nodes = Self::tree_response_to_backend_nodes(tree.nodes);
+                                    shell.state.hydrate_from_backend(backend_nodes);
+                                    shell.mark_flat_tree_dirty();
+                                    cx.notify();
+                                })
+                            } else {
+                                Ok(())
+                            }
+                        })
+                        .detach();
+                    }
+                }
+            }
+            "spec/nodeDeleted" => {
+                // Re-fetch the full tree to reflect the deletion.
+                if let Some(client) = self.client.clone() {
+                    cx.spawn(async move |this, cx| {
+                        if let Ok(tree) = client.get_tree_detailed().await {
+                            this.update(&mut *cx, |shell, cx| {
+                                let backend_nodes = Self::tree_response_to_backend_nodes(tree.nodes);
+                                shell.state.hydrate_from_backend(backend_nodes);
+                                shell.mark_flat_tree_dirty();
+                                cx.notify();
+                            })
+                        } else {
+                            Ok(())
+                        }
+                    })
+                    .detach();
+                }
+            }
+            "spec/treeChanged" => {
+                // Structural change (reparenting, indentation, outdentation, etc.)
+                // Re-fetch the full tree.
+                if let Some(client) = self.client.clone() {
+                    cx.spawn(async move |this, cx| {
+                        if let Ok(tree) = client.get_tree_detailed().await {
+                            this.update(&mut *cx, |shell, cx| {
+                                let backend_nodes = Self::tree_response_to_backend_nodes(tree.nodes);
+                                shell.state.hydrate_from_backend(backend_nodes);
+                                shell.mark_flat_tree_dirty();
+                                cx.notify();
+                            })
+                        } else {
+                            Ok(())
+                        }
+                    })
+                    .detach();
+                }
+            }
+            _ => {
+                // Agent notifications
+                match notif.method.as_str() {
+                    "agent/stateChanged" => {
+                        if let (Some(agent_id), Some(state_str), Some(spec_ref)) = (
+                            notif.params.get("agent_id").and_then(|v| v.as_str()),
+                            notif.params.get("state").and_then(|v| v.as_str()),
+                            notif.params.get("spec_ref").and_then(|v| v.as_str()),
+                        ) {
+                            let state = AgentState::from_str(state_str);
+                            let tier_str = notif.params.get("tier").and_then(|v| v.as_str()).unwrap_or("mid");
+                            let tier = AgentTier::from_str(tier_str);
+                            let agent_id = agent_id.to_string();
+                            let spec_ref = spec_ref.to_string();
+
+                            // Push detail event if detail panel is open for this agent.
+                            if self.state.detail_agent_id.as_deref() == Some(&agent_id) {
+                                self.state.push_detail_event(
+                                    &agent_id,
+                                    AgentDetailEvent::StateChange { state: AgentState::from_str(state_str) },
+                                );
+                            }
+
+                            self.state.upsert_agent(agent_id, spec_ref, state, tier);
+                            self.mark_flat_tree_dirty();
+                            cx.notify();
+                        }
+                    }
+                    "agent/toolBrief" => {
+                        if let (Some(agent_id), Some(tool_name)) = (
+                            notif.params.get("agent_id").and_then(|v| v.as_str()),
+                            notif.params.get("tool_name").and_then(|v| v.as_str()),
+                        ) {
+                            let agent_id = agent_id.to_string();
+                            let tool_name = tool_name.to_string();
+                            self.state.set_agent_tool_brief(&agent_id, tool_name.clone());
+                            self.mark_flat_tree_dirty();
+
+                            // Auto-clear tool brief after 4 seconds.
+                            let agent_id_clear = agent_id.clone();
+                            cx.spawn(async move |this, cx| {
+                                tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+                                let _ = this.update(cx, |shell, cx| {
+                                    shell.state.clear_agent_tool_brief(&agent_id_clear);
+                                    shell.mark_flat_tree_dirty();
+                                    cx.notify();
+                                });
+                                Ok::<_, anyhow::Error>(())
+                            })
+                            .detach();
+
+                            cx.notify();
+                        }
+                    }
+                    "agent/lockChanged" => {
+                        if let (Some(spec_ref), Some(locked)) = (
+                            notif.params.get("spec_ref").and_then(|v| v.as_str()),
+                            notif.params.get("locked").and_then(|v| v.as_bool()),
+                        ) {
+                            if locked {
+                                self.state.locked_branches.insert(spec_ref.to_string());
+                            } else {
+                                self.state.locked_branches.remove(spec_ref);
+                            }
+                            self.mark_flat_tree_dirty();
+                            cx.notify();
+                        }
+                    }
+                    "agent/questionAsked" => {
+                        if let (Some(agent_id), Some(question_node)) = (
+                            notif.params.get("agent_id").and_then(|v| v.as_str()),
+                            notif.params.get("question_node"),
+                        ) {
+                            let question_node_ref = question_node
+                                .get("spec_ref")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            let question = question_node
+                                .get("question")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            let options: Vec<String> = question_node
+                                .get("options")
+                                .and_then(|v| v.as_array())
+                                .map(|arr| {
+                                    arr.iter()
+                                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                                        .collect()
+                                })
+                                .unwrap_or_default();
+
+                            self.state.add_question(PendingQuestion {
+                                agent_id: agent_id.to_string(),
+                                question_node_ref,
+                                question,
+                                options,
+                            });
+                            self.mark_flat_tree_dirty();
+                            cx.notify();
+                        }
+                    }
+                    // Detail stream events — only relevant when subscribed (panel is open).
+                    "agent/message" => {
+                        if let Some(agent_id) = notif.params.get("agent_id").and_then(|v| v.as_str()) {
+                            if self.state.detail_agent_id.as_deref() == Some(agent_id) {
+                                let message = notif.params.get("message").cloned().unwrap_or_default();
+                                let role = message.get("role").and_then(|v| v.as_str()).unwrap_or("assistant").to_string();
+                                let content = message.get("content").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                self.state.push_detail_event(
+                                    agent_id,
+                                    AgentDetailEvent::Message { role, content },
+                                );
+                                cx.notify();
+                            }
+                        }
+                    }
+                    "agent/toolCall" => {
+                        if let Some(agent_id) = notif.params.get("agent_id").and_then(|v| v.as_str()) {
+                            if self.state.detail_agent_id.as_deref() == Some(agent_id) {
+                                let call_id = notif.params.get("call_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                let tool_name = notif.params.get("tool_name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                let arguments = notif.params.get("arguments").cloned().unwrap_or(serde_json::Value::Null);
+                                self.state.push_detail_event(
+                                    agent_id,
+                                    AgentDetailEvent::ToolCall { call_id, tool_name, arguments },
+                                );
+                                cx.notify();
+                            }
+                        }
+                    }
+                    "agent/toolResult" => {
+                        if let Some(agent_id) = notif.params.get("agent_id").and_then(|v| v.as_str()) {
+                            if self.state.detail_agent_id.as_deref() == Some(agent_id) {
+                                let call_id = notif.params.get("call_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                let output = notif.params.get("output").and_then(|v| v.as_str()).map(|s| s.to_string());
+                                let error = notif.params.get("error").and_then(|v| v.as_str()).map(|s| s.to_string());
+                                let duration_ms = notif.params.get("duration_ms").and_then(|v| v.as_u64());
+                                self.state.push_detail_event(
+                                    agent_id,
+                                    AgentDetailEvent::ToolResult { call_id, output, error, duration_ms },
+                                );
+                                cx.notify();
+                            }
+                        }
+                    }
+                    "agent/token" => {
+                        if let Some(agent_id) = notif.params.get("agent_id").and_then(|v| v.as_str()) {
+                            if self.state.detail_agent_id.as_deref() == Some(agent_id) {
+                                let text = notif.params.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                self.state.push_detail_event(
+                                    agent_id,
+                                    AgentDetailEvent::Token { text },
+                                );
+                                cx.notify();
+                            }
+                        }
+                    }
+                    _ => {
+                        // Unknown notification — ignore.
+                    }
+                }
+            }
+        }
+    }
+
+    fn tree_response_to_backend_nodes(
+        nodes: Vec<crate::services::backend_client::TreeNode>,
+    ) -> Vec<BackendNode> {
+        nodes
+            .into_iter()
+            .map(|n| BackendNode {
+                spec_ref: n.spec_ref,
+                depth: n.depth,
+                markdown: n.markdown,
+                status: n.status,
+                collapsed: n.collapsed,
+                code_refs: n.code_refs,
+                verification: n.verification,
+                depends_on: n.depends_on,
+                related_to: n.related_to,
+            })
+            .collect()
+    }
+
+    // -------------------------------------------------------------------------
+    // Message bar helpers
+    // -------------------------------------------------------------------------
+
+    /// Called when the user presses Enter in the message bar input.
+    /// Steers the currently active root agent with the typed message.
+    fn handle_message_bar_enter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let text = self.message_bar_input.read(cx).value().to_string();
+        let text = text.trim().to_string();
+        if text.is_empty() {
+            return;
+        }
+        let Some(agent) = self.state.active_agents().next() else {
+            return;
+        };
+        let agent_id = agent.agent_id.clone();
+        let Some(client) = self.client.clone() else {
+            return;
+        };
+        // Clear input immediately (synchronously — we have window here).
+        self.message_bar_input.update(cx, |state, cx| {
+            state.set_value("", window, cx);
+        });
+        cx.spawn(async move |_this, _cx| {
+            let _ = client.agent_steer(&agent_id, &text).await;
+            Ok::<_, anyhow::Error>(())
+        })
+        .detach();
+    }
+
+    /// Open the agent detail panel for a given agent id.
+    /// Subscribes to the agent's event stream and loads backlog.
+    fn open_detail_panel(&mut self, agent_id: String, cx: &mut Context<Self>) {
+        // If already open for this agent, close it (toggle).
+        if self.state.detail_agent_id.as_deref() == Some(&agent_id) {
+            self.close_detail_panel(cx);
+            return;
+        }
+        // Close any previously open panel.
+        self.close_detail_panel(cx);
+
+        self.state.detail_agent_id = Some(agent_id.clone());
+        self.state.detail_events.entry(agent_id.clone()).or_default();
+
+        if let Some(client) = self.client.clone() {
+            let agent_id_sub = agent_id.clone();
+            cx.spawn(async move |this, cx| {
+                match client.agent_subscribe(&agent_id_sub).await {
+                    Ok(backlog) => {
+                        let _ = this.update(cx, |shell, cx| {
+                            // Only apply if the panel is still open for this agent.
+                            if shell.state.detail_agent_id.as_deref() == Some(&agent_id_sub) {
+                                let events = shell
+                                    .state
+                                    .detail_events
+                                    .entry(agent_id_sub.clone())
+                                    .or_default();
+                                for item in backlog {
+                                    // Map backlog items to AgentDetailEvents.
+                                    if let Some(ev) = Self::parse_backlog_item(&item) {
+                                        events.push(ev);
+                                    }
+                                }
+                                cx.notify();
+                            }
+                        });
+                    }
+                    Err(e) => {
+                        eprintln!("[taui] agent_subscribe failed: {e}");
+                    }
+                }
+                Ok::<_, anyhow::Error>(())
+            })
+            .detach();
+        }
+        cx.notify();
+    }
+
+    /// Close the detail panel and unsubscribe from the agent's stream.
+    fn close_detail_panel(&mut self, cx: &mut Context<Self>) {
+        if let Some(agent_id) = self.state.detail_agent_id.take() {
+            if let Some(client) = self.client.clone() {
+                let agent_id_unsub = agent_id.clone();
+                cx.spawn(async move |_this, _cx| {
+                    let _ = client.agent_unsubscribe(&agent_id_unsub).await;
+                    Ok::<_, anyhow::Error>(())
+                })
+                .detach();
+            }
+        }
+        cx.notify();
+    }
+
+    /// Convert a backlog JSON item (from `agent_subscribe`) into an `AgentDetailEvent`.
+    fn parse_backlog_item(item: &serde_json::Value) -> Option<AgentDetailEvent> {
+        let kind = item.get("type").and_then(|v| v.as_str())?;
+        match kind {
+            "message" => {
+                let role = item.get("role").and_then(|v| v.as_str()).unwrap_or("assistant").to_string();
+                let content = item.get("content").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                Some(AgentDetailEvent::Message { role, content })
+            }
+            "tool_call" => {
+                let call_id = item.get("call_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let tool_name = item.get("tool_name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let arguments = item.get("arguments").cloned().unwrap_or(serde_json::Value::Null);
+                Some(AgentDetailEvent::ToolCall { call_id, tool_name, arguments })
+            }
+            "tool_result" => {
+                let call_id = item.get("call_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let output = item.get("output").and_then(|v| v.as_str()).map(|s| s.to_string());
+                let error = item.get("error").and_then(|v| v.as_str()).map(|s| s.to_string());
+                let duration_ms = item.get("duration_ms").and_then(|v| v.as_u64());
+                Some(AgentDetailEvent::ToolResult { call_id, output, error, duration_ms })
+            }
+            "state_change" => {
+                let state_str = item.get("state").and_then(|v| v.as_str()).unwrap_or("unknown");
+                Some(AgentDetailEvent::StateChange { state: AgentState::from_str(state_str) })
+            }
+            _ => None,
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Launch dialog: open/close/confirm + render
+    // -------------------------------------------------------------------------
+
+    /// Open the "launch agent" dialog for a node. Clears the input and focuses it.
+    fn open_launch_dialog(&mut self, spec_ref: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.state.launch_dialog_node = Some(spec_ref);
+        self.state.launch_dialog_tier = AgentTier::Mid;
+        self.launch_dialog_input.update(cx, |state, cx| {
+            state.set_value("", window, cx);
+            state.focus(window, cx);
+        });
+        cx.notify();
+    }
+
+    /// Close the launch dialog without launching.
+    fn close_launch_dialog(&mut self, cx: &mut Context<Self>) {
+        self.state.launch_dialog_node = None;
+        cx.notify();
+    }
+
+    /// Confirm the launch dialog: read the task text, call agent/launch, close the dialog.
+    fn confirm_launch_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let task = self.launch_dialog_input.read(cx).value().trim().to_string();
+        if task.is_empty() {
+            return;
+        }
+        let Some(spec_ref) = self.state.launch_dialog_node.clone() else {
+            return;
+        };
+        let tier = self.state.launch_dialog_tier.label().to_string();
+
+        // Close the dialog immediately.
+        self.state.launch_dialog_node = None;
+        self.launch_dialog_input.update(cx, |state, cx| {
+            state.set_value("", window, cx);
+        });
+
+        if let Some(client) = self.client.clone() {
+            cx.spawn(async move |_this, _cx| {
+                let _ = client.agent_launch(&spec_ref, &task, &tier).await;
+                Ok::<_, anyhow::Error>(())
+            })
+            .detach();
+        }
+        cx.notify();
+    }
+
+    /// Render the floating "launch agent" dialog as a top-level overlay.
+    fn render_launch_dialog(&mut self, spec_ref: &str, _window: &mut Window, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let colors = self.theme.styles.colors.clone();
+
+        // Node title (first line of markdown).
+        let node_title: String = self
+            .state
+            .spec_ref_index
+            .get(spec_ref)
+            .and_then(|&id| self.state.nodes.get(id))
+            .map(|n| {
+                n.markdown
+                    .lines()
+                    .next()
+                    .unwrap_or("")
+                    .trim()
+                    .to_string()
+            })
+            .unwrap_or_else(|| spec_ref.to_string());
+
+        let current_tier = self.state.launch_dialog_tier.clone();
+
+        // Tier pill buttons.
+        let tiers = [
+            ("Senior", AgentTier::Senior),
+            ("Mid", AgentTier::Mid),
+            ("Junior", AgentTier::Junior),
+        ];
+
+        let mut tier_row = div().flex().flex_row().gap_1();
+        for (label, tier) in tiers {
+            let is_selected = current_tier == tier;
+            let tier_clone = tier.clone();
+            tier_row = tier_row.child(
+                div()
+                    .px_2()
+                    .py(px(3.0))
+                    .rounded(px(4.0))
+                    .border_1()
+                    .text_size(px(11.0))
+                    .cursor_pointer()
+                    .when(is_selected, |this| {
+                        this.border_color(rgb(0x3b82f6))
+                            .text_color(rgb(0x3b82f6))
+                            .bg(rgba(0x3b82f614))
+                    })
+                    .when(!is_selected, |this| {
+                        this.border_color(rgb(colors.border))
+                            .text_color(rgb(colors.text_muted))
+                    })
+                    .child(label)
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _ev, _window, cx| {
+                            this.state.launch_dialog_tier = tier_clone.clone();
+                            cx.notify();
+                        }),
+                    ),
+            );
+        }
+
+        // Backdrop — clicking outside closes the dialog.
+        let backdrop = div()
+            .absolute()
+            .inset_0()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _ev, _window, cx| {
+                    this.close_launch_dialog(cx);
+                }),
+            );
+
+        // Dialog card.
+        let launch_dialog_input = self.launch_dialog_input.clone();
+        let card = div()
+            .absolute()
+            // Position: centred horizontally, ~30% from top.
+            .inset_0()
+            .flex()
+            .items_start()
+            .justify_center()
+            .pt(px(120.0))
+            // Stop clicks on the card from bubbling to the backdrop.
+            .on_mouse_down(MouseButton::Left, |_ev, _window, cx| cx.stop_propagation())
+            .child(
+                div()
+                    .w(px(380.0))
+                    .rounded(px(8.0))
+                    .border_1()
+                    .border_color(rgb(0x3b82f6))
+                    .bg(rgb(colors.element_background))
+                    .shadow_lg()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .p(px(14.0))
+                    // Header
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap_1()
+                                    .child(
+                                        div()
+                                            .w(px(6.0))
+                                            .h(px(6.0))
+                                            .rounded_full()
+                                            .bg(rgb(0x3b82f6)),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(12.0))
+                                            .text_color(rgb(colors.text_muted))
+                                            .child("Start agent on"),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(12.0))
+                                            .text_color(rgb(colors.text))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .child(node_title),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(11.0))
+                                    .text_color(rgb(colors.text_muted))
+                                    .cursor_pointer()
+                                    .child("✕")
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(|this, _ev, _window, cx| {
+                                            this.close_launch_dialog(cx);
+                                        }),
+                                    ),
+                            ),
+                    )
+                    // Task input
+                    .child(
+                        div()
+                            .rounded(px(4.0))
+                            .border_1()
+                            .border_color(rgb(colors.border))
+                            .bg(rgb(colors.background))
+                            .px_2()
+                            .py_1()
+                            .child(
+                                Input::new(&launch_dialog_input)
+                                    .appearance(false)
+                                    .bordered(false)
+                                    .px(px(0.0))
+                                    .py(px(0.0))
+                                    .text_size(px(13.0)),
+                            ),
+                    )
+                    // Tier selector + Launch button row
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .child(tier_row)
+                            .child(
+                                div()
+                                    .px_3()
+                                    .py_1()
+                                    .rounded(px(4.0))
+                                    .bg(rgb(0x3b82f6))
+                                    .text_size(px(12.0))
+                                    .text_color(rgb(0xffffff))
+                                    .cursor_pointer()
+                                    .child("Launch")
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(|this, _ev, window, cx| {
+                                            this.confirm_launch_dialog(window, cx);
+                                        }),
+                                    ),
+                            ),
+                    ),
+            );
+
+        div()
+            .absolute()
+            .inset_0()
+            .child(backdrop)
+            .child(card)
+            .into_any_element()
+    }
+
+    // -------------------------------------------------------------------------
+    // Render: Message bar
+    // -------------------------------------------------------------------------
+
+    /// Bottom bar shown when any root agent is active.
+    /// Contains: optional tool brief row, text input, steer/queue/stop buttons.
+    fn render_message_bar(
+        &mut self,
+        agent_id: &str,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let colors = self.theme.styles.colors.clone();
+        let agent_id = agent_id.to_string();
+
+        // Tool brief: agent name + tool name from active tool brief.
+        let tool_brief: Option<String> = self
+            .state
+            .agents
+            .get(&agent_id)
+            .and_then(|a| a.tool_brief.clone());
+
+        let client_steer = self.client.clone();
+        let client_stop = self.client.clone();
+        let client_queue = self.client.clone();
+        let agent_id_steer = agent_id.clone();
+        let agent_id_stop = agent_id.clone();
+        let agent_id_queue = agent_id.clone();
+        let msg_input = self.message_bar_input.clone();
+        let msg_input_queue = self.message_bar_input.clone();
+
+        let bar = div()
+            .w_full()
+            .border_t_1()
+            .border_color(rgb(colors.border))
+            .bg(rgb(colors.element_background))
+            .flex()
+            .flex_col()
+            .px_3()
+            .py_2()
+            .gap_1()
+            // Tool brief row
+            .when_some(tool_brief, |this, brief| {
+                this.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .child(
+                            div()
+                                .w(px(6.0))
+                                .h(px(6.0))
+                                .rounded_full()
+                                .bg(rgb(0x3b82f6)),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(11.0))
+                                .text_color(rgb(colors.text_muted))
+                                .child(brief),
+                        ),
+                )
+            })
+            // Input + buttons row
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    // Text input
+                    .child(
+                        div()
+                            .flex_1()
+                            .rounded(px(4.0))
+                            .border_1()
+                            .border_color(rgb(colors.border))
+                            .bg(rgb(colors.background))
+                            .px_2()
+                            .py_1()
+                            .child(
+                                Input::new(&self.message_bar_input)
+                                    .appearance(false)
+                                    .bordered(false)
+                                    .px(px(0.0))
+                                    .py(px(0.0))
+                                    .text_size(px(13.0)),
+                            ),
+                    )
+                    // Steer button
+                    .child(
+                        div()
+                            .px_2()
+                            .py_1()
+                            .rounded(px(4.0))
+                            .border_1()
+                            .border_color(rgb(colors.border))
+                            .text_size(px(12.0))
+                            .text_color(rgb(colors.text))
+                            .cursor_pointer()
+                            .child("Steer")
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |_this, _ev, window, cx| {
+                                    let text = msg_input.read(cx).value().to_string();
+                                    let text = text.trim().to_string();
+                                    if text.is_empty() { return; }
+                                    // Clear input synchronously (window is available here).
+                                    msg_input.update(cx, |state, cx| {
+                                        state.set_value("", window, cx);
+                                    });
+                                    if let Some(client) = client_steer.clone() {
+                                        let id = agent_id_steer.clone();
+                                        cx.spawn(async move |_this2, _cx| {
+                                            let _ = client.agent_steer(&id, &text).await;
+                                            Ok::<_, anyhow::Error>(())
+                                        }).detach();
+                                    }
+                                }),
+                            ),
+                    )
+                    // Queue button
+                    .child(
+                        div()
+                            .px_2()
+                            .py_1()
+                            .rounded(px(4.0))
+                            .border_1()
+                            .border_color(rgb(colors.border))
+                            .text_size(px(12.0))
+                            .text_color(rgb(colors.text))
+                            .cursor_pointer()
+                            .child("Queue")
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |_this, _ev, window, cx| {
+                                    let text = msg_input_queue.read(cx).value().to_string();
+                                    let text = text.trim().to_string();
+                                    if text.is_empty() { return; }
+                                    // Clear input synchronously.
+                                    msg_input_queue.update(cx, |state, cx| {
+                                        state.set_value("", window, cx);
+                                    });
+                                    if let Some(client) = client_queue.clone() {
+                                        let id = agent_id_queue.clone();
+                                        cx.spawn(async move |_this2, _cx| {
+                                            let _ = client.agent_queue(&id, &text).await;
+                                            Ok::<_, anyhow::Error>(())
+                                        }).detach();
+                                    }
+                                }),
+                            ),
+                    )
+                    // Stop button
+                    .child(
+                        div()
+                            .px_2()
+                            .py_1()
+                            .rounded(px(4.0))
+                            .border_1()
+                            .border_color(rgb(0xf59e0b))
+                            .text_size(px(12.0))
+                            .text_color(rgb(0xf59e0b))
+                            .cursor_pointer()
+                            .child("⏹ Stop")
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |_this, _ev, _window, cx| {
+                                    if let Some(client) = client_stop.clone() {
+                                        let id = agent_id_stop.clone();
+                                        cx.spawn(async move |_this2, _cx| {
+                                            let _ = client.agent_stop(&id).await;
+                                            Ok::<_, anyhow::Error>(())
+                                        }).detach();
+                                    }
+                                }),
+                            ),
+                    ),
+            );
+
+        bar.into_any_element()
+    }
+
+    // -------------------------------------------------------------------------
+    // Render: Agent detail side panel
+    // -------------------------------------------------------------------------
+
+    /// Right-side panel showing the agent's event stream.
+    fn render_detail_panel(
+        &mut self,
+        agent_id: &str,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let colors = self.theme.styles.colors.clone();
+        let status_colors = self.theme.styles.status.clone();
+        let agent_id = agent_id.to_string();
+
+        // Agent info snapshot
+        let (agent_state_label, agent_tier_label, agent_spec_ref) = self
+            .state
+            .agents
+            .get(&agent_id)
+            .map(|a| {
+                let state_lbl = match &a.state {
+                    AgentState::Idle => "idle",
+                    AgentState::Running => "running",
+                    AgentState::Thinking => "thinking",
+                    AgentState::ToolExecution => "tool",
+                    AgentState::AskingQuestion => "asking",
+                    AgentState::WaitingForAnswer => "waiting",
+                    AgentState::Stopping => "stopping",
+                    AgentState::Done => "done",
+                    AgentState::Unknown(_) => "unknown",
+                };
+                (state_lbl, a.tier.label(), a.spec_ref.clone())
+            })
+            .unwrap_or(("unknown", "mid", String::new()));
+
+        // Collect detail events.
+        let events: Vec<AgentDetailEvent> = self
+            .state
+            .detail_events
+            .get(&agent_id)
+            .cloned()
+            .unwrap_or_default();
+
+        let scroll_handle = self.detail_scroll_handle.clone();
+
+        // Build event timeline elements.
+        let mut event_els: Vec<gpui::AnyElement> = Vec::new();
+        for event in &events {
+            let el: gpui::AnyElement = match event {
+                AgentDetailEvent::Message { role, content } => {
+                    let is_user = role == "user";
+                    let label_color = if is_user {
+                        rgb(0x3b82f6u32)
+                    } else {
+                        rgb(colors.text_muted)
+                    };
+                    let role_label: SharedString = role.clone().into();
+                    let content_text: SharedString = content.clone().into();
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_px()
+                        .py_1()
+                        .child(
+                            div()
+                                .text_size(px(10.0))
+                                .text_color(label_color)
+                                .child(role_label),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(12.0))
+                                .text_color(rgb(colors.text))
+                                .child(content_text),
+                        )
+                        .into_any_element()
+                }
+                AgentDetailEvent::ToolCall { tool_name, arguments, .. } => {
+                    let tool: SharedString = format!("▶ {}", tool_name).into();
+                    let args_str: SharedString = serde_json::to_string_pretty(arguments)
+                        .unwrap_or_default()
+                        .into();
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_px()
+                        .py_1()
+                        .child(
+                            div()
+                                .text_size(px(11.0))
+                                .text_color(rgb(0x3b82f6u32))
+                                .child(tool),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(10.0))
+                                .text_color(rgb(colors.text_muted))
+                                .font_family(CODE_FONT_FAMILY)
+                                .child(args_str),
+                        )
+                        .into_any_element()
+                }
+                AgentDetailEvent::ToolResult { output, error, duration_ms, .. } => {
+                    let result_text: SharedString = if let Some(err) = error {
+                        format!("✗ {}", err).into()
+                    } else {
+                        let out = output.as_deref().unwrap_or("(no output)");
+                        let truncated = if out.len() > 200 { &out[..200] } else { out };
+                        format!("✓ {}", truncated).into()
+                    };
+                    let duration_text: Option<SharedString> =
+                        duration_ms.map(|ms| format!("{}ms", ms).into());
+                    let result_color = if error.is_some() {
+                        rgb(status_colors.error)
+                    } else {
+                        rgb(0x22c55eu32)
+                    };
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_px()
+                        .py_1()
+                        .child(
+                            div()
+                                .text_size(px(11.0))
+                                .text_color(result_color)
+                                .child(result_text),
+                        )
+                        .when_some(duration_text, |this, dur| {
+                            this.child(
+                                div()
+                                    .text_size(px(10.0))
+                                    .text_color(rgb(colors.text_muted))
+                                    .child(dur),
+                            )
+                        })
+                        .into_any_element()
+                }
+                AgentDetailEvent::Token { text } => {
+                    let t: SharedString = text.clone().into();
+                    div()
+                        .text_size(px(11.0))
+                        .text_color(rgb(colors.text_muted))
+                        .child(t)
+                        .into_any_element()
+                }
+                AgentDetailEvent::StateChange { state } => {
+                    let lbl: SharedString = format!(
+                        "→ {}",
+                        match state {
+                            AgentState::Idle => "idle",
+                            AgentState::Running => "running",
+                            AgentState::Thinking => "thinking",
+                            AgentState::ToolExecution => "tool execution",
+                            AgentState::AskingQuestion => "asking question",
+                            AgentState::WaitingForAnswer => "waiting for answer",
+                            AgentState::Stopping => "stopping",
+                            AgentState::Done => "done",
+                            AgentState::Unknown(s) => s.as_str(),
+                        }
+                    ).into();
+                    div()
+                        .text_size(px(10.0))
+                        .text_color(rgb(colors.text_muted))
+                        .py_px()
+                        .child(lbl)
+                        .into_any_element()
+                }
+            };
+            event_els.push(el);
+        }
+
+        let panel = div()
+            .w(px(320.0))
+            .h_full()
+            .border_l_1()
+            .border_color(rgb(colors.border))
+            .bg(rgb(colors.element_background))
+            .flex()
+            .flex_col()
+            // Header
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .px_3()
+                    .py_2()
+                    .border_b_1()
+                    .border_color(rgb(colors.border))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_px()
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap_1()
+                                    .child(
+                                        div()
+                                            .w(px(8.0))
+                                            .h(px(8.0))
+                                            .rounded_full()
+                                            .bg(rgb(0x3b82f6u32)),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(13.0))
+                                            .text_color(rgb(colors.text))
+                                            .child(agent_state_label),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(10.0))
+                                            .text_color(rgb(colors.text_muted))
+                                            .child(agent_tier_label),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(10.0))
+                                    .text_color(rgb(colors.text_muted))
+                                    .child(agent_spec_ref),
+                            ),
+                    )
+                    // Close button
+                    .child(
+                        div()
+                            .text_size(px(16.0))
+                            .text_color(rgb(colors.text_muted))
+                            .cursor_pointer()
+                            .child("✕")
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |this, _ev, _window, cx| {
+                                    this.close_detail_panel(cx);
+                                }),
+                            ),
+                    ),
+            )
+            // Event timeline (scrollable)
+            .child(
+                div()
+                    .id("detail-scroll")
+                    .flex_1()
+                    .overflow_y_scroll()
+                    .track_scroll(&scroll_handle)
+                    .px_3()
+                    .py_2()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .children(event_els)
+                    .when(events.is_empty(), |this| {
+                        this.child(
+                            div()
+                                .text_size(px(12.0))
+                                .text_color(rgb(colors.text_muted))
+                                .child("No events yet"),
+                        )
+                    }),
+            );
+
+        panel.into_any_element()
     }
 
     fn render_row(
@@ -1238,12 +2426,36 @@ impl AppShell {
 
         let group_id: SharedString = format!("node-row-{}", node_id).into();
 
-        // Bullet marker - always shown; grows on row hover
+        // spec_ref for this node — used by bullet click to open launch dialog or detail panel.
+        let node_spec_ref = self.state.nodes[node_id].spec_ref.clone();
+        // If there's an active agent on this node, bullet click opens the detail panel instead.
+        let active_agent_id_for_bullet: Option<String> = self
+            .state
+            .agent_for_spec_ref(&node_spec_ref)
+            .map(|a| a.agent_id.clone());
+
+        // Bullet marker - always shown; grows on row hover; clickable to start/view agent convo.
+        let bullet_spec_ref = node_spec_ref.clone();
         let bullet = div()
+            .id(("bullet", node_id))
             .child("•")
-            .text_color(rgb(colors.text_muted))
+            .text_color(rgb(0xc0c0c0))
             .text_size(px(22.0))
-            .group_hover(group_id.clone(), |s| s.text_size(px(28.0)));
+            .group_hover(group_id.clone(), |s| s.text_size(px(28.0)).text_color(rgb(0x909090)))
+            .active(|s| s.text_color(rgb(0x606060)))
+            .cursor_pointer()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _ev, window, cx| {
+                    if let Some(ref agent_id) = active_agent_id_for_bullet {
+                        // Agent already active on this node — open detail panel.
+                        this.open_detail_panel(agent_id.clone(), cx);
+                    } else {
+                        // No agent — open the launch dialog for this node.
+                        this.open_launch_dialog(bullet_spec_ref.clone(), window, cx);
+                    }
+                }),
+            );
 
         let chevron_slot = {
             let inner = chevron.unwrap_or_else(|| div().w(px(24.0)).into_any_element());
@@ -1254,6 +2466,7 @@ impl AppShell {
         };
         let left_controls = div()
             .flex()
+            .h(px(f32::from(MARKDOWN_TEXT_SIZE) * MARKDOWN_LINE_HEIGHT))
             .items_center()
             .gap_1()
             .child(chevron_slot)
@@ -1263,6 +2476,68 @@ impl AppShell {
             && self.editing_node_id == Some(node_id);
         let is_empty = row.markdown.trim().is_empty();
 
+        // --- Agent indicator (right side) ---
+        // Colors: blue dot for active agent, amber dot for question pending.
+        // Blue dot is clickable to open/close the detail panel.
+        let agent_indicator: Option<gpui::AnyElement> = if row.has_question {
+            Some(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .pt(px(4.0))
+                    .child(
+                        div()
+                            .w(px(8.0))
+                            .h(px(8.0))
+                            .rounded_full()
+                            .bg(rgb(0xf59e0b)), // amber — question pending
+                    )
+                    .into_any_element(),
+            )
+        } else if let Some(agent_id_for_dot) = row.agent_id.clone() {
+            // Lookup tool brief for this agent.
+            let tool_brief = self
+                .state
+                .agents
+                .get(&agent_id_for_dot)
+                .and_then(|a| a.tool_brief.clone());
+            Some(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .pt(px(4.0))
+                    .when_some(tool_brief, |this, brief| {
+                        this.child(
+                            div()
+                                .text_size(px(10.0))
+                                .text_color(rgb(colors.text_muted))
+                                .max_w(px(120.0))
+                                .overflow_hidden()
+                                .child(brief),
+                        )
+                    })
+                    .child(
+                        div()
+                            .w(px(8.0))
+                            .h(px(8.0))
+                            .rounded_full()
+                            .bg(rgb(0x3b82f6)) // blue — agent active
+                            .cursor_pointer()
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |this, _ev, _window, cx| {
+                                    this.open_detail_panel(agent_id_for_dot.clone(), cx);
+                                }),
+                            ),
+                    )
+                    .into_any_element(),
+            )
+        } else {
+            None
+        };
+
         // Content area
         let content_area = if is_active_editor {
             let markdown_input = self.markdown_input.clone();
@@ -1270,7 +2545,6 @@ impl AppShell {
             let (editor_text_size, editor_weight) = markdown_edit_style(&editor_markdown);
             div()
                 .flex_1()
-                .pt(px(4.0))
                 .child(
                     Input::new(&markdown_input)
                         .appearance(false)
@@ -1303,34 +2577,53 @@ impl AppShell {
                         .child("Type something…"),
                 )
         } else {
-            let markdown_view_id = ("node-markdown", node_id);
             let markdown_style = self.get_markdown_style();
+            let heading = depth_to_heading_style(row.depth);
+            let (title, body) = split_root_markdown(&row.markdown);
+            let has_body = !body.trim().is_empty();
+            let click_listener = cx.listener(move |this, _event: &MouseDownEvent, window, cx| {
+                this.select_node(node_id, window, cx);
+                this.markdown_input.update(cx, |state, cx| {
+                    state.focus(window, cx);
+                });
+            });
             div()
                 .flex_1()
                 .cursor_text()
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(move |this, _event, window, cx| {
-                        this.select_node(node_id, window, cx);
-                        this.markdown_input.update(cx, |state, cx| {
-                            state.focus(window, cx);
-                        });
-                    }),
-                )
+                .on_mouse_down(MouseButton::Left, click_listener)
                 .child(
-                    TextView::markdown(markdown_view_id, row.markdown.clone(), window, cx)
-                        .style(markdown_style)
-                        .text_size(MARKDOWN_TEXT_SIZE)
+                    div()
+                        .text_size(heading.font_size)
+                        .font_weight(heading.font_weight)
                         .line_height(relative(MARKDOWN_LINE_HEIGHT))
-                        .text_color(rgb(colors.text)),
+                        .text_color(rgb(colors.text))
+                        .child(title),
                 )
+                .when(has_body, |this| {
+                    let body_view_id = ("node-markdown-body", node_id);
+                    this.child(
+                        TextView::markdown(body_view_id, body, window, cx)
+                            .style(markdown_style)
+                            .text_size(MARKDOWN_TEXT_SIZE)
+                            .line_height(relative(MARKDOWN_LINE_HEIGHT))
+                            .text_color(rgb(colors.text)),
+                    )
+                })
         };
 
-        let padding = if is_root {
-            (px(14.0), px(10.0))
+        // Vertical padding scales down with depth: root(d=0)→10px, d=1→6px, d=2→4px, d≥3→2px
+        let py = if is_root {
+            px(10.0)
         } else {
-            (px(10.0), px(2.0))
+            match row.depth {
+                0 | 1 => px(6.0),
+                2      => px(4.0),
+                _      => px(2.0),
+            }
         };
+        let padding = (px(10.0), py);
+
+        let is_locked = row.locked;
 
         let mut row_el = div()
             .w_full()
@@ -1342,16 +2635,133 @@ impl AppShell {
             // Editing mode: left border indicator on this node's row
             .when(is_active_editor, |this| {
                 this.border_l_2().border_color(rgb(colors.border))
+            })
+            // Locked branch: subtle amber/orange left border
+            .when(is_locked && !is_active_editor, |this| {
+                this.border_l_2().border_color(rgb(0xf59e0b))
             });
 
-        row_el = row_el.child(
-            div()
-                .flex()
-                .items_start()
-                .gap_1()
-                .child(left_controls.pt(px(0.0)))
-                .child(content_area),
-        );
+        let inner_row = div()
+            .flex()
+            .items_start()
+            .gap_2()
+            .child(left_controls.pt(px(0.0)))
+            .child(content_area);
+
+        let inner_row = if let Some(indicator) = agent_indicator {
+            inner_row.child(indicator)
+        } else {
+            inner_row
+        };
+
+        row_el = row_el.child(inner_row);
+
+        // --- Question overlay ---
+        // Rendered as an inline card below the row content when there's a pending question.
+        if row.has_question {
+            let node_spec_ref = self.state.nodes[node_id].spec_ref.clone();
+            if let Some(question) = self
+                .state
+                .pending_questions
+                .iter()
+                .find(|q| q.question_node_ref == node_spec_ref)
+                .cloned()
+            {
+                let question_ref = question.question_node_ref.clone();
+                let question_text: SharedString = question.question.clone().into();
+                let options = question.options.clone();
+
+                let mut question_card = div()
+                    .mt(px(6.0))
+                    .ml(px(48.0)) // align with content area
+                    .p(px(10.0))
+                    .rounded(px(6.0))
+                    .border_1()
+                    .border_color(rgb(0xf59e0b))
+                    .bg(rgb(0x1c1a12))
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    // Question text
+                    .child(
+                        div()
+                            .text_size(px(12.0))
+                            .text_color(rgb(0xfbbf24))
+                            .child("Agent question"),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(13.0))
+                            .text_color(rgb(colors.text))
+                            .child(question_text),
+                    );
+
+                // Option buttons (if any)
+                if !options.is_empty() {
+                    let mut opts_row = div().flex().flex_row().flex_wrap().gap_1();
+                    for opt in options {
+                        let opt_text: SharedString = opt.clone().into();
+                        let question_ref_for_opt = question_ref.clone();
+                        let client_opt = self.client.clone();
+                        opts_row = opts_row.child(
+                            div()
+                                .px(px(8.0))
+                                .py(px(3.0))
+                                .rounded(px(4.0))
+                                .border_1()
+                                .border_color(rgb(0xf59e0b))
+                                .text_size(px(12.0))
+                                .text_color(rgb(0xfbbf24))
+                                .cursor_pointer()
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener({
+                                        let answer = opt.clone();
+                                        move |_this, _event, _window, cx| {
+                                            let qref = question_ref_for_opt.clone();
+                                            let ans = answer.clone();
+                                            if let Some(client) = client_opt.clone() {
+                                                cx.spawn(async move |this2, cx| {
+                                                    let _ = client.agent_answer_question(&qref, &ans).await;
+                                                    let _ = this2.update(cx, |shell, cx| {
+                                                        shell.state.remove_question(&qref);
+                                                        shell.mark_flat_tree_dirty();
+                                                        cx.notify();
+                                                    });
+                                                    Ok::<_, anyhow::Error>(())
+                                                })
+                                                .detach();
+                                            }
+                                        }
+                                    }),
+                                )
+                                .child(opt_text),
+                        );
+                    }
+                    question_card = question_card.child(opts_row);
+                }
+
+                // Dismiss button
+                let dismiss_ref = question_ref.clone();
+                question_card = question_card.child(
+                    div()
+                        .text_size(px(11.0))
+                        .text_color(rgb(colors.text_muted))
+                        .cursor_pointer()
+                        .child("Dismiss")
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, _event, _window, cx| {
+                                this.state.remove_question(&dismiss_ref);
+                                this.mark_flat_tree_dirty();
+                                cx.notify();
+                            }),
+                        ),
+                );
+
+                row_el = row_el.child(question_card);
+            }
+        }
 
         row_el
     }
@@ -1370,6 +2780,7 @@ impl AppShell {
         node_id: NodeId,
         is_root: bool,
         ancestor_is_selected: bool,
+        depth: usize,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
@@ -1378,10 +2789,20 @@ impl AppShell {
         // Build a FlatNode snapshot for render_row (avoids restructuring that function).
         let node = &self.state.nodes[node_id];
         let is_selected = self.state.selected_node == Some(node_id);
+        let spec_ref = node.spec_ref.clone();
+        let agent_id = self.state.agents.values().find_map(|a| {
+            if a.spec_ref == spec_ref && a.state.is_active() {
+                Some(a.agent_id.clone())
+            } else {
+                None
+            }
+        });
+        let locked = self.state.locked_branches.contains(&spec_ref);
+        let has_question = self.state.pending_questions.iter().any(|q| q.question_node_ref == spec_ref);
 
         let flat = FlatNode {
             id: node_id,
-            depth: 0, // depth irrelevant — no per-row indent in new layout
+            depth,
             markdown: if is_root {
                 // Root: use cached body (title shown in titlebar)
                 if self.cached_root_body.as_ref().map(|(rid, _)| *rid) != Some(node_id)
@@ -1405,6 +2826,9 @@ impl AppShell {
             verification: node.verification.clone(),
             depends_on: node.depends_on.clone(),
             related_to: node.related_to.clone(),
+            agent_id,
+            locked,
+            has_question,
         };
 
         let is_collapsed = node.collapsed;
@@ -1421,6 +2845,15 @@ impl AppShell {
             rgba(0x3B82F614u32)
         } else {
             rgba(0x3B82F60Du32)
+        };
+
+        // Fade-in highlight for recently changed nodes (green tint, 600 ms).
+        let node_spec_ref = self.state.nodes[node_id].spec_ref.clone();
+        let is_recently_changed = self.recently_changed.contains(&node_spec_ref);
+        let recently_changed_bg = if self.is_dark_theme() {
+            rgba(0x22C55E18u32) // green-500 at ~10% opacity
+        } else {
+            rgba(0x22C55E0Du32) // green-500 at ~5% opacity
         };
 
         // The node's own content row.
@@ -1572,7 +3005,7 @@ impl AppShell {
                 Some(
                     div()
                         .pl(INDENT_PER_LEVEL)
-                        .ml(px(20.0))
+                        .ml(px(25.0))
                         .border_l_1()
                         .border_color(rgb(colors.border_variant))
                         .flex()
@@ -1584,26 +3017,39 @@ impl AppShell {
         };
 
         // Children container: indent + left border, only if not collapsed.
+        // Level 0 (root's direct children) are rendered flat — no indent or border.
         let children_el: Option<gpui::AnyElement> = if !is_collapsed && !children_ids.is_empty() {
             // Propagate highlight downward: children of the selected node (or
             // a node whose ancestor is selected) should also be highlighted.
             let child_ancestor_selected = is_selected || ancestor_is_selected;
+            let child_depth = depth + 1;
             let child_els: Vec<gpui::AnyElement> = children_ids
                 .iter()
-                .map(|&cid| self.render_node(cid, false, child_ancestor_selected, window, cx))
+                .map(|&cid| self.render_node(cid, false, child_ancestor_selected, child_depth, window, cx))
                 .collect();
 
-            Some(
-                div()
-                    .pl(INDENT_PER_LEVEL)
-                    .ml(px(20.0)) // align left border under the bullet
-                    .border_l_1()
-                    .border_color(rgb(colors.border_variant))
-                    .flex()
-                    .flex_col()
-                    .children(child_els)
-                    .into_any_element(),
-            )
+            if is_root {
+                // Level 0: no indentation or left-border for root's direct children.
+                Some(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .children(child_els)
+                        .into_any_element(),
+                )
+            } else {
+                Some(
+                    div()
+                        .pl(INDENT_PER_LEVEL)
+                        .ml(px(25.0)) // align left border under the bullet
+                        .border_l_1()
+                        .border_color(rgb(colors.border_variant))
+                        .flex()
+                        .flex_col()
+                        .children(child_els)
+                        .into_any_element(),
+                )
+            }
         } else {
             None
         };
@@ -1616,6 +3062,7 @@ impl AppShell {
             .flex()
             .flex_col()
             .when(subtree_highlighted, |this| this.bg(selection_bg))
+            .when(is_recently_changed && !subtree_highlighted, |this| this.bg(recently_changed_bg))
             .child(this_row)
             .children(meta_children_el)
             .children(children_el)
@@ -1642,6 +3089,7 @@ impl Render for AppShell {
             .flex_col()
             .bg(rgb(colors.background))
             .text_color(rgb(colors.text))
+            .font_family(BODY_FONT_FAMILY)
             .track_focus(&self.focus_handle);
 
         let root = root.capture_key_down(cx.listener(|this, event, window, cx| {
@@ -1738,7 +3186,7 @@ impl Render for AppShell {
         // Render the root node (its body) then recursively render all children
         // as nested containers.
         let root_node_el: Option<gpui::AnyElement> = root_id.map(|id| {
-            self.render_node(id, true, false, window, cx)
+            self.render_node(id, true, false, 0, window, cx)
         });
 
         // Non-root top-level nodes (rare — secondary spec files, etc.)
@@ -1751,38 +3199,78 @@ impl Render for AppShell {
             .collect();
         let extra_root_els: Vec<gpui::AnyElement> = extra_root_ids
             .into_iter()
-            .map(|id| self.render_node(id, false, false, window, cx))
+            .map(|id| self.render_node(id, false, false, 0, window, cx))
             .collect();
 
+        // Determine if any root agent is active — used for message bar and detail panel.
+        let active_agent_id: Option<String> = self
+            .state
+            .active_agents()
+            .next()
+            .map(|a| a.agent_id.clone());
+
+        // Detail panel (open for specific agent).
+        let detail_agent_id: Option<String> = self.state.detail_agent_id.clone();
+        let detail_panel_el: Option<gpui::AnyElement> = detail_agent_id
+            .as_deref()
+            .map(|id| self.render_detail_panel(id, window, cx));
+
+        // Message bar (shown when any agent is active).
+        let message_bar_el: Option<gpui::AnyElement> = active_agent_id
+            .as_deref()
+            .map(|id| self.render_message_bar(id, window, cx));
+
+        // Launch dialog overlay (shown when bullet is clicked on a node with no active agent).
+        let launch_dialog_spec_ref: Option<String> = self.state.launch_dialog_node.clone();
+        let launch_dialog_el: Option<gpui::AnyElement> = launch_dialog_spec_ref
+            .as_deref()
+            .map(|spec_ref| self.render_launch_dialog(spec_ref, window, cx));
+
         root
+            .relative() // needed so absolute-positioned dialog overlay works
             .child(titlebar)
+            // Main content row: tree area + optional detail panel side-by-side
             .child(
                 div()
                     .w_full()
                     .flex_1()
                     .flex()
-                    .justify_center()
+                    .flex_row()
                     .overflow_hidden()
+                    // Tree scroll area
                     .child(
                         div()
-                            .id("spec-scroll")
-                            .w_full()
-                            .max_w(MAX_CONTENT_WIDTH)
-                            .px_3()
-                            .py_3()
+                            .flex_1()
                             .flex()
-                            .flex_col()
-                            .gap_1()
-                            .h_full()
-                            .overflow_y_scroll()
-                            .track_scroll(&scroll_handle)
-                            .children(status_banner)
-                            .children(root_node_el)
-                            .when(root_id.is_some(), |this| {
-                                this.child(div().w_full().border_t_1().border_color(rgb(colors.border)))
-                            })
-                            .children(extra_root_els),
-                    ),
+                            .justify_center()
+                            .overflow_hidden()
+                            .child(
+                                div()
+                                    .id("spec-scroll")
+                                    .w_full()
+                                    .max_w(MAX_CONTENT_WIDTH)
+                                    .px_3()
+                                    .py_3()
+                                    .flex()
+                                    .flex_col()
+                                    .gap_1()
+                                    .h_full()
+                                    .overflow_y_scroll()
+                                    .track_scroll(&scroll_handle)
+                                    .children(status_banner)
+                                    .children(root_node_el)
+                                    .when(root_id.is_some(), |this| {
+                                        this.child(div().w_full().border_t_1().border_color(rgb(colors.border)))
+                                    })
+                                    .children(extra_root_els),
+                            ),
+                    )
+                    // Optional detail panel
+                    .children(detail_panel_el),
             )
+            // Optional message bar at the bottom
+            .children(message_bar_el)
+            // Optional launch dialog floating overlay
+            .children(launch_dialog_el)
     }
 }
