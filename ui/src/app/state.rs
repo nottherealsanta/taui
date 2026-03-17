@@ -208,9 +208,7 @@ pub struct AppState {
     pub detail_events: HashMap<String, Vec<AgentDetailEvent>>,
     /// Which agent's detail panel is open, if any.
     pub detail_agent_id: Option<String>,
-    /// Which node's "launch agent" dialog is open (spec_ref), if any.
-    pub launch_dialog_node: Option<SpecRef>,
-    /// Selected tier for the launch dialog.
+    /// Selected tier for launching agents from the bottom bar.
     pub launch_dialog_tier: AgentTier,
 }
 
@@ -229,7 +227,6 @@ impl AppState {
             pending_questions: Vec::new(),
             detail_events: HashMap::new(),
             detail_agent_id: None,
-            launch_dialog_node: None,
             launch_dialog_tier: AgentTier::Mid,
         };
 

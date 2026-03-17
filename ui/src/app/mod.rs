@@ -101,10 +101,8 @@ pub struct AppShell {
     /// Set of spec_refs whose nodes recently changed (for fade-in animation).
     /// Cleared after a short delay.
     recently_changed: std::collections::HashSet<String>,
-    /// Input for the bottom message bar (steer/queue messages to the active root agent).
+    /// Input for the bottom bar (task description for launch, or steer/queue messages).
     message_bar_input: Entity<InputState>,
-    /// Input for the launch-agent dialog (task description).
-    launch_dialog_input: Entity<InputState>,
     /// Scroll handle for the agent detail side panel.
     detail_scroll_handle: ScrollHandle,
 }
@@ -138,13 +136,7 @@ impl AppShell {
 
         let message_bar_input = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("Steer agent... (Enter to send)")
-                .multi_line(false)
-        });
-
-        let launch_dialog_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder("Describe what you want the agent to do…")
+                .placeholder("Describe a task… (Enter to send)")
                 .multi_line(false)
         });
 
@@ -264,7 +256,6 @@ impl AppShell {
             editing_metadata: None,
             recently_changed: std::collections::HashSet::new(),
             message_bar_input: message_bar_input.clone(),
-            launch_dialog_input: launch_dialog_input.clone(),
             detail_scroll_handle: ScrollHandle::new(),
         };
 
@@ -279,29 +270,17 @@ impl AppShell {
         );
         shell._subscriptions.push(blur_subscription);
 
-        // Message bar: Enter triggers steer action.
+        // Bottom bar: Enter triggers steer (if agent active) or launch (if no agent).
         let msg_bar_sub = cx.subscribe_in(
             &message_bar_input,
             window,
             |this, _state, event, window, cx| {
                 if let InputEvent::PressEnter { secondary: false } = event {
-                    this.handle_message_bar_enter(window, cx);
+                    this.handle_bottom_bar_enter(window, cx);
                 }
             },
         );
         shell._subscriptions.push(msg_bar_sub);
-
-        // Launch dialog: Enter confirms launch.
-        let launch_sub = cx.subscribe_in(
-            &launch_dialog_input,
-            window,
-            |this, _state, event, window, cx| {
-                if let InputEvent::PressEnter { secondary: false } = event {
-                    this.confirm_launch_dialog(window, cx);
-                }
-            },
-        );
-        shell._subscriptions.push(launch_sub);
 
         let appearance_subscription = cx.observe_window_appearance(window, |this, window, cx| {
             this.sync_theme_from_window_appearance(window.appearance());
@@ -411,6 +390,28 @@ impl AppShell {
                 self.mark_flat_tree_dirty();
             }
             cx.notify();
+        }
+    }
+
+    /// Toggle collapse on the selected node and sync the new state to the backend.
+    fn toggle_collapse_synced(&mut self, cx: &mut Context<Self>) {
+        self.apply(UiAction::ToggleCollapse, cx);
+        if let Some(client) = self.client.clone() {
+            if let Some(selected) = self.state.selected_node {
+                let collapsed = self.state.nodes[selected].collapsed;
+                let spec_ref = self.state.nodes[selected].spec_ref.clone();
+                cx.spawn(async move |this, cx| {
+                    let result = client.set_node_collapsed(&spec_ref, collapsed).await;
+                    this.update(cx, |shell, cx| {
+                        if let Err(e) = result {
+                            shell.state.backend_state =
+                                BackendState::Error(format!("Update failed: {}", e));
+                        }
+                        cx.notify();
+                    })
+                })
+                .detach();
+            }
         }
     }
 
@@ -970,16 +971,6 @@ impl AppShell {
 
         // ── Keys handled only while the text cursor is active (Editing mode) ─
         if input_focused {
-            // If the launch dialog is open and focused, Escape closes it.
-            if self.state.launch_dialog_node.is_some() {
-                if key == "escape" {
-                    self.close_launch_dialog(cx);
-                    return true;
-                }
-                // All other keys in the dialog input pass through to it.
-                return false;
-            }
-
             match key.as_str() {
                 // ── Escape: Editing → Selection ──────────────────────────────
                 "escape" => {
@@ -1183,25 +1174,7 @@ impl AppShell {
                             }
                         }
                         UiAction::ToggleCollapse => {
-                            self.apply(action, cx);
-                            if let Some(client) = self.client.clone() {
-                                if let Some(selected) = self.state.selected_node {
-                                    let collapsed = self.state.nodes[selected].collapsed;
-                                    let spec_ref = self.state.nodes[selected].spec_ref.clone();
-
-                                    cx.spawn(async move |this, cx| {
-                                        let result = client.set_node_collapsed(&spec_ref, collapsed).await;
-                                        this.update(cx, |shell, cx| {
-                                            if let Err(e) = result {
-                                                shell.state.backend_state =
-                                                    BackendState::Error(format!("Update failed: {}", e));
-                                            }
-                                            cx.notify();
-                                        })
-                                    })
-                                    .detach();
-                                }
-                            }
+                            self.toggle_collapse_synced(cx);
                         }
                     }
                     return true;
@@ -1598,28 +1571,45 @@ impl AppShell {
 
     /// Called when the user presses Enter in the message bar input.
     /// Steers the currently active root agent with the typed message.
-    fn handle_message_bar_enter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// Unified Enter handler for the bottom bar input.
+    /// If an agent is active on the selected node → steer. Otherwise → launch agent.
+    fn handle_bottom_bar_enter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let text = self.message_bar_input.read(cx).value().to_string();
         let text = text.trim().to_string();
         if text.is_empty() {
             return;
         }
-        let Some(agent) = self.state.active_agents().next() else {
-            return;
-        };
-        let agent_id = agent.agent_id.clone();
-        let Some(client) = self.client.clone() else {
-            return;
-        };
-        // Clear input immediately (synchronously — we have window here).
-        self.message_bar_input.update(cx, |state, cx| {
-            state.set_value("", window, cx);
-        });
-        cx.spawn(async move |_this, _cx| {
-            let _ = client.agent_steer(&agent_id, &text).await;
-            Ok::<_, anyhow::Error>(())
-        })
-        .detach();
+
+        // Check if there's an active agent on the selected node (or any active root agent).
+        let active_agent = self.state.active_agents().next().map(|a| a.agent_id.clone());
+
+        if let Some(agent_id) = active_agent {
+            // Agent active → steer.
+            let Some(client) = self.client.clone() else { return; };
+            self.message_bar_input.update(cx, |state, cx| {
+                state.set_value("", window, cx);
+            });
+            cx.spawn(async move |_this, _cx| {
+                let _ = client.agent_steer(&agent_id, &text).await;
+                Ok::<_, anyhow::Error>(())
+            })
+            .detach();
+        } else {
+            // No agent → launch on selected node.
+            let Some(spec_ref) = self.state.selected_spec_ref().map(|s| s.to_string()) else {
+                return;
+            };
+            let tier = self.state.launch_dialog_tier.label().to_string();
+            let Some(client) = self.client.clone() else { return; };
+            self.message_bar_input.update(cx, |state, cx| {
+                state.set_value("", window, cx);
+            });
+            cx.spawn(async move |_this, _cx| {
+                let _ = client.agent_launch(&spec_ref, &text, &tier).await;
+                Ok::<_, anyhow::Error>(())
+            })
+            .detach();
+        }
     }
 
     /// Open the agent detail panel for a given agent id.
@@ -1716,63 +1706,30 @@ impl AppShell {
     }
 
     // -------------------------------------------------------------------------
-    // Launch dialog: open/close/confirm + render
+    // Render: Bottom bar (always visible)
     // -------------------------------------------------------------------------
 
-    /// Open the "launch agent" dialog for a node. Clears the input and focuses it.
-    fn open_launch_dialog(&mut self, spec_ref: String, window: &mut Window, cx: &mut Context<Self>) {
-        self.state.launch_dialog_node = Some(spec_ref);
-        self.state.launch_dialog_tier = AgentTier::Mid;
-        self.launch_dialog_input.update(cx, |state, cx| {
-            state.set_value("", window, cx);
-            state.focus(window, cx);
-        });
-        cx.notify();
-    }
-
-    /// Close the launch dialog without launching.
-    fn close_launch_dialog(&mut self, cx: &mut Context<Self>) {
-        self.state.launch_dialog_node = None;
-        cx.notify();
-    }
-
-    /// Confirm the launch dialog: read the task text, call agent/launch, close the dialog.
-    fn confirm_launch_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let task = self.launch_dialog_input.read(cx).value().trim().to_string();
-        if task.is_empty() {
-            return;
-        }
-        let Some(spec_ref) = self.state.launch_dialog_node.clone() else {
-            return;
-        };
-        let tier = self.state.launch_dialog_tier.label().to_string();
-
-        // Close the dialog immediately.
-        self.state.launch_dialog_node = None;
-        self.launch_dialog_input.update(cx, |state, cx| {
-            state.set_value("", window, cx);
-        });
-
-        if let Some(client) = self.client.clone() {
-            cx.spawn(async move |_this, _cx| {
-                let _ = client.agent_launch(&spec_ref, &task, &tier).await;
-                Ok::<_, anyhow::Error>(())
-            })
-            .detach();
-        }
-        cx.notify();
-    }
-
-    /// Render the floating "launch agent" dialog as a top-level overlay.
-    fn render_launch_dialog(&mut self, spec_ref: &str, _window: &mut Window, cx: &mut Context<Self>) -> gpui::AnyElement {
+    /// Always-visible bottom bar with selected node pill, input, and contextual buttons.
+    /// When agent active: Steer / Queue / Stop buttons.
+    /// When no agent: Tier selector + Launch button.
+    fn render_bottom_bar(
+        &mut self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
         let colors = self.theme.styles.colors.clone();
 
-        // Node title (first line of markdown).
-        let node_title: String = self
+        // Active agent (if any).
+        let active_agent = self.state.active_agents().next().map(|a| {
+            (a.agent_id.clone(), a.tool_brief.clone())
+        });
+        let has_agent = active_agent.is_some();
+
+        // Selected node info for the pill.
+        let selected_pill: Option<String> = self
             .state
-            .spec_ref_index
-            .get(spec_ref)
-            .and_then(|&id| self.state.nodes.get(id))
+            .selected_node
+            .and_then(|id| self.state.nodes.get(id))
             .map(|n| {
                 n.markdown
                     .lines()
@@ -1781,215 +1738,9 @@ impl AppShell {
                     .trim()
                     .to_string()
             })
-            .unwrap_or_else(|| spec_ref.to_string());
+            .filter(|s| !s.is_empty());
 
-        let current_tier = self.state.launch_dialog_tier.clone();
-
-        // Tier pill buttons.
-        let tiers = [
-            ("Senior", AgentTier::Senior),
-            ("Mid", AgentTier::Mid),
-            ("Junior", AgentTier::Junior),
-        ];
-
-        let mut tier_row = div().flex().flex_row().gap_1();
-        for (label, tier) in tiers {
-            let is_selected = current_tier == tier;
-            let tier_clone = tier.clone();
-            tier_row = tier_row.child(
-                div()
-                    .px_2()
-                    .py(px(3.0))
-                    .rounded(px(4.0))
-                    .border_1()
-                    .text_size(px(11.0))
-                    .cursor_pointer()
-                    .when(is_selected, |this| {
-                        this.border_color(rgb(0x3b82f6))
-                            .text_color(rgb(0x3b82f6))
-                            .bg(rgba(0x3b82f614))
-                    })
-                    .when(!is_selected, |this| {
-                        this.border_color(rgb(colors.border))
-                            .text_color(rgb(colors.text_muted))
-                    })
-                    .child(label)
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |this, _ev, _window, cx| {
-                            this.state.launch_dialog_tier = tier_clone.clone();
-                            cx.notify();
-                        }),
-                    ),
-            );
-        }
-
-        // Backdrop — clicking outside closes the dialog.
-        let backdrop = div()
-            .absolute()
-            .inset_0()
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, _ev, _window, cx| {
-                    this.close_launch_dialog(cx);
-                }),
-            );
-
-        // Dialog card.
-        let launch_dialog_input = self.launch_dialog_input.clone();
-        let card = div()
-            .absolute()
-            // Position: centred horizontally, ~30% from top.
-            .inset_0()
-            .flex()
-            .items_start()
-            .justify_center()
-            .pt(px(120.0))
-            // Stop clicks on the card from bubbling to the backdrop.
-            .on_mouse_down(MouseButton::Left, |_ev, _window, cx| cx.stop_propagation())
-            .child(
-                div()
-                    .w(px(380.0))
-                    .rounded(px(8.0))
-                    .border_1()
-                    .border_color(rgb(0x3b82f6))
-                    .bg(rgb(colors.element_background))
-                    .shadow_lg()
-                    .flex()
-                    .flex_col()
-                    .gap_2()
-                    .p(px(14.0))
-                    // Header
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap_1()
-                                    .child(
-                                        div()
-                                            .w(px(6.0))
-                                            .h(px(6.0))
-                                            .rounded_full()
-                                            .bg(rgb(0x3b82f6)),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_size(px(12.0))
-                                            .text_color(rgb(colors.text_muted))
-                                            .child("Start agent on"),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_size(px(12.0))
-                                            .text_color(rgb(colors.text))
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .child(node_title),
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(11.0))
-                                    .text_color(rgb(colors.text_muted))
-                                    .cursor_pointer()
-                                    .child("✕")
-                                    .on_mouse_down(
-                                        MouseButton::Left,
-                                        cx.listener(|this, _ev, _window, cx| {
-                                            this.close_launch_dialog(cx);
-                                        }),
-                                    ),
-                            ),
-                    )
-                    // Task input
-                    .child(
-                        div()
-                            .rounded(px(4.0))
-                            .border_1()
-                            .border_color(rgb(colors.border))
-                            .bg(rgb(colors.background))
-                            .px_2()
-                            .py_1()
-                            .child(
-                                Input::new(&launch_dialog_input)
-                                    .appearance(false)
-                                    .bordered(false)
-                                    .px(px(0.0))
-                                    .py(px(0.0))
-                                    .text_size(px(13.0)),
-                            ),
-                    )
-                    // Tier selector + Launch button row
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .child(tier_row)
-                            .child(
-                                div()
-                                    .px_3()
-                                    .py_1()
-                                    .rounded(px(4.0))
-                                    .bg(rgb(0x3b82f6))
-                                    .text_size(px(12.0))
-                                    .text_color(rgb(0xffffff))
-                                    .cursor_pointer()
-                                    .child("Launch")
-                                    .on_mouse_down(
-                                        MouseButton::Left,
-                                        cx.listener(|this, _ev, window, cx| {
-                                            this.confirm_launch_dialog(window, cx);
-                                        }),
-                                    ),
-                            ),
-                    ),
-            );
-
-        div()
-            .absolute()
-            .inset_0()
-            .child(backdrop)
-            .child(card)
-            .into_any_element()
-    }
-
-    // -------------------------------------------------------------------------
-    // Render: Message bar
-    // -------------------------------------------------------------------------
-
-    /// Bottom bar shown when any root agent is active.
-    /// Contains: optional tool brief row, text input, steer/queue/stop buttons.
-    fn render_message_bar(
-        &mut self,
-        agent_id: &str,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> gpui::AnyElement {
-        let colors = self.theme.styles.colors.clone();
-        let agent_id = agent_id.to_string();
-
-        // Tool brief: agent name + tool name from active tool brief.
-        let tool_brief: Option<String> = self
-            .state
-            .agents
-            .get(&agent_id)
-            .and_then(|a| a.tool_brief.clone());
-
-        let client_steer = self.client.clone();
-        let client_stop = self.client.clone();
-        let client_queue = self.client.clone();
-        let agent_id_steer = agent_id.clone();
-        let agent_id_stop = agent_id.clone();
-        let agent_id_queue = agent_id.clone();
-        let msg_input = self.message_bar_input.clone();
-        let msg_input_queue = self.message_bar_input.clone();
-
-        let bar = div()
+        let mut bar = div()
             .w_full()
             .border_t_1()
             .border_color(rgb(colors.border))
@@ -1998,145 +1749,259 @@ impl AppShell {
             .flex_col()
             .px_3()
             .py_2()
-            .gap_1()
-            // Tool brief row
-            .when_some(tool_brief, |this, brief| {
-                this.child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_1()
-                        .child(
-                            div()
-                                .w(px(6.0))
-                                .h(px(6.0))
-                                .rounded_full()
-                                .bg(rgb(0x3b82f6)),
-                        )
-                        .child(
-                            div()
-                                .text_size(px(11.0))
-                                .text_color(rgb(colors.text_muted))
-                                .child(brief),
-                        ),
-                )
-            })
-            // Input + buttons row
-            .child(
+            .gap_1();
+
+        // Selected node pill row.
+        if let Some(title) = selected_pill {
+            bar = bar.child(
                 div()
                     .flex()
                     .items_center()
-                    .gap_2()
-                    // Text input
-                    .child(
-                        div()
-                            .flex_1()
-                            .rounded(px(4.0))
-                            .border_1()
-                            .border_color(rgb(colors.border))
-                            .bg(rgb(colors.background))
-                            .px_2()
-                            .py_1()
-                            .child(
-                                Input::new(&self.message_bar_input)
-                                    .appearance(false)
-                                    .bordered(false)
-                                    .px(px(0.0))
-                                    .py(px(0.0))
-                                    .text_size(px(13.0)),
-                            ),
-                    )
-                    // Steer button
+                    .gap_1()
                     .child(
                         div()
                             .px_2()
-                            .py_1()
-                            .rounded(px(4.0))
+                            .py(px(2.0))
+                            .rounded(px(10.0))
+                            .bg(rgba(0x3b82f620))
                             .border_1()
-                            .border_color(rgb(colors.border))
-                            .text_size(px(12.0))
+                            .border_color(rgb(0x3b82f6))
+                            .text_size(px(11.0))
                             .text_color(rgb(colors.text))
-                            .cursor_pointer()
-                            .child("Steer")
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(move |_this, _ev, window, cx| {
-                                    let text = msg_input.read(cx).value().to_string();
-                                    let text = text.trim().to_string();
-                                    if text.is_empty() { return; }
-                                    // Clear input synchronously (window is available here).
-                                    msg_input.update(cx, |state, cx| {
-                                        state.set_value("", window, cx);
-                                    });
-                                    if let Some(client) = client_steer.clone() {
-                                        let id = agent_id_steer.clone();
-                                        cx.spawn(async move |_this2, _cx| {
-                                            let _ = client.agent_steer(&id, &text).await;
-                                            Ok::<_, anyhow::Error>(())
-                                        }).detach();
-                                    }
-                                }),
-                            ),
-                    )
-                    // Queue button
+                            .overflow_hidden()
+                            .max_w(px(400.0))
+                            .child(title),
+                    ),
+            );
+        }
+
+        // Tool brief row (when agent is active).
+        if let Some((_, Some(brief))) = &active_agent {
+            bar = bar.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_1()
                     .child(
                         div()
-                            .px_2()
-                            .py_1()
-                            .rounded(px(4.0))
-                            .border_1()
-                            .border_color(rgb(colors.border))
-                            .text_size(px(12.0))
-                            .text_color(rgb(colors.text))
-                            .cursor_pointer()
-                            .child("Queue")
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(move |_this, _ev, window, cx| {
-                                    let text = msg_input_queue.read(cx).value().to_string();
-                                    let text = text.trim().to_string();
-                                    if text.is_empty() { return; }
-                                    // Clear input synchronously.
-                                    msg_input_queue.update(cx, |state, cx| {
-                                        state.set_value("", window, cx);
-                                    });
-                                    if let Some(client) = client_queue.clone() {
-                                        let id = agent_id_queue.clone();
-                                        cx.spawn(async move |_this2, _cx| {
-                                            let _ = client.agent_queue(&id, &text).await;
-                                            Ok::<_, anyhow::Error>(())
-                                        }).detach();
-                                    }
-                                }),
-                            ),
+                            .w(px(6.0))
+                            .h(px(6.0))
+                            .rounded_full()
+                            .bg(rgb(0x3b82f6)),
                     )
-                    // Stop button
                     .child(
                         div()
-                            .px_2()
-                            .py_1()
-                            .rounded(px(4.0))
-                            .border_1()
-                            .border_color(rgb(0xf59e0b))
-                            .text_size(px(12.0))
-                            .text_color(rgb(0xf59e0b))
-                            .cursor_pointer()
-                            .child("⏹ Stop")
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(move |_this, _ev, _window, cx| {
-                                    if let Some(client) = client_stop.clone() {
-                                        let id = agent_id_stop.clone();
-                                        cx.spawn(async move |_this2, _cx| {
-                                            let _ = client.agent_stop(&id).await;
-                                            Ok::<_, anyhow::Error>(())
-                                        }).detach();
-                                    }
-                                }),
-                            ),
+                            .text_size(px(11.0))
+                            .text_color(rgb(colors.text_muted))
+                            .child(brief.clone()),
+                    ),
+            );
+        }
+
+        // Input + buttons row.
+        let mut input_row = div()
+            .flex()
+            .items_center()
+            .gap_2()
+            // Text input
+            .child(
+                div()
+                    .flex_1()
+                    .rounded(px(4.0))
+                    .border_1()
+                    .border_color(rgb(colors.border))
+                    .bg(rgb(colors.background))
+                    .px_2()
+                    .py_1()
+                    .child(
+                        Input::new(&self.message_bar_input)
+                            .appearance(false)
+                            .bordered(false)
+                            .px(px(0.0))
+                            .py(px(0.0))
+                            .text_size(px(13.0)),
                     ),
             );
 
+        if has_agent {
+            // Agent active: show Steer / Queue / Stop buttons.
+            let agent_id = active_agent.as_ref().unwrap().0.clone();
+            let client_steer = self.client.clone();
+            let client_queue = self.client.clone();
+            let client_stop = self.client.clone();
+            let agent_id_steer = agent_id.clone();
+            let agent_id_queue = agent_id.clone();
+            let agent_id_stop = agent_id.clone();
+            let msg_input_steer = self.message_bar_input.clone();
+            let msg_input_queue = self.message_bar_input.clone();
+
+            input_row = input_row
+                // Steer button
+                .child(
+                    div()
+                        .px_2()
+                        .py_1()
+                        .rounded(px(4.0))
+                        .border_1()
+                        .border_color(rgb(colors.border))
+                        .text_size(px(12.0))
+                        .text_color(rgb(colors.text))
+                        .cursor_pointer()
+                        .child("Steer")
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |_this, _ev, window, cx| {
+                                let text = msg_input_steer.read(cx).value().to_string();
+                                let text = text.trim().to_string();
+                                if text.is_empty() { return; }
+                                msg_input_steer.update(cx, |state, cx| {
+                                    state.set_value("", window, cx);
+                                });
+                                if let Some(client) = client_steer.clone() {
+                                    let id = agent_id_steer.clone();
+                                    cx.spawn(async move |_this2, _cx| {
+                                        let _ = client.agent_steer(&id, &text).await;
+                                        Ok::<_, anyhow::Error>(())
+                                    }).detach();
+                                }
+                            }),
+                        ),
+                )
+                // Queue button
+                .child(
+                    div()
+                        .px_2()
+                        .py_1()
+                        .rounded(px(4.0))
+                        .border_1()
+                        .border_color(rgb(colors.border))
+                        .text_size(px(12.0))
+                        .text_color(rgb(colors.text))
+                        .cursor_pointer()
+                        .child("Queue")
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |_this, _ev, window, cx| {
+                                let text = msg_input_queue.read(cx).value().to_string();
+                                let text = text.trim().to_string();
+                                if text.is_empty() { return; }
+                                msg_input_queue.update(cx, |state, cx| {
+                                    state.set_value("", window, cx);
+                                });
+                                if let Some(client) = client_queue.clone() {
+                                    let id = agent_id_queue.clone();
+                                    cx.spawn(async move |_this2, _cx| {
+                                        let _ = client.agent_queue(&id, &text).await;
+                                        Ok::<_, anyhow::Error>(())
+                                    }).detach();
+                                }
+                            }),
+                        ),
+                )
+                // Stop button
+                .child(
+                    div()
+                        .px_2()
+                        .py_1()
+                        .rounded(px(4.0))
+                        .border_1()
+                        .border_color(rgb(0xf59e0b))
+                        .text_size(px(12.0))
+                        .text_color(rgb(0xf59e0b))
+                        .cursor_pointer()
+                        .child("\u{23f9} Stop")
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |_this, _ev, _window, cx| {
+                                if let Some(client) = client_stop.clone() {
+                                    let id = agent_id_stop.clone();
+                                    cx.spawn(async move |_this2, _cx| {
+                                        let _ = client.agent_stop(&id).await;
+                                        Ok::<_, anyhow::Error>(())
+                                    }).detach();
+                                }
+                            }),
+                        ),
+                );
+        } else {
+            // No agent: show Tier selector + Launch button.
+            let current_tier = self.state.launch_dialog_tier.clone();
+            let tiers = [
+                ("Senior", AgentTier::Senior),
+                ("Mid", AgentTier::Mid),
+                ("Junior", AgentTier::Junior),
+            ];
+
+            let mut tier_row = div().flex().flex_row().gap_1();
+            for (label, tier) in tiers {
+                let is_selected = current_tier == tier;
+                let tier_clone = tier.clone();
+                tier_row = tier_row.child(
+                    div()
+                        .px_2()
+                        .py(px(3.0))
+                        .rounded(px(4.0))
+                        .border_1()
+                        .text_size(px(11.0))
+                        .cursor_pointer()
+                        .when(is_selected, |this| {
+                            this.border_color(rgb(0x3b82f6))
+                                .text_color(rgb(0x3b82f6))
+                                .bg(rgba(0x3b82f614))
+                        })
+                        .when(!is_selected, |this| {
+                            this.border_color(rgb(colors.border))
+                                .text_color(rgb(colors.text_muted))
+                        })
+                        .child(label)
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, _ev, _window, cx| {
+                                this.state.launch_dialog_tier = tier_clone.clone();
+                                cx.notify();
+                            }),
+                        ),
+                );
+            }
+
+            let msg_input_launch = self.message_bar_input.clone();
+            let client_launch = self.client.clone();
+
+            input_row = input_row
+                .child(tier_row)
+                .child(
+                    div()
+                        .px_3()
+                        .py_1()
+                        .rounded(px(4.0))
+                        .bg(rgb(0x3b82f6))
+                        .text_size(px(12.0))
+                        .text_color(rgb(0xffffff))
+                        .cursor_pointer()
+                        .child("Launch")
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, _ev, window, cx| {
+                                let text = msg_input_launch.read(cx).value().to_string();
+                                let text = text.trim().to_string();
+                                if text.is_empty() { return; }
+                                let Some(spec_ref) = this.state.selected_spec_ref().map(|s| s.to_string()) else { return; };
+                                let tier = this.state.launch_dialog_tier.label().to_string();
+                                msg_input_launch.update(cx, |state, cx| {
+                                    state.set_value("", window, cx);
+                                });
+                                if let Some(client) = client_launch.clone() {
+                                    cx.spawn(async move |_this, _cx| {
+                                        let _ = client.agent_launch(&spec_ref, &text, &tier).await;
+                                        Ok::<_, anyhow::Error>(())
+                                    }).detach();
+                                }
+                            }),
+                        ),
+                );
+        }
+
+        bar = bar.child(input_row);
         bar.into_any_element()
     }
 
@@ -2417,14 +2282,10 @@ impl AppShell {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let node_id = row.id;
-        let row_has_children = row.has_children;
         let colors = self.theme.styles.colors.clone();
 
-        // Chevron for expand/collapse - hidden for root, rendered for other nodes with children
-        let chevron: Option<gpui::AnyElement> =
-            component_adapters::render_chevron(row.collapsed, row_has_children, is_root, node_id, cx);
-
         let group_id: SharedString = format!("node-row-{}", node_id).into();
+        let row_element_id = ElementId::Name(format!("node-row-el-{}", node_id).into());
 
         // spec_ref for this node — used by bullet click to open launch dialog or detail panel.
         let node_spec_ref = self.state.nodes[node_id].spec_ref.clone();
@@ -2434,8 +2295,7 @@ impl AppShell {
             .agent_for_spec_ref(&node_spec_ref)
             .map(|a| a.agent_id.clone());
 
-        // Bullet marker - always shown; grows on row hover; clickable to start/view agent convo.
-        let bullet_spec_ref = node_spec_ref.clone();
+        // Bullet marker - always shown; grows on row hover; clickable to select node or view agent.
         let bullet = div()
             .id(("bullet", node_id))
             .child("•")
@@ -2446,30 +2306,22 @@ impl AppShell {
             .cursor_pointer()
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(move |this, _ev, window, cx| {
+                cx.listener(move |this, _ev, _window, cx| {
                     if let Some(ref agent_id) = active_agent_id_for_bullet {
                         // Agent already active on this node — open detail panel.
                         this.open_detail_panel(agent_id.clone(), cx);
                     } else {
-                        // No agent — open the launch dialog for this node.
-                        this.open_launch_dialog(bullet_spec_ref.clone(), window, cx);
+                        // No agent — select this node (bottom bar shows launch controls).
+                        this.select_node_no_edit(node_id, cx);
                     }
                 }),
             );
 
-        let chevron_slot = {
-            let inner = chevron.unwrap_or_else(|| div().w(px(24.0)).into_any_element());
-            div()
-                .invisible()
-                .group_hover(group_id.clone(), |s| s.visible())
-                .child(inner)
-        };
         let left_controls = div()
             .flex()
             .h(px(f32::from(MARKDOWN_TEXT_SIZE) * MARKDOWN_LINE_HEIGHT))
             .items_center()
             .gap_1()
-            .child(chevron_slot)
             .child(bullet);
 
         let is_active_editor = self.editor_mode == EditorMode::Editing
@@ -2545,6 +2397,7 @@ impl AppShell {
             let (editor_text_size, editor_weight) = markdown_edit_style(&editor_markdown);
             div()
                 .flex_1()
+                .min_w_0()
                 .child(
                     Input::new(&markdown_input)
                         .appearance(false)
@@ -2559,14 +2412,17 @@ impl AppShell {
             // Placeholder for empty nodes in view mode.
             div()
                 .flex_1()
-                .cursor_text()
+                .min_w_0()
+                .cursor_pointer()
                 .on_mouse_down(
                     MouseButton::Left,
-                    cx.listener(move |this, _event, window, cx| {
-                        this.select_node(node_id, window, cx);
-                        this.markdown_input.update(cx, |state, cx| {
-                            state.focus(window, cx);
-                        });
+                    cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                        if event.click_count == 2 {
+                            this.select_node(node_id, window, cx);
+                        } else {
+                            this.select_node_no_edit(node_id, cx);
+                            this.toggle_collapse_synced(cx);
+                        }
                     }),
                 )
                 .child(
@@ -2574,6 +2430,7 @@ impl AppShell {
                         .text_color(rgb(colors.text_muted))
                         .text_size(MARKDOWN_TEXT_SIZE)
                         .line_height(relative(MARKDOWN_LINE_HEIGHT))
+                        .whitespace_normal()
                         .child("Type something…"),
                 )
         } else {
@@ -2581,15 +2438,18 @@ impl AppShell {
             let heading = depth_to_heading_style(row.depth);
             let (title, body) = split_root_markdown(&row.markdown);
             let has_body = !body.trim().is_empty();
-            let click_listener = cx.listener(move |this, _event: &MouseDownEvent, window, cx| {
-                this.select_node(node_id, window, cx);
-                this.markdown_input.update(cx, |state, cx| {
-                    state.focus(window, cx);
-                });
+            let click_listener = cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                if event.click_count == 2 {
+                    this.select_node(node_id, window, cx);
+                } else {
+                    this.select_node_no_edit(node_id, cx);
+                    this.toggle_collapse_synced(cx);
+                }
             });
             div()
                 .flex_1()
-                .cursor_text()
+                .min_w_0()
+                .cursor_pointer()
                 .on_mouse_down(MouseButton::Left, click_listener)
                 .child(
                     div()
@@ -2597,6 +2457,7 @@ impl AppShell {
                         .font_weight(heading.font_weight)
                         .line_height(relative(MARKDOWN_LINE_HEIGHT))
                         .text_color(rgb(colors.text))
+                        .whitespace_normal()
                         .child(title),
                 )
                 .when(has_body, |this| {
@@ -2626,19 +2487,31 @@ impl AppShell {
         let is_locked = row.locked;
 
         let mut row_el = div()
+            .id(row_element_id)
             .w_full()
             .flex()
             .flex_col()
             .px(padding.0)
             .py(padding.1)
             .group(group_id)
-            // Editing mode: left border indicator on this node's row
+            // Editing mode: blue border around the node
             .when(is_active_editor, |this| {
-                this.border_l_2().border_color(rgb(colors.border))
+                this.border_1()
+                    .border_color(rgb(colors.text_accent))
+                    .rounded(px(4.0))
             })
             // Locked branch: subtle amber/orange left border
             .when(is_locked && !is_active_editor, |this| {
                 this.border_l_2().border_color(rgb(0xf59e0b))
+            })
+            // Click outside this node exits edit mode
+            .when(is_active_editor, |this| {
+                this.on_mouse_down_out(cx.listener(move |this, _event: &MouseDownEvent, _window, cx| {
+                    this.save_current_edits(cx);
+                    this.focus_handle.focus(_window);
+                    this.editor_mode = EditorMode::Selection;
+                    cx.notify();
+                }))
             });
 
         let inner_row = div()
@@ -2834,11 +2707,11 @@ impl AppShell {
         let is_collapsed = node.collapsed;
         let children_ids: Vec<NodeId> = node.children.clone();
 
-        // Determine whether this node should receive the blue selection background.
-        // Only the selected node itself and its descendants (children/grandchildren/…)
-        // are highlighted — ancestors and siblings are NOT highlighted.
-        let subtree_highlighted = self.editor_mode == EditorMode::Selection
-            && (is_selected || ancestor_is_selected);
+        // Selection styling: the selected node gets a blue background;
+        // descendant nodes only get a blue left border (subtler indicator).
+        let is_selection_mode = self.editor_mode == EditorMode::Selection;
+        let self_highlighted = is_selection_mode && is_selected;
+        let descendant_highlighted = is_selection_mode && ancestor_is_selected && !is_selected;
 
         // Selection highlight color
         let selection_bg = if self.is_dark_theme() {
@@ -2861,7 +2734,10 @@ impl AppShell {
 
         // Metadata children: code_refs + verification + depends_on + related_to,
         // rendered as child nodes with bullet + indentation (same indent as spec children).
-        let meta_children_el: Option<gpui::AnyElement> = {
+        // Hidden when the node is collapsed (same as real children).
+        let meta_children_el: Option<gpui::AnyElement> = if is_collapsed {
+            None
+        } else {
             let colors = self.theme.styles.colors.clone();
             let code_refs = flat.code_refs.clone();
             let verification = flat.verification.clone();
@@ -3002,12 +2878,17 @@ impl AppShell {
             if meta_els.is_empty() {
                 None
             } else {
+                let indent_color = if self_highlighted || descendant_highlighted {
+                    rgb(0x3B82F6)
+                } else {
+                    rgb(colors.border_variant)
+                };
                 Some(
                     div()
                         .pl(INDENT_PER_LEVEL)
                         .ml(px(25.0))
                         .border_l_1()
-                        .border_color(rgb(colors.border_variant))
+                        .border_color(indent_color)
                         .flex()
                         .flex_col()
                         .children(meta_els)
@@ -3038,12 +2919,17 @@ impl AppShell {
                         .into_any_element(),
                 )
             } else {
+                let indent_color = if self_highlighted || descendant_highlighted {
+                    rgb(0x3B82F6)
+                } else {
+                    rgb(colors.border_variant)
+                };
                 Some(
                     div()
                         .pl(INDENT_PER_LEVEL)
                         .ml(px(25.0)) // align left border under the bullet
                         .border_l_1()
-                        .border_color(rgb(colors.border_variant))
+                        .border_color(indent_color)
                         .flex()
                         .flex_col()
                         .children(child_els)
@@ -3054,16 +2940,32 @@ impl AppShell {
             None
         };
 
+        // Wrap the node's own row with selection/change highlight (not children).
+        let has_collapsed_children = is_collapsed && !children_ids.is_empty();
+        let this_row_wrapped = div()
+            .w_full()
+            .when(self_highlighted, |this| this.bg(selection_bg))
+            .when(is_recently_changed && !self_highlighted, |this| this.bg(recently_changed_bg))
+            .child(this_row)
+            // Collapsed indicator: small blue thick line at bottom-left
+            .when(has_collapsed_children, |this| {
+                this.child(
+                    div()
+                        .ml(px(25.0))
+                        .w(px(18.0))
+                        .h(px(3.0))
+                        .rounded(px(1.5))
+                        .bg(rgb(0x3B82F6))
+                )
+            });
+
         // Outer container: wraps this node's row + children.
-        // Blue background goes here so it covers the whole subtree as one block.
         div()
             .w_full()
             .max_w(MAX_CONTENT_WIDTH)
             .flex()
             .flex_col()
-            .when(subtree_highlighted, |this| this.bg(selection_bg))
-            .when(is_recently_changed && !subtree_highlighted, |this| this.bg(recently_changed_bg))
-            .child(this_row)
+            .child(this_row_wrapped)
             .children(meta_children_el)
             .children(children_el)
             .into_any_element()
@@ -3202,32 +3104,16 @@ impl Render for AppShell {
             .map(|id| self.render_node(id, false, false, 0, window, cx))
             .collect();
 
-        // Determine if any root agent is active — used for message bar and detail panel.
-        let active_agent_id: Option<String> = self
-            .state
-            .active_agents()
-            .next()
-            .map(|a| a.agent_id.clone());
-
         // Detail panel (open for specific agent).
         let detail_agent_id: Option<String> = self.state.detail_agent_id.clone();
         let detail_panel_el: Option<gpui::AnyElement> = detail_agent_id
             .as_deref()
             .map(|id| self.render_detail_panel(id, window, cx));
 
-        // Message bar (shown when any agent is active).
-        let message_bar_el: Option<gpui::AnyElement> = active_agent_id
-            .as_deref()
-            .map(|id| self.render_message_bar(id, window, cx));
-
-        // Launch dialog overlay (shown when bullet is clicked on a node with no active agent).
-        let launch_dialog_spec_ref: Option<String> = self.state.launch_dialog_node.clone();
-        let launch_dialog_el: Option<gpui::AnyElement> = launch_dialog_spec_ref
-            .as_deref()
-            .map(|spec_ref| self.render_launch_dialog(spec_ref, window, cx));
+        // Always-visible bottom bar.
+        let bottom_bar_el = self.render_bottom_bar(window, cx);
 
         root
-            .relative() // needed so absolute-positioned dialog overlay works
             .child(titlebar)
             // Main content row: tree area + optional detail panel side-by-side
             .child(
@@ -3268,9 +3154,7 @@ impl Render for AppShell {
                     // Optional detail panel
                     .children(detail_panel_el),
             )
-            // Optional message bar at the bottom
-            .children(message_bar_el)
-            // Optional launch dialog floating overlay
-            .children(launch_dialog_el)
+            // Always-visible bottom bar
+            .child(bottom_bar_el)
     }
 }

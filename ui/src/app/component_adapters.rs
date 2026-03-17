@@ -1,41 +1,9 @@
 use gpui::*;
-use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::input::{Input, InputState};
-use gpui_component::Sizable;
 
-use super::actions::UiAction;
 use super::state::MetadataEditTarget;
 use super::AppShell;
 use crate::services::backend_client::CodeRefPreview;
-
-pub fn render_chevron(
-    collapsed: bool,
-    has_children: bool,
-    is_root: bool,
-    node_id: crate::app::state::NodeId,
-    cx: &mut Context<AppShell>,
-) -> Option<gpui::AnyElement> {
-    if !has_children || is_root {
-        return None;
-    }
-
-    let chevron_icon = if collapsed { "▶" } else { "▼" };
-
-    let button = Button::new(("chevron", node_id))
-        .child(chevron_icon)
-        .xsmall()
-        .ghost()
-        .text_color(gpui::rgb(0x9CA3AF)) // Light gray
-        .on_mouse_down(
-            MouseButton::Left,
-            cx.listener(move |this, _event, _window, cx| {
-                this.apply(UiAction::SelectNode(node_id), cx);
-                this.apply(UiAction::ToggleCollapse, cx);
-            }),
-        );
-
-    Some(button.into_any_element())
-}
 
 // ── Shared bullet row layout ──────────────────────────────────────────────────
 
@@ -122,13 +90,9 @@ pub fn render_metadata_child(
         .flex()
         .flex_row()
         .items_start()
-        .gap_1()
+        .gap_2()
         .px(px(10.0))
         .py(px(2.0))
-        .child(
-            // spacer matching the invisible chevron slot width
-            div().w(px(24.0)),
-        )
         .child(bullet)
         .child(content)
 }
@@ -138,12 +102,11 @@ pub fn render_metadata_child(
 const PREVIEW_HEAD: usize = 5;
 const PREVIEW_TAIL: usize = 3;
 
-/// Render a code reference as a bullet child node.
+/// Render a code reference as a child node that looks like a normal tree node.
 ///
-/// Two states:
-/// - **Normal** (`is_editing = false`): rich card — file path header + code body preview.
-///   Clicking the header activates inline editing.
-///   Clicking the code body toggles expand / collapse.
+/// - **Normal** (`is_editing = false`): file path as title + code body preview below.
+///   Clicking the title activates inline editing.
+///   Clicking the code body toggles expand / collapse of the preview.
 /// - **Editing** (`is_editing = true`): shows the shared `markdown_input` as an inline
 ///   `Input` pre-filled with `{{code_ref: \`raw_ref\`}}`. Blur/save returns to normal.
 pub fn render_code_ref_child(
@@ -158,42 +121,35 @@ pub fn render_code_ref_child(
     colors: &crate::theme::ThemeColors,
     cx: &mut Context<AppShell>,
 ) -> gpui::AnyElement {
-    let bullet = meta_bullet(colors);
-
-    // Encode node_id + ref_index into a u64 key for ElementId uniqueness.
     let element_key: u64 = ((node_id as u64) << 20) | (ref_index as u64);
 
     let content: gpui::AnyElement = if is_editing {
-        // ── Editing mode: inline Input ────────────────────────────────────────
         if let Some(input_entity) = markdown_input {
             div()
                 .flex_1()
-                .pt(px(3.0))
                 .child(
                     Input::new(input_entity)
                         .appearance(false)
                         .bordered(false)
                         .px(px(0.0))
                         .py(px(0.0))
-                        .text_sm()
-                        .font_family(crate::app::typography::CODE_FONT_FAMILY),
+                        .text_size(crate::app::typography::MARKDOWN_TEXT_SIZE)
+                        .font_family(crate::app::typography::CODE_FONT_FAMILY)
+                        .line_height(relative(crate::app::typography::MARKDOWN_LINE_HEIGHT)),
                 )
                 .into_any_element()
         } else {
-            // Fallback (shouldn't happen)
             let raw_text: SharedString = format!("{{{{code_ref: `{}`}}}}", raw_ref).into();
             div()
                 .flex_1()
-                .text_sm()
+                .text_size(crate::app::typography::MARKDOWN_TEXT_SIZE)
                 .font_family(crate::app::typography::CODE_FONT_FAMILY)
                 .text_color(rgb(colors.text_muted))
-                .pt(px(3.0))
                 .child(raw_text)
                 .into_any_element()
         }
     } else {
-        // ── Normal mode: rich card ────────────────────────────────────────────
-        render_code_ref_rich(
+        render_code_ref_node(
             raw_ref,
             preview,
             node_id,
@@ -206,26 +162,29 @@ pub fn render_code_ref_child(
         )
     };
 
+    // Same row layout as regular nodes: bullet + content
+    let bullet = div()
+        .child("•")
+        .text_color(rgb(0xc0c0c0))
+        .text_size(px(22.0));
+
     div()
         .id(("code-ref-row", element_key))
         .w_full()
         .flex()
         .flex_row()
         .items_start()
-        .gap_1()
+        .gap_2()
         .px(px(10.0))
         .py(px(2.0))
-        .child(
-            // spacer matching the invisible chevron slot width
-            div().w(px(24.0)),
-        )
         .child(bullet)
         .child(content)
         .into_any_element()
 }
 
-/// Renders the rich code-ref card (header + optional code body).
-fn render_code_ref_rich(
+/// Renders a code ref in normal (non-editing) mode, styled like a regular tree node.
+/// Title line: file path + line range. Body: code preview (collapsible).
+fn render_code_ref_node(
     raw_ref: &str,
     preview: Option<&CodeRefPreview>,
     node_id: crate::app::state::NodeId,
@@ -236,46 +195,39 @@ fn render_code_ref_rich(
     colors: &crate::theme::ThemeColors,
     cx: &mut Context<AppShell>,
 ) -> gpui::AnyElement {
-    let header_bg = rgb(colors.element_background);
-    let header_text = rgb(colors.text_muted);
-    let border_color = rgb(colors.border_variant);
-    let code_bg = rgb(colors.background);
-    let code_text = rgb(colors.text);
+    let text_color = rgb(colors.text);
+    let muted_color = rgb(colors.text_muted);
+    let code_bg = rgb(colors.element_background);      // light gray for code body
+    let header_bg = rgb(colors.background);             // white/base background for header
+    let ellipsis_bg = rgb(colors.border_variant);       // slightly darker gray for "…" row
 
-    // ── header: file path  L{start}–L{end} ───────────────────────────────────
-    let (path_label, range_label): (SharedString, SharedString) = match preview {
+    // Build the title: file path + optional line range
+    let title_label: SharedString = match preview {
         Some(p) => {
-            let path: SharedString = match workspace_root {
+            let path = match workspace_root {
                 Some(root) => p
                     .file_path
                     .strip_prefix(root)
                     .unwrap_or(&p.file_path)
                     .trim_start_matches('/')
-                    .to_string()
-                    .into(),
-                None => p.file_path.clone().into(),
+                    .to_string(),
+                None => p.file_path.clone(),
             };
-            let range: SharedString = match (p.line_start, p.line_end) {
-                (Some(s), Some(e)) if s == e => format!("L{}", s).into(),
-                (Some(s), Some(e)) => format!("L{}–L{}", s, e).into(),
-                (Some(s), None) => format!("L{}", s).into(),
-                _ => String::new().into(),
+            let range = match (p.line_start, p.line_end) {
+                (Some(s), Some(e)) if s == e => format!(" L{}", s),
+                (Some(s), Some(e)) => format!(" L{}–L{}", s, e),
+                (Some(s), None) => format!(" L{}", s),
+                _ => String::new(),
             };
-            (path, range)
+            format!("{}{}", path, range).into()
         }
-        None => (raw_ref.to_string().into(), String::new().into()),
+        None => raw_ref.to_string().into(),
     };
 
-    // Clicking the header enters inline editing for this code_ref.
-    let header = div()
+    // Title line — clicking enters inline editing
+    let title = div()
         .id(("code-ref-header", element_key))
         .w_full()
-        .flex()
-        .items_center()
-        .justify_between()
-        .px(px(8.0))
-        .py(px(4.0))
-        .bg(header_bg)
         .cursor_pointer()
         .on_mouse_down(
             MouseButton::Left,
@@ -287,29 +239,30 @@ fn render_code_ref_rich(
                 );
             }),
         )
-        .child(
-            div()
-                .text_xs()
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(header_text)
-                .child(path_label),
-        )
-        .child(div().text_xs().text_color(header_text).child(range_label));
+        .px(px(6.0))
+        .py(px(3.0))
+        .bg(header_bg)
+        .text_xs()
+        .font_family(crate::app::typography::CODE_FONT_FAMILY)
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(text_color)
+        .whitespace_normal()
+        .child(title_label);
 
-    // ── code body — clicking toggles expand/collapse ──────────────────────────
-    let code_body: Option<gpui::AnyElement> = preview.map(|p| {
-        let body: gpui::AnyElement = if let Some(err) = &p.error {
+    // Code body preview — clicking toggles expand/collapse
+    let code_body: Option<gpui::AnyElement> = preview.and_then(|p| {
+        if let Some(err) = &p.error {
             let err_msg: SharedString = format!("error: {}", err).into();
-            div()
-                .w_full()
-                .px(px(8.0))
-                .py(px(6.0))
-                .bg(code_bg)
-                .text_xs()
-                .font_family(crate::app::typography::CODE_FONT_FAMILY)
-                .text_color(rgb(colors.text_muted))
-                .child(err_msg)
-                .into_any_element()
+            Some(
+                div()
+                    .text_xs()
+                    .font_family(crate::app::typography::CODE_FONT_FAMILY)
+                    .text_color(muted_color)
+                    .child(err_msg)
+                    .into_any_element(),
+            )
+        } else if p.content.is_empty() {
+            None
         } else {
             let all_lines: Vec<&str> = p.content.lines().collect();
             let total = all_lines.len();
@@ -334,67 +287,70 @@ fn render_code_ref_rich(
                     lines
                 };
 
-            div()
-                .w_full()
-                .px(px(8.0))
-                .py(px(6.0))
-                .bg(code_bg)
-                .flex()
-                .flex_col()
-                .children(display_lines.into_iter().map(|line| {
-                    let is_ellipsis = line.as_ref() == "…";
-                    div()
-                        .text_xs()
-                        .font_family(crate::app::typography::CODE_FONT_FAMILY)
-                        .text_color(if is_ellipsis {
-                            rgb(colors.text_muted)
+            Some(
+                div()
+                    .id(("code-ref-body", element_key))
+                    .mt(px(2.0))
+                    .px(px(6.0))
+                    .py(px(4.0))
+                    .bg(code_bg)
+                    .rounded(px(3.0))
+                    .cursor_pointer()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _event, _window, cx| {
+                            let key = (node_id, ref_index);
+                            if this.expanded_code_refs.contains(&key) {
+                                this.expanded_code_refs.remove(&key);
+                            } else {
+                                this.expanded_code_refs.insert(key);
+                            }
+                            cx.notify();
+                        }),
+                    )
+                    .flex()
+                    .flex_col()
+                    .children(display_lines.into_iter().map(|line| {
+                        let is_ellipsis = line.as_ref() == "…";
+                        if is_ellipsis {
+                            div()
+                                .w_full()
+                                .py(px(1.0))
+                                .bg(ellipsis_bg)
+                                .rounded(px(2.0))
+                                .text_xs()
+                                .text_color(muted_color)
+                                .font_family(crate::app::typography::CODE_FONT_FAMILY)
+                                .text_align(gpui::TextAlign::Center)
+                                .child(line)
                         } else {
-                            code_text
-                        })
-                        .child(if line.as_ref().is_empty() {
-                            SharedString::from(" ".to_string())
-                        } else {
-                            line
-                        })
-                }))
-                .into_any_element()
-        };
-
-        // Clicking the code body toggles expand/collapse.
-        div()
-            .id(("code-ref-body", element_key))
-            .w_full()
-            .border_t_1()
-            .border_color(border_color)
-            .cursor_pointer()
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |this, _event, _window, cx| {
-                    let key = (node_id, ref_index);
-                    if this.expanded_code_refs.contains(&key) {
-                        this.expanded_code_refs.remove(&key);
-                    } else {
-                        this.expanded_code_refs.insert(key);
-                    }
-                    cx.notify();
-                }),
+                            div()
+                                .text_xs()
+                                .font_family(crate::app::typography::CODE_FONT_FAMILY)
+                                .text_color(text_color)
+                                .child(if line.as_ref().is_empty() {
+                                    SharedString::from(" ".to_string())
+                                } else {
+                                    line
+                                })
+                        }
+                    }))
+                    .into_any_element(),
             )
-            .child(body)
-            .into_any_element()
+        }
     });
 
-    // ── outer card wrapper ────────────────────────────────────────────────────
+    // Normal node layout: title + optional body below, with a subtle border
     div()
         .flex_1()
-        .mt(px(2.0))
-        .mb(px(2.0))
-        .rounded(px(4.0))
-        .border_1()
-        .border_color(border_color)
-        .overflow_hidden()
+        .min_w_0()
         .flex()
         .flex_col()
-        .child(header)
+        .border_1()
+        .border_color(rgb(colors.border_variant))
+        .rounded(px(6.0))
+        .overflow_hidden()
+        .child(title)
         .children(code_body)
         .into_any_element()
 }
