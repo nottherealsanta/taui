@@ -1,226 +1,603 @@
-# Spec Tree Standards
+Project Specs Standards
 
-This document is the canonical specification for Taui's spec system.
+Purpose
 
-Taui is spec-first. Projects are authored as a tree that starts at high-level intent and narrows down to implementation details, verification, and code references. Agents and users collaborate in the same tree.
+This document defines the standard for creating, maintaining, and navigating a specs/ directory in a software project. The specs/ directory is the shared project knowledge surface for both humans and AI agents. It exists to keep intent, architecture, constraints, decisions, implementation context, and verification closely linked without duplicating the source code repository.
 
-## Core model
+The standards in this document are designed to make a project understandable, navigable, and editable at scale. They optimize for three goals:
+	1.	Shared understanding — humans and agents should work from the same project context.
+	2.	Scoped context — any local task should inherit the right amount of global and domain-specific context.
+	3.	Linked execution — specs should remain tied to code, tests, and decisions so they stay operational rather than becoming passive documentation.
 
-- Spec files live under `specs/`.
-- Root entry file is `specs/_main.md`.
-- The tree is list-driven: every node is a markdown list item.
-- Nodes can include heading prefixes (`#`, `##`, etc.) in the list-item text.
-- Heading prefixes are part of node markdown and do not create nodes on their own.
-- L0 (project name) does not use a heading prefix.
+⸻
 
-- ## Tree syntax (list of list)
+Core Principles
 
-Each node is a list item. Nesting is represented by indentation.
+1. The specs/ directory is the project knowledge interface
 
-- Use **4 spaces per level**.
-- Use `- ` for list items (parser also accepts `*` and `+`).
-- Heading convention:
-  - L0 project node: plain text (`- Example Project`)
-  - L1 node text starts with `# `
-  - L2 node text starts with `## `
-  - L3 node text starts with `### `
-  - and so on
+The specs/ directory is the primary place to understand how the project is intended to work. It is not a replacement for code, tests, or operational systems. Instead, it provides the structure and narrative that connects them.
+
+The specs/ directory should answer:
+	•	what the project is trying to achieve,
+	•	how the project is organized,
+	•	what constraints must always hold,
+	•	why major decisions were made,
+	•	where relevant code lives,
+	•	how correctness is verified.
+
+2. Specs must be readable by humans and parseable by agents
+
+All spec files must be easy for engineers to read directly. At the same time, they must have enough structural consistency that an agent can navigate them reliably.
+
+This means:
+	•	predictable file locations,
+	•	predictable headings,
+	•	lightweight frontmatter,
+	•	explicit links to related specs, code, tests, and decisions,
+	•	stable section anchors for important sections.
+
+3. Specs should describe intent and constraints, not duplicate implementation
+
+Specs must not become a second copy of the codebase.
+
+Specs should primarily contain:
+	•	purpose,
+	•	user or business outcomes,
+	•	constraints,
+	•	architecture and design context,
+	•	decisions,
+	•	references to implementation,
+	•	references to verification.
+
+Implementation details should live in code. Specs should refer to code rather than reproduce it, except when a small snippet is needed to explain a design or review a specific change.
+
+4. Hierarchy is for context inheritance, not ontology purity
+
+The structure of specs/ is hierarchical so that context can be inherited progressively.
+
+For example:
+	•	main.md defines project-wide context,
+	•	domain files inherit project-wide context,
+	•	feature files inherit project-wide and domain context,
+	•	decisions may be linked across multiple domains and features.
+
+This hierarchy exists to help humans and agents load the right slice of context. It must not force every project concept into a rigid tree.
+
+5. Every important spec must link outward to reality
+
+A spec is only useful if it is grounded in the actual project. Important spec files should link to:
+	•	relevant code,
+	•	relevant tests,
+	•	relevant decisions,
+	•	related specs,
+	•	operational or verification evidence when appropriate.
+
+⸻
+
+Standard Directory Structure
+
+At minimum, every project using this standard should contain:
+
+specs/
+  main.md
+  standards.md
+  architecture.md
+  domains/
+  features/
+  decisions/
+
+A fuller layout may look like:
+
+specs/
+  main.md
+  standards.md
+  architecture.md
+  glossary.md
+  domains/
+    auth.md
+    billing.md
+    onboarding.md
+  features/
+    login-flow.md
+    invoice-retries.md
+  decisions/
+    0001-auth-strategy.md
+    0002-billing-ledger.md
+  workflows/
+    release.md
+    incident-response.md
+  templates/
+    domain-template.md
+    feature-template.md
+    decision-template.md
+
+Required files
+
+specs/main.md
+The project entry point. This file provides the global project brief and the table of contents for the specs/ directory.
+
+specs/standards.md
+This standards document. It defines the rules agents and humans must follow when creating and maintaining the specs/ directory.
+
+specs/architecture.md
+A project-wide architecture overview describing major components, boundaries, and system shape.
+
+specs/domains/*.md
+Domain-level documents describing major product or technical areas.
+
+specs/features/*.md
+Feature-level documents describing specific user-facing or system-facing capabilities.
+
+specs/decisions/*.md
+Decision records documenting important architectural or product choices.
+
+⸻
+
+File Roles
+
+main.md
+
+main.md is the inheritance root for the entire specs/ directory. It should remain short, clear, and highly curated.
+
+It must contain:
+	•	project purpose,
+	•	how to use the specs/ directory,
+	•	global constraints,
+	•	major domains,
+	•	links to architecture, key features, and key decisions,
+	•	guidance for agents working in the project.
+
+Domain files
+
+A domain file describes a major project area such as auth, billing, onboarding, infrastructure, or analytics.
+
+A domain file should explain:
+	•	what the domain owns,
+	•	what it does not own,
+	•	invariants that must always hold,
+	•	important interfaces,
+	•	major code locations,
+	•	critical tests,
+	•	major related features and decisions.
+
+Feature files
+
+A feature file describes a concrete unit of work or capability. It should be scoped tightly enough that an agent or engineer can use it as a working context packet.
+
+A feature file should explain:
+	•	what problem the feature solves,
+	•	expected user or business outcomes,
+	•	scope and non-scope,
+	•	design and edge cases,
+	•	implementation references,
+	•	verification requirements,
+	•	open questions or follow-up items.
+
+Decision files
+
+Decision files capture why an important choice was made. They provide durable memory so that future humans and agents do not repeatedly undo deliberate tradeoffs.
+
+A decision file should explain:
+	•	context,
+	•	the decision,
+	•	alternatives considered,
+	•	consequences and tradeoffs,
+	•	related specs and code.
+
+⸻
+
+Required Frontmatter
+
+Every file in specs/ except templates must begin with YAML frontmatter.
+
+The minimum standard is:
+
+---
+title: Login Flow
+type: feature
+status: active
+owners:
+  - auth-team
+domain: auth
+depends_on:
+  - specs/domains/auth.md
+decision_refs:
+  - specs/decisions/0001-auth-strategy.md
+code_refs:
+  - app/auth/routes.py#login_handler
+test_refs:
+  - tests/auth/test_login.py
+last_updated: 2026-03-20
+---
+
+Required frontmatter fields
+	•	title: human-readable title
+	•	type: one of project, standard, architecture, domain, feature, decision, workflow, glossary, template
+	•	status: one of draft, active, verified, deprecated
+	•	owners: one or more responsible people or teams
+	•	last_updated: date of last meaningful update
+
+Recommended frontmatter fields
+	•	domain
+	•	depends_on
+	•	decision_refs
+	•	code_refs
+	•	test_refs
+
+Frontmatter must remain lightweight. Do not turn it into a complex database schema. The body of the document remains the primary source of meaning.
+
+⸻
+
+Standard Headings
+
+To keep files predictable for both humans and agents, use standard section headings whenever possible.
+
+Required headings for main.md
+	•	# Project Spec
+	•	## Purpose
+	•	## How to Use This Directory
+	•	## Global Constraints
+	•	## Domains
+	•	## Core Architecture
+	•	## Active Features
+	•	## Key Decisions
+	•	## Agent Working Rules
+
+Required headings for domain files
+	•	# <Domain Name>
+	•	## Responsibility
+	•	## Invariants
+	•	## Interfaces
+	•	## Key Components
+	•	## Important Code References
+	•	## Verification
+	•	## Related Features
+	•	## Related Decisions
+
+Required headings for feature files
+	•	# <Feature Name>
+	•	## Purpose
+	•	## User / Business Outcome
+	•	## Scope
+	•	## Constraints
+	•	## Design
+	•	## Code References
+	•	## Tests / Verification
+	•	## Open Questions
+	•	## Related Decisions
+
+Required headings for decision files
+	•	# <Decision ID and Title>
+	•	## Status
+	•	## Context
+	•	## Decision
+	•	## Consequences
+	•	## Alternatives Considered
+	•	## References
+
+Files may include additional sections when needed, but the standard headings should remain present and recognizable.
+
+⸻
+
+Stable References and Anchors
+
+Agents must be able to refer to specific parts of a file reliably. For that reason, important sections should include stable anchors.
+
+Accepted patterns include:
+
+## Constraints {#login-flow-constraints}
+
+or:
+
+## Constraints
+<!-- spec:id=login-flow.constraints -->
+
+When anchors are required
+
+Use explicit anchors for:
+	•	constraints,
+	•	design sections,
+	•	verification sections,
+	•	decision statements,
+	•	any section likely to be updated or cited independently.
+
+Anchors should be:
+	•	stable over time,
+	•	descriptive,
+	•	unique within the repo,
+	•	based on file purpose rather than current line numbers.
+
+⸻
+
+Linking Standards
+
+Every important spec file must link to related materials in a predictable way.
+
+Required relationship categories
+
+Most files should include a Related area or equivalent references distributed through the file.
+
+These relationship types are recommended:
+	•	related specs,
+	•	decision refs,
+	•	code refs,
+	•	test refs,
+	•	workflow refs,
+	•	evidence refs when relevant.
+
+Markdown links for spec-to-spec references
+
+Use normal relative markdown links for spec files.
 
 Example:
 
-```md
-- Project
-    Project intent paragraph line 1.
-    Project intent paragraph line 2.
-    - # Feature A
-        Feature A intent.
-        - ## Leaf task
-            - {{code_ref: `src/feature.py`}}
-            - {{verification: pytest tests/test.py -q}}
-```
+- [Auth Domain](../domains/auth.md)
+- [0001 Auth Strategy](../decisions/0001-auth-strategy.md)
 
-## Node content vs child nodes
+Code reference format
 
-Each node is a single markdown block:
+Prefer file path plus symbol reference rather than line numbers.
 
-1. **First line**: the list item line itself (`- # Node heading`)
-2. **Continuation lines**: indented lines under that item that do not start a child list item
+Recommended formats:
 
-Rules:
+- `app/auth/routes.py#login_handler`
+- `app/auth/service.py#authenticate_user`
+- `tests/auth/test_login.py#test_successful_login`
 
-- Continuation text (indented, no new list marker) belongs to the same node markdown block.
-- A nested list item at the next indent level is a child node.
-- Empty lines are allowed inside node content.
+If a more explicit syntax is supported by tooling, use:
 
-Example:
+- `file:app/auth/routes.py#symbol=login_handler`
 
-```md
-- # Task Board
-    Build a small board with columns and cards.
+Line ranges may be used only as snapshots or fallbacks:
 
-    This second paragraph is still Task Board content.
-    - ## Create card workflow
-        Define fields and validation.
-```
+- `file:app/auth/routes.py#L120-L180`
 
-## Cross-file composition and references
+Line-based references are less stable and should not be the primary form when symbol-based references are possible.
 
-There are two link semantics:
+⸻
 
-1. **Tree expansion (composition)** via `{{tree: ...}}` metadata:
+Writing Standards
 
-```md
-- {{tree: [Task Board](./task_board.md)}}
-```
+Write for local usefulness first
 
-- `{{tree: [Title](./file.md)}}` means "inline that spec file's tree here".
-- The value is a standard markdown link — clickable in any markdown viewer.
-- Expansion happens at the same tree level position.
-- This is how multi-file trees are composed.
+Each spec file should be useful on its own to someone actively working in that area. Files should not assume that the reader has loaded the entire project context.
 
-2. **Reference links** via normal markdown links:
+Keep files medium-sized
 
-```md
-[Task Board](task_board.md#task-board)
-```
+Do not create giant monolithic docs. A file should be long enough to explain one area well and short enough to act as an effective context packet.
 
-- Regular `[text](target)` links are references only.
-- They do not inline/expand tree structure.
+As a guideline:
+	•	main.md should be short,
+	•	domain files should be medium-sized,
+	•	feature files should be medium-sized and task-oriented,
+	•	decision files should be concise and durable.
 
-## Directory contract
+Favor explicit constraints
 
-- Root file: `specs/_main.md`.
-- First-level children should be split into separate files/folders where practical:
-  - file node: `specs/<child>.md`
-  - folder node: `specs/<child>/_main.md`
-- Use `{{tree: [Title](./path)}}` from parent files to compose child files into one tree.
+Important rules should be stated directly rather than implied through prose.
 
-## Metadata format (`{{key: value}}`)
+Good:
+	•	Do not reveal whether an email exists during login.
+	•	API responses for v1 clients must remain backward compatible.
 
-- Machine-parseable metadata uses `{{key: value}}`.
-- `status` is required for every actionable node in normal workflows.
-- Canonical status representation is a child metadata item (`- {{status: ...}}`). Inline status on the title line is legacy-compatible but should not be authored in new specs.
-- Metadata should be child list items (not content lines):
+Less good:
+	•	The system should probably continue behaving roughly as before in most cases.
 
-```md
-- Feature
-    Feature description.
-    - {{status: draft}}
-    - {{code_ref: `src/feature.py`}}
-    - {{verification: pytest tests/test_feature.py -q}}
-```
+Separate fact from inference
 
-Examples of supported metadata:
+When documenting the current project, distinguish between:
+	•	what is known,
+	•	what is intended,
+	•	what is inferred,
+	•	what remains unresolved.
 
-    - {{status: value}}
-    - {{tree: [Child File](./child.md)}}
-    - {{depends_on: [Reference](file.md#section)}}
-    - {{related_to: [Reference](file.md#section)}}
-    - {{code_ref: `src/file.py#L10-L20`}}
-    - {{verification: pytest tests/test.py -q}}
+Open questions should be placed in an Open Questions section rather than embedded ambiguously in the design.
 
-Recommended keys:
+Avoid stale duplication
 
-- `status`
-- `tree`
-- `depends_on`
-- `related_to`
-- `code_ref`
-- `verification`
+Do not duplicate code, API schemas, or test content unless the duplication serves a very specific explanatory purpose. Prefer references to canonical artifacts.
 
-## Status model
+⸻
 
-Allowed statuses:
+Agent Navigation Rules
 
-- `draft`
-- `ready`
-- `in_progress`
-- `to_review`
-- `done`
-- `blocked`
+Agents must navigate the specs/ directory using inherited context.
 
-Transitions:
+Required reading order for major work
 
-1. `draft -> ready`
-2. `ready -> in_progress`
-3. `in_progress -> done`
-4. `in_progress -> blocked`
-5. `in_progress -> to_review`
-6. `to_review -> done`
-7. `to_review -> in_progress`
-8. `blocked -> in_progress`
+Before making a significant change, an agent should read, in order:
+	1.	specs/main.md
+	2.	the relevant domain spec,
+	3.	the relevant feature spec if one exists,
+	4.	linked decision files,
+	5.	linked code and test references.
 
-Notes:
+This sequence ensures that local edits remain grounded in project-wide intent and constraints.
 
-- `blocked` means execution should pause until clarified.
-- Legacy `in-progress` may appear; write new status as `in_progress`.
-- `collapsed` is UI state only and should not be written to markdown.
+For small local changes
 
-## Intent extraction
+For narrowly scoped edits, an agent may start from the nearest feature or domain file, but it must still account for inherited global constraints from main.md.
 
-Node intent is derived from the first prose-like content lines under a node.
+When no matching spec exists
 
-- Metadata lines and pure links are ignored for intent.
-- Intent may span multiple lines/paragraphs.
+If an agent cannot find an appropriate feature or domain spec, it should:
+	•	check main.md and architecture.md,
+	•	infer the most relevant domain,
+	•	create a new spec file only if the work introduces new durable project knowledge,
+	•	avoid creating fragmented or redundant specs for one-off ephemeral tasks.
 
-## Code references
+⸻
 
-Use `{{code_ref: ...}}` as a child list item.
+Agent Authoring Rules
 
-Example:
+Agents must treat the specs/ directory as a living operational workspace.
 
-```md
-- ## Feature implementation
-    - {{code_ref: `src/server.py`}}
-    - {{code_ref: `src/server.py#L34-L45`}}
-```
+When agents must update specs
 
-## Verification evidence
+An agent must update related specs when it changes any of the following:
+	•	user-visible behavior,
+	•	domain constraints,
+	•	architecture boundaries,
+	•	implementation ownership assumptions,
+	•	important code references,
+	•	verification requirements,
+	•	major design decisions.
 
-Use `{{verification: ...}}` as a child list item.
+When agents must create a decision record
 
-Example:
+Create a new file in specs/decisions/ when a change:
+	•	introduces a new architectural pattern,
+	•	changes a long-lived interface contract,
+	•	changes an important tradeoff,
+	•	formalizes a significant product or system decision,
+	•	would be difficult to understand later without rationale.
 
-```md
-- ## Feature implementation
-    - {{verification: pytest tests/test_auth.py -q}}
-```
+When agents should not create new spec files
 
-## Dependencies and traversal
+Do not create a new spec file for:
+	•	trivial implementation cleanup,
+	•	purely local refactors with no change in system behavior or meaning,
+	•	temporary debugging notes,
+	•	information better represented as code comments or tests.
 
-- Primary traversal follows tree edges (list nesting + `{{tree: ...}}` expansion).
-- Dependency edges from `{{depends_on: ...}}` are secondary constraints.
-- Do not introduce dependency cycles.
+Required agent behaviors
 
-## Traceability tiers
+Agents should:
+	•	prefer editing existing specs over creating redundant ones,
+	•	preserve stable anchors when editing files,
+	•	maintain consistent headings and frontmatter,
+	•	add links rather than duplicate content,
+	•	update last_updated when making meaningful changes,
+	•	keep wording clear and direct,
+	•	keep specs synchronized with behavior-changing code updates.
 
-- `done` nodes are strict:
-  - include relevant `code_ref`
-  - include verification evidence
-- Other statuses are flexible.
+⸻
 
-## Non-negotiable invariants
+Human Navigation Guidance
 
-1. No major coding task without target node(s) in `specs/`.
-2. No silent spec drift; use explicit amendment/clarification.
-3. `done` requires verification-level evidence and code references.
+Humans should be able to use the specs/ directory as a progressive map of the project.
 
-## End-to-end example
+Recommended navigation pattern:
+	•	start at main.md for project-wide context,
+	•	move to a domain file for bounded area context,
+	•	move to a feature file for task-level context,
+	•	follow links to decisions, code, and tests as needed.
 
-```md
-- Shared Lists App
-    Build a collaborative app where many users share lists.
-    - {{status: ready}}
-    - {{tree: [Server](./server.md)}}
-    - {{tree: [Client](./client.md)}}
-```
+The specs/ directory should support both zooming out and zooming in.
 
-```md
-- # Server
-    - {{status: in_progress}}
-    - ## List sharing endpoint
-        - {{status: in_progress}}
-        - {{depends_on: [Auth model](server.md#auth-model)}}
-        - {{code_ref: `taui/server/routes/lists.py#L88-L170`}}
-        - {{verification: pytest tests/test_shared_links.py -q}}
-```
+⸻
+
+Verification Standards
+
+Specs should not only describe behavior; they should also indicate how behavior is verified.
+
+Every important feature or domain file should include verification references such as:
+	•	automated tests,
+	•	integration tests,
+	•	benchmark suites,
+	•	manual checks,
+	•	operational validations,
+	•	linked evidence.
+
+Verification sections should answer:
+	•	how to tell whether this area still works,
+	•	which checks matter most,
+	•	what must be revalidated after change.
+
+When possible, verification should be linked rather than restated.
+
+⸻
+
+Freshness and Maintenance
+
+A spec that is stale is often worse than a spec that does not exist.
+
+Minimum maintenance rules
+	•	Update last_updated when meaningfully changing a file.
+	•	Remove or revise stale references.
+	•	Prefer updating existing docs to adding parallel documents.
+	•	Mark deprecated files as status: deprecated rather than silently abandoning them.
+
+Signals that a spec needs review
+
+A spec likely needs review if:
+	•	linked code has moved or changed substantially,
+	•	behavior has changed but the feature file has not,
+	•	a decision file no longer reflects current architecture,
+	•	verification references are broken or outdated,
+	•	a file has grown too broad and should be split.
+
+⸻
+
+Naming Conventions
+
+Use kebab-case for filenames.
+
+Examples:
+	•	main.md
+	•	architecture.md
+	•	domains/auth.md
+	•	features/login-flow.md
+	•	decisions/0001-auth-strategy.md
+
+Decision files should be numbered and stable. Avoid renumbering existing decision records.
+
+⸻
+
+Anti-Patterns
+
+The following anti-patterns must be avoided:
+
+1. Specs as a second codebase
+
+Do not mirror the implementation line by line in markdown.
+
+2. Giant top-heavy documents
+
+Do not put all project knowledge into main.md or a single architecture file.
+
+3. Orphaned feature specs
+
+Do not create feature files that are not linked from a domain or from main.md when they matter to the project.
+
+4. Unstructured freeform notes
+
+Do not rely on ad hoc notes without headings, references, or ownership.
+
+5. Ambiguous references
+
+Do not write phrases like “the auth code” when an exact file or symbol can be named.
+
+6. Silent divergence
+
+Do not change important behavior in code without updating the related spec context.
+
+⸻
+
+Minimal Example
+
+specs/
+  main.md
+  standards.md
+  architecture.md
+  domains/
+    auth.md
+  features/
+    login-flow.md
+  decisions/
+    0001-auth-strategy.md
+
+This minimal structure is enough to support:
+	•	project-wide context,
+	•	domain-level context,
+	•	feature-level context,
+	•	durable decision memory,
+	•	linked code and verification.
+
+⸻
+
+Standard Operating Rule
+
+A software project should be understandable by starting from specs/main.md, moving into the relevant domain and feature files, and then following links into code, tests, and decisions. Agents and humans should work from the same knowledge surface, with local work inheriting the right context from the broader project.
+
+The purpose of this standard is not to impose documentation overhead. Its purpose is to ensure that project knowledge remains structured, navigable, and operational as the system grows.

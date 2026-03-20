@@ -14,6 +14,7 @@ class SpecFile:
     content_hash: str
     last_seen: float
     mtime_ns: int
+    format: str = "legacy"
 
 
 @dataclass(slots=True)

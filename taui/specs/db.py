@@ -220,7 +220,8 @@ CREATE TABLE IF NOT EXISTS files (
     rel_path TEXT NOT NULL UNIQUE,
     content_hash TEXT NOT NULL,
     last_seen REAL NOT NULL,
-    mtime_ns INTEGER NOT NULL
+    mtime_ns INTEGER NOT NULL,
+    format TEXT NOT NULL DEFAULT 'legacy'
 );
 
 CREATE TABLE IF NOT EXISTS nodes (
@@ -475,6 +476,14 @@ END
         if "agent_id" not in node_columns:
             await self._execute("ALTER TABLE nodes ADD COLUMN agent_id TEXT")
 
+        file_columns = {
+            str(row["name"]) for row in await self._all("PRAGMA table_info(files)")
+        }
+        if "format" not in file_columns:
+            await self._execute(
+                "ALTER TABLE files ADD COLUMN format TEXT NOT NULL DEFAULT 'legacy'"
+            )
+
         ref_columns = {
             str(row["name"]) for row in await self._all("PRAGMA table_info(node_refs)")
         }
@@ -512,22 +521,28 @@ END
         return [dict(row) for row in rows]
 
     async def upsert_file(
-        self, rel_path: str, content_hash: str, mtime_ns: int, now_ts: float
+        self,
+        rel_path: str,
+        content_hash: str,
+        mtime_ns: int,
+        now_ts: float,
+        format: str = "legacy",
     ) -> SpecFile:
         await self._execute(
             """
-INSERT INTO files(rel_path, content_hash, last_seen, mtime_ns)
-VALUES (?, ?, ?, ?)
+INSERT INTO files(rel_path, content_hash, last_seen, mtime_ns, format)
+VALUES (?, ?, ?, ?, ?)
 ON CONFLICT(rel_path) DO UPDATE SET
     content_hash=excluded.content_hash,
     last_seen=excluded.last_seen,
-    mtime_ns=excluded.mtime_ns
+    mtime_ns=excluded.mtime_ns,
+    format=excluded.format
 """,
-            (rel_path, content_hash, now_ts, mtime_ns),
+            (rel_path, content_hash, now_ts, mtime_ns, format),
         )
         await self._conn.commit()
         row = await self._one(
-            "SELECT id, rel_path, content_hash, last_seen, mtime_ns FROM files WHERE rel_path = ?",
+            "SELECT id, rel_path, content_hash, last_seen, mtime_ns, format FROM files WHERE rel_path = ?",
             (rel_path,),
         )
         assert row is not None
@@ -544,21 +559,21 @@ ON CONFLICT(rel_path) DO UPDATE SET
 
     async def get_file(self, rel_path: str) -> SpecFile | None:
         row = await self._one(
-            "SELECT id, rel_path, content_hash, last_seen, mtime_ns FROM files WHERE rel_path = ?",
+            "SELECT id, rel_path, content_hash, last_seen, mtime_ns, format FROM files WHERE rel_path = ?",
             (rel_path,),
         )
         return SpecFile(**row) if row is not None else None
 
     async def get_file_by_id(self, file_id: int) -> SpecFile | None:
         row = await self._one(
-            "SELECT id, rel_path, content_hash, last_seen, mtime_ns FROM files WHERE id = ?",
+            "SELECT id, rel_path, content_hash, last_seen, mtime_ns, format FROM files WHERE id = ?",
             (file_id,),
         )
         return SpecFile(**row) if row is not None else None
 
     async def list_files(self) -> list[SpecFile]:
         rows = await self._all(
-            "SELECT id, rel_path, content_hash, last_seen, mtime_ns FROM files ORDER BY rel_path"
+            "SELECT id, rel_path, content_hash, last_seen, mtime_ns, format FROM files ORDER BY rel_path"
         )
         return [SpecFile(**row) for row in rows]
 

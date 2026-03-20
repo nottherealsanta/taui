@@ -10,8 +10,10 @@ import time
 from .db import NodeUpsert, SpecDB
 from .errors import SpecNotFoundError, SpecValidationError
 from .markdown import (
+    parse_heading_tree,
     parse_list_items,
     parse_markdown_link,
+    parse_yaml_frontmatter,
     slugify,
     strip_inline_metadata,
 )
@@ -80,12 +82,13 @@ class SpecSync:
             text = path.read_text(encoding="utf-8")
             content_hash = sha256(text.encode("utf-8")).hexdigest()
             mtime_ns = path.stat().st_mtime_ns
+            lines = text.splitlines()
+            fmt = self._detect_format(lines)
             file_row = await self.db.upsert_file(
-                rel_path, content_hash, mtime_ns, now_ts
+                rel_path, content_hash, mtime_ns, now_ts, fmt
             )
 
             existing = await self.db.list_node_ids_by_file(file_row.id)
-            lines = text.splitlines()
             nodes, includes, in_file_edges = self._parse_nodes(
                 file_id=file_row.id,
                 rel_path=rel_path,
@@ -207,7 +210,9 @@ class SpecSync:
         visited_files: set[str] = set()
         sort_counter = 0
 
-        root_main = self.spec_root / "_main.md"
+        root_main = self.spec_root / "main.md"
+        if not root_main.exists():
+            root_main = self.spec_root / "_main.md"
         root_rel = self._to_rel_path(root_main)
 
         def visit(rel_path: str, depth_base: int) -> None:
@@ -264,6 +269,123 @@ class SpecSync:
 
         return updates
 
+    def _detect_format(self, lines: list[str]) -> str:
+        """Return 'legacy' or 'standard' based on file content."""
+        for line in lines[:5]:
+            if line.strip() == "---":
+                return "standard"
+        return "legacy"
+
+    def _parse_nodes_standard(
+        self,
+        *,
+        file_id: int,
+        rel_path: str,
+        lines: list[str],
+        existing_ids: dict[str, str],
+    ) -> tuple[list[ParsedNode], list[ParsedInclude], list[tuple[str, str]]]:
+        """Parse a standard-format spec file (YAML frontmatter + markdown headings).
+
+        Creates a synthetic root node from frontmatter (anchor from frontmatter title),
+        then each markdown heading becomes a child node.
+        """
+        out: list[ParsedNode] = []
+        includes: list[ParsedInclude] = []
+        in_file_edges: list[tuple[str, str]] = []
+
+        fm, body_start = parse_yaml_frontmatter(lines)
+        heading_nodes = parse_heading_tree(lines, start=body_start)
+
+        # Synthetic root anchor comes from frontmatter title
+        fm_title = str(fm.get("title", "")).strip()
+        root_anchor = slugify(fm_title) if fm_title else slugify(rel_path.split("/")[-1].replace(".md", ""))
+
+        used_anchors: set[str] = set()
+
+        def make_anchor(title: str) -> str:
+            base = slugify(title)
+            anchor = base
+            suffix = 1
+            while anchor in used_anchors:
+                anchor = f"{base}-{suffix}"
+                suffix += 1
+            used_anchors.add(anchor)
+            return anchor
+
+        # Reserve root anchor
+        used_anchors.add(root_anchor)
+
+        # Create synthetic root node from frontmatter
+        root_id = existing_ids.get(root_anchor) or self.db.new_node_id()
+        root_markdown = fm_title or root_anchor
+
+        root_node = ParsedNode(
+            id=root_id,
+            file_id=file_id,
+            file_rel_path=rel_path,
+            spec_ref=f"{rel_path}#{root_anchor}",
+            anchor=root_anchor,
+            heading_level=1,
+            line_start=1,
+            line_end=None,
+            markdown=root_markdown,
+            lines=[root_markdown],
+        )
+
+        # Apply frontmatter metadata to root node
+        status = fm.get("status")
+        root_node.status = str(status) if status else None
+        code_refs = fm.get("code_refs") or []
+        root_node.code_refs = [str(r) for r in code_refs] if code_refs else []
+        test_refs = fm.get("test_refs") or []
+        if test_refs:
+            root_node.verification = "; ".join(str(r) for r in test_refs)
+        depends_on = fm.get("depends_on") or []
+        root_node.depends_on_targets = [str(d) for d in depends_on] if depends_on else []
+
+        out.append(root_node)
+
+        # heading_index -> node_id mapping for building in_file_edges
+        idx_to_node_id: dict[int, str] = {}
+
+        for hidx, hnode in enumerate(heading_nodes):
+            anchor = make_anchor(hnode.title)
+            node_id = existing_ids.get(anchor) or self.db.new_node_id()
+            idx_to_node_id[hidx] = node_id
+
+            # Build markdown: heading title + body
+            body_text = "\n".join(hnode.body_lines).strip("\n")
+            markdown = hnode.title
+            if body_text:
+                markdown = f"{hnode.title}\n{body_text}"
+
+            parsed_node = ParsedNode(
+                id=node_id,
+                file_id=file_id,
+                file_rel_path=rel_path,
+                spec_ref=f"{rel_path}#{anchor}",
+                anchor=anchor,
+                heading_level=hnode.level,
+                line_start=hnode.line_index + 1,
+                line_end=None,
+                markdown=markdown,
+                lines=[hnode.title] + hnode.body_lines,
+            )
+
+            out.append(parsed_node)
+
+            # Build parent-child edges within the file
+            parent_idx = hnode.parent_index
+            if parent_idx is not None:
+                parent_node_id = idx_to_node_id.get(parent_idx)
+                if parent_node_id is not None:
+                    in_file_edges.append((parent_node_id, node_id))
+            else:
+                # Top-level heading: child of synthetic root
+                in_file_edges.append((root_id, node_id))
+
+        return out, includes, in_file_edges
+
     def _parse_nodes(
         self,
         *,
@@ -272,6 +394,15 @@ class SpecSync:
         lines: list[str],
         existing_ids: dict[str, str],
     ) -> tuple[list[ParsedNode], list[ParsedInclude], list[tuple[str, str]]]:
+        fmt = self._detect_format(lines)
+        if fmt == "standard":
+            return self._parse_nodes_standard(
+                file_id=file_id,
+                rel_path=rel_path,
+                lines=lines,
+                existing_ids=existing_ids,
+            )
+
         out: list[ParsedNode] = []
         includes: list[ParsedInclude] = []
         in_file_edges: list[tuple[str, str]] = []

@@ -675,11 +675,21 @@ def test_outdent_node_moves_up_one_level(tmp_path: Path) -> None:
 
     specs_root = tmp_path / "example_project" / "specs"
     specs_root.mkdir(parents=True, exist_ok=True)
-    (specs_root / "_main.md").write_text(
+    (specs_root / "main.md").write_text(
         "\n".join(
             [
-                "- Example Project",
-                "    Example intent.",
+                "---",
+                "title: Example Project",
+                "type: project",
+                "status: active",
+                "owners:",
+                "  - example-team",
+                "last_updated: 2026-03-20",
+                "---",
+                "",
+                "# Project Spec",
+                "",
+                "Example intent.",
                 "",
             ]
         ),
@@ -702,6 +712,6 @@ def test_outdent_node_moves_up_one_level(tmp_path: Path) -> None:
             tree_resp = json.loads(ws.receive_text())
             nodes = tree_resp["result"]["nodes"]
             assert any(
-                node["spec_ref"] == "example_project/specs/_main.md#example-project"
+                node["spec_ref"] == "example_project/specs/main.md#example-project"
                 for node in nodes
             )

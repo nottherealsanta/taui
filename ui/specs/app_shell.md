@@ -1,6 +1,0 @@
-- # app_shell
-    - status: in-progress
-    - ## layout
-        - intent: clean four-pane interface with spec tree primary.
-    - ## startup
-        - intent: `cargo run` launches GPUI window.

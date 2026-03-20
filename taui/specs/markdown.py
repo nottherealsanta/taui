@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import re
+from typing import Any
 
 ORDERED_LIST_RE = re.compile(r"^\d+\.\s+")
 LIST_ITEM_RE = re.compile(r"^( *)([-*+])\s+(.*\S)?\s*$")
@@ -13,6 +14,15 @@ class Heading:
     level: int
     title: str
     line_index: int
+
+
+@dataclass(slots=True)
+class HeadingNode:
+    level: int
+    title: str
+    line_index: int
+    body_lines: list[str] = field(default_factory=list)
+    parent_index: int | None = None
 
 
 @dataclass(slots=True)
@@ -135,6 +145,123 @@ def extract_headings(lines: list[str]) -> list[Heading]:
             continue
         out.append(Heading(level=level, title=title, line_index=line_number))
     return out
+
+
+def parse_yaml_frontmatter(lines: list[str]) -> tuple[dict[str, Any], int]:
+    """Parse YAML frontmatter from --- delimited block at top of file.
+
+    Returns (metadata_dict, body_start_line_index).
+    If no frontmatter found, returns ({}, 0).
+    """
+    if not lines or lines[0].strip() != "---":
+        return {}, 0
+    end: int | None = None
+    for i in range(1, len(lines)):
+        if lines[i].strip() == "---":
+            end = i
+            break
+    if end is None:
+        return {}, 0
+
+    result: dict[str, Any] = {}
+    current_key: str | None = None
+    current_list: list[str] | None = None
+
+    for line in lines[1:end]:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        # List item continuation
+        if stripped.startswith("- ") and current_key is not None and current_list is not None:
+            current_list.append(stripped[2:].strip())
+            continue
+        # Key-value pair
+        if ":" in stripped:
+            if current_key and current_list is not None:
+                result[current_key] = current_list
+                current_list = None
+            key, _, value = stripped.partition(":")
+            key = key.strip()
+            value = value.strip()
+            if value:
+                result[key] = value
+                current_key = key
+            else:
+                current_key = key
+                current_list = []
+            continue
+
+    if current_key and current_list is not None:
+        result[current_key] = current_list
+
+    return result, end + 1
+
+
+def parse_heading_tree(lines: list[str], start: int = 0) -> list[HeadingNode]:
+    """Parse standard markdown headings into a tree structure.
+
+    Returns a list of HeadingNode objects with parent_index set based on
+    heading level relationships.
+    """
+    nodes: list[HeadingNode] = []
+    # Stack holds (level, index_in_nodes)
+    stack: list[tuple[int, int]] = []
+
+    for line_index in range(start, len(lines)):
+        raw = lines[line_index]
+        stripped = raw.lstrip()
+        if not stripped.startswith("#"):
+            # Accumulate body into the most recent node
+            if nodes:
+                nodes[-1].body_lines.append(raw.rstrip())
+            continue
+        level = len(stripped) - len(stripped.lstrip("#"))
+        if level <= 0:
+            if nodes:
+                nodes[-1].body_lines.append(raw.rstrip())
+            continue
+        title = stripped[level:].strip()
+        if not title:
+            if nodes:
+                nodes[-1].body_lines.append(raw.rstrip())
+            continue
+
+        # Find parent: walk back the stack until we find a node with lower level
+        while stack and stack[-1][0] >= level:
+            stack.pop()
+        parent_index = stack[-1][1] if stack else None
+
+        node = HeadingNode(
+            level=level,
+            title=title,
+            line_index=line_index,
+            body_lines=[],
+            parent_index=parent_index,
+        )
+        node_index = len(nodes)
+        nodes.append(node)
+        stack.append((level, node_index))
+
+    # Strip trailing blank lines from each node's body
+    for node in nodes:
+        while node.body_lines and not node.body_lines[-1].strip():
+            node.body_lines.pop()
+
+    return nodes
+
+
+def extract_metadata_from_frontmatter(fm: dict[str, Any]) -> dict[str, Any]:
+    """Normalize frontmatter keys to the internal metadata format."""
+    return {
+        "status": fm.get("status"),
+        "code_refs": fm.get("code_refs") or [],
+        "test_refs": fm.get("test_refs") or [],
+        "depends_on": fm.get("depends_on") or [],
+        "title": fm.get("title"),
+        "type": fm.get("type"),
+        "domain": fm.get("domain"),
+        "owners": fm.get("owners") or [],
+    }
 
 
 def extract_document_title_and_description(

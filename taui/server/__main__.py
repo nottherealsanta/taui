@@ -6,7 +6,7 @@ from pathlib import Path
 import socket
 import sys
 
-from taui.logging import configure_logging
+from taui.log_config import configure_logging
 
 logger = logging.getLogger(__name__)
 

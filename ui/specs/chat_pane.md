@@ -1,4 +1,0 @@
-- # chat_pane
-    - status: ready
-    - ## steering
-        - intent: send secondary steering messages to root/minion.

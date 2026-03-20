@@ -246,11 +246,21 @@ def test_metadata_only_siblings_do_not_create_nodes(tmp_path: Path) -> None:
 def test_get_tree_uses_custom_specs_path(tmp_path: Path) -> None:
     specs_root = tmp_path / "tests" / "example_project" / "specs"
     specs_root.mkdir(parents=True, exist_ok=True)
-    (specs_root / "_main.md").write_text(
+    (specs_root / "main.md").write_text(
         "\n".join(
             [
-                "- Example Project",
-                "    Example intent.",
+                "---",
+                "title: Example Project",
+                "type: project",
+                "status: active",
+                "owners:",
+                "  - example-team",
+                "last_updated: 2026-03-20",
+                "---",
+                "",
+                "# Project Spec",
+                "",
+                "Example intent.",
                 "",
             ]
         ),
@@ -259,7 +269,7 @@ def test_get_tree_uses_custom_specs_path(tmp_path: Path) -> None:
 
     service = SpecService(workspace=tmp_path, specs_path="tests/example_project/specs")
     refs = {node.spec_ref for node in _run(service.get_tree())}
-    assert "tests/example_project/specs/_main.md#example-project" in refs
+    assert "tests/example_project/specs/main.md#example-project" in refs
 
 
 def test_dev_mode_does_not_create_cache_file(tmp_path: Path) -> None:

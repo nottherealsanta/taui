@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import date
 from hashlib import sha256
 import os
 from pathlib import Path
@@ -46,6 +47,9 @@ class SpecMarkdownWriter:
     async def write_file(self, file_id: int) -> None:
         file_row = await self.db.get_file_by_id(file_id)
         if file_row is None:
+            return
+        if getattr(file_row, "format", "legacy") == "standard":
+            await self._write_file_standard(file_id, file_row)
             return
         nodes = await self.db.get_nodes_for_file(file_id)
         path = (self.workspace / file_row.rel_path).resolve()
@@ -142,6 +146,96 @@ class SpecMarkdownWriter:
         for file_id in list(self._pending):
             await self.write_file(file_id)
             self._pending.discard(file_id)
+
+    @staticmethod
+    def _infer_type_from_path(rel_path: str) -> str:
+        parts = Path(rel_path).parts
+        # parts[0] is the workspace-relative prefix (e.g. "tests/example_project/specs")
+        # look for segments like "domains", "features", "decisions", "architecture"
+        for part in parts:
+            p = part.lower()
+            if p in ("domains", "domain"):
+                return "domain"
+            if p in ("features", "feature"):
+                return "feature"
+            if p in ("decisions", "decision"):
+                return "decision"
+            if p in ("architecture",):
+                return "architecture"
+            if p in ("standards", "standard"):
+                return "standard"
+        name = Path(rel_path).stem.lower()
+        if name in ("main", "index"):
+            return "project"
+        if name in ("architecture",):
+            return "architecture"
+        if name in ("standards", "standard"):
+            return "standard"
+        return "document"
+
+    async def _write_file_standard(self, file_id: int, file_row: object) -> None:
+        """Write a standard-format spec file (YAML frontmatter + markdown headings)."""
+        rel_path: str = getattr(file_row, "rel_path")
+        nodes = await self.db.get_nodes_for_file(file_id)
+        path = (self.workspace / rel_path).resolve()
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        lines: list[str] = []
+
+        root_node = nodes[0] if nodes else None
+
+        # Build frontmatter from root node
+        if root_node is not None:
+            title = root_node.markdown.splitlines()[0].strip().lstrip("#").strip() if root_node.markdown else ""
+            fm_lines: list[str] = ["---"]
+            fm_lines.append(f"title: {title}" if title else "title: ''")
+            fm_lines.append(f"type: {self._infer_type_from_path(rel_path)}")
+            fm_lines.append(f"status: {root_node.status or 'draft'}")
+            fm_lines.append("owners:")
+            fm_lines.append("  - team")
+            fm_lines.append(f"last_updated: {date.today().isoformat()}")
+            if root_node.code_refs:
+                fm_lines.append("code_refs:")
+                for ref in root_node.code_refs:
+                    fm_lines.append(f"  - {ref}")
+            if root_node.verification:
+                fm_lines.append("test_refs:")
+                fm_lines.append(f"  - {root_node.verification}")
+            fm_lines.append("---")
+            fm_lines.append("")
+            lines.extend(fm_lines)
+
+        for node in nodes:
+            heading_level = node.line_start  # heading_level stored in nodes
+            # Re-read actual heading level from DB
+            row = await self.db._one(
+                "SELECT heading_level FROM nodes WHERE id = ?", (node.id,)
+            )
+            level = (row.get("heading_level") if row else None) or 1
+            hashes = "#" * level
+            node_lines = node.markdown.splitlines() if node.markdown else [""]
+            first = node_lines[0].strip().lstrip("#").strip()
+            lines.append(f"{hashes} {first}")
+            if len(node_lines) > 1:
+                body = "\n".join(node_lines[1:]).strip("\n")
+                if body:
+                    lines.append("")
+                    lines.append(body)
+            lines.append("")
+
+        text = "\n".join(lines).rstrip("\n")
+        if text:
+            text += "\n"
+        path.write_text(text, encoding="utf-8")
+
+        updated_hash = sha256(text.encode("utf-8")).hexdigest()
+        mtime_ns = path.stat().st_mtime_ns
+        await self.db.update_file_tracking(
+            file_id,
+            content_hash=updated_hash,
+            mtime_ns=mtime_ns,
+            last_seen=time.time(),
+        )
 
     async def _node_heading_level(self, node_id: str) -> int | None:
         node = await self.db.get_node(node_id)

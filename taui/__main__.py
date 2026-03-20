@@ -9,7 +9,7 @@ import sys
 
 import uvicorn
 
-from taui.logging import configure_logging
+from taui.log_config import configure_logging
 from taui.server.app import create_app
 from taui.specs import SpecDB
 

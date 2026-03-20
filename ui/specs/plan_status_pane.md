@@ -1,4 +1,0 @@
-- # plan_status_pane
-    - status: draft
-    - ## task_graph
-        - intent: render DAG and live task states.

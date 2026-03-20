@@ -1,6 +1,0 @@
-- # state_and_events
-    - status: in-progress
-    - ## app_state
-        - intent: store nodes, selection, edit mode, and chat draft.
-    - ## reducer
-        - intent: typed `UiAction` dispatch for selection/edit/indent/outdent.
