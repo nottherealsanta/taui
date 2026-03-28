@@ -1,9 +1,6 @@
 ---
 title: Login
-type: feature
 status: active
-owners:
-  - example-team
 domain: authentication
 depends_on:
   - specs/domains/authentication.md

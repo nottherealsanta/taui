@@ -147,32 +147,6 @@ class SpecMarkdownWriter:
             await self.write_file(file_id)
             self._pending.discard(file_id)
 
-    @staticmethod
-    def _infer_type_from_path(rel_path: str) -> str:
-        parts = Path(rel_path).parts
-        # parts[0] is the workspace-relative prefix (e.g. "tests/example_project/specs")
-        # look for segments like "domains", "features", "decisions", "architecture"
-        for part in parts:
-            p = part.lower()
-            if p in ("domains", "domain"):
-                return "domain"
-            if p in ("features", "feature"):
-                return "feature"
-            if p in ("decisions", "decision"):
-                return "decision"
-            if p in ("architecture",):
-                return "architecture"
-            if p in ("standards", "standard"):
-                return "standard"
-        name = Path(rel_path).stem.lower()
-        if name in ("main", "index"):
-            return "project"
-        if name in ("architecture",):
-            return "architecture"
-        if name in ("standards", "standard"):
-            return "standard"
-        return "document"
-
     async def _write_file_standard(self, file_id: int, file_row: object) -> None:
         """Write a standard-format spec file (YAML frontmatter + markdown headings)."""
         rel_path: str = getattr(file_row, "rel_path")
@@ -189,10 +163,7 @@ class SpecMarkdownWriter:
             title = root_node.markdown.splitlines()[0].strip().lstrip("#").strip() if root_node.markdown else ""
             fm_lines: list[str] = ["---"]
             fm_lines.append(f"title: {title}" if title else "title: ''")
-            fm_lines.append(f"type: {self._infer_type_from_path(rel_path)}")
             fm_lines.append(f"status: {root_node.status or 'draft'}")
-            fm_lines.append("owners:")
-            fm_lines.append("  - team")
             fm_lines.append(f"last_updated: {date.today().isoformat()}")
             if root_node.code_refs:
                 fm_lines.append("code_refs:")

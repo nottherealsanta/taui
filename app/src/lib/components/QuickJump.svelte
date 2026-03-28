@@ -1,12 +1,16 @@
 <!--
-  8.3 QuickJump.svelte
-  Cmd+P modal: fuzzy finder that navigates to a spec_ref by selecting a node.
-  Searches node labels and spec_refs.
+  QuickJump.svelte
+  Cmd+P modal: fuzzy finder that searches both spec nodes and workspace files.
+  - Spec nodes: instant (in-memory), icon: tree
+  - Files: async search via backend fs/listDir, icon: file
 -->
 <script lang="ts">
   import { tick } from 'svelte'
   import { appState } from '$stores/app-state.svelte'
+  import { fileTree } from '$stores/file-tree.svelte'
+  import { tabStore } from '$stores/tabs.svelte'
   import { dispatch } from '$stores/actions'
+  import { backendClient } from '$services/backend-client'
 
   interface Props {
     onclose: () => void
@@ -17,22 +21,120 @@
   let selectedIndex = $state(0)
   let inputEl: HTMLInputElement | undefined = $state()
 
-  // All spec nodes from the flat tree (includes collapsed children)
-  const allNodes = $derived(
+  // ── Spec node results (instant, in-memory) ─────────────────────────────
+
+  interface JumpItem {
+    kind: 'spec' | 'file'
+    label: string
+    detail: string  // spec_ref or file path
+    nodeId?: number
+    filePath?: string
+  }
+
+  const specItems: JumpItem[] = $derived(
     appState.nodes
-      .map((n, id) => ({ id, label: n.markdown.split('\n')[0].trim() || '…', specRef: n.specRef, depth: 0 }))
-      .filter((n) => n.specRef)
+      .map((n, id) => ({
+        kind: 'spec' as const,
+        label: n.markdown.split('\n')[0].trim() || '...',
+        detail: n.specRef,
+        nodeId: id,
+      }))
+      .filter((n) => n.detail)
   )
 
-  const filtered = $derived(
-    query.trim() === ''
-      ? allNodes.slice(0, 50)
-      : allNodes.filter((n) => {
-          const q = query.toLowerCase()
-          return n.label.toLowerCase().includes(q) || n.specRef.toLowerCase().includes(q)
-        }).slice(0, 50)
-  )
+  // ── File results (from cached file tree + async search) ─────────────────
 
+  let fileSearchResults: JumpItem[] = $state([])
+  let searching = $state(false)
+  let searchTimer: ReturnType<typeof setTimeout> | null = null
+
+  /**
+   * Collect all known files from the file tree cache (already-loaded dirs).
+   */
+  function getCachedFiles(): JumpItem[] {
+    const results: JumpItem[] = []
+    for (const [_dir, entries] of fileTree.entries) {
+      for (const entry of entries) {
+        if (!entry.isDir) {
+          results.push({
+            kind: 'file',
+            label: entry.name,
+            detail: entry.path,
+            filePath: entry.path,
+          })
+        }
+      }
+    }
+    return results
+  }
+
+  // Debounced file search via backend when query changes
+  $effect(() => {
+    const q = query.trim()
+    if (searchTimer) clearTimeout(searchTimer)
+
+    if (q.length === 0) {
+      fileSearchResults = getCachedFiles()
+      return
+    }
+
+    // Start with cached files filtered locally
+    const cached = getCachedFiles().filter((f) => {
+      const lower = q.toLowerCase()
+      return f.label.toLowerCase().includes(lower) || f.detail.toLowerCase().includes(lower)
+    })
+    fileSearchResults = cached
+
+    // Also do an async backend search for deeper results
+    searchTimer = setTimeout(async () => {
+      searching = true
+      try {
+        const result = await backendClient.searchFiles(q, { caseSensitive: false })
+        // Deduplicate by file path — add files from search results that aren't in cached
+        const existing = new Set(cached.map((f) => f.filePath))
+        const extra: JumpItem[] = []
+        const seenPaths = new Set<string>()
+        for (const sr of result.results) {
+          if (!existing.has(sr.filePath) && !seenPaths.has(sr.filePath)) {
+            seenPaths.add(sr.filePath)
+            const name = sr.filePath.split('/').pop() ?? sr.filePath
+            extra.push({
+              kind: 'file',
+              label: name,
+              detail: sr.filePath,
+              filePath: sr.filePath,
+            })
+          }
+        }
+        fileSearchResults = [...cached, ...extra]
+      } catch {
+        // Keep cached results on error
+      } finally {
+        searching = false
+      }
+    }, 200)
+  })
+
+  // ── Combined + filtered results ─────────────────────────────────────────
+
+  const filtered: JumpItem[] = $derived.by(() => {
+    const q = query.trim().toLowerCase()
+
+    // Filter spec items
+    const matchingSpecs = q === ''
+      ? specItems.slice(0, 20)
+      : specItems.filter((n) =>
+          n.label.toLowerCase().includes(q) || n.detail.toLowerCase().includes(q)
+        ).slice(0, 20)
+
+    // File results are already filtered by the effect above
+    const matchingFiles = fileSearchResults.slice(0, 30)
+
+    // Interleave: files first (more common in Obsidian-like usage), then specs
+    return [...matchingFiles, ...matchingSpecs].slice(0, 50)
+  })
+
+  // Reset selection when results change
   $effect(() => {
     void filtered.length
     selectedIndex = 0
@@ -42,8 +144,14 @@
     tick().then(() => inputEl?.focus())
   })
 
-  function jump(nodeId: number) {
-    dispatch({ type: 'selectNode', nodeId })
+  // ── Actions ─────────────────────────────────────────────────────────────
+
+  function select(item: JumpItem) {
+    if (item.kind === 'spec' && item.nodeId !== undefined) {
+      dispatch({ type: 'selectNode', nodeId: item.nodeId })
+    } else if (item.kind === 'file' && item.filePath) {
+      tabStore.openFile(item.filePath)
+    }
     onclose()
   }
 
@@ -57,11 +165,10 @@
     } else if (e.key === 'Enter') {
       e.preventDefault()
       const item = filtered[selectedIndex]
-      if (item) jump(item.id)
+      if (item) select(item)
     }
   }
 
-  // Highlight matching substring
   function highlight(text: string, q: string): string {
     if (!q) return text
     const idx = text.toLowerCase().indexOf(q.toLowerCase())
@@ -73,6 +180,10 @@
       '</mark>' +
       text.slice(idx + q.length)
     )
+  }
+
+  function kindIcon(kind: 'spec' | 'file'): string {
+    return kind === 'spec' ? '🌿' : '📄'
   }
 </script>
 
@@ -94,15 +205,18 @@
         bind:value={query}
         class="search-input"
         type="text"
-        placeholder="Jump to spec node…"
+        placeholder="Search files and spec nodes..."
         autocomplete="off"
         spellcheck="false"
-        aria-label="Node search"
+        aria-label="Quick jump search"
       />
+      {#if searching}
+        <span class="search-spinner">...</span>
+      {/if}
     </div>
 
     <ul class="jump-list" role="listbox">
-      {#each filtered as item, i (item.id)}
+      {#each filtered as item, i (`${item.kind}-${item.detail}`)}
         <!-- svelte-ignore a11y_interactive_supports_focus -->
         <li
           class="jump-item"
@@ -110,20 +224,21 @@
           role="option"
           aria-selected={i === selectedIndex}
           onmouseenter={() => { selectedIndex = i }}
-          onclick={() => jump(item.id)}
+          onclick={() => select(item)}
         >
-          <span class="node-label">{@html highlight(item.label, query)}</span>
-          <span class="spec-ref">{@html highlight(item.specRef, query)}</span>
+          <span class="item-icon">{kindIcon(item.kind)}</span>
+          <span class="item-label">{@html highlight(item.label, query)}</span>
+          <span class="item-detail">{@html highlight(item.detail, query)}</span>
         </li>
       {/each}
       {#if filtered.length === 0}
-        <li class="jump-empty">No matching nodes</li>
+        <li class="jump-empty">{query ? 'No matches found' : 'No files or nodes'}</li>
       {/if}
     </ul>
 
     <div class="jump-footer">
       <span>↑↓ navigate</span>
-      <span>↵ jump</span>
+      <span>↵ open</span>
       <span>Esc close</span>
     </div>
   </div>
@@ -142,7 +257,7 @@
   }
 
   .jump-modal {
-    width: 520px;
+    width: 560px;
     max-width: calc(100vw - 32px);
     background-color: var(--bg-surface);
     border: 1px solid var(--border);
@@ -151,7 +266,7 @@
     display: flex;
     flex-direction: column;
     overflow: hidden;
-    max-height: 420px;
+    max-height: 450px;
   }
 
   .jump-search {
@@ -186,6 +301,18 @@
   }
   .search-input::placeholder { color: var(--fg-muted); }
 
+  .search-spinner {
+    color: var(--fg-muted);
+    font-size: 12px;
+    flex-shrink: 0;
+    animation: pulse 1s ease-in-out infinite;
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 0.4; }
+    50% { opacity: 1; }
+  }
+
   .jump-list {
     list-style: none;
     margin: 0;
@@ -197,7 +324,7 @@
   .jump-item {
     display: flex;
     align-items: baseline;
-    gap: 10px;
+    gap: 8px;
     padding: 6px 14px;
     cursor: pointer;
     transition: background-color 0.1s;
@@ -205,23 +332,32 @@
   .jump-item.active { background-color: var(--element-selected); }
   .jump-item:hover { background-color: var(--element-hover); }
 
-  .node-label {
+  .item-icon {
+    font-size: 12px;
+    flex-shrink: 0;
+    width: 18px;
+    text-align: center;
+  }
+
+  .item-label {
     font-size: 13px;
     color: var(--fg-primary);
     flex-shrink: 0;
-    max-width: 55%;
+    max-width: 45%;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  .spec-ref {
+  .item-detail {
     font-size: 11px;
     font-family: var(--font-mono);
     color: var(--fg-muted);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    flex: 1;
+    min-width: 0;
   }
 
   :global(mark) {

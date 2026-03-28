@@ -95,7 +95,7 @@
   // Auto-scroll output when new lines come in
   $effect(() => {
     // Subscribe to lines length for reactivity
-    const _len = runState.lines.length
+    void runState.lines.length
     if (outputEl) {
       tick().then(() => {
         if (outputEl) outputEl.scrollTop = outputEl.scrollHeight

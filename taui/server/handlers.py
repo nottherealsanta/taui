@@ -166,6 +166,31 @@ class MethodHandlers:
                 return await self._handle_agent_answer_question(params)
             if method == "ui/nodeEdited":
                 return await self._handle_ui_node_edited(params)
+            if method == "fs/listDir":
+                return DispatchResult(
+                    result=await self._handle_fs_list_dir(params),
+                    notifications=[],
+                )
+            if method == "fs/readFile":
+                return DispatchResult(
+                    result=await self._handle_fs_read_file(params),
+                    notifications=[],
+                )
+            if method == "fs/writeFile":
+                return DispatchResult(
+                    result=await self._handle_fs_write_file(params),
+                    notifications=[],
+                )
+            if method == "fs/search":
+                return DispatchResult(
+                    result=await self._handle_fs_search(params),
+                    notifications=[],
+                )
+            if method == "spec/getBacklinks":
+                return DispatchResult(
+                    result=await self._handle_spec_get_backlinks(params),
+                    notifications=[],
+                )
             logger.warning(
                 "Unknown method=%s request_id=%s", method, request.request_id
             )
@@ -247,6 +272,11 @@ class MethodHandlers:
                 "agent/unsubscribe",
                 "agent/answerQuestion",
                 "ui/nodeEdited",
+                "fs/listDir",
+                "fs/readFile",
+                "fs/writeFile",
+                "fs/search",
+                "spec/getBacklinks",
             ],
             "notifications": [
                 "spec/nodeCreated",
@@ -814,15 +844,15 @@ class MethodHandlers:
         """Launch a root agent on a spec branch.
 
         Required params: spec_ref, task
-        Optional params: tier (default "mid"), model, provider
+        Optional params: tier (default "medium"), model, provider
 
         Returns: {agent_id, session_id}
         """
         spec_ref = self._require_str(params, "spec_ref")
         task = self._require_str(params, "task")
-        tier = str(params.get("tier", "mid"))
-        if tier not in ("senior", "mid", "junior"):
-            raise ValueError("tier must be 'senior', 'mid', or 'junior'")
+        tier = str(params.get("tier", "medium"))
+        if tier not in ("high", "medium", "low"):
+            raise ValueError("tier must be 'high', 'medium', or 'low'")
 
         # Ensure DB is initialized
         await self.specs.ensure_initialized()
@@ -1015,3 +1045,251 @@ class MethodHandlers:
                 )
             )
         return DispatchResult(result={"ok": True}, notifications=notifications)
+
+    # ── Filesystem RPC handlers ────────────────────────────────────────────────
+
+    async def _handle_fs_list_dir(self, params: dict[str, Any]) -> dict[str, Any]:
+        """List files and folders in a directory.
+
+        Required params: path (string, relative to workspace root)
+        Returns: {entries: [{name, path, is_dir, extension}, ...]}
+        """
+        rel_path = params.get("path", "")
+        if not isinstance(rel_path, str):
+            raise ValueError("path must be a string")
+
+        workspace = self.specs.workspace.resolve()
+        target = (workspace / rel_path).resolve() if rel_path else workspace
+
+        # Security: ensure target is within workspace
+        if not str(target).startswith(str(workspace)):
+            raise ValueError("path escapes workspace")
+
+        if not target.is_dir():
+            raise ValueError(f"not a directory: {rel_path}")
+
+        entries: list[dict[str, Any]] = []
+        try:
+            for item in sorted(
+                target.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower())
+            ):
+                # Skip hidden files/dirs and __pycache__
+                if item.name.startswith(".") or item.name == "__pycache__":
+                    continue
+                try:
+                    item_rel = str(item.relative_to(workspace))
+                except ValueError:
+                    continue
+                entries.append(
+                    {
+                        "name": item.name,
+                        "path": item_rel,
+                        "is_dir": item.is_dir(),
+                        "extension": item.suffix.lstrip(".") if item.suffix else "",
+                    }
+                )
+        except PermissionError:
+            pass
+
+        return {"entries": entries}
+
+    async def _handle_fs_read_file(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Read file content with optional parsed frontmatter.
+
+        Required params: path (string, relative to workspace root)
+        Returns: {content: string, frontmatter?: object}
+        """
+        rel_path = self._require_str(params, "path")
+        workspace = self.specs.workspace.resolve()
+        target = (workspace / rel_path).resolve()
+
+        # Security: ensure target is within workspace
+        if not str(target).startswith(str(workspace)):
+            raise ValueError("path escapes workspace")
+
+        if not target.is_file():
+            raise ValueError(f"not a file: {rel_path}")
+
+        try:
+            content = target.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise ValueError(f"cannot read file: {exc}") from exc
+
+        # Parse YAML frontmatter if present
+        frontmatter: dict[str, Any] | None = None
+        if content.startswith("---\n"):
+            end = content.find("\n---\n", 4)
+            if end != -1:
+                fm_text = content[4:end]
+                try:
+                    import yaml
+
+                    frontmatter = yaml.safe_load(fm_text)
+                    if not isinstance(frontmatter, dict):
+                        frontmatter = None
+                except Exception:
+                    frontmatter = None
+
+        result: dict[str, Any] = {"content": content}
+        if frontmatter is not None:
+            result["frontmatter"] = frontmatter
+        return result
+
+    async def _handle_fs_write_file(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Write content to a file.
+
+        Required params: path (string), content (string)
+        Returns: {ok: True}
+        """
+        rel_path = self._require_str(params, "path")
+        content = params.get("content", "")
+        if not isinstance(content, str):
+            raise ValueError("content must be a string")
+
+        workspace = self.specs.workspace.resolve()
+        target = (workspace / rel_path).resolve()
+
+        # Security: ensure target is within workspace
+        if not str(target).startswith(str(workspace)):
+            raise ValueError("path escapes workspace")
+
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content, encoding="utf-8")
+        except OSError as exc:
+            raise ValueError(f"cannot write file: {exc}") from exc
+
+        return {"ok": True}
+
+    async def _handle_fs_search(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Full-text search across spec files.
+
+        Required params: query (string)
+        Optional params: regex (bool), case_sensitive (bool), file_pattern (string)
+        Returns: {results: [{file_path, line_number, line_content, match_start, match_end}, ...]}
+        """
+        query = self._require_str(params, "query")
+        use_regex = bool(params.get("regex", False))
+        case_sensitive = bool(params.get("case_sensitive", False))
+        file_pattern = params.get("file_pattern", "*.md")
+        if not isinstance(file_pattern, str):
+            file_pattern = "*.md"
+
+        workspace = self.specs.workspace.resolve()
+        results: list[dict[str, Any]] = []
+        max_results = 200
+
+        # Compile pattern
+        if use_regex:
+            flags = 0 if case_sensitive else re.IGNORECASE
+            try:
+                pattern = re.compile(query, flags)
+            except re.error as exc:
+                raise ValueError(f"invalid regex: {exc}") from exc
+        else:
+            if not case_sensitive:
+                query_lower = query.lower()
+            pattern = None
+
+        # Walk workspace files
+        import fnmatch
+
+        for file_path in sorted(workspace.rglob("*")):
+            if len(results) >= max_results:
+                break
+            if not file_path.is_file():
+                continue
+            if file_path.name.startswith("."):
+                continue
+            if not fnmatch.fnmatch(file_path.name, file_pattern):
+                continue
+
+            # Skip binary files, node_modules, .git, etc.
+            rel = str(file_path.relative_to(workspace))
+            skip_dirs = {".git", "node_modules", "__pycache__", ".venv", "target"}
+            if any(part in skip_dirs for part in rel.split("/")):
+                continue
+
+            try:
+                text = file_path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+
+            for line_num, line in enumerate(text.splitlines(), start=1):
+                if len(results) >= max_results:
+                    break
+
+                if pattern:
+                    m = pattern.search(line)
+                    if m:
+                        results.append(
+                            {
+                                "file_path": rel,
+                                "line_number": line_num,
+                                "line_content": line[:500],
+                                "match_start": m.start(),
+                                "match_end": m.end(),
+                            }
+                        )
+                else:
+                    search_line = line if case_sensitive else line.lower()
+                    search_query = query if case_sensitive else query_lower
+                    idx = search_line.find(search_query)
+                    if idx != -1:
+                        results.append(
+                            {
+                                "file_path": rel,
+                                "line_number": line_num,
+                                "line_content": line[:500],
+                                "match_start": idx,
+                                "match_end": idx + len(query),
+                            }
+                        )
+
+        return {"results": results}
+
+    async def _handle_spec_get_backlinks(
+        self, params: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Find files that link to the given file.
+
+        Required params: file_path (string, relative to workspace)
+        Returns: {backlinks: [{file_path, line_number, context}, ...]}
+        """
+        target_path = self._require_str(params, "file_path")
+        workspace = self.specs.workspace.resolve()
+        backlinks: list[dict[str, Any]] = []
+
+        # Extract the file name and possible references to it
+        target_name = Path(target_path).stem
+        search_patterns = [target_path, target_name]
+
+        for file_path in sorted(workspace.rglob("*.md")):
+            if not file_path.is_file():
+                continue
+            rel = str(file_path.relative_to(workspace))
+            if rel == target_path:
+                continue  # Don't include self
+
+            skip_dirs = {".git", "node_modules", "__pycache__", ".venv", "target"}
+            if any(part in skip_dirs for part in rel.split("/")):
+                continue
+
+            try:
+                text = file_path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+
+            for line_num, line in enumerate(text.splitlines(), start=1):
+                for pattern in search_patterns:
+                    if pattern in line:
+                        backlinks.append(
+                            {
+                                "file_path": rel,
+                                "line_number": line_num,
+                                "context": line.strip()[:200],
+                            }
+                        )
+                        break  # Only count first match per line
+
+        return {"backlinks": backlinks}

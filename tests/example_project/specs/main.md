@@ -1,9 +1,6 @@
 ---
 title: Example Project
-type: project
 status: active
-owners:
-  - example-team
 last_updated: 2026-03-20
 ---
 

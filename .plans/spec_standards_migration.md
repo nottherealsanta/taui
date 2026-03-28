@@ -45,10 +45,7 @@ tests/example_project/specs/
 ```yaml
 ---
 title: Example Project
-type: project
 status: active
-owners:
-  - example-team
 last_updated: 2026-03-20
 ---
 ```
@@ -66,10 +63,7 @@ Content:
 ```yaml
 ---
 title: Spec Standards
-type: standard
 status: active
-owners:
-  - example-team
 last_updated: 2026-03-20
 ---
 ```
@@ -81,10 +75,7 @@ Body: "This project follows the spec standards defined in the root project. See 
 ```yaml
 ---
 title: Architecture
-type: architecture
 status: active
-owners:
-  - example-team
 last_updated: 2026-03-20
 ---
 ```
@@ -98,10 +89,7 @@ Content: Brief description of the three-area system: task management (boards/car
 ```yaml
 ---
 title: Task Management
-type: domain
 status: active
-owners:
-  - example-team
 domain: task-management
 depends_on:
   - specs/domains/data-layer.md
@@ -128,10 +116,7 @@ Content derived from current `_main.md` Task Management section + `task_board.md
 ```yaml
 ---
 title: Authentication
-type: domain
 status: active
-owners:
-  - example-team
 domain: authentication
 code_refs:
   - src/auth.py
@@ -148,10 +133,7 @@ Content derived from current `_main.md` Authentication section:
 ```yaml
 ---
 title: Data Layer
-type: domain
 status: active
-owners:
-  - example-team
 domain: data-layer
 code_refs:
   - src/database.py
@@ -168,10 +150,7 @@ Content derived from current `_main.md` Data Layer section + `database_schema.md
 ```yaml
 ---
 title: Create Task
-type: feature
 status: active
-owners:
-  - example-team
 domain: task-management
 depends_on:
   - specs/domains/task-management.md
@@ -194,10 +173,7 @@ Content:
 ```yaml
 ---
 title: Edit Task
-type: feature
 status: draft
-owners:
-  - example-team
 domain: task-management
 depends_on:
   - specs/domains/task-management.md
@@ -217,10 +193,7 @@ Content:
 ```yaml
 ---
 title: Delete Task
-type: feature
 status: draft
-owners:
-  - example-team
 domain: task-management
 depends_on:
   - specs/domains/task-management.md
@@ -236,10 +209,7 @@ Content:
 ```yaml
 ---
 title: Login
-type: feature
 status: active
-owners:
-  - example-team
 domain: authentication
 depends_on:
   - specs/domains/authentication.md
@@ -258,10 +228,7 @@ Content:
 ```yaml
 ---
 title: Logout
-type: feature
 status: draft
-owners:
-  - example-team
 domain: authentication
 depends_on:
   - specs/domains/authentication.md

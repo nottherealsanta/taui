@@ -51,7 +51,7 @@ class AppState {
   detailAgentId: string | null = $state(null)
 
   // Launch tier
-  launchTier: AgentTier = $state('mid')
+  launchTier: AgentTier = $state('medium')
 
   // Inline metadata editing target
   metadataEditTarget: MetadataEditTarget | null = $state(null)
@@ -183,8 +183,8 @@ class AppState {
 
       const id = this.createNode(bn.spec_ref, bn.markdown, parentId)
 
-      // Collapse nodes deeper than depth 2 by default (root, ## and ### start expanded).
-      this.nodes[id].collapsed = depth > 2
+      // Start fully expanded; persisted local fold state is applied after hydration.
+      this.nodes[id].collapsed = false
       this.nodes[id].status = bn.status ?? null
       this.nodes[id].codeRefs = bn.code_refs ?? []
       this.nodes[id].verification = bn.verification ?? null
@@ -253,7 +253,7 @@ class AppState {
         agentId: info.agentId,
         specRef: info.specRef ?? '',
         state: info.state ?? 'idle',
-        tier: info.tier ?? 'mid',
+        tier: info.tier ?? 'medium',
         toolBrief: info.toolBrief ?? null,
       })
     }
@@ -391,7 +391,10 @@ class AppState {
 
 // ─── Singleton export ─────────────────────────────────────────────────────────
 
-export const appState = new AppState()
+export const appState: AppState = import.meta.hot?.data?.appState ?? new AppState()
+if (import.meta.hot) {
+  import.meta.hot.data.appState = appState
+}
 
 // Re-export for convenience
 export type { AppState }
@@ -417,7 +420,7 @@ export function resetAppState(): void {
   appState.pendingQuestions = []
   appState.detailEvents = new Map()
   appState.detailAgentId = null
-  appState.launchTier = 'mid'
+  appState.launchTier = 'medium'
   appState.metadataEditTarget = null
   appState.runState = { status: 'idle', runId: null, specRef: null, command: null, exitCode: null, lines: [] }
 }

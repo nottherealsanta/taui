@@ -1,9 +1,6 @@
 ---
 title: Create Task
-type: feature
 status: active
-owners:
-  - example-team
 domain: task-management
 depends_on:
   - specs/domains/task-management.md

@@ -4,8 +4,7 @@
   Handles keyboard navigation (up/down/tab/shift-tab/enter/escape/f2).
 -->
 <script lang="ts">
-  import { onMount, tick } from 'svelte'
-  import type { FlatNode } from '$types/index'
+  import { onMount } from 'svelte'
   import TreeRow from './TreeRow.svelte'
   import CodeRefRow from './CodeRefRow.svelte'
   import { appState } from '$stores/app-state.svelte'

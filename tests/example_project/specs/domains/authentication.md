@@ -1,9 +1,6 @@
 ---
 title: Authentication
-type: domain
 status: active
-owners:
-  - example-team
 domain: authentication
 code_refs:
   - src/auth.py

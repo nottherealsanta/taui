@@ -2,22 +2,40 @@
   import { onMount, onDestroy } from 'svelte'
   import { startConnection, stopConnection } from '$services/connection'
   import { appState } from '$stores/app-state.svelte'
+  import { fileTree } from '$stores/file-tree.svelte'
+  import { tabStore } from '$stores/tabs.svelte'
   import { theme } from '$stores/theme.svelte'
   import TitleBar from '$components/TitleBar.svelte'
-  import SpecTreePane from '$components/SpecTreePane.svelte'
-  import AgentDetailPanel from '$components/AgentDetailPanel.svelte'
+  import SplitPane from '$components/SplitPane.svelte'
+  import SpecNavSidebar from '$components/SpecNavSidebar.svelte'
+  import MainPane from '$components/MainPane.svelte'
+  import SearchPanel from '$components/SearchPanel.svelte'
+  import GraphView from '$components/GraphView.svelte'
   import BottomDrawer from '$components/BottomDrawer.svelte'
-  import MessageBar from '$components/MessageBar.svelte'
   import CommandPalette from '$components/CommandPalette.svelte'
   import QuickJump from '$components/QuickJump.svelte'
   import Toast from '$components/Toast.svelte'
 
   onMount(() => {
     startConnection()
-    // Listen for menu events emitted from Tauri backend
     listenMenuEvents()
+    tabStore.restoreSession()
+
+    // Listen for custom events from CommandPalette
+    window.addEventListener('taui:toggle-search', handleToggleSearch)
+    window.addEventListener('taui:toggle-graph', handleToggleGraph)
+    window.addEventListener('taui:toggle-right-sidebar', handleToggleRightSidebar)
   })
-  onDestroy(() => { stopConnection() })
+  onDestroy(() => {
+    stopConnection()
+    window.removeEventListener('taui:toggle-search', handleToggleSearch)
+    window.removeEventListener('taui:toggle-graph', handleToggleGraph)
+    window.removeEventListener('taui:toggle-right-sidebar', handleToggleRightSidebar)
+  })
+
+  function handleToggleSearch() { showSearch = !showSearch }
+  function handleToggleGraph() { showGraph = !showGraph }
+  function handleToggleRightSidebar() { toggleRightSidebar() }
 
   async function listenMenuEvents() {
     try {
@@ -31,28 +49,34 @@
   }
 
   // ── Bottom drawer state ────────────────────────────────────────────────────
-  interface CodePreview {
-    specRef?: string | null
-    filePath: string
-    content: string
-    lineStart: number | null
-    lineEnd: number | null
-    language?: string
-    truncated?: boolean
-    previewStart?: number | null
-    previewEnd?: number | null
-  }
   let drawerOpen = $state(false)
-  let codePreview: CodePreview | null = $state(null)
 
-  function handleShowCode(preview: CodePreview) {
-    codePreview = preview
-    drawerOpen = true
+  // ── Agent pane state ──────────────────────────────────────────────────────
+  let rightSidebarCollapsed = $state(false)
+
+  // Restore agent pane collapsed state from localStorage
+  onMount(() => {
+    try {
+      const collapsed = localStorage.getItem('taui-agent-pane-collapsed')
+      if (collapsed === 'true') rightSidebarCollapsed = true
+    } catch { /* ignore */ }
+  })
+
+  $effect(() => {
+    try {
+      localStorage.setItem('taui-agent-pane-collapsed', String(rightSidebarCollapsed))
+    } catch { /* ignore */ }
+  })
+
+  function toggleRightSidebar() {
+    rightSidebarCollapsed = !rightSidebarCollapsed
   }
 
-  // ── Agent detail panel ─────────────────────────────────────────────────────
-  // Open when a node with an active agent is selected, or user explicitly opens.
-  const detailAgentId = $derived(appState.detailAgentId)
+  // ── Search panel state ────────────────────────────────────────────────────
+  let showSearch = $state(false)
+
+  // ── Graph view state ──────────────────────────────────────────────────────
+  let showGraph = $state(false)
 
   // ── Modals ─────────────────────────────────────────────────────────────────
   let showPalette = $state(false)
@@ -63,20 +87,49 @@
     const meta = e.metaKey || e.ctrlKey
     if (!meta) return
 
+    const tag = (e.target as HTMLElement)?.tagName
+    const isInput = tag === 'INPUT' || tag === 'TEXTAREA'
+
     if (e.key === 'p' && !e.shiftKey) {
-      // Cmd+P → Quick Jump (only when not typing in an input/textarea/monaco)
-      const tag = (e.target as HTMLElement)?.tagName
-      if (tag === 'INPUT' || tag === 'TEXTAREA') return
+      // Cmd+P → Quick Jump
+      if (isInput) return
       e.preventDefault()
       showJump = !showJump
       showPalette = false
     } else if (e.key === 'P' || (e.key === 'p' && e.shiftKey)) {
       // Cmd+Shift+P → Command Palette
-      const tag = (e.target as HTMLElement)?.tagName
-      if (tag === 'INPUT' || tag === 'TEXTAREA') return
+      if (isInput) return
       e.preventDefault()
       showPalette = !showPalette
       showJump = false
+    } else if (e.key === 'f' && e.shiftKey) {
+      // Cmd+Shift+F → Search in files
+      e.preventDefault()
+      showSearch = !showSearch
+    } else if (e.key === 'g' && e.shiftKey) {
+      // Cmd+Shift+G → Graph view
+      e.preventDefault()
+      showGraph = !showGraph
+    } else if (e.key === 's') {
+      // Cmd+S → Save current tab
+      e.preventDefault()
+      tabStore.save()
+    } else if (e.key === 'b' && !e.shiftKey) {
+      // Cmd+B → Toggle left sidebar
+      if (isInput) return
+      e.preventDefault()
+      fileTree.toggleSidebar()
+    } else if (e.key === 'B' || (e.key === 'b' && e.shiftKey)) {
+      // Cmd+Shift+B → Toggle right sidebar
+      if (isInput) return
+      e.preventDefault()
+      toggleRightSidebar()
+    } else if (e.key === 'w') {
+      // Cmd+W → Close current tab
+      e.preventDefault()
+      if (tabStore.activeTabId) {
+        tabStore.closeTab(tabStore.activeTabId)
+      }
     }
   }
 
@@ -92,46 +145,58 @@
   <TitleBar />
 
   <div class="app-body">
-    <!-- Primary spec tree pane -->
-    <div class="main-area">
-      {#if appState.connectionState === 'offline' || appState.connectionState === 'connecting'}
-        <div class="connection-screen">
-          <div class="conn-icon">⚡</div>
-          <p class="conn-status">
-            {appState.connectionState === 'connecting' ? 'Connecting to backend…' : 'Waiting for backend'}
-          </p>
-          <p class="conn-hint">Start with <code>uv run taui</code></p>
-        </div>
-      {:else if typeof appState.connectionState === 'object' && 'error' in appState.connectionState}
-        <div class="connection-screen error">
-          <div class="conn-icon">✗</div>
-          <p class="conn-status">Connection error</p>
-          <p class="conn-hint">{appState.connectionState.error}</p>
-        </div>
-      {:else}
-        <SpecTreePane onshowCode={handleShowCode} />
-      {/if}
-    </div>
+    {#if appState.connectionState === 'offline' || appState.connectionState === 'connecting'}
+      <div class="connection-screen">
+        <div class="conn-icon">⚡</div>
+        <p class="conn-status">
+          {appState.connectionState === 'connecting' ? 'Connecting to backend…' : 'Waiting for backend'}
+        </p>
+        <p class="conn-hint">Start with <code>uv run taui</code></p>
+      </div>
+    {:else if typeof appState.connectionState === 'object' && 'error' in appState.connectionState}
+      <div class="connection-screen error">
+        <div class="conn-icon">✗</div>
+        <p class="conn-status">Connection error</p>
+        <p class="conn-hint">{appState.connectionState.error}</p>
+      </div>
+    {:else}
+      <!-- Three-column Obsidian-like layout -->
+      <SplitPane
+        direction="horizontal"
+        initialSize={250}
+        minSize={150}
+        maxSize={500}
+        storageKey="taui-left-sidebar-width"
+        collapsed={fileTree.sidebarCollapsed}
+      >
+        {#snippet first()}
+          {#if showSearch}
+            <SearchPanel onclose={() => { showSearch = false }} />
+          {:else}
+            <SpecNavSidebar />
+          {/if}
+        {/snippet}
 
-    <!-- Agent detail panel (slide-in right) -->
-    {#if detailAgentId !== null}
-      <AgentDetailPanel
-        agentId={detailAgentId}
-        onclose={() => { appState.detailAgentId = null }}
-      />
+        {#snippet second()}
+          <MainPane agentPaneCollapsed={rightSidebarCollapsed} />
+        {/snippet}
+      </SplitPane>
     {/if}
   </div>
+
+  <!-- Graph view overlay -->
+  {#if showGraph}
+    <div class="graph-overlay">
+      <GraphView onclose={() => { showGraph = false }} />
+    </div>
+  {/if}
 
   <!-- Bottom drawer (Code + Terminal) -->
   {#if drawerOpen}
     <BottomDrawer
-      {codePreview}
-      onclose={() => { drawerOpen = false; codePreview = null }}
+      onclose={() => { drawerOpen = false }}
     />
   {/if}
-
-  <!-- Message bar -->
-  <MessageBar />
 </div>
 
 <!-- Modals (outside app-shell to avoid stacking context issues) -->
@@ -161,14 +226,6 @@
     flex: 1;
     display: flex;
     min-height: 0;
-    overflow: hidden;
-  }
-
-  .main-area {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    min-width: 0;
     overflow: hidden;
   }
 
@@ -210,5 +267,14 @@
 
   .connection-screen.error .conn-icon {
     color: var(--status-error);
+  }
+
+  .graph-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 400;
+    background-color: var(--bg-base);
+    display: flex;
+    flex-direction: column;
   }
 </style>

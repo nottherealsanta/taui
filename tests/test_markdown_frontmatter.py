@@ -15,9 +15,6 @@ def test_parse_frontmatter_with_lists() -> None:
     lines = [
         "---",
         "title: My Feature",
-        "owners:",
-        "  - alice",
-        "  - bob",
         "code_refs:",
         "  - src/foo.py",
         "  - src/bar.py",
@@ -29,10 +26,9 @@ def test_parse_frontmatter_with_lists() -> None:
     ]
     fm, body_start = parse_yaml_frontmatter(lines)
     assert fm["title"] == "My Feature"
-    assert fm["owners"] == ["alice", "bob"]
     assert fm["code_refs"] == ["src/foo.py", "src/bar.py"]
     assert fm["depends_on"] == ["specs/domains/data-layer.md"]
-    assert body_start == 11
+    assert body_start == 8
 
 
 def test_parse_frontmatter_missing() -> None:

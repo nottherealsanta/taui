@@ -16,7 +16,7 @@
   --font-mono: "JetBrains Mono", ui-monospace, "Cascadia Code", monospace;
 
   /* Typography scale (ported from typography.rs) */
-  --text-body: 13px;
+  --text-body: 14px;
   --leading-body: 1.5;
   --text-code: 12px;
 

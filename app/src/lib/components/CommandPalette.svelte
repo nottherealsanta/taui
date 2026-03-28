@@ -8,6 +8,8 @@
   import { appState } from '$stores/app-state.svelte'
   import { dispatch } from '$stores/actions'
   import { theme } from '$stores/theme.svelte'
+  import { fileTree } from '$stores/file-tree.svelte'
+  import { tabStore } from '$stores/tabs.svelte'
   import { backendClient } from '$services/backend-client'
 
   interface Props {
@@ -76,19 +78,54 @@
       run: () => dispatch({ type: 'toggleCollapse' }),
     },
     {
-      label: 'Launch agent (junior)',
-      description: 'Launch a junior agent on selected node',
-      run: () => { appState.launchTier = 'junior' },
+      label: 'Launch agent (low)',
+      description: 'Launch a low-tier agent on selected node',
+      run: () => { appState.launchTier = 'low' },
     },
     {
-      label: 'Launch agent (mid)',
-      description: 'Launch a mid-tier agent on selected node',
-      run: () => { appState.launchTier = 'mid' },
+      label: 'Launch agent (medium)',
+      description: 'Launch a medium-tier agent on selected node',
+      run: () => { appState.launchTier = 'medium' },
     },
     {
-      label: 'Launch agent (senior)',
-      description: 'Launch a senior agent on selected node',
-      run: () => { appState.launchTier = 'senior' },
+      label: 'Launch agent (high)',
+      description: 'Launch a high-tier agent on selected node',
+      run: () => { appState.launchTier = 'high' },
+    },
+    {
+      label: 'Toggle left sidebar',
+      description: 'Show/hide the file tree sidebar (Cmd+B)',
+      run: () => { fileTree.toggleSidebar() },
+    },
+    {
+      label: 'Toggle right sidebar',
+      description: 'Show/hide the right panel (Cmd+Shift+B)',
+      run: () => { window.dispatchEvent(new CustomEvent('taui:toggle-right-sidebar')) },
+    },
+    {
+      label: 'Search in files',
+      description: 'Open global file search (Cmd+Shift+F)',
+      run: () => { window.dispatchEvent(new CustomEvent('taui:toggle-search')) },
+    },
+    {
+      label: 'Open graph view',
+      description: 'Show link graph visualization (Cmd+Shift+G)',
+      run: () => { window.dispatchEvent(new CustomEvent('taui:toggle-graph')) },
+    },
+    {
+      label: 'Close current tab',
+      description: 'Close the active editor tab',
+      run: () => { if (tabStore.activeTabId) tabStore.closeTab(tabStore.activeTabId) },
+    },
+    {
+      label: 'Close all tabs',
+      description: 'Close all open editor tabs',
+      run: () => { tabStore.closeAllTabs() },
+    },
+    {
+      label: 'Save current file',
+      description: 'Save the active file (Cmd+S)',
+      run: () => { tabStore.save() },
     },
   ]
 

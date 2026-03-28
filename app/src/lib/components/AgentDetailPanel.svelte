@@ -117,7 +117,9 @@
         <span class="agent-state">{typeof agent.state === 'string' ? agent.state : 'unknown'}</span>
       {/if}
     </div>
-    <button class="close-btn" onclick={onclose} aria-label="Close agent panel">✕</button>
+    {#if onclose}
+      <button class="close-btn" onclick={onclose} aria-label="Close agent panel">✕</button>
+    {/if}
   </div>
 
   <!-- Event stream -->
@@ -130,9 +132,9 @@
       {#each displayEvents() as item, i (item.data)}
         {@const ev = item.data}
         {#if ev.type === 'message' || item.kind === 'token-run'}
-          <div class="event message" class:user={ev.type === 'message' && ev.role === 'user'}>
-            <span class="role">{ev.role}</span>
-            <p class="content selectable">{ev.content}</p>
+          <div class="event message" class:user={ev.type === 'message' && 'role' in ev && ev.role === 'user'}>
+            <span class="role">{'role' in ev ? ev.role : ''}</span>
+            <p class="content selectable">{'content' in ev ? ev.content : ''}</p>
           </div>
         {:else if ev.type === 'toolCall'}
           <div class="event tool-call">
@@ -187,12 +189,13 @@
 
 <style lang="postcss">
   .agent-detail-panel {
-    width: 340px;
     display: flex;
     flex-direction: column;
+    flex: 1;
+    width: auto;
+    min-width: 0;
+    min-height: 0;
     background-color: var(--bg-surface);
-    border-left: 1px solid var(--border);
-    flex-shrink: 0;
     overflow: hidden;
   }
 
@@ -260,10 +263,10 @@
   .event-stream {
     flex: 1;
     overflow-y: auto;
-    padding: 8px;
+    padding: 12px 14px;
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: 8px;
   }
 
   .loading, .empty {

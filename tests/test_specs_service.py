@@ -251,10 +251,7 @@ def test_get_tree_uses_custom_specs_path(tmp_path: Path) -> None:
             [
                 "---",
                 "title: Example Project",
-                "type: project",
                 "status: active",
-                "owners:",
-                "  - example-team",
                 "last_updated: 2026-03-20",
                 "---",
                 "",

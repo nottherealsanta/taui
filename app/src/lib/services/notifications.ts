@@ -26,7 +26,7 @@ export function handleNotification(notification: ServerNotification): void {
       const agentId = p['agent_id'] as string
       const rawState = (p['state'] as string) ?? 'idle'
       const specRef = (p['spec_ref'] as string) ?? ''
-      const tier = (p['tier'] as 'senior' | 'mid' | 'junior') ?? 'mid'
+      const tier = (p['tier'] as 'high' | 'medium' | 'low') ?? 'medium'
       appState.upsertAgent({
         agentId,
         specRef,

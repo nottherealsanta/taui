@@ -15,6 +15,8 @@ import type {
   CodeRefPreview,
   SourceRangeResponse,
   BackendRunState,
+  FileEntry,
+  SearchResult,
 } from '$types/index'
 import { toasts } from '$stores/toasts.svelte'
 
@@ -311,8 +313,64 @@ export class BackendClient extends EventTarget {
   async agentAnswerQuestion(agentId: string, answer: string): Promise<void> {
     await this.call('agent/answerQuestion', { agent_id: agentId, answer })
   }
+
+  // ── Filesystem RPCs ───────────────────────────────────────────────────────
+
+  async listDir(path: string): Promise<{ entries: FileEntry[] }> {
+    const raw = await this.call('fs/listDir', { path }) as {
+      entries: Array<{ name: string; path: string; is_dir: boolean; extension: string }>
+    }
+    return {
+      entries: raw.entries.map((e): FileEntry => ({
+        name: e.name,
+        path: e.path,
+        isDir: e.is_dir,
+        extension: e.extension,
+      })),
+    }
+  }
+
+  async readFile(path: string): Promise<{ content: string; frontmatter?: Record<string, unknown> }> {
+    return this.call('fs/readFile', { path }) as Promise<{ content: string; frontmatter?: Record<string, unknown> }>
+  }
+
+  async writeFile(path: string, content: string): Promise<void> {
+    await this.call('fs/writeFile', { path, content })
+  }
+
+  async searchFiles(query: string, opts?: { regex?: boolean; caseSensitive?: boolean; filePattern?: string }): Promise<{ results: SearchResult[] }> {
+    const params: Record<string, unknown> = { query }
+    if (opts?.regex !== undefined) params['regex'] = opts.regex
+    if (opts?.caseSensitive !== undefined) params['case_sensitive'] = opts.caseSensitive
+    if (opts?.filePattern !== undefined) params['file_pattern'] = opts.filePattern
+    const raw = await this.call('fs/search', params) as {
+      results: Array<{
+        file_path: string
+        line_number: number
+        line_content: string
+        match_start: number
+        match_end: number
+      }>
+    }
+    return {
+      results: raw.results.map((r): SearchResult => ({
+        filePath: r.file_path,
+        lineNumber: r.line_number,
+        lineContent: r.line_content,
+        matchStart: r.match_start,
+        matchEnd: r.match_end,
+      })),
+    }
+  }
+
+  async getBacklinks(filePath: string): Promise<{ backlinks: Array<{ filePath: string; lineNumber: number; context: string }> }> {
+    return this.call('spec/getBacklinks', { file_path: filePath }) as Promise<{ backlinks: Array<{ filePath: string; lineNumber: number; context: string }> }>
+  }
 }
 
 // ─── Singleton ────────────────────────────────────────────────────────────────
 
-export const backendClient = new BackendClient()
+export const backendClient: BackendClient = import.meta.hot?.data?.backendClient ?? new BackendClient()
+if (import.meta.hot) {
+  import.meta.hot.data.backendClient = backendClient
+}

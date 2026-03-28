@@ -680,10 +680,7 @@ def test_outdent_node_moves_up_one_level(tmp_path: Path) -> None:
             [
                 "---",
                 "title: Example Project",
-                "type: project",
                 "status: active",
-                "owners:",
-                "  - example-team",
                 "last_updated: 2026-03-20",
                 "---",
                 "",

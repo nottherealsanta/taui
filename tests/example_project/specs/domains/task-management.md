@@ -1,9 +1,6 @@
 ---
 title: Task Management
-type: domain
 status: active
-owners:
-  - example-team
 domain: task-management
 depends_on:
   - specs/domains/data-layer.md

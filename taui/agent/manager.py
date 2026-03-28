@@ -50,7 +50,7 @@ class AgentManager:
         *,
         spec_ref: str,
         task: str,
-        tier: str = "mid",
+        tier: str = "medium",
         llm: Any,  # BaseLLMClient
         model: str,
         tool_registry: Any,  # ToolRegistry

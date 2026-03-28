@@ -40,7 +40,7 @@ export function agentStateFromString(s: string): AgentState {
   }
 }
 
-export type AgentTier = 'senior' | 'mid' | 'junior'
+export type AgentTier = 'high' | 'medium' | 'low'
 
 export interface AgentInfo {
   agentId: string
@@ -209,6 +209,32 @@ export interface SourceRangeResponse {
   content: string
   truncated: boolean
   error?: string | null
+}
+
+// ─── File system types ────────────────────────────────────────────────────────
+
+export interface FileEntry {
+  name: string
+  path: string       // relative to workspace root
+  isDir: boolean
+  extension: string
+}
+
+export interface OpenTab {
+  id: string          // unique tab ID
+  filePath: string
+  title: string
+  isDirty: boolean
+  content: string
+  frontmatter?: Record<string, unknown>
+}
+
+export interface SearchResult {
+  filePath: string
+  lineNumber: number
+  lineContent: string
+  matchStart: number
+  matchEnd: number
 }
 
 // ─── Backend state ────────────────────────────────────────────────────────────

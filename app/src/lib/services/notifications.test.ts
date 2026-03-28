@@ -7,7 +7,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { handleNotification } from './notifications'
 import { appState } from '$stores/app-state.svelte'
-import { resetAppState, loadDemoState } from '$stores/app-state.svelte'
+import { loadDemoState } from '$stores/app-state.svelte'
 
 beforeEach(() => {
   loadDemoState()
@@ -44,7 +44,7 @@ describe('agent/stateChanged', () => {
         agent_id: 'agent-1',
         state: 'running',
         spec_ref: 'specs/ui.md',
-        tier: 'senior',
+        tier: 'high',
       },
     })
 
@@ -52,18 +52,18 @@ describe('agent/stateChanged', () => {
     const call = spy.mock.calls[0][0]
     expect(call.agentId).toBe('agent-1')
     expect(call.specRef).toBe('specs/ui.md')
-    expect(call.tier).toBe('senior')
+    expect(call.tier).toBe('high')
     // state is mapped through agentStateFromString
     expect(call.state).toBeTruthy()
   })
 
-  it('defaults tier to mid when absent', () => {
+  it('defaults tier to medium when absent', () => {
     const spy = vi.spyOn(appState, 'upsertAgent')
     handleNotification({
       method: 'agent/stateChanged',
       params: { agent_id: 'agent-2', state: 'idle' },
     })
-    expect(spy.mock.calls[0][0].tier).toBe('mid')
+    expect(spy.mock.calls[0][0].tier).toBe('medium')
   })
 })
 

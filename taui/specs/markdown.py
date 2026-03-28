@@ -258,9 +258,7 @@ def extract_metadata_from_frontmatter(fm: dict[str, Any]) -> dict[str, Any]:
         "test_refs": fm.get("test_refs") or [],
         "depends_on": fm.get("depends_on") or [],
         "title": fm.get("title"),
-        "type": fm.get("type"),
         "domain": fm.get("domain"),
-        "owners": fm.get("owners") or [],
     }
 
 

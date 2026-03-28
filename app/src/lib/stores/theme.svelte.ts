@@ -56,5 +56,8 @@ class ThemeStore {
   }
 }
 
-export const theme = new ThemeStore()
+export const theme: ThemeStore = import.meta.hot?.data?.theme ?? new ThemeStore()
+if (import.meta.hot) {
+  import.meta.hot.data.theme = theme
+}
 export type { Theme }

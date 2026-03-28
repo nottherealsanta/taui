@@ -1,9 +1,6 @@
 ---
 title: Logout
-type: feature
 status: draft
-owners:
-  - example-team
 domain: authentication
 depends_on:
   - specs/domains/authentication.md

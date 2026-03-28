@@ -1,9 +1,6 @@
 ---
 title: Architecture
-type: architecture
 status: active
-owners:
-  - example-team
 last_updated: 2026-03-20
 ---
 

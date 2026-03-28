@@ -102,7 +102,6 @@
     rows="1"
     spellcheck="false"
     autocomplete="off"
-    autocorrect="off"
     autocapitalize="off"
     onkeydown={handleKeydown}
     onblur={handleBlur}

@@ -1,9 +1,6 @@
 ---
 title: Data Layer
-type: domain
 status: active
-owners:
-  - example-team
 domain: data-layer
 code_refs:
   - src/database.py

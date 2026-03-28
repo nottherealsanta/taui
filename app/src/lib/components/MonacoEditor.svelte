@@ -24,6 +24,7 @@
     lineStart?: number
     diffOrig?: string | null
     themeName?: string | null
+    onchange?: (content: string) => void
   }
 
   const {
@@ -33,6 +34,7 @@
     lineStart = 1,
     diffOrig = null,
     themeName = null,
+    onchange,
   }: Props = $props()
 
   let container: HTMLElement | undefined = $state()
@@ -77,6 +79,15 @@
         modified: monaco.editor.createModel(value, language),
       })
       editor = diffEditor
+
+      // Listen for changes in the modified side of the diff editor
+      if (onchange) {
+        const modifiedEditor = diffEditor.getModifiedEditor()
+        modifiedEditor.onDidChangeModelContent(() => {
+          const model = modifiedEditor.getModel()
+          if (model) onchange(model.getValue())
+        })
+      }
     } else {
       // Standard editor mode
       const stdEditor = monaco.editor.create(container, {
@@ -88,6 +99,14 @@
           : 'on',
       })
       editor = stdEditor
+
+      // Notify parent of content changes
+      if (onchange) {
+        stdEditor.onDidChangeModelContent(() => {
+          const model = stdEditor.getModel()
+          if (model) onchange(model.getValue())
+        })
+      }
     }
 
     // ResizeObserver for responsive layout
