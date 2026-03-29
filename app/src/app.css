@@ -216,3 +216,10 @@ body {
 ::-webkit-scrollbar-thumb:hover {
   background: var(--fg-muted);
 }
+
+/* ─── Global: remove border-radius from all elements ──────────────────────── */
+*,
+*::before,
+*::after {
+  border-radius: 0 !important;
+}

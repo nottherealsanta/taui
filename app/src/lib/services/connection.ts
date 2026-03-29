@@ -36,7 +36,10 @@ async function _initialize(): Promise<void> {
   appState.connectionState = 'connecting'
 
   // 1. Handshake
-  await backendClient.initialize()
+  const initResult = await backendClient.initialize()
+  if (initResult.model) {
+    appState.currentModel = initResult.model
+  }
 
   // 2. Load the spec tree
   const tree = await backendClient.getTreeDetailed()

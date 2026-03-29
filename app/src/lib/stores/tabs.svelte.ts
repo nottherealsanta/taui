@@ -214,6 +214,22 @@ class TabStore {
   }
 
   private async _restoreSessionAsync(paths: string[], activeFilePath: string | null): Promise<void> {
+    // Wait for backend connection before attempting to read files
+    if (appState.connectionState !== 'ready') {
+      await new Promise<void>((resolve) => {
+        const check = () => {
+          if (appState.connectionState === 'ready') {
+            resolve()
+          } else if (typeof appState.connectionState === 'object' && 'error' in appState.connectionState) {
+            resolve() // Give up waiting on error
+          } else {
+            setTimeout(check, 50)
+          }
+        }
+        check()
+      })
+    }
+
     for (const path of paths) {
       await this.openFile(path)
     }

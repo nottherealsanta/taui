@@ -5,6 +5,7 @@
 <script lang="ts">
   import { tick } from 'svelte'
   import type { AgentTier } from '$types/index'
+  import { PRIME_AGENT_ID } from '$types/index'
   import { appState } from '$stores/app-state.svelte'
   import { backendClient } from '$services/backend-client'
 
@@ -13,11 +14,66 @@
   let inputEl: HTMLTextAreaElement | undefined = $state()
   let draft = $state('')
   let sending = $state(false)
+  let providerDropdownOpen = $state(false)
+  let modelDropdownOpen = $state(false)
+
+  const PROVIDERS: Record<string, string[]> = {
+    copilot: [
+      'claude-sonnet-4',
+      'claude-haiku-4.5',
+      'gpt-4.1',
+      'gpt-4.1-mini',
+      'o4-mini',
+      'gemini-2.5-pro',
+    ],
+    gemini: [
+      'gemini-2.5-pro',
+      'gemini-2.5-flash',
+      'gemini-2.0-flash',
+    ],
+    anthropic: [
+      'claude-sonnet-4',
+      'claude-haiku-4.5',
+    ],
+    openai: [
+      'gpt-4.1',
+      'gpt-4.1-mini',
+      'o4-mini',
+      'o3',
+    ],
+  }
 
   const selectedRef = $derived(appState.selectedSpecRef)
+  const isPrime = $derived(appState.detailAgentId === PRIME_AGENT_ID)
+
+  /** Parse "provider:model" into separate parts. */
+  const providerName = $derived(() => {
+    const m = appState.currentModel
+    if (!m) return ''
+    const idx = m.indexOf(':')
+    return idx >= 0 ? m.slice(0, idx) : ''
+  })
+  const modelName = $derived(() => {
+    const m = appState.currentModel
+    if (!m) return ''
+    const idx = m.indexOf(':')
+    return idx >= 0 ? m.slice(idx + 1) : m
+  })
+
+  const availableModels = $derived(() => {
+    const p = providerName()
+    return PROVIDERS[p] ?? []
+  })
+
+  /** Fallback to root spec ref when nothing is selected. */
+  const launchRef = $derived(
+    selectedRef ?? (appState.primaryRootId !== null ? appState.nodes[appState.primaryRootId]?.specRef ?? null : null)
+  )
 
   const activeAgent = $derived(
-    appState.detailAgentId ? appState.agents.get(appState.detailAgentId) ?? null : null
+    appState.detailAgentId && appState.detailAgentId !== PRIME_AGENT_ID
+      ? appState.agents.get(appState.detailAgentId) ?? null
+      : null
   )
 
   const steerableAgent = $derived(
@@ -26,11 +82,55 @@
       : null
   )
 
+  /** Status text for the status bar. */
+  const statusText = $derived(() => {
+    if (isPrime && sending) return 'thinking…'
+    if (steerableAgent) {
+      const s = steerableAgent.state
+      if (s === 'thinking') return 'thinking…'
+      if (s === 'running') return 'working on it…'
+      if (s === 'tool_execution') return steerableAgent.toolBrief ? `running ${steerableAgent.toolBrief}…` : 'executing…'
+      if (s === 'asking_question' || s === 'waiting_for_answer') return 'waiting for answer…'
+      if (s === 'stopping') return 'stopping…'
+    }
+    return ''
+  })
+
   const placeholder = $derived(
-    steerableAgent
-      ? `Steer active agent (Shift+Enter to queue)…`
-      : `Launch ${appState.launchTier} agent on ${selectedRef ?? 'a node'}…`
+    isPrime
+      ? `Message Prime…`
+      : steerableAgent
+        ? `Steer active agent (Shift+Enter to queue)…`
+        : `Send a message…`
   )
+
+  function toggleProviderDropdown() {
+    providerDropdownOpen = !providerDropdownOpen
+    modelDropdownOpen = false
+  }
+
+  function toggleModelDropdown() {
+    modelDropdownOpen = !modelDropdownOpen
+    providerDropdownOpen = false
+  }
+
+  function closeDropdowns() {
+    providerDropdownOpen = false
+    modelDropdownOpen = false
+  }
+
+  function selectProvider(p: string) {
+    const models = PROVIDERS[p] ?? []
+    const firstModel = models[0] ?? ''
+    appState.currentModel = `${p}:${firstModel}`
+    providerDropdownOpen = false
+  }
+
+  function selectModel(m: string) {
+    const p = providerName()
+    appState.currentModel = p ? `${p}:${m}` : m
+    modelDropdownOpen = false
+  }
 
   async function submit() {
     const msg = draft.trim()
@@ -39,13 +139,32 @@
     draft = ''
 
     try {
-      if (steerableAgent) {
+      if (isPrime) {
+        // Send to Prime and get reply
+        appState.addPrimeMessage({ role: 'user', content: msg })
+        try {
+          const allMessages = appState.primeMessages.map((m) => ({ role: m.role, content: m.content }))
+          const reply = await backendClient.primeMessage(allMessages)
+          appState.addPrimeMessage({ role: 'assistant', content: reply.content })
+        } catch (e) {
+          console.error('[MessageBar] prime failed:', e)
+          appState.addPrimeMessage({ role: 'assistant', content: `Error: ${e}` })
+        }
+      } else if (steerableAgent) {
         // Steer running agent
         await backendClient.agentSteer(steerableAgent.agentId, msg)
       } else {
-        if (!selectedRef) return
+        const ref = launchRef
+        if (!ref) return
         // Launch new agent and open detail panel
-        const result = await backendClient.agentLaunch(selectedRef, msg, appState.launchTier)
+        const result = await backendClient.agentLaunch(ref, msg, appState.launchTier)
+        // Pre-register agent so the tab appears immediately (before stateChanged notification)
+        appState.upsertAgent({
+          agentId: result.agentId,
+          specRef: ref,
+          state: 'running',
+          tier: appState.launchTier as 'high' | 'medium' | 'low',
+        })
         appState.detailAgentId = result.agentId
       }
     } catch (e) {
@@ -100,47 +219,112 @@
   {/if}
 
   <div class="input-row">
-    <textarea
-      bind:this={inputEl}
-      bind:value={draft}
-      class="message-input selectable"
-      rows="2"
-      {placeholder}
-      disabled={sending || (!selectedRef && !steerableAgent)}
-      onkeydown={onKeydown}
-      oninput={autoResize}
-      autocomplete="off"
-      spellcheck="false"
-    ></textarea>
-
-    <div class="message-actions">
-      {#if !steerableAgent}
-        <div class="tier-radios" role="radiogroup" aria-label="Agent tier">
-          {#each TIERS as tier}
-            <button
-              class="tier-radio"
-              class:active={appState.launchTier === tier}
-              onclick={() => { appState.launchTier = tier }}
-              role="radio"
-              aria-checked={appState.launchTier === tier}
-            >{tier === 'low' ? 'L' : tier === 'medium' ? 'M' : 'H'}</button>
-          {/each}
-        </div>
-      {:else}
-        <div class="agent-indicator">
-          <span class="agent-dot"></span>
-          <span class="agent-label">{steerableAgent.tier}</span>
+    <div class="input-wrapper">
+      {#if statusText()}
+        <div class="status-bar">
+          <span class="status-dot"></span>
+          <span class="status-text">{statusText()}</span>
         </div>
       {/if}
 
-      <button
-        class="send-btn"
-        onclick={submit}
-        disabled={!draft.trim() || sending || (!selectedRef && !steerableAgent)}
-        aria-label="Send"
-      >
-        {sending ? '…' : '↑'}
-      </button>
+      <textarea
+        bind:this={inputEl}
+        bind:value={draft}
+        class="message-input selectable"
+        rows="1"
+        {placeholder}
+        disabled={sending || (!isPrime && !selectedRef && !steerableAgent)}
+        onkeydown={onKeydown}
+        oninput={autoResize}
+        autocomplete="off"
+        spellcheck="false"
+      ></textarea>
+
+      <div class="input-toolbar">
+        <div class="toolbar-left">
+          {#if appState.currentModel}
+            <div class="model-info">
+              {#if providerDropdownOpen || modelDropdownOpen}
+                <!-- svelte-ignore a11y_click_events_have_key_events -->
+                <!-- svelte-ignore a11y_no_static_element_interactions -->
+                <div class="dropdown-backdrop" onclick={closeDropdowns}></div>
+              {/if}
+
+              <!-- Provider selector -->
+              <span class="selector-group">
+                <!-- svelte-ignore a11y_click_events_have_key_events -->
+                <!-- svelte-ignore a11y_no_static_element_interactions -->
+                <span class="toolbar-btn provider-selector" onclick={toggleProviderDropdown}>
+                  {providerName() || 'provider'}
+                </span>
+                {#if providerDropdownOpen}
+                  <div class="dropdown provider-dropdown">
+                    {#each Object.keys(PROVIDERS) as p}
+                      <!-- svelte-ignore a11y_click_events_have_key_events -->
+                      <!-- svelte-ignore a11y_no_static_element_interactions -->
+                      <div
+                        class="dropdown-item"
+                        class:active={providerName() === p}
+                        onclick={() => selectProvider(p)}
+                      >{p}</div>
+                    {/each}
+                  </div>
+                {/if}
+              </span>
+
+              <!-- Model selector -->
+              <span class="selector-group">
+                <!-- svelte-ignore a11y_click_events_have_key_events -->
+                <!-- svelte-ignore a11y_no_static_element_interactions -->
+                <span class="toolbar-btn model-selector" onclick={toggleModelDropdown}>
+                  {modelName() || 'model'}
+                </span>
+                {#if modelDropdownOpen}
+                  <div class="dropdown model-dropdown">
+                    {#each availableModels() as m}
+                      <!-- svelte-ignore a11y_click_events_have_key_events -->
+                      <!-- svelte-ignore a11y_no_static_element_interactions -->
+                      <div
+                        class="dropdown-item"
+                        class:active={modelName() === m}
+                        onclick={() => selectModel(m)}
+                      >{m}</div>
+                    {/each}
+                  </div>
+                {/if}
+              </span>
+            </div>
+          {/if}
+
+          {#if !isPrime && !steerableAgent}
+            <div class="tier-radios" role="radiogroup" aria-label="Agent tier">
+              {#each TIERS as tier}
+                <button
+                  class="tier-radio"
+                  class:active={appState.launchTier === tier}
+                  onclick={() => { appState.launchTier = tier }}
+                  role="radio"
+                  aria-checked={appState.launchTier === tier}
+                >{tier === 'low' ? 'L' : tier === 'medium' ? 'M' : 'H'}</button>
+              {/each}
+            </div>
+          {:else if steerableAgent}
+            <div class="agent-indicator">
+              <span class="agent-dot"></span>
+              <span class="agent-label">{steerableAgent.tier}</span>
+            </div>
+          {/if}
+        </div>
+
+        <button
+          class="send-btn"
+          onclick={submit}
+          disabled={!draft.trim() || sending || (!isPrime && !selectedRef && !steerableAgent)}
+          aria-label="Send"
+        >
+          {sending ? '…' : '↑'}
+        </button>
+      </div>
     </div>
   </div>
 </div>
@@ -149,10 +333,9 @@
   .message-bar-shell {
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: 4px;
     width: 100%;
-    padding: 8px 10px;
-    background-color: var(--bg-surface);
+    /* padding: 4px 6px; */
   }
 
   .tool-brief {
@@ -169,14 +352,100 @@
   .input-row {
     display: flex;
     align-items: flex-end;
-    gap: 10px;
+    gap: 8px;
   }
 
-  .message-actions {
+  .input-wrapper {
+    flex: 1;
+    min-width: 0;
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    background: var(--element-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    transition: border-color 0.15s, box-shadow 0.15s;
+    overflow: hidden;
+  }
+  .input-wrapper:focus-within {
+    border-color: #4a90c4;
+    box-shadow: 0 0 0 1px #4a90c433;
+  }
+
+  .status-bar {
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: 6px;
+    padding: 6px 12px;
+    background: var(--bg-base);
+    border-bottom: 1px solid var(--border);
+    font-size: 12px;
+    color: var(--fg-muted);
+  }
+
+  .status-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background-color: var(--fg-accent);
+    animation: pulse 1.5s ease-in-out infinite;
     flex-shrink: 0;
+  }
+
+  .status-text {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .message-input {
+    flex: 1;
+    min-width: 0;
+    min-height: calc(1 * 1.4em + 16px);
+    max-height: calc(7 * 1.4em + 16px);
+    overflow-y: auto;
+    resize: none;
+    background: transparent;
+    border: none;
+    padding: 12px 12px 8px 12px;
+    font-size: 14px;
+    line-height: 1.4;
+    font-family: var(--font-sans);
+    color: var(--fg-primary);
+    outline: none;
+    field-sizing: content;
+  }
+  .message-input::placeholder { color: var(--fg-muted); }
+  .message-input:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  .input-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0;
+    border-top: 1px solid var(--border);
+  }
+
+  .toolbar-left {
+    display: flex;
+    align-items: stretch;
+    gap: 0;
+  }
+
+  .toolbar-btn {
+    font-size: 11px;
+    color: var(--fg-muted);
+    cursor: pointer;
+    user-select: none;
+    padding: 5px 10px;
+    border: none;
+    border-right: 1px solid var(--border);
+    border-radius: 0;
+    transition: all 0.1s;
+  }
+  .toolbar-btn:hover {
+    color: var(--fg-primary);
+    background-color: var(--element-hover);
   }
 
   .tier-radios {
@@ -186,12 +455,13 @@
   }
 
   .tier-radio {
-    width: 28px;
-    height: 28px;
+    width: 26px;
+    height: 26px;
     display: flex;
     align-items: center;
     justify-content: center;
     border: 1px solid var(--border);
+    border-radius: 0;
     background: transparent;
     color: var(--fg-muted);
     font-size: 11px;
@@ -201,20 +471,21 @@
     transition: all 0.1s;
     margin-left: -1px;
   }
-  .tier-radio:first-child { margin-left: 0; }
+  .tier-radio:first-child { margin-left: 0; border-radius: 4px 0 0 4px; }
+  .tier-radio:last-child { border-radius: 0 4px 4px 0; }
   .tier-radio:hover { background-color: var(--element-hover); color: var(--fg-primary); }
   .tier-radio.active { background-color: var(--element-selected); color: var(--fg-accent); border-color: var(--fg-accent); z-index: 1; }
 
   .agent-indicator {
     display: flex;
     align-items: center;
-    gap: 7px;
+    gap: 5px;
     flex-shrink: 0;
-    height: 32px;
-    padding: 0 10px;
+    height: 26px;
+    padding: 0 8px;
     border: 1px solid var(--border);
-    border-radius: 0;
-    background-color: var(--element-bg);
+    border-radius: 4px;
+    background-color: transparent;
   }
 
   .agent-dot {
@@ -227,35 +498,12 @@
 
   .agent-label { font-size: 11px; color: var(--fg-muted); }
 
-  .message-input {
-    flex: 1;
-    min-width: 0;
-    min-height: calc(2 * 1.4em + 12px);
-    max-height: calc(7 * 1.4em + 12px);
-    overflow-y: auto;
-    resize: none;
-    background: var(--element-bg);
-    border: 1px solid var(--border);
-    border-radius: 0;
-    padding: 6px 10px;
-    font-size: 14px;
-    line-height: 1.4;
-    font-family: var(--font-sans);
-    color: var(--fg-primary);
-    outline: none;
-    transition: border-color 0.15s;
-    field-sizing: content;
-  }
-  .message-input::placeholder { color: var(--fg-muted); }
-  .message-input:focus { border-color: var(--fg-accent); }
-  .message-input:disabled { opacity: 0.5; cursor: not-allowed; }
-
   .send-btn {
-    width: 32px;
-    height: 32px;
+    width: 28px;
+    height: 28px;
     border: 1px solid var(--border);
-    border-radius: 0;
-    background: var(--bg-base);
+    border-radius: 4px;
+    background: transparent;
     color: var(--fg-muted);
     font-size: 16px;
     cursor: pointer;
@@ -265,23 +513,59 @@
     flex-shrink: 0;
     transition: all 0.15s;
   }
-  .send-btn:hover:not(:disabled) { background-color: var(--fg-accent); color: var(--bg-base); border-color: var(--fg-accent); }
+  .send-btn:hover:not(:disabled) { background-color: #4a90c4; color: var(--bg-base); border-color: #4a90c4; }
   .send-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+
+  /* ── Model info ─────────────────────────────────────────────────────────── */
+
+  .model-info {
+    position: relative;
+    display: flex;
+    align-items: stretch;
+    gap: 0;
+  }
+
+  .selector-group {
+    position: relative;
+  }
+
+  .dropdown-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 99;
+  }
+
+  .dropdown {
+    position: absolute;
+    bottom: 100%;
+    left: 0;
+    margin-bottom: 4px;
+    min-width: 160px;
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    z-index: 100;
+    padding: 4px 0;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  }
+
+  .dropdown-item {
+    padding: 6px 12px;
+    font-size: 12px;
+    color: var(--fg-primary);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .dropdown-item:hover {
+    background-color: var(--element-hover);
+  }
+  .dropdown-item.active {
+    color: var(--fg-accent);
+  }
 
   @media (max-width: 900px) {
     .input-row {
       flex-wrap: wrap;
-    }
-
-    .message-actions {
-      width: 100%;
-      justify-content: flex-end;
-    }
-
-    .tier-field,
-    .agent-indicator {
-      flex: 1;
-      min-width: 0;
     }
   }
 

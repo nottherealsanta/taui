@@ -76,6 +76,9 @@ class MethodHandlers:
         self.run_state = RunState()
         self._notification_callback: NotificationCallback | None = None
         self.agent_manager = AgentManager(db=self.specs.db)
+        self._symbol_indexer: Any | None = None
+        self._symbol_resolver: Any | None = None
+        self._symbol_db: Any | None = None
 
     def set_notification_callback(self, callback: NotificationCallback | None) -> None:
         self._notification_callback = callback
@@ -148,6 +151,8 @@ class MethodHandlers:
                 return await self._handle_run_stop()
             if method == "run/status":
                 return DispatchResult(result=self.run_state.to_dict(), notifications=[])
+            if method == "prime/message":
+                return await self._handle_prime_message(params)
             if method == "agent/launch":
                 return await self._handle_agent_launch(params)
             if method == "agent/stop":
@@ -189,6 +194,41 @@ class MethodHandlers:
             if method == "spec/getBacklinks":
                 return DispatchResult(
                     result=await self._handle_spec_get_backlinks(params),
+                    notifications=[],
+                )
+            if method == "refs/search":
+                return DispatchResult(
+                    result=await self._handle_refs_search(params),
+                    notifications=[],
+                )
+            if method == "refs/resolve":
+                return DispatchResult(
+                    result=await self._handle_refs_resolve(params),
+                    notifications=[],
+                )
+            if method == "refs/getDefinition":
+                return DispatchResult(
+                    result=await self._handle_refs_get_definition(params),
+                    notifications=[],
+                )
+            if method == "refs/updateValue":
+                return DispatchResult(
+                    result=await self._handle_refs_update_value(params),
+                    notifications=[],
+                )
+            if method == "refs/backlinks":
+                return DispatchResult(
+                    result=await self._handle_refs_backlinks(params),
+                    notifications=[],
+                )
+            if method == "refs/validate":
+                return DispatchResult(
+                    result=await self._handle_refs_validate(params),
+                    notifications=[],
+                )
+            if method == "refs/reindex":
+                return DispatchResult(
+                    result=await self._handle_refs_reindex(params),
                     notifications=[],
                 )
             logger.warning(
@@ -277,6 +317,13 @@ class MethodHandlers:
                 "fs/writeFile",
                 "fs/search",
                 "spec/getBacklinks",
+                "refs/search",
+                "refs/resolve",
+                "refs/getDefinition",
+                "refs/updateValue",
+                "refs/backlinks",
+                "refs/validate",
+                "refs/reindex",
             ],
             "notifications": [
                 "spec/nodeCreated",
@@ -299,11 +346,19 @@ class MethodHandlers:
                 "run/completed",
             ],
         }
+        # Include current default model in response
+        try:
+            from taui.config.settings import load_settings
+            default_model = load_settings().model.default
+        except Exception:
+            default_model = "unknown"
+
         return {
             "protocolVersion": "1.0",
             "serverName": "taui-python-server",
             "workspace": workspace,
             "capabilities": capabilities,
+            "model": default_model,
         }
 
     async def _handle_spec_get_tree(self) -> dict[str, Any]:
@@ -840,6 +895,52 @@ class MethodHandlers:
 
     # ── Agent RPC handlers ─────────────────────────────────────────────────────
 
+    # ── Prime ─────────────────────────────────────────────────────────────────
+
+    async def _handle_prime_message(self, params: dict[str, Any]) -> DispatchResult:
+        """Send a message to Prime and get a reply.
+
+        Required params: messages (list of {role, content})
+        Returns: {role: "assistant", content: str}
+        """
+        raw_messages = params.get("messages")
+        if not isinstance(raw_messages, list) or not raw_messages:
+            raise JsonRpcProtocolError(
+                INVALID_PARAMS, "messages must be a non-empty list"
+            )
+
+        # Build LLM message list from the conversation
+        llm_messages: list[dict[str, Any]] = [
+            {
+                "role": "system",
+                "content": (
+                    "You are Prime, the user's main AI assistant in Taui — "
+                    "a spec-driven development environment. You help the user "
+                    "think through their project, answer questions, and can "
+                    "suggest launching root agents for implementation tasks. "
+                    "Be concise and helpful."
+                ),
+            }
+        ]
+        for m in raw_messages:
+            if isinstance(m, dict) and "role" in m and "content" in m:
+                llm_messages.append({"role": m["role"], "content": m["content"]})
+
+        # Resolve LLM client
+        llm, model = self._resolve_llm_for_tier("medium", params)
+
+        try:
+            result = await llm.create_turn(llm_messages, model)
+            reply = result.text.strip() if result.text else "(no response)"
+        except Exception as exc:
+            logger.error("Prime LLM call failed: %s", exc)
+            reply = f"Sorry, I couldn't respond right now: {exc}"
+
+        return DispatchResult(
+            result={"role": "assistant", "content": reply},
+            notifications=[],
+        )
+
     async def _handle_agent_launch(self, params: dict[str, Any]) -> DispatchResult:
         """Launch a root agent on a spec branch.
 
@@ -1293,3 +1394,203 @@ class MethodHandlers:
                         break  # Only count first match per line
 
         return {"backlinks": backlinks}
+
+    # ── Semantic refs RPC handlers ─────────────────────────────────────────────
+
+    async def _ensure_symbol_infra(self) -> None:
+        """Lazily initialise the symbol indexer, DB, and resolver."""
+        if self._symbol_db is not None:
+            return
+        from taui.symbols.db import SymbolDB
+        from taui.symbols.indexer import SymbolIndexer
+        from taui.symbols.resolver import SymbolResolver
+
+        await self.specs.ensure_initialized()
+        conn = self.specs.db._conn
+        self._symbol_db = SymbolDB(conn)
+        self._symbol_indexer = SymbolIndexer(self.specs.workspace)
+        self._symbol_resolver = SymbolResolver(self.specs.workspace, self._symbol_db)
+
+    async def _handle_refs_search(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Search the symbol index.
+
+        params: { query: string, kind?: string, scope?: string, limit?: int }
+        returns: { symbols: SymbolEntry[] }
+        """
+        await self._ensure_symbol_infra()
+        query = self._require_str(params, "query")
+        kind = params.get("kind")
+        scope = params.get("scope")
+        limit = int(params.get("limit", 50))
+        if limit < 1:
+            limit = 50
+
+        symbols = await self._symbol_db.search_symbols(
+            query, kind=kind, scope=scope, limit=limit
+        )
+        return {"symbols": [s.to_dict() for s in symbols]}
+
+    async def _handle_refs_resolve(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Resolve a semantic reference.
+
+        params: { ref: SemanticRef }
+        returns: ResolvedRef
+        """
+        await self._ensure_symbol_infra()
+        ref_raw = params.get("ref")
+        if not isinstance(ref_raw, dict):
+            raise ValueError("refs/resolve.ref must be an object")
+
+        from taui.symbols.models import SemanticRef
+        ref = SemanticRef.from_dict(ref_raw)
+        resolved = await self._symbol_resolver.resolve(ref)
+        return resolved.to_dict()
+
+    async def _handle_refs_get_definition(
+        self, params: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Get a symbol definition with source context.
+
+        params: { file_path: string, symbol_name: string }
+        returns: { symbol, source_text, context_before, context_after }
+        """
+        await self._ensure_symbol_infra()
+        file_path = self._require_str(params, "file_path")
+        symbol_name = self._require_str(params, "symbol_name")
+
+        symbol = await self._symbol_db.get_symbol(file_path, symbol_name)
+        if symbol is None:
+            return {"symbol": None, "error": f"Symbol '{symbol_name}' not found in {file_path}"}
+
+        abs_path = self.specs.workspace / file_path
+        source_text = ""
+        context_before = ""
+        context_after = ""
+        if abs_path.exists():
+            try:
+                lines = abs_path.read_text(encoding="utf-8").splitlines()
+                start = max(0, symbol.line_start - 1)
+                end = min(len(lines), symbol.line_end)
+                source_text = "\n".join(lines[start:end])
+                ctx_start = max(0, start - 3)
+                context_before = "\n".join(lines[ctx_start:start])
+                ctx_end = min(len(lines), end + 3)
+                context_after = "\n".join(lines[end:ctx_end])
+            except OSError:
+                pass
+
+        return {
+            "symbol": symbol.to_dict(),
+            "source_text": source_text,
+            "context_before": context_before,
+            "context_after": context_after,
+        }
+
+    async def _handle_refs_update_value(
+        self, params: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Update a writable variable ref value in source.
+
+        params: { file_path: string, symbol_name: string, new_value: string }
+        returns: { success, old_value, new_value, line }
+        """
+        await self._ensure_symbol_infra()
+        file_path = self._require_str(params, "file_path")
+        symbol_name = self._require_str(params, "symbol_name")
+        new_value = self._require_str(params, "new_value")
+
+        result = await self._symbol_resolver.update_value(
+            file_path, symbol_name, new_value
+        )
+
+        # Re-index the file after edit
+        if result.get("success"):
+            abs_path = self.specs.workspace / file_path
+            if abs_path.exists():
+                new_symbols = self._symbol_indexer.index_file(abs_path)
+                await self._symbol_db.delete_symbols_for_file(file_path)
+                if new_symbols:
+                    await self._symbol_db.upsert_symbols(new_symbols)
+
+        return result
+
+    async def _handle_refs_backlinks(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Find spec nodes referencing a file or symbol.
+
+        params: { file_path: string, symbol_name?: string }
+        returns: { refs: RefIndexEntry[], count: int }
+        """
+        await self._ensure_symbol_infra()
+        file_path = self._require_str(params, "file_path")
+        symbol_name = params.get("symbol_name")
+
+        refs = await self._symbol_db.get_backlinks_for_file(
+            file_path, symbol_name=symbol_name
+        )
+        return {"refs": refs, "count": len(refs)}
+
+    async def _handle_refs_validate(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Validate all semantic refs or refs on a specific spec node.
+
+        params: { spec_ref?: string }
+        returns: { results: [{ ref, diagnostic, detail }] }
+        """
+        await self._ensure_symbol_infra()
+        from taui.symbols.models import SemanticRef
+
+        spec_ref = params.get("spec_ref")
+        if spec_ref:
+            node = await self.specs.get_node(spec_ref)
+            ref_entries = await self._symbol_db.get_refs_for_node(node.id)
+        else:
+            ref_entries = await self._symbol_db.validate_all_refs()
+
+        results = []
+        for entry in ref_entries:
+            ref = SemanticRef(
+                file_path=entry["file_path"],
+                symbol_path=entry.get("symbol_path"),
+                ref_kind=entry["ref_kind"],
+            )
+            resolved = await self._symbol_resolver.resolve(ref)
+            # Update diagnostic in DB
+            await self._symbol_db.update_ref_diagnostic(
+                entry["id"], resolved.diagnostic
+            )
+            results.append({
+                "ref": ref.to_dict(),
+                "diagnostic": resolved.diagnostic,
+                "detail": resolved.fallback_reason or "ok",
+            })
+
+        return {"results": results}
+
+    async def _handle_refs_reindex(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Trigger a full or incremental re-index of the project symbols.
+
+        params: { file_path?: string }  (if omitted, full re-index)
+        returns: { indexed_files: int, symbols: int }
+        """
+        await self._ensure_symbol_infra()
+        file_path = params.get("file_path")
+
+        if file_path and isinstance(file_path, str):
+            abs_path = self.specs.workspace / file_path
+            if not abs_path.exists():
+                return {"indexed_files": 0, "symbols": 0, "error": "File not found"}
+            await self._symbol_db.delete_symbols_for_file(file_path)
+            symbols = self._symbol_indexer.index_file(abs_path)
+            if symbols:
+                await self._symbol_db.upsert_symbols(symbols)
+            return {"indexed_files": 1, "symbols": len(symbols)}
+
+        # Full re-index
+        symbols = self._symbol_indexer.scan_project()
+        # Clear and re-insert all
+        await self._symbol_db._conn.execute("DELETE FROM symbols")
+        await self._symbol_db._conn.commit()
+        if symbols:
+            await self._symbol_db.upsert_symbols(symbols)
+        # Count unique files
+        files = {s.file_path for s in symbols}
+        return {"indexed_files": len(files), "symbols": len(symbols)}

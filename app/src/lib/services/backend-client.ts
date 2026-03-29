@@ -314,6 +314,12 @@ export class BackendClient extends EventTarget {
     await this.call('agent/answerQuestion', { agent_id: agentId, answer })
   }
 
+  // ── Prime RPCs ─────────────────────────────────────────────────────────────
+
+  async primeMessage(messages: Array<{ role: string; content: string }>): Promise<{ role: string; content: string }> {
+    return this.call('prime/message', { messages }) as Promise<{ role: string; content: string }>
+  }
+
   // ── Filesystem RPCs ───────────────────────────────────────────────────────
 
   async listDir(path: string): Promise<{ entries: FileEntry[] }> {

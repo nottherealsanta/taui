@@ -1,38 +1,26 @@
 <script lang="ts">
   import AgentDetailPanel from '$components/AgentDetailPanel.svelte'
+  import PrimeChatPanel from '$components/PrimeChatPanel.svelte'
   import MessageBar from '$components/MessageBar.svelte'
   import { appState } from '$stores/app-state.svelte'
+  import { PRIME_AGENT_ID } from '$types/index'
   import { markdownLineLabel } from '$lib/utils/specs'
-
-  let activePane = $state<string | null>(null)
 
   const agentTabs = $derived.by(() => {
     return [...appState.agents.values()].filter((agent) => agent.state !== 'idle')
   })
 
+  const isPrime = $derived(appState.detailAgentId === PRIME_AGENT_ID)
+
+  /** The agent to display — derived directly from detailAgentId + agents map.
+   *  No intermediate $effect needed; derivations are synchronous in Svelte 5. */
   const activeAgentId = $derived.by(() => {
-    if (activePane === null) return null
-    return agentTabs.some((agent) => agent.agentId === activePane) ? activePane : null
-  })
-
-  $effect(() => {
-    const tabs = agentTabs
-    if (tabs.length === 0) {
-      activePane = null
-      appState.detailAgentId = null
-      return
-    }
-
-    if (appState.detailAgentId && tabs.some((agent) => agent.agentId === appState.detailAgentId)) {
-      activePane = appState.detailAgentId
-      return
-    }
-
-    if (activePane !== null && tabs.some((agent) => agent.agentId === activePane)) {
-      return
-    }
-
-    activePane = null
+    const id = appState.detailAgentId
+    if (!id || id === PRIME_AGENT_ID) return null
+    // Show panel if the agent exists in our map (any non-idle state)
+    const agent = appState.agents.get(id)
+    if (agent && agent.state !== 'idle') return id
+    return null
   })
 
   const activeAgent = $derived(
@@ -46,7 +34,6 @@
   }
 
   function selectAgent(agentId: string | null) {
-    activePane = agentId
     appState.detailAgentId = agentId
   }
 </script>
@@ -54,11 +41,12 @@
 <section class="agent-pane">
   <div class="agent-tabs" role="tablist">
     <button
-      class="agent-tab launch-tab"
-      class:active={activeAgentId === null}
-      onclick={() => selectAgent(null)}
-      aria-pressed={activeAgentId === null}
-    >New</button>
+      class="agent-tab prime-tab"
+      class:active={isPrime}
+      onclick={() => selectAgent(PRIME_AGENT_ID)}
+      aria-pressed={isPrime}
+      title="Prime"
+    >★</button>
 
     {#each agentTabs as agent (agent.agentId)}
       <button
@@ -75,8 +63,10 @@
   </div>
 
   <div class="agent-body">
-    {#if activeAgent}
-      <AgentDetailPanel agentId={activeAgent.agentId} onclose={() => selectAgent(null)} />
+    {#if isPrime}
+      <PrimeChatPanel />
+    {:else if activeAgent}
+      <AgentDetailPanel agentId={activeAgent.agentId} onclose={() => selectAgent(PRIME_AGENT_ID)} />
     {:else}
       <div class="agent-empty-state">
         <p class="empty-title">Ready for a new agent</p>
@@ -138,8 +128,13 @@
     border-bottom: 2px solid var(--fg-accent);
   }
 
-  .launch-tab {
-    font-weight: 600;
+  .prime-tab {
+    font-size: 14px;
+    color: var(--fg-muted);
+  }
+
+  .prime-tab.active {
+    color: var(--fg-accent);
   }
 
   .agent-state-dot {
@@ -185,7 +180,6 @@
   .agent-message-bar {
     flex-shrink: 0;
     padding: 0px;
-    border-top: 1px solid var(--border);
   }
 
   .empty-hint {

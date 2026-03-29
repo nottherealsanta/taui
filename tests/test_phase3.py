@@ -306,7 +306,7 @@ async def test_subscribe_returns_backlog(tmp_path: Path) -> None:
     await db.close()
 
     assert len(backlog) > 0
-    event_types = {e["event_type"] for e in backlog}
+    event_types = {e["type"] for e in backlog}
     assert "state_change" in event_types
 
 

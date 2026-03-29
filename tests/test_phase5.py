@@ -285,11 +285,9 @@ async def test_subscribe_after_recovery_returns_backlog(tmp_path: Path) -> None:
     backlog = manager.subscribe("ag-sub")
     # 5 originals + 1 recovery event
     assert len(backlog) == 6
-    # All have correct agent_id
-    assert all(ev["agent_id"] == "ag-sub" for ev in backlog)
     # Last event is the recovery state_change
-    assert backlog[-1]["event_type"] == "state_change"
-    assert backlog[-1]["payload"]["state"] == "stopped"
+    assert backlog[-1]["type"] == "state_change"
+    assert backlog[-1]["state"] == "stopped"
 
     manager.unsubscribe("ag-sub")
     await db.close()

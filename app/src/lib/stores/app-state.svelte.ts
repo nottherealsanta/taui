@@ -21,8 +21,9 @@ import type {
   BackendNode,
   RunState,
   RunLine,
+  PrimeMessage,
 } from '$types/index'
-import { agentStateIsActive, agentStateFromString } from '$types/index'
+import { agentStateIsActive, agentStateFromString, PRIME_AGENT_ID } from '$types/index'
 
 // ─── AppState class ───────────────────────────────────────────────────────────
 
@@ -48,10 +49,16 @@ class AppState {
   lockedBranches: Set<SpecRef> = $state(new Set())
   pendingQuestions: PendingQuestion[] = $state([])
   detailEvents: Map<string, AgentDetailEvent[]> = $state(new Map())
-  detailAgentId: string | null = $state(null)
+  detailAgentId: string | null = $state(PRIME_AGENT_ID)
+
+  // Prime
+  primeMessages: PrimeMessage[] = $state([])
 
   // Launch tier
   launchTier: AgentTier = $state('medium')
+
+  // Current model
+  currentModel: string = $state('')
 
   // Inline metadata editing target
   metadataEditTarget: MetadataEditTarget | null = $state(null)
@@ -292,6 +299,12 @@ class AppState {
 
   setDetailBacklog(agentId: string, events: AgentDetailEvent[]): void {
     this.detailEvents.set(agentId, events)
+  }
+
+  // ── Prime mutations ────────────────────────────────────────────────────────
+
+  addPrimeMessage(msg: PrimeMessage): void {
+    this.primeMessages = [...this.primeMessages, msg]
   }
 
   // ── Run mutations ─────────────────────────────────────────────────────────

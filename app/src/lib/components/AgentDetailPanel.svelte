@@ -24,6 +24,7 @@
   let subscribed = $state(false)
 
   onMount(async () => {
+    if (appState.connectionState !== 'ready') return
     try {
       const backlog = await backendClient.agentSubscribe(agentId)
       // Parse backlog events

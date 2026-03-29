@@ -30,6 +30,7 @@
     "@tauri-apps/api": "^2",
     "@xterm/addon-fit": "^0.10",
     "@xterm/xterm": "^5",
+    "marked": "^17.0.5",
     "monaco-editor": "^0.52"
   },
   "devDependencies": {

@@ -130,15 +130,17 @@ class AgentManager:
     # ── Subscribe / Unsubscribe ────────────────────────────────────────────────
 
     def subscribe(self, agent_id: str) -> list[dict[str, Any]]:
-        """Subscribe to detail events for agent. Returns the event backlog."""
+        """Subscribe to detail events for agent. Returns the event backlog.
+
+        Each backlog entry is a flat dict with a ``type`` key matching the
+        event_type (e.g. "message", "tool_call") plus the payload fields
+        merged at the top level – this matches the format the frontend's
+        ``parseEvent`` function expects.
+        """
         self._subscriptions.add(agent_id)
         buf = self._event_buffers.get(agent_id, [])
         return [
-            {
-                "agent_id": e.agent_id,
-                "event_type": e.event_type,
-                "payload": e.payload,
-            }
+            {"type": e.event_type, **e.payload}
             for e in buf
         ]
 
@@ -245,43 +247,20 @@ class AgentManager:
                     },
                 )
             )
-            # If subscribed, also emit full detail
+            # If subscribed, also emit full detail via subscribeEvent
             if event.agent_id in self._subscriptions:
                 notifications.append(
-                    notification_message(
-                        "agent/toolCall",
-                        {
-                            "agent_id": event.agent_id,
-                            "tool_name": event.payload.get("tool_name"),
-                            "arguments": event.payload.get("arguments"),
-                            "call_id": event.payload.get("call_id"),
-                        },
-                    )
+                    self._wrap_subscribe_event(event),
                 )
         elif event.event_type == "tool_result":
             if event.agent_id in self._subscriptions:
                 notifications.append(
-                    notification_message(
-                        "agent/toolResult",
-                        {
-                            "agent_id": event.agent_id,
-                            "call_id": event.payload.get("call_id"),
-                            "output": event.payload.get("output"),
-                            "error": event.payload.get("error"),
-                            "duration_ms": event.payload.get("duration_ms"),
-                        },
-                    )
+                    self._wrap_subscribe_event(event),
                 )
         elif event.event_type == "message":
             if event.agent_id in self._subscriptions:
                 notifications.append(
-                    notification_message(
-                        "agent/message",
-                        {
-                            "agent_id": event.agent_id,
-                            "message": event.payload,
-                        },
-                    )
+                    self._wrap_subscribe_event(event),
                 )
         elif event.event_type == "question_asked":
             notifications.append(
@@ -295,6 +274,22 @@ class AgentManager:
             )
 
         return notifications
+
+    def _wrap_subscribe_event(self, event: AgentEvent) -> dict[str, Any]:
+        """Wrap an AgentEvent as an ``agent/subscribeEvent`` notification.
+
+        The nested ``event`` dict uses the flat format expected by the
+        frontend's ``parseDetailEvent``: ``{type, ...payload}``.
+        """
+        from taui.server.protocol import notification_message
+
+        return notification_message(
+            "agent/subscribeEvent",
+            {
+                "agent_id": event.agent_id,
+                "event": {"type": event.event_type, **event.payload},
+            },
+        )
 
     # Legacy compatibility
     def _build_notification(self, event: AgentEvent) -> dict[str, Any] | None:

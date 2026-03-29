@@ -498,6 +498,11 @@ END
         if metadata_exists is not None:
             await self._execute("DROP TABLE IF EXISTS node_metadata")
 
+        # ── Symbol index tables (Phase 1 literate programming) ───────────
+        from taui.symbols.db import SymbolDB
+        symbol_db = SymbolDB(self._conn)
+        await symbol_db.migrate()
+
         await self._conn.commit()
 
     async def _execute(self, sql: str, params: tuple[Any, ...] = ()) -> Any:

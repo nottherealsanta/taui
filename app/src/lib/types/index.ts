@@ -42,6 +42,13 @@ export function agentStateFromString(s: string): AgentState {
 
 export type AgentTier = 'high' | 'medium' | 'low'
 
+export const PRIME_AGENT_ID = '__prime__'
+
+export interface PrimeMessage {
+  role: 'user' | 'assistant'
+  content: string
+}
+
 export interface AgentInfo {
   agentId: string
   specRef: SpecRef
@@ -149,6 +156,7 @@ export interface BackendInitializeResponse {
   serverName: string
   workspace: string | null
   capabilities: unknown
+  model?: string
 }
 
 export interface BackendUpdateNodeResponse {
