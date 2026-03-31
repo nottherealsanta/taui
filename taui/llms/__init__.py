@@ -15,10 +15,7 @@ from taui.llms.antigravity import AntigravityLLMClient
 from taui.llms.codex import CodexLLMClient
 
 DEFAULT_MODELS: dict[str, str] = {
-    "copilot": "claude-haiku-4.5",
-    "gemini": "gemini-2.5-flash",
-    "antigravity": "gemini-3-flash",
-    "codex": "gpt-5.1-codex-mini",
+    "copilot": "claude-sonnet-4.6",
 }
 
 

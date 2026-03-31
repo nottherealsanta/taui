@@ -56,6 +56,7 @@ class AgentManager:
         tool_registry: Any,  # ToolRegistry
         spec_service: Any | None = None,  # SpecService — for spec-tree tools
         parent_agent_id: str | None = None,
+        working_dir: Any | None = None,  # Path — workspace root
     ) -> AgentRunner:
         agent_id = str(uuid4())
         session_id = str(uuid4())
@@ -85,6 +86,7 @@ class AgentManager:
             spec_service=spec_service,
             event_callback=self._on_agent_event,
             parent_agent_id=parent_agent_id,
+            working_dir=working_dir,
         )
 
         self._runners[agent_id] = runner

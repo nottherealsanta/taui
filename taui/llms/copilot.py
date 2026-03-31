@@ -186,7 +186,12 @@ class CopilotLLMClient(BaseLLMClient):
                 model,
                 response.text[:2000],
             )
-        response.raise_for_status()
+            # Include the API error body in the exception so callers can see it
+            raise httpx.HTTPStatusError(
+                f"HTTP {response.status_code}: {response.text[:500]}",
+                request=response.request,
+                response=response,
+            )
 
         payload = response.json()
         choices = payload.get("choices")

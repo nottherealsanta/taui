@@ -62,7 +62,7 @@
     {/each}
   </div>
 
-  <div class="agent-body">
+  <div class="agent-body selectable">
     {#if isPrime}
       <PrimeChatPanel />
     {:else if activeAgent}
@@ -180,6 +180,7 @@
   .agent-message-bar {
     flex-shrink: 0;
     padding: 0px;
+    position: relative;
   }
 
   .empty-hint {

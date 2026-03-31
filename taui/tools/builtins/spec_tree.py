@@ -11,7 +11,7 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
-from taui.tools.base import ToolContext, ToolResult
+from taui.tools.base import ToolCategory, ToolContext, ToolResult
 
 
 def _ok(data: Any) -> ToolResult:
@@ -44,6 +44,7 @@ class SpecGetTreeTool:
     )
     schema: dict[str, object] = None  # type: ignore[assignment]
     origin: str = "builtin"
+    category: ToolCategory = ToolCategory.SPEC
 
     def __post_init__(self) -> None:
         if self.schema is None:
@@ -99,6 +100,7 @@ class SpecGetNodeTool:
     )
     schema: dict[str, object] = None  # type: ignore[assignment]
     origin: str = "builtin"
+    category: ToolCategory = ToolCategory.SPEC
 
     def __post_init__(self) -> None:
         if self.schema is None:
@@ -139,6 +141,7 @@ class SpecGetBranchTool:
     )
     schema: dict[str, object] = None  # type: ignore[assignment]
     origin: str = "builtin"
+    category: ToolCategory = ToolCategory.SPEC
 
     def __post_init__(self) -> None:
         if self.schema is None:
@@ -181,6 +184,7 @@ class SpecUpdateNodeTool:
     )
     schema: dict[str, object] = None  # type: ignore[assignment]
     origin: str = "builtin"
+    category: ToolCategory = ToolCategory.SPEC
 
     def __post_init__(self) -> None:
         if self.schema is None:
@@ -233,6 +237,7 @@ class SpecCreateSiblingTool:
     )
     schema: dict[str, object] = None  # type: ignore[assignment]
     origin: str = "builtin"
+    category: ToolCategory = ToolCategory.SPEC
 
     def __post_init__(self) -> None:
         if self.schema is None:
@@ -278,6 +283,7 @@ class SpecDeleteNodeTool:
     )
     schema: dict[str, object] = None  # type: ignore[assignment]
     origin: str = "builtin"
+    category: ToolCategory = ToolCategory.SPEC
 
     def __post_init__(self) -> None:
         if self.schema is None:
@@ -322,6 +328,7 @@ class SpecMoveNodeTool:
     )
     schema: dict[str, object] = None  # type: ignore[assignment]
     origin: str = "builtin"
+    category: ToolCategory = ToolCategory.SPEC
 
     def __post_init__(self) -> None:
         if self.schema is None:
@@ -389,6 +396,7 @@ class SpecAskQuestionTool:
     )
     schema: dict[str, object] = None  # type: ignore[assignment]
     origin: str = "builtin"
+    category: ToolCategory = ToolCategory.SPEC
 
     def __post_init__(self) -> None:
         if self.schema is None:

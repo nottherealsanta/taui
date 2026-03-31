@@ -18,7 +18,7 @@ class ProviderSettings:
 
 @dataclass(slots=True)
 class ModelSettings:
-    default: str = "copilot:claude-haiku-4.5"
+    default: str = "copilot:claude-sonnet-4.6"
 
 
 @dataclass(slots=True)

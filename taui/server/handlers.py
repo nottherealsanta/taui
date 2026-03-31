@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+import json
 import logging
 from pathlib import Path
 import re
@@ -898,46 +899,208 @@ class MethodHandlers:
     # ── Prime ─────────────────────────────────────────────────────────────────
 
     async def _handle_prime_message(self, params: dict[str, Any]) -> DispatchResult:
-        """Send a message to Prime and get a reply.
+        """Send a message to Prime and get a tool-augmented reply.
+
+        Prime has access to all tools except the AGENT category (no sub-agent
+        launching).  It runs a think → tool → observe loop, just like a real
+        agent, but inline inside the RPC handler.
 
         Required params: messages (list of {role, content})
-        Returns: {role: "assistant", content: str}
+        Optional params: max_turns (default 20)
+        Returns: {role: "assistant", content: str, tool_calls: [...]}
         """
         raw_messages = params.get("messages")
         if not isinstance(raw_messages, list) or not raw_messages:
             raise JsonRpcProtocolError(
                 INVALID_PARAMS, "messages must be a non-empty list"
             )
+        max_turns: int = int(params.get("max_turns", 20))
 
-        # Build LLM message list from the conversation
+        # ── Build tool registry (all builtins + spec-tree, minus AGENT) ────
+        from taui.tools.registry import ToolRegistry
+        from taui.tools.base import ToolCategory, ToolContext, ToolResult
+        from taui.tools.builtins import register_builtin_tools
+        from taui.tools.builtins.spec_tree import register_spec_tree_tools
+        from taui.config.policies import Policy
+        from taui.config.settings import BashPolicySettings
+
+        registry = ToolRegistry()
+        register_builtin_tools(registry)
+        register_spec_tree_tools(registry)
+
+        excluded = {ToolCategory.AGENT}
+        tool_schemas = registry.list_schemas(exclude_categories=excluded)
+
+        # ── System prompt ──────────────────────────────────────────────────
+        tool_names = [t["function"]["name"] for t in tool_schemas]
+        context_parts: list[str] = [
+            "You are Prime, the user's main AI assistant in Taui — "
+            "a spec-driven development environment.\n\n"
+            "IMPORTANT: You have direct access to tools. When the user asks "
+            "you to create, edit, or write files, you MUST call the "
+            "appropriate tool (e.g. 'write' to create a file, 'edit' to "
+            "modify one, 'bash' to run commands). NEVER just print code "
+            "and ask the user to save it. NEVER suggest launching an agent. "
+            "NEVER ask 'shall I write this?' — just do it.\n\n"
+            "Available tools: " + ", ".join(tool_names) + "\n\n"
+            "Be concise and helpful.",
+        ]
+
+        workspace = self.specs.workspace
+        context_parts.append(f"\nWorkspace: {workspace}")
+
+        # Inject spec tree outline so Prime knows the project structure
+        try:
+            await self.specs.ensure_initialized()
+            nodes = await self.specs.get_tree()
+            if nodes:
+                lines: list[str] = []
+                for n in nodes:
+                    indent = "  " * n.depth
+                    title = (
+                        n.markdown.split("\n")[0].lstrip("# ").strip()
+                        if n.markdown
+                        else n.anchor
+                    )
+                    lines.append(f"{indent}- {n.spec_ref}: {title}")
+                context_parts.append(
+                    "\n\n## Project Spec Tree\n" + "\n".join(lines)
+                )
+        except Exception:
+            pass  # specs may not be available
+
+        # ── Build LLM message list ────────────────────────────────────────
         llm_messages: list[dict[str, Any]] = [
-            {
-                "role": "system",
-                "content": (
-                    "You are Prime, the user's main AI assistant in Taui — "
-                    "a spec-driven development environment. You help the user "
-                    "think through their project, answer questions, and can "
-                    "suggest launching root agents for implementation tasks. "
-                    "Be concise and helpful."
-                ),
-            }
+            {"role": "system", "content": "\n".join(context_parts)}
         ]
         for m in raw_messages:
             if isinstance(m, dict) and "role" in m and "content" in m:
                 llm_messages.append({"role": m["role"], "content": m["content"]})
 
-        # Resolve LLM client
+        # ── Tool execution context ────────────────────────────────────────
+        auto_approve = {
+            "spec_get_tree", "spec_get_node", "spec_get_branch",
+            "spec_create_node", "spec_create_sibling",
+            "spec_update_node", "spec_move_node",
+            "read", "glob", "grep", "find", "codesearch",
+            "bash", "git", "lsp",
+            "plan", "todowrite", "question",
+            "skill", "monty",
+        }
+        policy = Policy(
+            auto_approve=auto_approve,
+            confirm={
+                "spec_delete_node", "write", "edit",
+                "apply_patch", "multiedit", "skill_import",
+            },
+            deny=set(),
+            bash=BashPolicySettings(default_timeout_sec=60),
+        )
+
+        class _PrimeSession:
+            def __init__(self, spec_service: Any) -> None:
+                self.spec_service = spec_service
+                self.agent_runner = None
+                self._read_files: dict[str, str] = {}  # path → status
+
+            def mark_read(self, path: Any, *, status: str = "success") -> None:
+                self._read_files[str(path)] = status
+
+            def has_read(self, path: Any) -> bool:
+                return str(path) in self._read_files
+
+            def read_status(self, path: Any) -> str | None:
+                return self._read_files.get(str(path))
+
+        ctx = ToolContext(
+            working_dir=Path(workspace),
+            session=_PrimeSession(self.specs),
+            policy=policy,
+        )
+
+        # ── Resolve LLM ───────────────────────────────────────────────────
         llm, model = self._resolve_llm_for_tier("medium", params)
 
+        logger.debug(
+            "Prime: %d tools, %d messages, model=%s",
+            len(tool_schemas), len(llm_messages), model,
+        )
+
+        # ── Think → tool → observe loop ───────────────────────────────────
+        all_tool_calls: list[dict[str, Any]] = []
+        reply = "(no response)"
+
         try:
-            result = await llm.create_turn(llm_messages, model)
-            reply = result.text.strip() if result.text else "(no response)"
+            for _turn in range(max_turns):
+                result = await llm.create_turn(
+                    llm_messages, model, tools=tool_schemas or None,
+                )
+
+                # Collect assistant text
+                text = result.text or ""
+
+                # Build assistant message for history
+                assistant_msg: dict[str, Any] = {"role": "assistant", "content": text}
+                if result.tool_calls:
+                    assistant_msg["tool_calls"] = [
+                        {
+                            "id": tc.call_id,
+                            "type": "function",
+                            "function": {
+                                "name": tc.name,
+                                "arguments": json.dumps(tc.arguments),
+                            },
+                        }
+                        for tc in result.tool_calls
+                    ]
+                llm_messages.append(assistant_msg)
+
+                if not result.tool_calls:
+                    reply = text.strip() if text else "(no response)"
+                    break
+
+                # Execute each tool call
+                for tc in result.tool_calls:
+                    all_tool_calls.append({
+                        "call_id": tc.call_id,
+                        "tool_name": tc.name,
+                        "arguments": tc.arguments,
+                    })
+                    try:
+                        tool = registry.get(tc.name)
+                        tool_result = await tool.execute(tc.arguments, ctx)
+                        content = tool_result.content
+                    except Exception as exc:
+                        content = f"Tool error: {exc}"
+
+                    llm_messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc.call_id,
+                        "content": content,
+                    })
+            else:
+                # Exhausted turns — use whatever text we have so far
+                reply = text.strip() if text else "(max turns reached)"
         except Exception as exc:
-            logger.error("Prime LLM call failed: %s", exc)
-            reply = f"Sorry, I couldn't respond right now: {exc}"
+            logger.error("Prime LLM call failed: %s", exc, exc_info=True)
+            # If the first turn failed (API rejected tools), fall back to
+            # a plain chat turn without tools so the user sees a response.
+            if not all_tool_calls:
+                try:
+                    fallback = await llm.create_turn(llm_messages, model)
+                    reply = fallback.text.strip() if fallback.text else "(no response)"
+                except Exception as exc2:
+                    logger.error("Prime fallback also failed: %s", exc2)
+                    reply = f"Sorry, I couldn't respond right now: {exc}"
+            else:
+                reply = f"Sorry, I couldn't respond right now: {exc}"
 
         return DispatchResult(
-            result={"role": "assistant", "content": reply},
+            result={
+                "role": "assistant",
+                "content": reply,
+                "tool_calls": all_tool_calls,
+            },
             notifications=[],
         )
 
@@ -961,11 +1124,13 @@ class MethodHandlers:
         # Resolve LLM from tier — for now use a stub/None when no LLM is configured
         llm, model = self._resolve_llm_for_tier(tier, params)
 
-        # Build a minimal ToolRegistry with spec-tree tools
+        # Build a full ToolRegistry with all builtin + spec-tree tools
         from taui.tools.registry import ToolRegistry
+        from taui.tools.builtins import register_builtin_tools
         from taui.tools.builtins.spec_tree import register_spec_tree_tools
 
         registry = ToolRegistry()
+        register_builtin_tools(registry)
         register_spec_tree_tools(registry)
 
         runner = await self.agent_manager.launch(
@@ -976,6 +1141,7 @@ class MethodHandlers:
             model=model,
             tool_registry=registry,
             spec_service=self.specs,
+            working_dir=self.specs.workspace,
         )
 
         # Notify that a new agent started
@@ -1020,7 +1186,7 @@ class MethodHandlers:
             pass
 
         if not model:
-            model = "claude-haiku-4.5"
+            model = "claude-sonnet-4.6"
 
         # Try to instantiate a real LLM client
         if provider == "copilot" or not provider:

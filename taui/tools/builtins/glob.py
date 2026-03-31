@@ -2,16 +2,20 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from taui.tools.base import ToolContext, ToolResult
+from taui.tools.base import ToolCategory, ToolContext, ToolResult
 from taui.tools.builtins._common import normalize_tool_error, resolve_path
 
 
 @dataclass(slots=True)
 class GlobTool:
     name: str = "glob"
-    description: str = "Find files by glob pattern"
+    description: str = (
+        "Find files matching a glob pattern within the workspace. "
+        "Results sorted by modification time (newest first)."
+    )
     schema: dict[str, object] = None  # type: ignore[assignment]
     origin: str = "builtin"
+    category: ToolCategory = ToolCategory.SEARCH
 
     def __post_init__(self) -> None:
         if self.schema is None:

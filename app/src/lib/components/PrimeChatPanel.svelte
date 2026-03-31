@@ -59,7 +59,7 @@
   .prime-chat {
     flex: 1;
     overflow-y: auto;
-    padding: 20px 24px;
+    padding: 0;
     display: flex;
     flex-direction: column;
   }
@@ -103,9 +103,9 @@
   }
 
   .user-wrapper {
-    border-top: 1px solid var(--border-variant);
-    border-bottom: 1px solid var(--border-variant);
-    padding: 12px 0;
+    background-color: color-mix(in srgb, var(--fg-primary) 4%, transparent);
+    padding: 10px 12px;
+    border-radius: 6px;
   }
 
   .prime-bubble {
@@ -121,6 +121,10 @@
   .prime-bubble.user .bubble-content {
     color: var(--fg-accent);
     font-weight: 500;
+  }
+
+  .prime-bubble.assistant {
+    padding-left: 12px;
   }
 
   .prime-bubble.assistant .bubble-content {

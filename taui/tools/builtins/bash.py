@@ -6,16 +6,20 @@ import asyncio
 import os
 import signal
 
-from taui.tools.base import ToolContext, ToolResult
+from taui.tools.base import ToolCategory, ToolContext, ToolResult
 from taui.tools.builtins._common import normalize_tool_error
 
 
 @dataclass(slots=True)
 class BashTool:
     name: str = "bash"
-    description: str = "Execute a shell command"
+    description: str = (
+        "Execute a shell command in the workspace. Supports timeout and workdir. "
+        "Output is truncated if it exceeds the byte limit."
+    )
     schema: dict[str, object] = None  # type: ignore[assignment]
     origin: str = "builtin"
+    category: ToolCategory = ToolCategory.SHELL
 
     def __post_init__(self) -> None:
         if self.schema is None:

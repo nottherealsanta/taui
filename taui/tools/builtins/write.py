@@ -4,16 +4,20 @@ from dataclasses import dataclass
 from pathlib import Path
 import tempfile
 
-from taui.tools.base import ToolContext, ToolResult
+from taui.tools.base import ToolCategory, ToolContext, ToolResult
 from taui.tools.builtins._common import normalize_tool_error, resolve_path
 
 
 @dataclass(slots=True)
 class WriteTool:
     name: str = "write"
-    description: str = "Write full file content"
+    description: str = (
+        "Write full file content. The file must have been read first (or attempted "
+        "with 'missing' result for new files). Uses atomic write via temp file."
+    )
     schema: dict[str, object] = None  # type: ignore[assignment]
     origin: str = "builtin"
+    category: ToolCategory = ToolCategory.FILE_WRITE
 
     def __post_init__(self) -> None:
         if self.schema is None:

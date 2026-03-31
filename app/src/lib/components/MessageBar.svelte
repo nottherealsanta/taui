@@ -16,32 +16,15 @@
   let sending = $state(false)
   let providerDropdownOpen = $state(false)
   let modelDropdownOpen = $state(false)
+  let dropdownPos = $state({ x: 0, y: 0 })
 
-  const PROVIDERS: Record<string, string[]> = {
-    copilot: [
-      'claude-sonnet-4',
-      'claude-haiku-4.5',
-      'gpt-4.1',
-      'gpt-4.1-mini',
-      'o4-mini',
-      'gemini-2.5-pro',
-    ],
-    gemini: [
-      'gemini-2.5-pro',
-      'gemini-2.5-flash',
-      'gemini-2.0-flash',
-    ],
-    anthropic: [
-      'claude-sonnet-4',
-      'claude-haiku-4.5',
-    ],
-    openai: [
-      'gpt-4.1',
-      'gpt-4.1-mini',
-      'o4-mini',
-      'o3',
-    ],
-  }
+  const MODELS = [
+    'claude-sonnet-4.6',
+    'claude-opus-4.6',
+    'gpt-5.3-codex',
+    'gemini-3.1-pro-preview',
+    'claude-haiku-4.5',
+  ]
 
   const selectedRef = $derived(appState.selectedSpecRef)
   const isPrime = $derived(appState.detailAgentId === PRIME_AGENT_ID)
@@ -60,10 +43,7 @@
     return idx >= 0 ? m.slice(idx + 1) : m
   })
 
-  const availableModels = $derived(() => {
-    const p = providerName()
-    return PROVIDERS[p] ?? []
-  })
+  const availableModels = () => MODELS
 
   /** Fallback to root spec ref when nothing is selected. */
   const launchRef = $derived(
@@ -104,12 +84,20 @@
         : `Send a message…`
   )
 
-  function toggleProviderDropdown() {
+  function toggleProviderDropdown(e: MouseEvent) {
+    if (!providerDropdownOpen) {
+      const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+      dropdownPos = { x: rect.left, y: rect.top }
+    }
     providerDropdownOpen = !providerDropdownOpen
     modelDropdownOpen = false
   }
 
-  function toggleModelDropdown() {
+  function toggleModelDropdown(e: MouseEvent) {
+    if (!modelDropdownOpen) {
+      const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+      dropdownPos = { x: rect.left, y: rect.top }
+    }
     modelDropdownOpen = !modelDropdownOpen
     providerDropdownOpen = false
   }
@@ -120,8 +108,7 @@
   }
 
   function selectProvider(p: string) {
-    const models = PROVIDERS[p] ?? []
-    const firstModel = models[0] ?? ''
+    const firstModel = MODELS[0] ?? ''
     appState.currentModel = `${p}:${firstModel}`
     providerDropdownOpen = false
   }
@@ -212,6 +199,13 @@
   }
 </script>
 
+<div class="status-bar">
+  {#if statusText()}
+    <span class="status-dot"></span>
+    <span class="status-text">{statusText()}</span>
+  {/if}
+</div>
+
 <div class="message-bar-shell">
   <!-- Tool brief (ephemeral, from active agent) -->
   {#if steerableAgent?.toolBrief}
@@ -220,13 +214,6 @@
 
   <div class="input-row">
     <div class="input-wrapper">
-      {#if statusText()}
-        <div class="status-bar">
-          <span class="status-dot"></span>
-          <span class="status-text">{statusText()}</span>
-        </div>
-      {/if}
-
       <textarea
         bind:this={inputEl}
         bind:value={draft}
@@ -257,19 +244,6 @@
                 <span class="toolbar-btn provider-selector" onclick={toggleProviderDropdown}>
                   {providerName() || 'provider'}
                 </span>
-                {#if providerDropdownOpen}
-                  <div class="dropdown provider-dropdown">
-                    {#each Object.keys(PROVIDERS) as p}
-                      <!-- svelte-ignore a11y_click_events_have_key_events -->
-                      <!-- svelte-ignore a11y_no_static_element_interactions -->
-                      <div
-                        class="dropdown-item"
-                        class:active={providerName() === p}
-                        onclick={() => selectProvider(p)}
-                      >{p}</div>
-                    {/each}
-                  </div>
-                {/if}
               </span>
 
               <!-- Model selector -->
@@ -279,19 +253,6 @@
                 <span class="toolbar-btn model-selector" onclick={toggleModelDropdown}>
                   {modelName() || 'model'}
                 </span>
-                {#if modelDropdownOpen}
-                  <div class="dropdown model-dropdown">
-                    {#each availableModels() as m}
-                      <!-- svelte-ignore a11y_click_events_have_key_events -->
-                      <!-- svelte-ignore a11y_no_static_element_interactions -->
-                      <div
-                        class="dropdown-item"
-                        class:active={modelName() === m}
-                        onclick={() => selectModel(m)}
-                      >{m}</div>
-                    {/each}
-                  </div>
-                {/if}
               </span>
             </div>
           {/if}
@@ -328,6 +289,40 @@
     </div>
   </div>
 </div>
+
+{#if providerDropdownOpen || modelDropdownOpen}
+  <!-- svelte-ignore a11y_click_events_have_key_events -->
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div class="dropdown-backdrop" onclick={closeDropdowns}></div>
+{/if}
+
+{#if providerDropdownOpen}
+  <div class="dropdown fixed-dropdown" style="left: {dropdownPos.x}px; top: {dropdownPos.y}px;">
+    {#each ['copilot'] as p}
+      <!-- svelte-ignore a11y_click_events_have_key_events -->
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <div
+        class="dropdown-item"
+        class:active={providerName() === p}
+        onclick={() => selectProvider(p)}
+      >{p}</div>
+    {/each}
+  </div>
+{/if}
+
+{#if modelDropdownOpen}
+  <div class="dropdown fixed-dropdown" style="left: {dropdownPos.x}px; top: {dropdownPos.y}px;">
+    {#each availableModels() as m}
+      <!-- svelte-ignore a11y_click_events_have_key_events -->
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <div
+        class="dropdown-item"
+        class:active={modelName() === m}
+        onclick={() => selectModel(m)}
+      >{m}</div>
+    {/each}
+  </div>
+{/if}
 
 <style lang="postcss">
   .message-bar-shell {
@@ -373,14 +368,22 @@
   }
 
   .status-bar {
+    position: absolute;
+    bottom: 100%;
+    left: 0;
+    right: 0;
     display: flex;
     align-items: center;
     gap: 6px;
-    padding: 6px 12px;
-    background: var(--bg-base);
-    border-bottom: 1px solid var(--border);
+    padding: 16px 12px 6px 12px;
+    background: linear-gradient(to bottom, transparent, var(--bg-base));
     font-size: 12px;
     color: var(--fg-muted);
+    pointer-events: none;
+    z-index: 1;
+  }
+  .status-bar > * {
+    pointer-events: auto;
   }
 
   .status-dot {
@@ -536,10 +539,6 @@
   }
 
   .dropdown {
-    position: absolute;
-    bottom: 100%;
-    left: 0;
-    margin-bottom: 4px;
     min-width: 160px;
     background: var(--bg-surface);
     border: 1px solid var(--border);
@@ -547,6 +546,11 @@
     z-index: 100;
     padding: 4px 0;
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  }
+
+  .fixed-dropdown {
+    position: fixed;
+    transform: translateY(-100%) translateY(-4px);
   }
 
   .dropdown-item {

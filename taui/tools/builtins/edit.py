@@ -3,17 +3,24 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import tempfile
+from typing import Any
 
-from taui.tools.base import ToolContext, ToolResult
+from taui.tools.base import ToolCategory, ToolContext, ToolResult
 from taui.tools.builtins._common import normalize_tool_error, resolve_path
+from taui.tools.builtins.fuzzy_match import find_match
 
 
 @dataclass(slots=True)
 class EditTool:
     name: str = "edit"
-    description: str = "Replace exact text in a file"
+    description: str = (
+        "Replace text in a file. Uses fuzzy matching to find the target text "
+        "even with minor whitespace or indentation differences. The file must "
+        "have been read first. Set replace_all=true to replace all occurrences."
+    )
     schema: dict[str, object] = None  # type: ignore[assignment]
     origin: str = "builtin"
+    category: ToolCategory = ToolCategory.FILE_WRITE
 
     def __post_init__(self) -> None:
         if self.schema is None:
@@ -68,19 +75,26 @@ class EditTool:
         except OSError as exc:
             return normalize_tool_error(f"Could not read file: {path} ({exc})")
 
-        count = original.count(old_string)
-        if count == 0:
-            return normalize_tool_error("No exact match found for 'old_string'.")
-        if count > 1 and not replace_all:
+        # Use fuzzy matching chain to find old_string
+        match_result = find_match(original, old_string)
+        if match_result is None:
             return normalize_tool_error(
-                "Multiple matches found for 'old_string'. Set 'replace_all' to true to replace all matches."
+                "No match found for 'old_string'. Ensure the text exists in the file.\n"
+                "Tip: include enough surrounding context to make the match unique."
+            )
+
+        matched_text, match_count = match_result
+        if match_count > 1 and not replace_all:
+            return normalize_tool_error(
+                f"Multiple matches ({match_count}) found for 'old_string'. "
+                "Set 'replace_all' to true or add more context to make it unique."
             )
 
         if replace_all:
-            updated = original.replace(old_string, new_string)
-            replaced = count
+            updated = original.replace(matched_text, new_string)
+            replaced = original.count(matched_text)
         else:
-            updated = original.replace(old_string, new_string, 1)
+            updated = original.replace(matched_text, new_string, 1)
             replaced = 1
 
         try:

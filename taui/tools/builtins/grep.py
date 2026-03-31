@@ -5,16 +5,20 @@ from pathlib import Path
 import fnmatch
 import re
 
-from taui.tools.base import ToolContext, ToolResult
+from taui.tools.base import ToolCategory, ToolContext, ToolResult
 from taui.tools.builtins._common import normalize_tool_error, resolve_path
 
 
 @dataclass(slots=True)
 class GrepTool:
     name: str = "grep"
-    description: str = "Search files by regex pattern"
+    description: str = (
+        "Search files by regex pattern. Optionally filter by filename glob. "
+        "Returns matching lines with file paths and line numbers."
+    )
     schema: dict[str, object] = None  # type: ignore[assignment]
     origin: str = "builtin"
+    category: ToolCategory = ToolCategory.SEARCH
 
     def __post_init__(self) -> None:
         if self.schema is None:

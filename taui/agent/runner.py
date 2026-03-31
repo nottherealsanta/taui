@@ -50,14 +50,42 @@ class AgentEvent:
 EventCallback = Callable[[AgentEvent], None]
 
 
-def _build_system_prompt(spec_ref: str, task: str) -> str:
-    return (
-        f"You are an AI agent working on the spec tree. "
-        f"You are assigned to spec branch: {spec_ref!r}.\n"
-        f"Your current task is:\n{task}\n\n"
-        "Use the spec-tree tools to read and modify spec nodes. "
-        "When you are finished, simply stop calling tools and provide a summary."
+def _build_system_prompt(
+    spec_ref: str,
+    task: str,
+    *,
+    working_dir: str = "",
+    spec_tree_outline: str = "",
+    tool_names: list[str] | None = None,
+) -> str:
+    parts: list[str] = []
+    parts.append(
+        "You are an AI coding agent. You have access to a full set of tools "
+        "for reading files, searching code, editing, running commands, git, "
+        "and managing specs."
     )
+    if working_dir:
+        parts.append(f"\nWorkspace root: {working_dir}")
+    parts.append(f"\nYou are assigned to spec branch: {spec_ref!r}.")
+    parts.append(f"\nYour current task is:\n{task}")
+    if spec_tree_outline:
+        parts.append(
+            "\n\n## Current Spec Tree\n"
+            "Below is an outline of the project's spec tree. Use spec-tree tools "
+            "to read full node content or modify nodes.\n\n"
+            + spec_tree_outline
+        )
+    if tool_names:
+        parts.append(
+            "\n\n## Available Tools\n"
+            + ", ".join(tool_names)
+        )
+    parts.append(
+        "\n\nStart by understanding the project using read, glob, grep, and "
+        "spec-tree tools. Then proceed with the task. When finished, provide "
+        "a summary."
+    )
+    return "\n".join(parts)
 
 
 class AgentRunner:
@@ -84,6 +112,7 @@ class AgentRunner:
         event_callback: EventCallback | None = None,
         parent_agent_id: str | None = None,
         max_turns: int = 50,
+        working_dir: Any | None = None,  # Path — workspace root for tool context
     ) -> None:
         self.agent_id = agent_id
         self.session_id = session_id
@@ -98,6 +127,7 @@ class AgentRunner:
         self.event_callback = event_callback
         self.parent_agent_id = parent_agent_id
         self.max_turns = max_turns
+        self._working_dir = working_dir
 
         self.state: AgentState = AgentState.IDLE
         self._stop_flag = asyncio.Event()
@@ -321,10 +351,37 @@ class AgentRunner:
     async def _task_loop(self, task: str) -> None:
         """Run one task (system prompt → think → tool → ... → done)."""
         await self._set_state(AgentState.RUNNING)
+
+        # Build spec tree outline for context
+        spec_outline = ""
+        if self.spec_service is not None:
+            try:
+                nodes = await self.spec_service.get_tree()
+                lines: list[str] = []
+                for n in nodes:
+                    indent = "  " * n.depth
+                    title = n.markdown.split("\n")[0].lstrip("# ").strip() if n.markdown else n.anchor
+                    lines.append(f"{indent}- {n.spec_ref}: {title}")
+                spec_outline = "\n".join(lines)
+            except Exception:
+                pass
+
+        import pathlib
+        wd = self._working_dir or pathlib.Path.cwd()
+        tool_names = list(self.tool_registry.names()) if hasattr(self.tool_registry, "names") else None
+
+        system_content = _build_system_prompt(
+            self.spec_ref,
+            task,
+            working_dir=str(wd),
+            spec_tree_outline=spec_outline,
+            tool_names=tool_names,
+        )
+
         self._messages = [
             Message(
                 role="system",
-                content=_build_system_prompt(self.spec_ref, task),
+                content=system_content,
             ),
             Message(
                 role="user",
@@ -485,8 +542,8 @@ class AgentRunner:
             from taui.config.settings import BashPolicySettings
 
             # Build a permissive policy for agent tool execution
-            # (spec-tree tools are auto-approved; bash/write may confirm)
             auto_approve = {
+                # Spec-tree tools (read)
                 "spec_get_tree",
                 "spec_get_node",
                 "spec_get_branch",
@@ -494,26 +551,50 @@ class AgentRunner:
                 "spec_create_sibling",
                 "spec_update_node",
                 "spec_move_node",
-                "bash",
+                # File read & search
                 "read",
                 "glob",
                 "grep",
+                "find",
+                "codesearch",
+                # Shell
+                "bash",
+                # Git (read-only)
+                "git",
+                # LSP
+                "lsp",
+                # Planning
+                "plan",
+                "todowrite",
+                "question",
+                # Skills
+                "skill",
+                # Agent
+                "monty",
             }
             bash_settings = BashPolicySettings(
                 default_timeout_sec=60,
             )
             policy = Policy(
                 auto_approve=auto_approve,
-                confirm={"spec_delete_node", "write", "edit"},
+                confirm={
+                    "spec_delete_node",
+                    "write",
+                    "edit",
+                    "apply_patch",
+                    "multiedit",
+                    "skill_import",
+                    "task",
+                },
                 deny=set(),
                 bash=bash_settings,
             )
 
-            # Working dir defaults to cwd for now
+            # Working dir: use configured workspace or fall back to cwd
             import pathlib
 
             ctx = ToolContext(
-                working_dir=pathlib.Path.cwd(),
+                working_dir=self._working_dir or pathlib.Path.cwd(),
                 session=_AgentSession(self.spec_service, agent_runner=self)
                 if self.spec_service
                 else _AgentSession(None, agent_runner=self),
