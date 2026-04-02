@@ -64,7 +64,7 @@
 
   /** Status text for the status bar. */
   const statusText = $derived(() => {
-    if (isPrime && sending) return 'thinking…'
+    if (isPrime && (sending || appState.primeStreaming)) return 'thinking…'
     if (steerableAgent) {
       const s = steerableAgent.state
       if (s === 'thinking') return 'thinking…'
@@ -121,21 +121,28 @@
 
   async function submit() {
     const msg = draft.trim()
-    if (!msg || sending) return
+    if (!msg || sending || appState.primeStreaming) return
     sending = true
     draft = ''
 
     try {
       if (isPrime) {
-        // Send to Prime and get reply
-        appState.addPrimeMessage({ role: 'user', content: msg })
+        // Start Prime streaming — the RPC returns immediately, and
+        // tokens arrive via prime/token, prime/toolCall, prime/toolResult,
+        // prime/done notifications handled in notifications.ts.
+        appState.startPrimeStream(msg)
         try {
-          const allMessages = appState.primeMessages.map((m) => ({ role: m.role, content: m.content }))
-          const reply = await backendClient.primeMessage(allMessages)
-          appState.addPrimeMessage({ role: 'assistant', content: reply.content })
+          const allMessages = [
+            ...appState.primeMessages.map((m) => ({ role: m.role, content: m.content })),
+            { role: 'user', content: msg },
+          ]
+          await backendClient.primeMessage(allMessages)
+          // Actual response arrives via notifications — nothing to await here.
         } catch (e) {
           console.error('[MessageBar] prime failed:', e)
-          appState.addPrimeMessage({ role: 'assistant', content: `Error: ${e}` })
+          // Emit an error token and finalize so the UI isn't stuck in streaming state
+          appState.appendPrimeStreamToken(`Error: ${e}`)
+          appState.finalizePrimeStream()
         }
       } else if (steerableAgent) {
         // Steer running agent
@@ -220,7 +227,7 @@
         class="message-input selectable"
         rows="1"
         {placeholder}
-        disabled={sending || (!isPrime && !selectedRef && !steerableAgent)}
+        disabled={sending || appState.primeStreaming || (!isPrime && !selectedRef && !steerableAgent)}
         onkeydown={onKeydown}
         oninput={autoResize}
         autocomplete="off"
@@ -280,10 +287,10 @@
         <button
           class="send-btn"
           onclick={submit}
-          disabled={!draft.trim() || sending || (!isPrime && !selectedRef && !steerableAgent)}
+          disabled={!draft.trim() || sending || appState.primeStreaming || (!isPrime && !selectedRef && !steerableAgent)}
           aria-label="Send"
         >
-          {sending ? '…' : '↑'}
+          {sending || appState.primeStreaming ? '…' : '↑'}
         </button>
       </div>
     </div>

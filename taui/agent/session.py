@@ -13,11 +13,13 @@ from taui.llm.types import Message, Usage
 class SessionUsage:
     input_tokens: int = 0
     output_tokens: int = 0
+    cost_usd: float = 0.0
 
-    def to_dict(self) -> dict[str, int]:
+    def to_dict(self) -> dict[str, object]:
         return {
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,
+            "cost_usd": round(self.cost_usd, 6),
         }
 
 
@@ -43,6 +45,8 @@ class Session:
             return
         self.usage.input_tokens += usage.input_tokens
         self.usage.output_tokens += usage.output_tokens
+        if usage.cost_usd is not None:
+            self.usage.cost_usd += usage.cost_usd
         self.updated_at = _utc_now()
 
     def estimated_input_tokens(self) -> int:
@@ -150,10 +154,13 @@ class Session:
         if isinstance(usage_raw, dict):
             in_tokens = usage_raw.get("input_tokens")
             out_tokens = usage_raw.get("output_tokens")
+            cost = usage_raw.get("cost_usd")
             if isinstance(in_tokens, int) and in_tokens >= 0:
                 usage.input_tokens = in_tokens
             if isinstance(out_tokens, int) and out_tokens >= 0:
                 usage.output_tokens = out_tokens
+            if isinstance(cost, (int, float)) and cost >= 0:
+                usage.cost_usd = float(cost)
         timestamps_raw = payload.get("timestamps", {})
         created_at = _utc_now()
         updated_at = created_at

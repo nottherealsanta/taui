@@ -340,6 +340,13 @@ class MethodHandlers:
                 "agent/lockChanged",
                 "agent/event",
                 "agent/token",
+                "prime/token",
+                "prime/toolCall",
+                "prime/toolResult",
+                "prime/done",
+                "prime/minionLaunched",
+                "prime/minionDone",
+                "prime/agentLaunched",
                 "approval/request",
                 "clarificationRequired",
                 "amendmentProposed",
@@ -350,6 +357,7 @@ class MethodHandlers:
         # Include current default model in response
         try:
             from taui.config.settings import load_settings
+
             default_model = load_settings().model.default
         except Exception:
             default_model = "unknown"
@@ -899,15 +907,17 @@ class MethodHandlers:
     # ── Prime ─────────────────────────────────────────────────────────────────
 
     async def _handle_prime_message(self, params: dict[str, Any]) -> DispatchResult:
-        """Send a message to Prime and get a tool-augmented reply.
+        """Send a message to Prime and kick off streaming response.
 
-        Prime has access to all tools except the AGENT category (no sub-agent
-        launching).  It runs a think → tool → observe loop, just like a real
-        agent, but inline inside the RPC handler.
+        The RPC returns immediately with {ok: true}.  The think→tool→observe
+        loop runs as a background task, emitting notifications:
+          prime/token      — streamed text chunks
+          prime/toolCall   — a tool call is starting
+          prime/toolResult — a tool call finished
+          prime/done       — the full response is complete
 
         Required params: messages (list of {role, content})
         Optional params: max_turns (default 20)
-        Returns: {role: "assistant", content: str, tool_calls: [...]}
         """
         raw_messages = params.get("messages")
         if not isinstance(raw_messages, list) or not raw_messages:
@@ -916,7 +926,50 @@ class MethodHandlers:
             )
         max_turns: int = int(params.get("max_turns", 20))
 
-        # ── Build tool registry (all builtins + spec-tree, minus AGENT) ────
+        # Launch the streaming loop as a background task
+        task = asyncio.create_task(self._run_prime_loop(list(raw_messages), max_turns, params))
+        task.add_done_callback(self._on_prime_task_done)
+
+        return DispatchResult(result={"ok": True}, notifications=[])
+
+    def _on_prime_task_done(self, task: asyncio.Task[None]) -> None:
+        """Callback for completed Prime tasks — log unhandled exceptions."""
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            logger.error("Prime background task failed: %s", exc, exc_info=exc)
+
+    async def _run_prime_loop(
+        self,
+        raw_messages: list[Any],
+        max_turns: int,
+        params: dict[str, Any],
+    ) -> None:
+        """Background task: Prime's think→tool→observe loop with streaming notifications."""
+        try:
+            await self._run_prime_loop_inner(raw_messages, max_turns, params)
+        except Exception as exc:
+            logger.error("Prime loop setup failed: %s", exc, exc_info=True)
+            error_text = f"Sorry, I couldn't respond right now: {exc}"
+            self._emit_notification(
+                notification_message("prime/token", {"text": error_text})
+            )
+        finally:
+            # Always signal completion so the frontend exits streaming state
+            self._emit_notification(notification_message("prime/done", {}))
+
+    async def _run_prime_loop_inner(
+        self,
+        raw_messages: list[Any],
+        max_turns: int,
+        params: dict[str, Any],
+    ) -> None:
+        """Inner implementation of Prime's think→tool→observe loop."""
+
+        # ── Build tool registry (all builtins + spec-tree) ─────────────────
+        # Prime gets launch_minion and launch_root but not the sub-agent
+        # "task" tool (which is for root agents, not Prime).
         from taui.tools.registry import ToolRegistry
         from taui.tools.base import ToolCategory, ToolContext, ToolResult
         from taui.tools.builtins import register_builtin_tools
@@ -928,8 +981,13 @@ class MethodHandlers:
         register_builtin_tools(registry)
         register_spec_tree_tools(registry)
 
-        excluded = {ToolCategory.AGENT}
-        tool_schemas = registry.list_schemas(exclude_categories=excluded)
+        # Remove the sub-agent "task" tool — Prime uses launch_minion/launch_root instead
+        try:
+            registry.unregister("task")
+        except ValueError:
+            pass
+
+        tool_schemas = registry.list_schemas()
 
         # ── System prompt ──────────────────────────────────────────────────
         tool_names = [t["function"]["name"] for t in tool_schemas]
@@ -940,8 +998,15 @@ class MethodHandlers:
             "you to create, edit, or write files, you MUST call the "
             "appropriate tool (e.g. 'write' to create a file, 'edit' to "
             "modify one, 'bash' to run commands). NEVER just print code "
-            "and ask the user to save it. NEVER suggest launching an agent. "
-            "NEVER ask 'shall I write this?' — just do it.\n\n"
+            "and ask the user to save it. NEVER ask 'shall I write this?' — "
+            "just do it.\n\n"
+            "You can delegate work:\n"
+            "- Use 'launch_minion' for quick lookups (reading files, searching code, "
+            "answering factual questions). Minions block until done and return "
+            "their result to you.\n"
+            "- Use 'launch_root' for large autonomous tasks (implementing features, "
+            "refactoring, writing tests). Root agents run in the background "
+            "as separate tabs.\n\n"
             "Available tools: " + ", ".join(tool_names) + "\n\n"
             "Be concise and helpful.",
         ]
@@ -963,9 +1028,7 @@ class MethodHandlers:
                         else n.anchor
                     )
                     lines.append(f"{indent}- {n.spec_ref}: {title}")
-                context_parts.append(
-                    "\n\n## Project Spec Tree\n" + "\n".join(lines)
-                )
+                context_parts.append("\n\n## Project Spec Tree\n" + "\n".join(lines))
         except Exception:
             pass  # specs may not be available
 
@@ -979,28 +1042,61 @@ class MethodHandlers:
 
         # ── Tool execution context ────────────────────────────────────────
         auto_approve = {
-            "spec_get_tree", "spec_get_node", "spec_get_branch",
-            "spec_create_node", "spec_create_sibling",
-            "spec_update_node", "spec_move_node",
-            "read", "glob", "grep", "find", "codesearch",
-            "bash", "git", "lsp",
-            "plan", "todowrite", "question",
-            "skill", "monty",
+            "spec_get_tree",
+            "spec_get_node",
+            "spec_get_branch",
+            "spec_create_node",
+            "spec_create_sibling",
+            "spec_update_node",
+            "spec_move_node",
+            "read",
+            "glob",
+            "grep",
+            "find",
+            "codesearch",
+            "bash",
+            "git",
+            "lsp",
+            "plan",
+            "todowrite",
+            "question",
+            "skill",
+            "monty",
+            "launch_minion",
+            "launch_root",
         }
         policy = Policy(
             auto_approve=auto_approve,
             confirm={
-                "spec_delete_node", "write", "edit",
-                "apply_patch", "multiedit", "skill_import",
+                "spec_delete_node",
+                "write",
+                "edit",
+                "apply_patch",
+                "multiedit",
+                "skill_import",
             },
             deny=set(),
             bash=BashPolicySettings(default_timeout_sec=60),
         )
 
         class _PrimeSession:
-            def __init__(self, spec_service: Any) -> None:
+            def __init__(
+                self,
+                spec_service: Any,
+                *,
+                agent_manager: Any = None,
+                notification_callback: Any = None,
+                llm: Any = None,
+                model: str = "",
+                tool_registry: Any = None,
+            ) -> None:
                 self.spec_service = spec_service
                 self.agent_runner = None
+                self.agent_manager = agent_manager
+                self.notification_callback = notification_callback
+                self.llm = llm
+                self.model = model
+                self.tool_registry = tool_registry
                 self._read_files: dict[str, str] = {}  # path → status
 
             def mark_read(self, path: Any, *, status: str = "success") -> None:
@@ -1012,32 +1108,46 @@ class MethodHandlers:
             def read_status(self, path: Any) -> str | None:
                 return self._read_files.get(str(path))
 
-        ctx = ToolContext(
-            working_dir=Path(workspace),
-            session=_PrimeSession(self.specs),
-            policy=policy,
-        )
-
         # ── Resolve LLM ───────────────────────────────────────────────────
         llm, model = self._resolve_llm_for_tier("medium", params)
 
-        logger.debug(
-            "Prime: %d tools, %d messages, model=%s",
-            len(tool_schemas), len(llm_messages), model,
+        ctx = ToolContext(
+            working_dir=Path(workspace),
+            session=_PrimeSession(
+                self.specs,
+                agent_manager=self.agent_manager,
+                notification_callback=self._notification_callback,
+                llm=llm,
+                model=model,
+                tool_registry=registry,
+            ),
+            policy=policy,
         )
 
-        # ── Think → tool → observe loop ───────────────────────────────────
-        all_tool_calls: list[dict[str, Any]] = []
-        reply = "(no response)"
+        logger.debug(
+            "Prime: %d tools, %d messages, model=%s",
+            len(tool_schemas),
+            len(llm_messages),
+            model,
+        )
 
+        # ── Think → tool → observe loop (background, with notifications) ──
         try:
             for _turn in range(max_turns):
                 result = await llm.create_turn(
-                    llm_messages, model, tools=tool_schemas or None,
+                    llm_messages,
+                    model,
+                    tools=tool_schemas or None,
                 )
 
                 # Collect assistant text
                 text = result.text or ""
+
+                # Stream the text as a token notification
+                if text:
+                    self._emit_notification(
+                        notification_message("prime/token", {"text": text})
+                    )
 
                 # Build assistant message for history
                 assistant_msg: dict[str, Any] = {"role": "assistant", "content": text}
@@ -1056,53 +1166,63 @@ class MethodHandlers:
                 llm_messages.append(assistant_msg)
 
                 if not result.tool_calls:
-                    reply = text.strip() if text else "(no response)"
                     break
 
                 # Execute each tool call
                 for tc in result.tool_calls:
-                    all_tool_calls.append({
-                        "call_id": tc.call_id,
-                        "tool_name": tc.name,
-                        "arguments": tc.arguments,
-                    })
+                    # Notify: tool call starting
+                    self._emit_notification(
+                        notification_message(
+                            "prime/toolCall",
+                            {
+                                "call_id": tc.call_id,
+                                "tool_name": tc.name,
+                                "arguments": tc.arguments,
+                            },
+                        )
+                    )
+
+                    started = time.perf_counter()
+                    tool_output: str
+                    tool_error: str | None = None
                     try:
                         tool = registry.get(tc.name)
                         tool_result = await tool.execute(tc.arguments, ctx)
-                        content = tool_result.content
+                        tool_output = tool_result.content
                     except Exception as exc:
-                        content = f"Tool error: {exc}"
+                        tool_output = f"Tool error: {exc}"
+                        tool_error = str(exc)
 
-                    llm_messages.append({
-                        "role": "tool",
-                        "tool_call_id": tc.call_id,
-                        "content": content,
-                    })
-            else:
-                # Exhausted turns — use whatever text we have so far
-                reply = text.strip() if text else "(max turns reached)"
+                    duration_ms = int((time.perf_counter() - started) * 1000)
+
+                    # Notify: tool call finished
+                    self._emit_notification(
+                        notification_message(
+                            "prime/toolResult",
+                            {
+                                "call_id": tc.call_id,
+                                "output": tool_output if not tool_error else None,
+                                "error": tool_error,
+                                "duration_ms": duration_ms,
+                            },
+                        )
+                    )
+
+                    llm_messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tc.call_id,
+                            "content": tool_output,
+                        }
+                    )
+
         except Exception as exc:
             logger.error("Prime LLM call failed: %s", exc, exc_info=True)
-            # If the first turn failed (API rejected tools), fall back to
-            # a plain chat turn without tools so the user sees a response.
-            if not all_tool_calls:
-                try:
-                    fallback = await llm.create_turn(llm_messages, model)
-                    reply = fallback.text.strip() if fallback.text else "(no response)"
-                except Exception as exc2:
-                    logger.error("Prime fallback also failed: %s", exc2)
-                    reply = f"Sorry, I couldn't respond right now: {exc}"
-            else:
-                reply = f"Sorry, I couldn't respond right now: {exc}"
-
-        return DispatchResult(
-            result={
-                "role": "assistant",
-                "content": reply,
-                "tool_calls": all_tool_calls,
-            },
-            notifications=[],
-        )
+            # Emit error text as a token so the user sees something
+            error_text = f"Sorry, I couldn't respond right now: {exc}"
+            self._emit_notification(
+                notification_message("prime/token", {"text": error_text})
+            )
 
     async def _handle_agent_launch(self, params: dict[str, Any]) -> DispatchResult:
         """Launch a root agent on a spec branch.
@@ -1142,6 +1262,7 @@ class MethodHandlers:
             tool_registry=registry,
             spec_service=self.specs,
             working_dir=self.specs.workspace,
+            agent_type=str(params.get("agent_type", "root")),
         )
 
         # Notify that a new agent started
@@ -1152,12 +1273,19 @@ class MethodHandlers:
                     "agent_id": runner.agent_id,
                     "state": "running",
                     "spec_ref": spec_ref,
+                    "agent_type": runner.agent_type,
+                    "display_name": runner.display_name,
                 },
             )
         )
 
         return DispatchResult(
-            result={"agent_id": runner.agent_id, "session_id": runner.session_id},
+            result={
+                "agent_id": runner.agent_id,
+                "session_id": runner.session_id,
+                "display_name": runner.display_name,
+                "agent_type": runner.agent_type,
+            },
             notifications=[],
         )
 
@@ -1196,10 +1324,17 @@ class MethodHandlers:
 
                 creds = get_copilot_credentials()
                 return CopilotLLMClient(creds), model
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning(
+                    "Failed to initialize Copilot LLM (tier=%s): %s",
+                    tier,
+                    exc,
+                )
 
         # Fall back to a no-op stub that immediately returns "done"
+        logger.warning(
+            "No LLM provider available for tier=%s — using no-op stub", tier
+        )
         return _NoOpLLMClient(), model
 
     async def _handle_agent_stop(self, params: dict[str, Any]) -> DispatchResult:
@@ -1608,6 +1743,7 @@ class MethodHandlers:
             raise ValueError("refs/resolve.ref must be an object")
 
         from taui.symbols.models import SemanticRef
+
         ref = SemanticRef.from_dict(ref_raw)
         resolved = await self._symbol_resolver.resolve(ref)
         return resolved.to_dict()
@@ -1626,7 +1762,10 @@ class MethodHandlers:
 
         symbol = await self._symbol_db.get_symbol(file_path, symbol_name)
         if symbol is None:
-            return {"symbol": None, "error": f"Symbol '{symbol_name}' not found in {file_path}"}
+            return {
+                "symbol": None,
+                "error": f"Symbol '{symbol_name}' not found in {file_path}",
+            }
 
         abs_path = self.specs.workspace / file_path
         source_text = ""
@@ -1652,9 +1791,7 @@ class MethodHandlers:
             "context_after": context_after,
         }
 
-    async def _handle_refs_update_value(
-        self, params: dict[str, Any]
-    ) -> dict[str, Any]:
+    async def _handle_refs_update_value(self, params: dict[str, Any]) -> dict[str, Any]:
         """Update a writable variable ref value in source.
 
         params: { file_path: string, symbol_name: string, new_value: string }
@@ -1723,11 +1860,13 @@ class MethodHandlers:
             await self._symbol_db.update_ref_diagnostic(
                 entry["id"], resolved.diagnostic
             )
-            results.append({
-                "ref": ref.to_dict(),
-                "diagnostic": resolved.diagnostic,
-                "detail": resolved.fallback_reason or "ok",
-            })
+            results.append(
+                {
+                    "ref": ref.to_dict(),
+                    "diagnostic": resolved.diagnostic,
+                    "detail": resolved.fallback_reason or "ok",
+                }
+            )
 
         return {"results": results}
 

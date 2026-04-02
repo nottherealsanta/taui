@@ -1,25 +1,29 @@
 <!--
   PrimeChatPanel.svelte
   Chat panel for the Prime agent — the user's main conversational surface.
-  Prime can reply to any message and optionally launch root agents.
+  Renders streaming text, tool call cards, minion cards, and agent-launch notices.
 -->
 <script lang="ts">
   import { appState } from '$stores/app-state.svelte'
   import { tick } from 'svelte'
   import { marked } from 'marked'
+  import PrimeToolCard from '$components/PrimeToolCard.svelte'
+  import MinionCard from '$components/MinionCard.svelte'
 
   marked.setOptions({ breaks: true, gfm: true })
 
   let scrollEl: HTMLElement | undefined = $state()
 
-  const messages = $derived(appState.primeMessages)
+  const entries = $derived(appState.primeChatEntries)
 
   function renderMarkdown(text: string): string {
     return marked.parse(text, { async: false }) as string
   }
 
   $effect(() => {
-    void messages.length
+    void entries.length
+    // Also react to streaming buffer updates
+    void appState.primeStreamBuffer
     scrollToBottom()
   })
 
@@ -30,7 +34,7 @@
 </script>
 
 <div class="prime-chat" bind:this={scrollEl}>
-  {#if messages.length === 0}
+  {#if entries.length === 0}
     <div class="prime-empty">
       <span class="prime-star">★</span>
       <p class="prime-title">Prime</p>
@@ -38,16 +42,40 @@
     </div>
   {:else}
     <div class="prime-messages">
-      {#each messages as msg, i (i)}
-        {#if msg.role === 'user'}
+      {#each entries as entry, i (i)}
+        {#if entry.kind === 'user'}
           <div class="user-wrapper">
             <div class="prime-bubble user">
-              <div class="bubble-content">{@html renderMarkdown(msg.content)}</div>
+              <div class="bubble-content">{@html renderMarkdown(entry.content)}</div>
             </div>
           </div>
-        {:else}
+        {:else if entry.kind === 'assistant'}
           <div class="prime-bubble assistant">
-            <div class="bubble-content">{@html renderMarkdown(msg.content)}</div>
+            <div class="bubble-content">{@html renderMarkdown(entry.content)}</div>
+          </div>
+        {:else if entry.kind === 'assistant-streaming'}
+          <div class="prime-bubble assistant streaming">
+            <div class="bubble-content">
+              {#if entry.content}
+                {@html renderMarkdown(entry.content)}
+              {/if}
+              <span class="cursor-blink">|</span>
+            </div>
+          </div>
+        {:else if entry.kind === 'tool'}
+          <div class="tool-entry">
+            <PrimeToolCard tool={entry.tool} />
+          </div>
+        {:else if entry.kind === 'minion'}
+          <div class="minion-entry">
+            <MinionCard minion={entry.minion} />
+          </div>
+        {:else if entry.kind === 'agent-launched'}
+          <div class="agent-launched-entry">
+            <span class="agent-launched-icon">→</span>
+            <span class="agent-launched-text">
+              Launched <strong>{entry.displayName}</strong>: {entry.task}
+            </span>
           </div>
         {/if}
       {/each}
@@ -99,7 +127,7 @@
   .prime-messages {
     display: flex;
     flex-direction: column;
-    gap: 16px;
+    gap: 10px;
   }
 
   .user-wrapper {
@@ -123,11 +151,13 @@
     font-weight: 500;
   }
 
-  .prime-bubble.assistant {
+  .prime-bubble.assistant,
+  .prime-bubble.streaming {
     padding-left: 12px;
   }
 
-  .prime-bubble.assistant .bubble-content {
+  .prime-bubble.assistant .bubble-content,
+  .prime-bubble.streaming .bubble-content {
     color: var(--fg-primary);
   }
 
@@ -195,5 +225,55 @@
     border: none;
     border-top: 1px solid var(--border-variant);
     margin: 0.8em 0;
+  }
+
+  /* ── Streaming cursor ─────────────────────────────────────────────────── */
+
+  .cursor-blink {
+    display: inline;
+    color: var(--fg-accent);
+    animation: blink 0.8s step-end infinite;
+    font-weight: 300;
+  }
+
+  @keyframes blink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0; }
+  }
+
+  /* ── Tool entries ─────────────────────────────────────────────────────── */
+
+  .tool-entry {
+    padding: 0 12px;
+    max-width: 560px;
+  }
+
+  /* ── Minion entries ───────────────────────────────────────────────────── */
+
+  .minion-entry {
+    padding: 0 12px;
+    max-width: 560px;
+  }
+
+  /* ── Agent-launched entries ────────────────────────────────────────────── */
+
+  .agent-launched-entry {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 12px;
+    font-size: 12px;
+    color: var(--fg-muted);
+  }
+
+  .agent-launched-icon {
+    color: var(--fg-accent);
+    flex-shrink: 0;
+  }
+
+  .agent-launched-text :global(strong) {
+    color: var(--fg-accent);
+    font-weight: 600;
+    text-transform: capitalize;
   }
 </style>

@@ -316,8 +316,8 @@ export class BackendClient extends EventTarget {
 
   // ── Prime RPCs ─────────────────────────────────────────────────────────────
 
-  async primeMessage(messages: Array<{ role: string; content: string }>): Promise<{ role: string; content: string }> {
-    return this.call('prime/message', { messages }) as Promise<{ role: string; content: string }>
+  async primeMessage(messages: Array<{ role: string; content: string }>): Promise<{ ok: boolean }> {
+    return this.call('prime/message', { messages }) as Promise<{ ok: boolean }>
   }
 
   // ── Filesystem RPCs ───────────────────────────────────────────────────────

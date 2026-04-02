@@ -42,12 +42,57 @@ export function agentStateFromString(s: string): AgentState {
 
 export type AgentTier = 'high' | 'medium' | 'low'
 
+export type AgentType = 'root' | 'minion'
+
 export const PRIME_AGENT_ID = '__prime__'
+
+/** Color hex values for root agent display names. */
+export const AGENT_COLOR_HEX: Record<string, string> = {
+  blue: '#3b82f6',
+  red: '#ef4444',
+  green: '#22c55e',
+  amber: '#f59e0b',
+  violet: '#8b5cf6',
+  cyan: '#06b6d4',
+  orange: '#f97316',
+  rose: '#f43f5e',
+  teal: '#14b8a6',
+  indigo: '#6366f1',
+}
 
 export interface PrimeMessage {
   role: 'user' | 'assistant'
   content: string
 }
+
+/** An in-flight or completed tool call inside Prime's streaming loop. */
+export interface PrimeToolCall {
+  callId: string
+  toolName: string
+  arguments: unknown
+  result?: string | null
+  error?: string | null
+  durationMs?: number | null
+  status: 'running' | 'done' | 'error'
+}
+
+/** A minion launched from Prime's context. */
+export interface PrimeMinionEntry {
+  minionId: string
+  task: string
+  status: 'running' | 'done' | 'error'
+  result?: string | null
+  events: AgentDetailEvent[]
+}
+
+/** An entry in the Prime chat stream — text, tool, minion, or agent-launch. */
+export type PrimeChatEntry =
+  | { kind: 'user'; content: string }
+  | { kind: 'assistant'; content: string }
+  | { kind: 'assistant-streaming'; content: string }
+  | { kind: 'tool'; tool: PrimeToolCall }
+  | { kind: 'minion'; minion: PrimeMinionEntry }
+  | { kind: 'agent-launched'; agentId: string; displayName: string; task: string }
 
 export interface AgentInfo {
   agentId: string
@@ -56,6 +101,8 @@ export interface AgentInfo {
   tier: AgentTier
   /** Most recent ephemeral tool brief (shown above the message bar). */
   toolBrief: string | null
+  agentType: AgentType
+  displayName: string
 }
 
 export interface PendingQuestion {

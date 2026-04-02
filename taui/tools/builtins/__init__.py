@@ -1,5 +1,6 @@
 """Built-in tools package."""
 
+from taui.tools.builtins.agents import LaunchMinionTool, LaunchRootTool
 from taui.tools.builtins.apply_patch import ApplyPatchTool
 from taui.tools.builtins.bash import BashTool
 from taui.tools.builtins.codesearch import CodeSearchTool
@@ -18,6 +19,7 @@ from taui.tools.builtins.skill import SkillTool
 from taui.tools.builtins.skill_import import SkillImportTool
 from taui.tools.builtins.task import TaskTool
 from taui.tools.builtins.todo import TodoWriteTool
+from taui.tools.builtins.tool_search import tool_search
 from taui.tools.builtins.write import WriteTool
 from taui.tools.registry import ToolRegistry
 
@@ -55,11 +57,18 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
     registry.register(SkillTool())
     registry.register(SkillImportTool())
 
-    # Agent
+    # Agent — sub-agent task tool (for root agents)
     registry.register(TaskTool())
+
+    # Agent — Prime agent-launching tools
+    registry.register(LaunchMinionTool())
+    registry.register(LaunchRootTool())
 
     # Programmatic
     registry.register(MontyTool())
+
+    # Tool discovery
+    registry.register(tool_search)
 
 
 __all__ = ["register_builtin_tools"]

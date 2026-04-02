@@ -38,6 +38,14 @@ class BashPolicySettings:
 
 
 @dataclass(slots=True)
+class HookSettings:
+    """Shell snippets run before/after every tool use (claw-code pattern)."""
+
+    pre_tool_use: tuple[str, ...] = ()
+    post_tool_use: tuple[str, ...] = ()
+
+
+@dataclass(slots=True)
 class McpServerSettings:
     command: str = ""
     args: tuple[str, ...] = ()
@@ -51,6 +59,7 @@ class Settings:
     providers: dict[str, ProviderSettings] = field(default_factory=dict)
     policy: PolicySettings = field(default_factory=PolicySettings)
     policy_bash: BashPolicySettings = field(default_factory=BashPolicySettings)
+    hooks: HookSettings = field(default_factory=HookSettings)
     mcp_servers: dict[str, McpServerSettings] = field(default_factory=dict)
 
     def provider(self, name: str) -> ProviderSettings:
@@ -139,6 +148,20 @@ def _from_mapping(data: dict[str, Any]) -> Settings:
             bash_table.get("default_timeout_sec"),
             "policy.bash.default_timeout_sec",
             settings.policy_bash.default_timeout_sec,
+        ),
+    )
+
+    hooks_table = _as_dict(data.get("hooks"), "hooks")
+    settings.hooks = HookSettings(
+        pre_tool_use=_as_string_tuple(
+            hooks_table.get("pre_tool_use"),
+            "hooks.pre_tool_use",
+            settings.hooks.pre_tool_use,
+        ),
+        post_tool_use=_as_string_tuple(
+            hooks_table.get("post_tool_use"),
+            "hooks.post_tool_use",
+            settings.hooks.post_tool_use,
         ),
     )
 

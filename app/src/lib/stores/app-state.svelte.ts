@@ -22,6 +22,9 @@ import type {
   RunState,
   RunLine,
   PrimeMessage,
+  PrimeToolCall,
+  PrimeMinionEntry,
+  PrimeChatEntry,
 } from '$types/index'
 import { agentStateIsActive, agentStateFromString, PRIME_AGENT_ID } from '$types/index'
 
@@ -53,6 +56,13 @@ class AppState {
 
   // Prime
   primeMessages: PrimeMessage[] = $state([])
+
+  // Prime streaming state
+  primeStreaming: boolean = $state(false)
+  primeStreamBuffer: string = $state('')
+  primeChatEntries: PrimeChatEntry[] = $state([])
+  primeToolCalls: Map<string, PrimeToolCall> = $state(new Map())
+  primeMinions: Map<string, PrimeMinionEntry> = $state(new Map())
 
   // Launch tier
   launchTier: AgentTier = $state('medium')
@@ -262,6 +272,8 @@ class AppState {
         state: info.state ?? 'idle',
         tier: info.tier ?? 'medium',
         toolBrief: info.toolBrief ?? null,
+        agentType: info.agentType ?? 'root',
+        displayName: info.displayName ?? info.agentId,
       })
     }
   }
@@ -305,6 +317,105 @@ class AppState {
 
   addPrimeMessage(msg: PrimeMessage): void {
     this.primeMessages = [...this.primeMessages, msg]
+  }
+
+  /** Start a new Prime streaming response. Called when user sends a message. */
+  startPrimeStream(userMessage: string): void {
+    this.primeStreaming = true
+    this.primeStreamBuffer = ''
+    this.primeChatEntries = [...this.primeChatEntries, { kind: 'user', content: userMessage }]
+  }
+
+  /** Append a token to the current streaming buffer. */
+  appendPrimeStreamToken(text: string): void {
+    this.primeStreamBuffer += text
+    // Update the last streaming entry or create one
+    const last = this.primeChatEntries[this.primeChatEntries.length - 1]
+    if (last?.kind === 'assistant-streaming') {
+      last.content = this.primeStreamBuffer
+    } else {
+      this.primeChatEntries = [
+        ...this.primeChatEntries,
+        { kind: 'assistant-streaming', content: this.primeStreamBuffer },
+      ]
+    }
+  }
+
+  /** Add a tool call entry to the Prime chat stream. */
+  addPrimeToolCall(tool: PrimeToolCall): void {
+    this.primeToolCalls.set(tool.callId, tool)
+    this.primeChatEntries = [...this.primeChatEntries, { kind: 'tool', tool }]
+  }
+
+  /** Complete a Prime tool call with result. */
+  completePrimeToolCall(result: {
+    callId: string
+    output: string | null
+    error: string | null
+    durationMs: number | null
+  }): void {
+    const tool = this.primeToolCalls.get(result.callId)
+    if (tool) {
+      tool.result = result.output
+      tool.error = result.error
+      tool.durationMs = result.durationMs
+      tool.status = result.error ? 'error' : 'done'
+    }
+    // Also update the entry in primeChatEntries
+    for (const entry of this.primeChatEntries) {
+      if (entry.kind === 'tool' && entry.tool.callId === result.callId) {
+        entry.tool.result = result.output
+        entry.tool.error = result.error
+        entry.tool.durationMs = result.durationMs
+        entry.tool.status = result.error ? 'error' : 'done'
+      }
+    }
+  }
+
+  /** Add a minion entry to the Prime chat stream. */
+  addPrimeMinion(minion: PrimeMinionEntry): void {
+    this.primeMinions.set(minion.minionId, minion)
+    this.primeChatEntries = [...this.primeChatEntries, { kind: 'minion', minion }]
+  }
+
+  /** Complete a Prime minion with its result. */
+  completePrimeMinion(minionId: string, result: string | null): void {
+    const minion = this.primeMinions.get(minionId)
+    if (minion) {
+      minion.status = 'done'
+      minion.result = result
+    }
+    for (const entry of this.primeChatEntries) {
+      if (entry.kind === 'minion' && entry.minion.minionId === minionId) {
+        entry.minion.status = 'done'
+        entry.minion.result = result
+      }
+    }
+  }
+
+  /** Add an agent-launched notification to Prime's chat. */
+  addPrimeAgentLaunched(info: { agentId: string; displayName: string; task: string }): void {
+    this.primeChatEntries = [...this.primeChatEntries, {
+      kind: 'agent-launched',
+      agentId: info.agentId,
+      displayName: info.displayName,
+      task: info.task,
+    }]
+  }
+
+  /** Finalize the streaming response — convert streaming entry to final assistant message. */
+  finalizePrimeStream(): void {
+    const content = this.primeStreamBuffer
+    if (content) {
+      // Replace the streaming entry with a final assistant entry
+      this.primeChatEntries = this.primeChatEntries.map((e) =>
+        e.kind === 'assistant-streaming' ? { kind: 'assistant' as const, content: e.content } : e,
+      )
+      // Also add to legacy primeMessages for backwards compat
+      this.primeMessages = [...this.primeMessages, { role: 'assistant', content }]
+    }
+    this.primeStreaming = false
+    this.primeStreamBuffer = ''
   }
 
   // ── Run mutations ─────────────────────────────────────────────────────────

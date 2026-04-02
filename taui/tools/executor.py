@@ -9,6 +9,7 @@ from typing import Literal
 import asyncio
 
 from taui.tools.base import ToolContext, ToolResult
+from taui.tools.hooks import HookConfig, HookRunner, merge_hook_feedback
 from taui.tools.registry import ToolRegistry
 
 ExecutionState = Literal["completed", "approval_required", "denied"]
@@ -41,9 +42,15 @@ logger = logging.getLogger(__name__)
 
 
 class ToolExecutor:
-    def __init__(self, registry: ToolRegistry, default_timeout_sec: int = 120) -> None:
+    def __init__(
+        self,
+        registry: ToolRegistry,
+        default_timeout_sec: int = 120,
+        hook_config: HookConfig | None = None,
+    ) -> None:
         self._registry = registry
         self._default_timeout_sec = default_timeout_sec
+        self._hook_runner = HookRunner(hook_config)
 
     async def run(
         self,
@@ -121,6 +128,28 @@ class ToolExecutor:
             or context.policy.bash.default_timeout_sec
             or self._default_timeout_sec
         )
+
+        # ── PreToolUse hooks ──────────────────────────────────────────
+        import json as _json
+
+        pre_hook_result = self._hook_runner.run_pre_tool_use(
+            tool_name, _json.dumps(arguments, default=str)
+        )
+        if pre_hook_result.is_denied():
+            deny_msg = merge_hook_feedback(
+                pre_hook_result.messages,
+                f"PreToolUse hook denied tool `{tool_name}`",
+                True,
+            )
+            logger.info(
+                "Tool denied by pre-hook call_id=%s tool=%s",
+                tool_call_id,
+                tool_name,
+            )
+            return ExecutionDenied(
+                state="denied", result=ToolResult.fail(deny_msg)
+            )
+
         try:
             logger.debug(
                 "Running tool call_id=%s tool=%s timeout_sec=%s",
@@ -177,6 +206,23 @@ class ToolExecutor:
         metadata.setdefault("duration_ms", elapsed_ms)
         metadata.setdefault("tool_name", tool_name)
         metadata.setdefault("arguments_digest", _digest(arguments))
+
+        # ── PostToolUse hooks ─────────────────────────────────────────
+        post_hook_result = self._hook_runner.run_post_tool_use(
+            tool_name,
+            _json.dumps(arguments, default=str),
+            result.content,
+            result.error,
+        )
+        if post_hook_result.messages:
+            result.content = merge_hook_feedback(
+                post_hook_result.messages,
+                result.content,
+                post_hook_result.is_denied(),
+            )
+        if post_hook_result.is_denied():
+            result.error = True
+
         result.metadata = metadata
         logger.info(
             "Tool execution completed call_id=%s tool=%s error=%s duration_ms=%s",

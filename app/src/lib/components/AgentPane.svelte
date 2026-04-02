@@ -2,12 +2,15 @@
   import AgentDetailPanel from '$components/AgentDetailPanel.svelte'
   import PrimeChatPanel from '$components/PrimeChatPanel.svelte'
   import MessageBar from '$components/MessageBar.svelte'
+  import Shimmer from '$components/Shimmer.svelte'
   import { appState } from '$stores/app-state.svelte'
-  import { PRIME_AGENT_ID } from '$types/index'
-  import { markdownLineLabel } from '$lib/utils/specs'
+  import { PRIME_AGENT_ID, AGENT_COLOR_HEX, agentStateIsActive } from '$types/index'
 
+  /** Only root agents (not minions) get tabs; hide idle agents. */
   const agentTabs = $derived.by(() => {
-    return [...appState.agents.values()].filter((agent) => agent.state !== 'idle')
+    return [...appState.agents.values()].filter(
+      (agent) => agent.state !== 'idle' && agent.agentType === 'root',
+    )
   })
 
   const isPrime = $derived(appState.detailAgentId === PRIME_AGENT_ID)
@@ -27,10 +30,9 @@
     activeAgentId ? appState.agents.get(activeAgentId) ?? null : null
   )
 
-  function labelForAgent(specRef: string): string {
-    const nodeId = appState.specRefIndex.get(specRef)
-    if (nodeId === undefined) return specRef.split('#').pop() ?? specRef
-    return markdownLineLabel(appState.nodes[nodeId]?.markdown ?? specRef)
+  /** Resolve the accent color hex for an agent's display name (e.g. "blue" → "#3b82f6"). */
+  function colorForAgent(displayName: string): string | null {
+    return AGENT_COLOR_HEX[displayName.toLowerCase()] ?? null
   }
 
   function selectAgent(agentId: string | null) {
@@ -49,15 +51,21 @@
     >★</button>
 
     {#each agentTabs as agent (agent.agentId)}
+      {@const agentColor = colorForAgent(agent.displayName)}
+      {@const isActive = agentStateIsActive(agent.state)}
       <button
         class="agent-tab"
         class:active={activeAgentId === agent.agentId}
         onclick={() => selectAgent(agent.agentId)}
         aria-pressed={activeAgentId === agent.agentId}
-        title={agent.agentId}
+        title={agent.displayName}
+        style:--agent-color={agentColor ?? 'var(--status-in-progress)'}
       >
-        <span class="agent-state-dot"></span>
-        <span class="agent-tab-label">{labelForAgent(agent.specRef)}</span>
+        <span class="agent-state-dot" class:pulsing={isActive} style:background-color={agentColor ?? 'var(--status-in-progress)'}></span>
+        <span class="agent-tab-label">{agent.displayName}</span>
+        {#if isActive}
+          <Shimmer color={agentColor ?? undefined} />
+        {/if}
       </button>
     {/each}
   </div>
@@ -115,6 +123,8 @@
     color: var(--fg-muted);
     cursor: pointer;
     font-size: 12px;
+    position: relative;
+    overflow: hidden;
   }
 
   .agent-tab:hover {
@@ -125,7 +135,7 @@
   .agent-tab.active {
     background-color: var(--bg-surface);
     color: var(--fg-primary);
-    border-bottom: 2px solid var(--fg-accent);
+    border-bottom: 2px solid var(--agent-color, var(--fg-accent));
   }
 
   .prime-tab {
@@ -142,7 +152,15 @@
     height: 7px;
     border-radius: 999px;
     flex-shrink: 0;
-    background-color: var(--status-in-progress);
+  }
+
+  .agent-state-dot.pulsing {
+    animation: pulse 2s ease-in-out infinite;
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
   }
 
   .agent-tab-label {
@@ -150,6 +168,7 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    text-transform: capitalize;
   }
 
   .agent-body {

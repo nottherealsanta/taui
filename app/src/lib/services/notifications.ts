@@ -3,7 +3,7 @@
  * Called by the connection manager for every notification received.
  */
 
-import type { AgentDetailEvent, RunLine } from '$types/index'
+import type { AgentDetailEvent, AgentType, RunLine } from '$types/index'
 import { agentStateFromString } from '$types/index'
 import { appState } from '$stores/app-state.svelte'
 import type { ServerNotification } from '$services/backend-client'
@@ -27,11 +27,15 @@ export function handleNotification(notification: ServerNotification): void {
       const rawState = (p['state'] as string) ?? 'idle'
       const specRef = (p['spec_ref'] as string) ?? ''
       const tier = (p['tier'] as 'high' | 'medium' | 'low') ?? 'medium'
+      const agentType = (p['agent_type'] as AgentType) ?? 'root'
+      const displayName = (p['display_name'] as string) ?? agentId
       appState.upsertAgent({
         agentId,
         specRef,
         state: agentStateFromString(rawState),
         tier,
+        agentType,
+        displayName,
       })
       break
     }
@@ -77,6 +81,65 @@ export function handleNotification(notification: ServerNotification): void {
         }
         appState.appendDetailEvent(agentId, event)
       }
+      break
+    }
+
+    // ── Prime streaming notifications ────────────────────────────────────
+    case 'prime/token': {
+      const text = (p['text'] as string) ?? ''
+      appState.appendPrimeStreamToken(text)
+      break
+    }
+
+    case 'prime/toolCall': {
+      appState.addPrimeToolCall({
+        callId: (p['call_id'] as string) ?? '',
+        toolName: (p['tool_name'] as string) ?? '',
+        arguments: p['arguments'] ?? {},
+        status: 'running',
+      })
+      break
+    }
+
+    case 'prime/toolResult': {
+      appState.completePrimeToolCall({
+        callId: (p['call_id'] as string) ?? '',
+        output: (p['output'] as string) ?? null,
+        error: (p['error'] as string) ?? null,
+        durationMs: (p['duration_ms'] as number) ?? null,
+      })
+      break
+    }
+
+    case 'prime/done': {
+      appState.finalizePrimeStream()
+      break
+    }
+
+    case 'prime/minionLaunched': {
+      appState.addPrimeMinion({
+        minionId: (p['minion_id'] as string) ?? '',
+        task: (p['task'] as string) ?? '',
+        status: 'running',
+        events: [],
+      })
+      break
+    }
+
+    case 'prime/minionDone': {
+      appState.completePrimeMinion(
+        (p['minion_id'] as string) ?? '',
+        (p['result'] as string) ?? null,
+      )
+      break
+    }
+
+    case 'prime/agentLaunched': {
+      appState.addPrimeAgentLaunched({
+        agentId: (p['agent_id'] as string) ?? '',
+        displayName: (p['display_name'] as string) ?? '',
+        task: (p['task'] as string) ?? '',
+      })
       break
     }
 

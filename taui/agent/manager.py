@@ -10,7 +10,9 @@ import time
 from typing import Any, Callable
 from uuid import uuid4
 
+from taui.agent.agents import get_agent_definition, AGENT_DEFINITIONS
 from taui.agent.runner import AgentEvent, AgentRunner, AgentState
+from taui.agent.naming import AgentNamePool, generate_minion_id, AGENT_COLOR_HEX
 from taui.specs.db import SpecDB
 
 logger = logging.getLogger(__name__)
@@ -39,6 +41,7 @@ class AgentManager:
             set()
         )  # agent_ids with active detail subscribers
         self._notification_callback: NotificationCallback | None = None
+        self._name_pool = AgentNamePool()
 
     def set_notification_callback(self, callback: NotificationCallback | None) -> None:
         self._notification_callback = callback
@@ -57,9 +60,18 @@ class AgentManager:
         spec_service: Any | None = None,  # SpecService — for spec-tree tools
         parent_agent_id: str | None = None,
         working_dir: Any | None = None,  # Path — workspace root
+        agent_type: str = "root",  # "root" | "minion"
     ) -> AgentRunner:
         agent_id = str(uuid4())
         session_id = str(uuid4())
+
+        # Assign display name based on agent type
+        if agent_type == "minion":
+            display_name = generate_minion_id()
+            max_turns = 15
+        else:
+            display_name = self._name_pool.allocate()
+            max_turns = 50
 
         await self.db.create_agent_session(
             agent_id=agent_id,
@@ -69,7 +81,15 @@ class AgentManager:
             tier=tier,
             model=model,
             parent_agent_id=parent_agent_id,
+            agent_type=agent_type,
+            display_name=display_name,
         )
+
+        # Resolve agent definition for tool/prompt restrictions (claw-code pattern)
+        agent_def = None
+        if agent_type in AGENT_DEFINITIONS:
+            agent_def = get_agent_definition(agent_type)
+            max_turns = agent_def.max_turns
 
         self._event_buffers[agent_id] = []
 
@@ -87,14 +107,20 @@ class AgentManager:
             event_callback=self._on_agent_event,
             parent_agent_id=parent_agent_id,
             working_dir=working_dir,
+            agent_type=agent_type,
+            display_name=display_name,
+            max_turns=max_turns,
+            agent_definition=agent_def,
         )
 
         self._runners[agent_id] = runner
         runner.start()
 
         logger.info(
-            "AgentManager launched agent_id=%s spec_ref=%s tier=%s",
+            "AgentManager launched agent_id=%s display_name=%s type=%s spec_ref=%s tier=%s",
             agent_id,
+            display_name,
+            agent_type,
             spec_ref,
             tier,
         )
@@ -107,6 +133,9 @@ class AgentManager:
         if runner is None:
             raise ValueError(f"No active agent with id={agent_id!r}")
         await runner.stop_safely()
+        # Release display name back to pool if it's a root agent
+        if runner.agent_type == "root":
+            self._name_pool.release(runner.display_name)
         self._runners.pop(agent_id, None)
         logger.info("AgentManager stopped agent_id=%s", agent_id)
 
@@ -141,10 +170,7 @@ class AgentManager:
         """
         self._subscriptions.add(agent_id)
         buf = self._event_buffers.get(agent_id, [])
-        return [
-            {"type": e.event_type, **e.payload}
-            for e in buf
-        ]
+        return [{"type": e.event_type, **e.payload} for e in buf]
 
     def unsubscribe(self, agent_id: str) -> None:
         """Stop streaming detail events for agent."""
@@ -228,6 +254,8 @@ class AgentManager:
         notifications: list[dict[str, Any]] = []
 
         if event.event_type == "state_change":
+            # Look up runner metadata for richer notifications
+            runner = self._runners.get(event.agent_id)
             notifications.append(
                 notification_message(
                     "agent/stateChanged",
@@ -235,6 +263,8 @@ class AgentManager:
                         "agent_id": event.agent_id,
                         "state": event.payload.get("state"),
                         "spec_ref": event.payload.get("spec_ref"),
+                        "agent_type": runner.agent_type if runner else "root",
+                        "display_name": runner.display_name if runner else None,
                     },
                 )
             )
@@ -309,6 +339,9 @@ class AgentManager:
         return list(self._event_buffers.get(agent_id, []))
 
     def cleanup_runner(self, agent_id: str) -> None:
+        runner = self._runners.get(agent_id)
+        if runner and runner.agent_type == "root":
+            self._name_pool.release(runner.display_name)
         self._runners.pop(agent_id, None)
 
     # ── Startup recovery ───────────────────────────────────────────────────────

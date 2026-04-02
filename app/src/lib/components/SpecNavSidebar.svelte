@@ -187,7 +187,7 @@
   .sidebar-content {
     flex: 1;
     overflow: auto;
-    padding: 8px 4px 12px;
+    padding: 6px 4px 12px;
   }
 
   .empty-state {

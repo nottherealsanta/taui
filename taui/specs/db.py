@@ -357,6 +357,8 @@ CREATE TABLE IF NOT EXISTS agent_sessions (
     task            TEXT NOT NULL,
     state           TEXT NOT NULL DEFAULT 'idle',
     tier            TEXT NOT NULL DEFAULT 'medium',
+    agent_type      TEXT NOT NULL DEFAULT 'root',
+    display_name    TEXT,
     model           TEXT,
     provider        TEXT,
     created_at      REAL NOT NULL,
@@ -500,6 +502,7 @@ END
 
         # ── Symbol index tables (Phase 1 literate programming) ───────────
         from taui.symbols.db import SymbolDB
+
         symbol_db = SymbolDB(self._conn)
         await symbol_db.migrate()
 
@@ -1083,6 +1086,8 @@ VALUES (?, ?, ?, ?)
         spec_ref: str,
         task: str,
         tier: str = "medium",
+        agent_type: str = "root",
+        display_name: str | None = None,
         model: str | None = None,
         provider: str | None = None,
         parent_agent_id: str | None = None,
@@ -1091,9 +1096,10 @@ VALUES (?, ?, ?, ?)
         await self._execute(
             """
 INSERT INTO agent_sessions(
-    agent_id, session_id, parent_agent_id, spec_ref, task, state, tier, model, provider,
+    agent_id, session_id, parent_agent_id, spec_ref, task, state, tier,
+    agent_type, display_name, model, provider,
     created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, 'idle', ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, 'idle', ?, ?, ?, ?, ?, ?, ?)
 """,
             (
                 agent_id,
@@ -1102,6 +1108,8 @@ INSERT INTO agent_sessions(
                 spec_ref,
                 task,
                 tier,
+                agent_type,
+                display_name,
                 model,
                 provider,
                 now_ts,

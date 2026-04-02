@@ -7,11 +7,16 @@ Verifies:
 - AGENT-category tools are excluded
 - Error / fallback handling
 - Session tracks read state for write tool
+
+Prime uses a streaming notification protocol:
+  - The RPC returns {ok: true} immediately
+  - Background task emits prime/token, prime/toolCall, prime/toolResult, prime/done
 """
 
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, patch
@@ -70,29 +75,91 @@ def _rpc(ws: Any, id_: int, method: str, params: dict[str, Any]) -> dict[str, An
             return msg
 
 
+@dataclass
+class PrimeResult:
+    """Aggregated result from collecting Prime streaming notifications."""
+    text: str = ""
+    tool_calls: list[dict[str, Any]] = field(default_factory=list)
+    done: bool = False
+
+
+def _prime_send_and_collect(
+    ws: Any,
+    id_: int,
+    messages: list[dict[str, Any]],
+    *,
+    max_turns: int | None = None,
+    max_messages: int = 200,
+) -> tuple[dict[str, Any], PrimeResult]:
+    """Send a prime/message RPC and collect streaming notifications.
+
+    Returns (rpc_response, PrimeResult) where PrimeResult aggregates all
+    prime/token text and prime/toolCall entries until prime/done.
+    """
+    params: dict[str, Any] = {"messages": messages}
+    if max_turns is not None:
+        params["max_turns"] = max_turns
+
+    ws.send_text(
+        json.dumps({"jsonrpc": "2.0", "id": id_, "method": "prime/message", "params": params})
+    )
+
+    rpc_resp: dict[str, Any] | None = None
+    result = PrimeResult()
+
+    for _ in range(max_messages):
+        msg = json.loads(ws.receive_text())
+
+        # RPC response (has "id" field)
+        if msg.get("id") == id_ or (msg.get("id") is None and "error" in msg):
+            rpc_resp = msg
+            if "error" in msg:
+                return msg, result
+            continue
+
+        # Notification (no "id", has "method")
+        method = msg.get("method", "")
+        p = msg.get("params", {})
+
+        if method == "prime/token":
+            result.text += p.get("text", "")
+        elif method == "prime/toolCall":
+            result.tool_calls.append({
+                "call_id": p.get("call_id", ""),
+                "tool_name": p.get("tool_name", ""),
+                "arguments": p.get("arguments", {}),
+            })
+        elif method == "prime/toolResult":
+            # Match result to existing tool call
+            pass
+        elif method == "prime/done":
+            result.done = True
+            break
+
+    assert rpc_resp is not None, "Never received RPC response"
+    return rpc_resp, result
+
+
 # ── Tests ──────────────────────────────────────────────────────────────────────
 
 
 def test_prime_basic_text_response(tmp_path: Path) -> None:
-    """With no-op LLM, Prime returns a simple text response with no tool_calls."""
+    """With no-op LLM, Prime returns ok and streams text via notifications."""
     _write_specs(tmp_path)
     app = create_app(workspace=tmp_path)
 
     with TestClient(app) as client:
         with client.websocket_connect("/ws") as ws:
-            resp = _rpc(
-                ws,
-                1,
-                "prime/message",
-                {"messages": [{"role": "user", "content": "Hello"}]},
+            resp, result = _prime_send_and_collect(
+                ws, 1, [{"role": "user", "content": "Hello"}]
             )
             assert "error" not in resp, resp
-            result = resp["result"]
-            assert result["role"] == "assistant"
-            assert isinstance(result["content"], str)
-            assert len(result["content"]) > 0
+            assert resp["result"] == {"ok": True}
+            assert result.done
+            assert isinstance(result.text, str)
+            assert len(result.text) > 0
             # No-op LLM doesn't call tools
-            assert result["tool_calls"] == []
+            assert result.tool_calls == []
 
 
 def test_prime_missing_messages_returns_error(tmp_path: Path) -> None:
@@ -175,7 +242,6 @@ def test_prime_executes_tool_calls(tmp_path: Path) -> None:
 
     with TestClient(app) as client:
         with client.websocket_connect("/ws") as ws:
-            # Patch _resolve_llm_for_tier to return our mock
             from taui.server.handlers import MethodHandlers
 
             original = MethodHandlers._resolve_llm_for_tier
@@ -188,22 +254,17 @@ def test_prime_executes_tool_calls(tmp_path: Path) -> None:
 
             MethodHandlers._resolve_llm_for_tier = patched_resolve
             try:
-                resp = _rpc(
-                    ws,
-                    1,
-                    "prime/message",
-                    {"messages": [{"role": "user", "content": "Read hello.txt"}]},
+                resp, result = _prime_send_and_collect(
+                    ws, 1, [{"role": "user", "content": "Read hello.txt"}]
                 )
             finally:
                 MethodHandlers._resolve_llm_for_tier = original
 
             assert "error" not in resp, resp
-            result = resp["result"]
-            assert result["role"] == "assistant"
-            assert "Hello, world!" in result["content"]
-            # Should have recorded the tool call
-            assert len(result["tool_calls"]) == 1
-            assert result["tool_calls"][0]["tool_name"] == "read"
+            assert result.done
+            assert "Hello, world!" in result.text
+            assert len(result.tool_calls) == 1
+            assert result.tool_calls[0]["tool_name"] == "read"
             assert call_count == 2
 
 
@@ -254,17 +315,15 @@ def test_prime_tool_error_is_returned_to_llm(tmp_path: Path) -> None:
         with client.websocket_connect("/ws") as ws:
             MethodHandlers._resolve_llm_for_tier = patched_resolve
             try:
-                resp = _rpc(
-                    ws,
-                    1,
-                    "prime/message",
-                    {"messages": [{"role": "user", "content": "Read nonexistent.txt"}]},
+                resp, result = _prime_send_and_collect(
+                    ws, 1, [{"role": "user", "content": "Read nonexistent.txt"}]
                 )
             finally:
                 MethodHandlers._resolve_llm_for_tier = original
 
             assert "error" not in resp, resp
-            assert resp["result"]["content"] == "File not found."
+            assert result.done
+            assert result.text == "File not found."
 
 
 def test_prime_max_turns_limit(tmp_path: Path) -> None:
@@ -301,41 +360,28 @@ def test_prime_max_turns_limit(tmp_path: Path) -> None:
         with client.websocket_connect("/ws") as ws:
             MethodHandlers._resolve_llm_for_tier = patched_resolve
             try:
-                resp = _rpc(
+                resp, result = _prime_send_and_collect(
                     ws,
                     1,
-                    "prime/message",
-                    {
-                        "messages": [{"role": "user", "content": "Loop forever"}],
-                        "max_turns": 3,
-                    },
+                    [{"role": "user", "content": "Loop forever"}],
+                    max_turns=3,
                 )
             finally:
                 MethodHandlers._resolve_llm_for_tier = original
 
             assert "error" not in resp, resp
+            assert result.done
             # Should have exactly 3 tool calls (one per turn)
-            assert len(resp["result"]["tool_calls"]) == 3
+            assert len(result.tool_calls) == 3
 
 
 def test_prime_fallback_on_tool_api_error(tmp_path: Path) -> None:
-    """If the first tool-augmented call fails, Prime falls back to plain chat."""
+    """If the LLM call fails, Prime reports the error via streaming."""
     _write_specs(tmp_path)
     app = create_app(workspace=tmp_path)
 
-    call_count = 0
-
     async def mock_create_turn(messages, model, *, tools=None, **kw):
-        nonlocal call_count
-        call_count += 1
-        if tools:
-            raise Exception("API does not support tools")
-        # Fallback without tools
-        return ProviderTurnResult(
-            response_id=None,
-            text="Fallback response without tools.",
-            tool_calls=[],
-        )
+        raise Exception("API does not support tools")
 
     from taui.server.handlers import MethodHandlers
 
@@ -351,17 +397,17 @@ def test_prime_fallback_on_tool_api_error(tmp_path: Path) -> None:
         with client.websocket_connect("/ws") as ws:
             MethodHandlers._resolve_llm_for_tier = patched_resolve
             try:
-                resp = _rpc(
-                    ws,
-                    1,
-                    "prime/message",
-                    {"messages": [{"role": "user", "content": "Hello"}]},
+                resp, result = _prime_send_and_collect(
+                    ws, 1, [{"role": "user", "content": "Hello"}]
                 )
             finally:
                 MethodHandlers._resolve_llm_for_tier = original
 
             assert "error" not in resp, resp
-            assert resp["result"]["content"] == "Fallback response without tools."
+            assert result.done
+            # Error is reported in streamed text
+            assert "Sorry" in result.text
+            assert "API does not support tools" in result.text
 
 
 def test_prime_session_tracks_read_state(tmp_path: Path) -> None:
@@ -427,16 +473,14 @@ def test_prime_session_tracks_read_state(tmp_path: Path) -> None:
         with client.websocket_connect("/ws") as ws:
             MethodHandlers._resolve_llm_for_tier = patched_resolve
             try:
-                resp = _rpc(
-                    ws,
-                    1,
-                    "prime/message",
-                    {"messages": [{"role": "user", "content": "Write output.py"}]},
+                resp, result = _prime_send_and_collect(
+                    ws, 1, [{"role": "user", "content": "Write output.py"}]
                 )
             finally:
                 MethodHandlers._resolve_llm_for_tier = original
 
             assert "error" not in resp, resp
+            assert result.done
             assert call_count == 3
             # Verify the file was actually created
             assert target.exists()
@@ -493,17 +537,14 @@ def test_prime_multiple_tool_calls_in_one_turn(tmp_path: Path) -> None:
         with client.websocket_connect("/ws") as ws:
             MethodHandlers._resolve_llm_for_tier = patched_resolve
             try:
-                resp = _rpc(
-                    ws,
-                    1,
-                    "prime/message",
-                    {"messages": [{"role": "user", "content": "Read a.txt and b.txt"}]},
+                resp, result = _prime_send_and_collect(
+                    ws, 1, [{"role": "user", "content": "Read a.txt and b.txt"}]
                 )
             finally:
                 MethodHandlers._resolve_llm_for_tier = original
 
             assert "error" not in resp, resp
-            result = resp["result"]
-            assert len(result["tool_calls"]) == 2
-            assert result["tool_calls"][0]["tool_name"] == "read"
-            assert result["tool_calls"][1]["tool_name"] == "read"
+            assert result.done
+            assert len(result.tool_calls) == 2
+            assert result.tool_calls[0]["tool_name"] == "read"
+            assert result.tool_calls[1]["tool_name"] == "read"

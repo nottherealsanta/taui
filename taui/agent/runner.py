@@ -14,11 +14,23 @@ from enum import Enum
 from typing import Any, Callable
 from uuid import uuid4
 
+from taui.agent.cost_tracker import CostTracker
 from taui.llm.types import Message, ToolCall
 from taui.llms.base import ProviderTurnResult
 from taui.specs.db import SpecDB
+from taui.tools.executor import (
+    ToolExecutor,
+    ExecutionCompleted,
+    ExecutionRequiresApproval,
+    ExecutionDenied,
+)
 
 logger = logging.getLogger(__name__)
+
+# Default token budget for auto-compaction (matches typical 200k context models)
+_DEFAULT_MAX_INPUT_TOKENS = 180_000
+_COMPACTION_SOFT_RATIO = 0.80
+_COMPACTION_HARD_RATIO = 0.90
 
 
 class _AgentSession:
@@ -42,7 +54,7 @@ class AgentState(str, Enum):
 @dataclass(slots=True)
 class AgentEvent:
     agent_id: str
-    event_type: str  # state_change | tool_call | tool_result | message | token
+    event_type: str  # state_change | tool_call | tool_result | message | token | cost_update | turn_complete | permission_denial | thinking_delta | error
     payload: dict[str, Any]
 
 
@@ -57,35 +69,53 @@ def _build_system_prompt(
     working_dir: str = "",
     spec_tree_outline: str = "",
     tool_names: list[str] | None = None,
+    agent_definition: Any | None = None,
 ) -> str:
-    parts: list[str] = []
-    parts.append(
-        "You are an AI coding agent. You have access to a full set of tools "
-        "for reading files, searching code, editing, running commands, git, "
-        "and managing specs."
-    )
+    """Build a structured system prompt using the SystemPromptBuilder pattern."""
+    from taui.tools.prompt_builder import ProjectContext, SystemPromptBuilder
+
+    import platform
+
+    builder = SystemPromptBuilder()
+    builder.with_os(platform.system(), platform.release())
+
     if working_dir:
-        parts.append(f"\nWorkspace root: {working_dir}")
-    parts.append(f"\nYou are assigned to spec branch: {spec_ref!r}.")
-    parts.append(f"\nYour current task is:\n{task}")
+        from pathlib import Path as _Path
+
+        try:
+            ctx = ProjectContext.discover_with_git(_Path(working_dir), "")
+            builder.with_project_context(ctx)
+        except Exception:
+            ctx = ProjectContext.discover(_Path(working_dir), "")
+            builder.with_project_context(ctx)
+
+    # Agent-specific prefix from definition
+    if agent_definition and hasattr(agent_definition, "system_prompt_prefix"):
+        prefix = agent_definition.system_prompt_prefix
+        if prefix:
+            builder.append_section(f"# Agent Role\n{prefix}")
+
+    # Task section
+    task_section = f"# Assignment\nYou are assigned to spec branch: {spec_ref!r}.\n\nYour current task is:\n{task}"
+    builder.append_section(task_section)
+
     if spec_tree_outline:
-        parts.append(
-            "\n\n## Current Spec Tree\n"
+        builder.append_section(
+            "# Current Spec Tree\n"
             "Below is an outline of the project's spec tree. Use spec-tree tools "
-            "to read full node content or modify nodes.\n\n"
-            + spec_tree_outline
+            "to read full node content or modify nodes.\n\n" + spec_tree_outline
         )
     if tool_names:
-        parts.append(
-            "\n\n## Available Tools\n"
-            + ", ".join(tool_names)
-        )
-    parts.append(
-        "\n\nStart by understanding the project using read, glob, grep, and "
+        builder.append_section("# Available Tools\n" + ", ".join(tool_names))
+
+    builder.append_section(
+        "# Getting Started\n"
+        "Start by understanding the project using read, glob, grep, and "
         "spec-tree tools. Then proceed with the task. When finished, provide "
         "a summary."
     )
-    return "\n".join(parts)
+
+    return builder.render()
 
 
 class AgentRunner:
@@ -113,6 +143,9 @@ class AgentRunner:
         parent_agent_id: str | None = None,
         max_turns: int = 50,
         working_dir: Any | None = None,  # Path — workspace root for tool context
+        agent_type: str = "root",  # "root" | "minion"
+        display_name: str | None = None,
+        agent_definition: Any | None = None,  # AgentDefinition — for tool restrictions
     ) -> None:
         self.agent_id = agent_id
         self.session_id = session_id
@@ -128,11 +161,21 @@ class AgentRunner:
         self.parent_agent_id = parent_agent_id
         self.max_turns = max_turns
         self._working_dir = working_dir
+        self.agent_type = agent_type
+        self.display_name = display_name or agent_id
+        self.agent_definition = agent_definition
 
         self.state: AgentState = AgentState.IDLE
         self._stop_flag = asyncio.Event()
         self._steer_queue: asyncio.Queue[str] = asyncio.Queue()
         self._task: asyncio.Task[None] | None = None
+
+        # Cost tracking (claw-code pattern)
+        self.cost_tracker = CostTracker(session_id=session_id)
+
+        # Tool executor — centralizes policy, hooks, timeout, validation
+        # (claw-code pattern: runner delegates to executor instead of inline)
+        self._tool_executor: ToolExecutor | None = None  # lazily built in _task_loop
 
         # Question blocking: question_node_ref → asyncio.Event
         self._pending_questions: dict[str, asyncio.Event] = {}
@@ -252,6 +295,9 @@ class AgentRunner:
             "tier": self.tier,
             "state": self.state.value,
             "parent_agent_id": self.parent_agent_id,
+            "agent_type": self.agent_type,
+            "display_name": self.display_name,
+            "cost": self.cost_tracker.to_dict(),
         }
 
     # ── State management ───────────────────────────────────────────────────────
@@ -360,15 +406,37 @@ class AgentRunner:
                 lines: list[str] = []
                 for n in nodes:
                     indent = "  " * n.depth
-                    title = n.markdown.split("\n")[0].lstrip("# ").strip() if n.markdown else n.anchor
+                    title = (
+                        n.markdown.split("\n")[0].lstrip("# ").strip()
+                        if n.markdown
+                        else n.anchor
+                    )
                     lines.append(f"{indent}- {n.spec_ref}: {title}")
                 spec_outline = "\n".join(lines)
             except Exception:
                 pass
 
         import pathlib
+
         wd = self._working_dir or pathlib.Path.cwd()
-        tool_names = list(self.tool_registry.names()) if hasattr(self.tool_registry, "names") else None
+        tool_names = (
+            list(self.tool_registry.names())
+            if hasattr(self.tool_registry, "names")
+            else None
+        )
+
+        # Filter tools by agent definition categories (claw-code pattern)
+        if self.agent_definition is not None and tool_names:
+            filtered_names: list[str] = []
+            for tn in tool_names:
+                try:
+                    t = self.tool_registry.get(tn)
+                    cat = getattr(t, "category", None)
+                    if cat is None or self.agent_definition.accepts_category(cat):
+                        filtered_names.append(tn)
+                except ValueError:
+                    filtered_names.append(tn)
+            tool_names = filtered_names
 
         system_content = _build_system_prompt(
             self.spec_ref,
@@ -376,6 +444,7 @@ class AgentRunner:
             working_dir=str(wd),
             spec_tree_outline=spec_outline,
             tool_names=tool_names,
+            agent_definition=self.agent_definition,
         )
 
         self._messages = [
@@ -408,6 +477,9 @@ class AgentRunner:
                 self._messages.append(Message(role="user", content=steer_content))
                 await self._persist_message(role="user", content=steer_content)
 
+            # Auto-compact conversation if approaching token budget (claw-code pattern)
+            self._maybe_compact()
+
             # Think
             await self._set_state(AgentState.THINKING)
             try:
@@ -425,6 +497,26 @@ class AgentRunner:
                 self._emit(event)
                 await self._persist_event(event)
                 break
+
+            # ── Cost tracking: record LLM turn ───────────────────────
+            turn_input_tokens, turn_output_tokens = self._estimate_turn_tokens(result)
+            cost_record = self.cost_tracker.record_llm_turn(
+                model=self.model,
+                input_tokens=turn_input_tokens,
+                output_tokens=turn_output_tokens,
+            )
+            cost_event = AgentEvent(
+                agent_id=self.agent_id,
+                event_type="cost_update",
+                payload={
+                    "turn_cost_usd": round(cost_record.cost_usd, 6),
+                    "turn_input_tokens": turn_input_tokens,
+                    "turn_output_tokens": turn_output_tokens,
+                    **self.cost_tracker.to_dict(),
+                },
+            )
+            self._emit(cost_event)
+            await self._persist_event(cost_event)
 
             # Record assistant message
             assistant_msg = Message(
@@ -464,10 +556,29 @@ class AgentRunner:
             for tc in result.tool_calls:
                 if self._stop_flag.is_set():
                     break
-                tool_result_msg = await self._execute_tool(tc, msg_id)
+                tool_result_msg, tool_duration_ms = await self._execute_tool(tc, msg_id)
                 tool_results.append(tool_result_msg)
 
+                # ── Cost tracking: record tool call ───────────────────
+                self.cost_tracker.record_tool_call(
+                    tool_name=tc.name,
+                    duration_ms=tool_duration_ms,
+                )
+
             self._messages.extend(tool_results)
+
+            # ── Emit turn_complete event ──────────────────────────────
+            turn_complete_event = AgentEvent(
+                agent_id=self.agent_id,
+                event_type="turn_complete",
+                payload={
+                    "turn": turn,
+                    "tool_calls_count": len(result.tool_calls),
+                    **self.cost_tracker.to_dict(),
+                },
+            )
+            self._emit(turn_complete_event)
+            await self._persist_event(turn_complete_event)
 
         else:
             logger.warning(
@@ -475,6 +586,63 @@ class AgentRunner:
                 self.max_turns,
                 self.agent_id,
             )
+
+    def _maybe_compact(self) -> None:
+        """Drop oldest non-essential messages when approaching token budget.
+
+        Mirrors Session.compact_for_token_budget but operates on the in-memory
+        message list directly (claw-code pattern: auto-compaction before each LLM turn).
+        """
+        # Rough estimate: ~4 chars per token
+        est_tokens = sum(len(m.content or "") // 4 for m in self._messages)
+        soft_limit = int(_DEFAULT_MAX_INPUT_TOKENS * _COMPACTION_SOFT_RATIO)
+
+        if est_tokens <= soft_limit:
+            return
+
+        # Preserve system (index 0) and the most recent messages
+        removed = 0
+        while est_tokens > soft_limit and len(self._messages) > 4:
+            # Find oldest droppable message (skip system at 0, last 3 messages)
+            drop_idx: int | None = None
+            for i in range(1, len(self._messages) - 3):
+                if self._messages[i].role != "system":
+                    drop_idx = i
+                    break
+            if drop_idx is None:
+                break
+            est_tokens -= len(self._messages[drop_idx].content or "") // 4
+            del self._messages[drop_idx]
+            removed += 1
+
+        if removed > 0:
+            logger.info(
+                "Auto-compacted %d messages for token budget agent_id=%s",
+                removed,
+                self.agent_id,
+            )
+
+    def _estimate_turn_tokens(self, result: ProviderTurnResult) -> tuple[int, int]:
+        """Estimate input/output tokens for one LLM turn.
+
+        If the provider returned actual usage in ``assistant_metadata``, use
+        those numbers.  Otherwise fall back to character-based estimation
+        (~4 chars per token).
+        """
+        meta = result.assistant_metadata or {}
+        actual_input = meta.get("input_tokens")
+        actual_output = meta.get("output_tokens")
+
+        if isinstance(actual_input, int) and isinstance(actual_output, int):
+            return actual_input, actual_output
+
+        # Estimate: input = all messages sent, output = assistant reply
+        input_chars = sum(len(m.content or "") for m in self._messages)
+        output_chars = len(result.text or "")
+        for tc in result.tool_calls:
+            output_chars += len(tc.name) + len(str(tc.arguments))
+
+        return max(1, input_chars // 4), max(1, output_chars // 4)
 
     async def _drain_steer(self) -> list[str]:
         messages: list[str] = []
@@ -491,14 +659,37 @@ class AgentRunner:
         messages_raw = [m.to_dict() for m in self._messages]
         tool_schemas = self.tool_registry.list_schemas() if self.tool_registry else []
 
+        # Filter tool schemas by agent definition categories (claw-code pattern)
+        if self.agent_definition is not None and tool_schemas:
+            filtered: list[dict[str, Any]] = []
+            for schema in tool_schemas:
+                name = schema.get("function", {}).get("name", "")
+                try:
+                    tool = self.tool_registry.get(name)
+                    cat = getattr(tool, "category", None)
+                    if cat is None or self.agent_definition.accepts_category(cat):
+                        filtered.append(schema)
+                except (ValueError, KeyError):
+                    filtered.append(schema)
+            tool_schemas = filtered
+
         return await self.llm.create_turn(
             messages=messages_raw,
             model=self.model,
             tools=tool_schemas or None,
         )
 
-    async def _execute_tool(self, tool_call: Any, assistant_msg_id: int) -> Message:
-        """Execute a single tool call, persist result, emit events."""
+    async def _execute_tool(
+        self, tool_call: Any, assistant_msg_id: int
+    ) -> tuple[Message, int]:
+        """Execute a single tool call via ToolExecutor, persist result, emit events.
+
+        Delegates to the centralized ToolExecutor which handles policy
+        enforcement, schema validation, hooks, and timeouts (claw-code
+        pattern: runner delegates to executor instead of inline execution).
+
+        Returns a tuple of (tool_result_message, duration_ms).
+        """
         call_id = tool_call.call_id
         tool_name = tool_call.name
         arguments = tool_call.arguments
@@ -536,61 +727,28 @@ class AgentRunner:
         output: str | None = None
         error: str | None = None
 
-        try:
+        # Enforce agent definition tool restrictions (claw-code pattern)
+        if self.agent_definition is not None:
+            try:
+                tool_obj = self.tool_registry.get(tool_name)
+                cat = getattr(tool_obj, "category", None)
+                if cat is not None and not self.agent_definition.accepts_category(cat):
+                    error = (
+                        f"Tool '{tool_name}' (category={cat}) is not allowed "
+                        f"for agent type '{self.agent_definition.name}'."
+                    )
+                    logger.warning(
+                        "AgentRunner tool denied by agent_definition agent_id=%s tool=%s cat=%s",
+                        self.agent_id,
+                        tool_name,
+                        cat,
+                    )
+            except (ValueError, KeyError):
+                pass  # Unknown tool — will be caught below
+
+        if error is None:
+            # Build context for ToolExecutor
             from taui.tools.base import ToolContext
-            from taui.config.policies import Policy
-            from taui.config.settings import BashPolicySettings
-
-            # Build a permissive policy for agent tool execution
-            auto_approve = {
-                # Spec-tree tools (read)
-                "spec_get_tree",
-                "spec_get_node",
-                "spec_get_branch",
-                "spec_create_node",
-                "spec_create_sibling",
-                "spec_update_node",
-                "spec_move_node",
-                # File read & search
-                "read",
-                "glob",
-                "grep",
-                "find",
-                "codesearch",
-                # Shell
-                "bash",
-                # Git (read-only)
-                "git",
-                # LSP
-                "lsp",
-                # Planning
-                "plan",
-                "todowrite",
-                "question",
-                # Skills
-                "skill",
-                # Agent
-                "monty",
-            }
-            bash_settings = BashPolicySettings(
-                default_timeout_sec=60,
-            )
-            policy = Policy(
-                auto_approve=auto_approve,
-                confirm={
-                    "spec_delete_node",
-                    "write",
-                    "edit",
-                    "apply_patch",
-                    "multiedit",
-                    "skill_import",
-                    "task",
-                },
-                deny=set(),
-                bash=bash_settings,
-            )
-
-            # Working dir: use configured workspace or fall back to cwd
             import pathlib
 
             ctx = ToolContext(
@@ -598,27 +756,44 @@ class AgentRunner:
                 session=_AgentSession(self.spec_service, agent_runner=self)
                 if self.spec_service
                 else _AgentSession(None, agent_runner=self),
-                policy=policy,
+                policy=self._build_agent_policy(),
+                agent_name=self.display_name,
+                session_id=self.session_id,
             )
 
-            tool = self.tool_registry.get(tool_name)
-            result = await tool.execute(arguments, ctx)
-            output = result.content
-            if result.error:
-                error = result.content
-                output = None
+            # Delegate to ToolExecutor (handles policy, hooks, validation, timeout)
+            executor = self._get_tool_executor()
+            outcome = await executor.run(
+                tool_call_id=call_id,
+                tool_name=tool_name,
+                arguments=arguments,
+                context=ctx,
+                approved=True,  # agent auto-approves within its policy
+            )
 
-        except ValueError as exc:
-            # Unknown tool
-            error = f"Unknown tool '{tool_name}': {exc}"
-            logger.warning(
-                "AgentRunner unknown tool agent_id=%s tool=%s", self.agent_id, tool_name
-            )
-        except Exception as exc:
-            error = f"Tool execution failed: {exc}"
-            logger.exception(
-                "AgentRunner tool error agent_id=%s tool=%s", self.agent_id, tool_name
-            )
+            if isinstance(outcome, ExecutionCompleted):
+                if outcome.result.error:
+                    error = outcome.result.content
+                else:
+                    output = outcome.result.content
+            elif isinstance(outcome, ExecutionDenied):
+                error = outcome.result.content
+                # Emit permission_denial event
+                denial_event = AgentEvent(
+                    agent_id=self.agent_id,
+                    event_type="permission_denial",
+                    payload={
+                        "call_id": call_id,
+                        "tool_name": tool_name,
+                        "reason": outcome.result.content,
+                    },
+                )
+                self._emit(denial_event)
+                await self._persist_event(denial_event)
+            elif isinstance(outcome, ExecutionRequiresApproval):
+                # For agent execution, auto-approve confirmable tools
+                # (the policy already handles this, but as a safety net)
+                error = f"Tool '{tool_name}' requires user approval: {outcome.reason}"
 
         duration_ms = int((time.monotonic() - start_ms) * 1000)
 
@@ -646,11 +821,76 @@ class AgentRunner:
         await self._persist_event(result_event)
 
         result_content = output if output is not None else (error or "")
-        return Message(
-            role="tool",
-            content=result_content,
-            tool_call_id=call_id,
-            name=tool_name,
+        return (
+            Message(
+                role="tool",
+                content=result_content,
+                tool_call_id=call_id,
+                name=tool_name,
+            ),
+            duration_ms,
+        )
+
+    def _get_tool_executor(self) -> ToolExecutor:
+        """Lazily build the ToolExecutor with registered hooks."""
+        if self._tool_executor is None:
+            from taui.tools.hooks import HookConfig, BashSafetyHook
+
+            hook_config = HookConfig()  # shell hooks can be loaded from settings
+            self._tool_executor = ToolExecutor(
+                registry=self.tool_registry,
+                default_timeout_sec=120,
+                hook_config=hook_config,
+            )
+            # Register built-in programmatic hooks
+            self._tool_executor._hook_runner.register_pre(BashSafetyHook())
+        return self._tool_executor
+
+    def _build_agent_policy(self) -> "Policy":
+        """Build the tool execution policy for agent-mode execution."""
+        from taui.config.policies import Policy
+        from taui.config.settings import BashPolicySettings
+
+        auto_approve = {
+            # Spec-tree tools
+            "spec_get_tree",
+            "spec_get_node",
+            "spec_get_branch",
+            "spec_create_node",
+            "spec_create_sibling",
+            "spec_update_node",
+            "spec_move_node",
+            # File read & search
+            "read",
+            "glob",
+            "grep",
+            "find",
+            "codesearch",
+            # Shell
+            "bash",
+            # Git (read-only)
+            "git",
+            # LSP
+            "lsp",
+            # Planning
+            "plan",
+            "todowrite",
+            "question",
+            # Skills
+            "skill",
+            # Agent
+            "monty",
+            # Write tools (auto-approve in agent mode)
+            "write",
+            "edit",
+            "apply_patch",
+            "multiedit",
+        }
+        return Policy(
+            auto_approve=auto_approve,
+            confirm={"spec_delete_node", "skill_import", "task"},
+            deny=set(),
+            bash=BashPolicySettings(default_timeout_sec=60),
         )
 
     async def _persist_message(

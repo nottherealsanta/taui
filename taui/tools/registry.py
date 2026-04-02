@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 from taui.tools.base import Tool, ToolCategory
 
@@ -100,3 +101,26 @@ class ToolRegistry:
                 if getattr(tool, "category", None) == category
             )
         )
+
+    def register_skills_as_tools(self, skill_registry: Any) -> int:
+        """Bridge skills into the tool registry.
+
+        Skills that define a ``schema`` are registered as standalone tools
+        (claw-code pattern: skill-to-tool bridge).  Skills without schemas
+        remain accessible only through the ``skill`` tool's ``invoke``
+        operation.
+
+        Returns the number of skills registered as tools.
+        """
+        from taui.tools.skill_bridge import SkillBridgeTool
+
+        count = 0
+        for skill in skill_registry.list_skills():
+            if skill.schema is not None:
+                tool_name = f"skill_{skill.name}"
+                if tool_name in self._tools:
+                    continue
+                bridge = SkillBridgeTool(skill=skill)
+                self._tools[tool_name] = bridge  # type: ignore[assignment]
+                count += 1
+        return count
