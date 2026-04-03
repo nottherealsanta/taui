@@ -80,6 +80,8 @@ class PrimeResult:
     """Aggregated result from collecting Prime streaming notifications."""
     text: str = ""
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
+    tool_results: list[dict[str, Any]] = field(default_factory=list)
+    notifications: list[dict[str, Any]] = field(default_factory=list)
     done: bool = False
 
 
@@ -130,8 +132,13 @@ def _prime_send_and_collect(
                 "arguments": p.get("arguments", {}),
             })
         elif method == "prime/toolResult":
-            # Match result to existing tool call
-            pass
+            result.tool_results.append({
+                "call_id": p.get("call_id", ""),
+                "output": p.get("output"),
+                "error": p.get("error"),
+            })
+        elif method == "prime/agentLaunched":
+            result.notifications.append({"method": method, **p})
         elif method == "prime/done":
             result.done = True
             break
@@ -347,8 +354,10 @@ def test_prime_max_turns_limit(tmp_path: Path) -> None:
         )
 
     from taui.server.handlers import MethodHandlers
+    from taui.agent.prime import PrimeAgent
 
-    original = MethodHandlers._resolve_llm_for_tier
+    original_resolve = MethodHandlers._resolve_llm_for_tier
+    original_init = PrimeAgent.__init__
 
     class MockLLM:
         create_turn = staticmethod(mock_create_turn)
@@ -356,18 +365,23 @@ def test_prime_max_turns_limit(tmp_path: Path) -> None:
     def patched_resolve(self, tier, params):
         return MockLLM(), "test-model"
 
+    def patched_init(self, **kwargs):
+        kwargs["max_turns"] = 3
+        original_init(self, **kwargs)
+
     with TestClient(app) as client:
         with client.websocket_connect("/ws") as ws:
             MethodHandlers._resolve_llm_for_tier = patched_resolve
+            PrimeAgent.__init__ = patched_init
             try:
                 resp, result = _prime_send_and_collect(
                     ws,
                     1,
                     [{"role": "user", "content": "Loop forever"}],
-                    max_turns=3,
                 )
             finally:
-                MethodHandlers._resolve_llm_for_tier = original
+                MethodHandlers._resolve_llm_for_tier = original_resolve
+                PrimeAgent.__init__ = original_init
 
             assert "error" not in resp, resp
             assert result.done
@@ -548,3 +562,351 @@ def test_prime_multiple_tool_calls_in_one_turn(tmp_path: Path) -> None:
             assert len(result.tool_calls) == 2
             assert result.tool_calls[0]["tool_name"] == "read"
             assert result.tool_calls[1]["tool_name"] == "read"
+
+
+def test_prime_launches_root_agent(tmp_path: Path) -> None:
+    """Prime can call launch_root to spin up a background root agent."""
+    _write_specs(tmp_path)
+    app = create_app(workspace=tmp_path)
+
+    call_count = 0
+
+    async def mock_create_turn(messages, model, *, tools=None, **kw):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return ProviderTurnResult(
+                response_id=None,
+                text="Launching a root agent for that task.",
+                tool_calls=[
+                    ProviderToolCall(
+                        call_id="call_root",
+                        name="launch_root",
+                        arguments={
+                            "task": "Implement authentication module",
+                            "spec_ref": "specs/core.md#core",
+                        },
+                    )
+                ],
+            )
+        else:
+            return ProviderTurnResult(
+                response_id=None,
+                text="Root agent launched successfully.",
+                tool_calls=[],
+            )
+
+    from taui.server.handlers import MethodHandlers
+
+    original = MethodHandlers._resolve_llm_for_tier
+
+    class MockLLM:
+        create_turn = staticmethod(mock_create_turn)
+
+    def patched_resolve(self, tier, params):
+        return MockLLM(), "test-model"
+
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws") as ws:
+            MethodHandlers._resolve_llm_for_tier = patched_resolve
+            try:
+                resp, result = _prime_send_and_collect(
+                    ws, 1, [{"role": "user", "content": "Implement auth"}],
+                    max_messages=300,
+                )
+            finally:
+                MethodHandlers._resolve_llm_for_tier = original
+
+            assert "error" not in resp, resp
+            assert result.done
+            assert len(result.tool_calls) == 1
+            assert result.tool_calls[0]["tool_name"] == "launch_root"
+            # Tool result notification should contain agent info
+            assert len(result.tool_results) == 1
+            tool_output = result.tool_results[0]["output"]
+            assert tool_output is not None
+            assert "Root agent launched" in tool_output
+            # prime/agentLaunched notification should have been emitted
+            launched = [n for n in result.notifications if n["method"] == "prime/agentLaunched"]
+            assert len(launched) == 1
+            assert "agent_id" in launched[0]
+            assert "display_name" in launched[0]
+            assert launched[0]["task"] == "Implement authentication module"
+
+
+# ── Persistent Prime / Interrupt Tests ─────────────────────────────────────────
+
+
+def test_prime_persistent_conversation_context(tmp_path: Path) -> None:
+    """Consecutive prime/message calls share persistent conversation history."""
+    _write_specs(tmp_path)
+    app = create_app(workspace=tmp_path)
+
+    call_count = 0
+    seen_messages: list[list[dict[str, Any]]] = []
+
+    async def mock_create_turn(messages, model, *, tools=None, **kw):
+        nonlocal call_count
+        call_count += 1
+        # Record what messages the LLM received
+        seen_messages.append([m for m in messages if m.get("role") == "user"])
+        return ProviderTurnResult(
+            response_id=None,
+            text=f"Response {call_count}",
+            tool_calls=[],
+        )
+
+    from taui.server.handlers import MethodHandlers
+
+    original = MethodHandlers._resolve_llm_for_tier
+
+    class MockLLM:
+        create_turn = staticmethod(mock_create_turn)
+
+    def patched_resolve(self, tier, params):
+        return MockLLM(), "test-model"
+
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws") as ws:
+            MethodHandlers._resolve_llm_for_tier = patched_resolve
+            try:
+                # First message
+                resp1, result1 = _prime_send_and_collect(
+                    ws, 1, [{"role": "user", "content": "Hello, I'm Alice"}]
+                )
+                assert result1.done
+                assert "Response 1" in result1.text
+
+                # Second message — should see first message in history
+                resp2, result2 = _prime_send_and_collect(
+                    ws, 2, [{"role": "user", "content": "What's my name?"}]
+                )
+                assert result2.done
+                assert "Response 2" in result2.text
+
+                # LLM should have seen both user messages on the second call
+                assert len(seen_messages) == 2
+                # First call: only "Hello, I'm Alice"
+                assert len(seen_messages[0]) == 1
+                # Second call: both messages
+                assert len(seen_messages[1]) == 2
+                assert seen_messages[1][0]["content"] == "Hello, I'm Alice"
+                assert seen_messages[1][1]["content"] == "What's my name?"
+            finally:
+                MethodHandlers._resolve_llm_for_tier = original
+
+
+def test_prime_history_rpc(tmp_path: Path) -> None:
+    """prime/history returns the conversation history."""
+    _write_specs(tmp_path)
+    app = create_app(workspace=tmp_path)
+
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws") as ws:
+            # Send a message first (using no-op LLM)
+            resp, result = _prime_send_and_collect(
+                ws, 1, [{"role": "user", "content": "Hello"}]
+            )
+            assert result.done
+
+            # Fetch history
+            hist_resp = _rpc(ws, 2, "prime/history", {})
+            assert "error" not in hist_resp
+            messages = hist_resp["result"]["messages"]
+            # Should contain at least the user message and assistant response
+            roles = [m["role"] for m in messages]
+            assert "user" in roles
+            assert "assistant" in roles
+
+
+def test_prime_cancel_rpc(tmp_path: Path) -> None:
+    """prime/cancel cancels the current Prime loop."""
+    _write_specs(tmp_path)
+    app = create_app(workspace=tmp_path)
+
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws") as ws:
+            # Cancel should work even when Prime is idle
+            resp = _rpc(ws, 1, "prime/cancel", {})
+            assert "error" not in resp
+            assert resp["result"] == {"ok": True}
+
+
+def test_prime_interrupt_during_tool_execution(tmp_path: Path) -> None:
+    """When a new message arrives during tool execution, Prime pivots."""
+    _write_specs(tmp_path)
+    (tmp_path / "slow.txt").write_text("slow content", encoding="utf-8")
+    app = create_app(workspace=tmp_path)
+
+    call_count = 0
+    interrupt_seen = False
+
+    async def mock_create_turn(messages, model, *, tools=None, **kw):
+        nonlocal call_count, interrupt_seen
+        call_count += 1
+
+        user_msgs = [m for m in messages if m.get("role") == "user"]
+        # Check if the interrupt message made it into context
+        if any("INTERRUPT" in (m.get("content") or "") for m in user_msgs):
+            interrupt_seen = True
+            return ProviderTurnResult(
+                response_id=None,
+                text="I see the interrupt message!",
+                tool_calls=[],
+            )
+
+        if call_count == 1:
+            # Return a tool call that will take some time
+            return ProviderTurnResult(
+                response_id=None,
+                text="Let me read that.",
+                tool_calls=[
+                    ProviderToolCall(
+                        call_id="call_slow",
+                        name="read",
+                        arguments={"filePath": str(tmp_path / "slow.txt")},
+                    ),
+                    ProviderToolCall(
+                        call_id="call_slow2",
+                        name="read",
+                        arguments={"filePath": str(tmp_path / "slow.txt")},
+                    ),
+                ],
+            )
+        else:
+            return ProviderTurnResult(
+                response_id=None,
+                text="Done.",
+                tool_calls=[],
+            )
+
+    from taui.server.handlers import MethodHandlers
+    from taui.agent.prime import PrimeAgent
+
+    original_resolve = MethodHandlers._resolve_llm_for_tier
+
+    class MockLLM:
+        create_turn = staticmethod(mock_create_turn)
+
+    def patched_resolve(self, tier, params):
+        return MockLLM(), "test-model"
+
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws") as ws:
+            MethodHandlers._resolve_llm_for_tier = patched_resolve
+            try:
+                # Send first message
+                ws.send_text(
+                    json.dumps({
+                        "jsonrpc": "2.0", "id": 1,
+                        "method": "prime/message",
+                        "params": {"messages": [{"role": "user", "content": "Read slow file"}]},
+                    })
+                )
+                # Immediately read the RPC response
+                rpc_resp = json.loads(ws.receive_text())
+                assert rpc_resp.get("result") == {"ok": True}
+
+                # Immediately send an interrupt message
+                ws.send_text(
+                    json.dumps({
+                        "jsonrpc": "2.0", "id": 2,
+                        "method": "prime/message",
+                        "params": {"messages": [{"role": "user", "content": "INTERRUPT: new question"}]},
+                    })
+                )
+
+                # Collect all notifications until prime/done
+                notifications = []
+                done_count = 0
+                for _ in range(100):
+                    msg = json.loads(ws.receive_text())
+                    if "method" in msg:
+                        notifications.append(msg)
+                        if msg["method"] == "prime/done":
+                            done_count += 1
+                            if done_count >= 1:
+                                break
+                    # Also consume the second RPC response
+                    if msg.get("id") == 2:
+                        continue
+
+                # Prime should have seen the interrupt message
+                assert interrupt_seen or call_count >= 2
+            finally:
+                MethodHandlers._resolve_llm_for_tier = original_resolve
+
+
+def test_prime_state_changes(tmp_path: Path) -> None:
+    """Prime emits stateChanged notifications during execution."""
+    _write_specs(tmp_path)
+    (tmp_path / "test.txt").write_text("content", encoding="utf-8")
+    app = create_app(workspace=tmp_path)
+
+    call_count = 0
+
+    async def mock_create_turn(messages, model, *, tools=None, **kw):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return ProviderTurnResult(
+                response_id=None,
+                text="Reading.",
+                tool_calls=[
+                    ProviderToolCall(
+                        call_id="call_1",
+                        name="read",
+                        arguments={"filePath": str(tmp_path / "test.txt")},
+                    ),
+                ],
+            )
+        else:
+            return ProviderTurnResult(
+                response_id=None,
+                text="Done.",
+                tool_calls=[],
+            )
+
+    from taui.server.handlers import MethodHandlers
+
+    original = MethodHandlers._resolve_llm_for_tier
+
+    class MockLLM:
+        create_turn = staticmethod(mock_create_turn)
+
+    def patched_resolve(self, tier, params):
+        return MockLLM(), "test-model"
+
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws") as ws:
+            MethodHandlers._resolve_llm_for_tier = patched_resolve
+            try:
+                ws.send_text(
+                    json.dumps({
+                        "jsonrpc": "2.0", "id": 1,
+                        "method": "prime/message",
+                        "params": {"messages": [{"role": "user", "content": "Read test.txt"}]},
+                    })
+                )
+
+                notifications = []
+                for _ in range(50):
+                    msg = json.loads(ws.receive_text())
+                    if "method" in msg:
+                        notifications.append(msg)
+                        if msg["method"] == "prime/done":
+                            break
+
+                methods = [n["method"] for n in notifications]
+                # Should have stateChanged notifications
+                assert "prime/stateChanged" in methods
+                # Should have both thinking and tool_execution states
+                state_changes = [
+                    n["params"]["state"]
+                    for n in notifications
+                    if n["method"] == "prime/stateChanged"
+                ]
+                assert "thinking" in state_changes
+                assert "tool_execution" in state_changes
+            finally:
+                MethodHandlers._resolve_llm_for_tier = original

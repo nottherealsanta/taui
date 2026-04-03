@@ -1,17 +1,12 @@
 ---
 title: Task Management
 status: active
-domain: task-management
-depends_on:
-  - specs/domains/data-layer.md
-code_refs:
-  - src/task_board.py
-test_refs:
-  - tests/example_project/tests/test_task_board.py
 last_updated: 2026-03-20
 ---
 
 # Task Management
+
+Depends on: [Data Layer](../domains/data-layer.md)
 
 ## Responsibility
 
@@ -20,28 +15,37 @@ Basic task tracking with boards and cards. Owns card creation, editing, deletion
 ## Invariants
 
 - A card cannot be updated unless it was first created and persisted.
-- Card creation requires a title.
+- Card creation requires a title — enforced in `src/task_board.py#create_card`.
 - All card operations must be persisted to the database via the data layer.
 
 ## Interfaces
 
-- `create_card(title, description)` → card
-- `update_card(card_id, fields)` → card
-- `delete_card(card_id)` → None
-- `organize_cards(board_id, order)` → None
+- `src/task_board.py#create_card` — create a new card with title and optional description.
+- `src/task_board.py#list_cards` — return all cards on the board.
+- `src/api.py#list_boards` — REST endpoint to list boards for a user.
+- `src/api.py#create_board` — REST endpoint to create a new board.
 
 ## Key Components
 
-- **Create card workflow**: Define the card creation flow with validation and persistence.
-- **Update card workflow**: Modify existing cards with validation.
-- **Delete card workflow**: Soft-delete cards by archiving them.
-- **Card organization**: Organize cards into columns and support drag-and-drop.
+- **Card** (`src/task_board.py#Card`): Core data model — dataclass with title and description.
+- **TaskBoard** (`src/task_board.py#TaskBoard`): Board class managing a list of cards. Provides `create_card` and `list_cards`.
+- **Create Card** (`src/task_board.py#create_card`): Validates title is non-empty (strips whitespace), creates and persists the card.
+- **List Cards** (`src/task_board.py#list_cards`): Returns a copy of the internal card list.
+- **API Layer** (`src/api.py#list_boards`, `src/api.py#create_board`): REST endpoints for board operations.
 
 ## Important Code References
 
-- `src/task_board.py`
+- `src/task_board.py#TaskBoard`
+- `src/task_board.py#Card`
+- `src/task_board.py#create_card`
+- `src/task_board.py#list_cards`
+- `src/api.py#list_boards`
+- `src/api.py#create_board`
 
 ## Verification
+
+- `tests/example_project/tests/test_task_board.py#test_create_card_trims_and_persists` — verifies card creation with title trimming.
+- `tests/example_project/tests/test_task_board.py#test_create_card_requires_title` — verifies title validation.
 
 ```
 pytest tests/example_project/tests/test_task_board.py -q

@@ -16,6 +16,7 @@ from taui.specs import (
     SpecValidationError,
 )
 from taui.agent.manager import AgentManager
+from taui.history import HistoryDB
 
 from .protocol import (
     INVALID_PARAMS,
@@ -76,7 +77,14 @@ class MethodHandlers:
         )
         self.run_state = RunState()
         self._notification_callback: NotificationCallback | None = None
-        self.agent_manager = AgentManager(db=self.specs.db)
+        workspace_path = Path(workspace).resolve() if workspace else None
+        self.history_db = HistoryDB()
+        self.agent_manager = AgentManager(
+            db=self.specs.db,
+            history_db=self.history_db,
+            workspace=workspace_path,
+        )
+        self._prime_agent: Any | None = None  # Lazily created PrimeAgent
         self._symbol_indexer: Any | None = None
         self._symbol_resolver: Any | None = None
         self._symbol_db: Any | None = None
@@ -154,6 +162,12 @@ class MethodHandlers:
                 return DispatchResult(result=self.run_state.to_dict(), notifications=[])
             if method == "prime/message":
                 return await self._handle_prime_message(params)
+            if method == "prime/newContext":
+                return await self._handle_prime_new_context(params)
+            if method == "prime/cancel":
+                return await self._handle_prime_cancel()
+            if method == "prime/history":
+                return await self._handle_prime_history()
             if method == "agent/launch":
                 return await self._handle_agent_launch(params)
             if method == "agent/stop":
@@ -185,6 +199,11 @@ class MethodHandlers:
             if method == "fs/writeFile":
                 return DispatchResult(
                     result=await self._handle_fs_write_file(params),
+                    notifications=[],
+                )
+            if method == "fs/createDir":
+                return DispatchResult(
+                    result=await self._handle_fs_create_dir(params),
                     notifications=[],
                 )
             if method == "fs/search":
@@ -304,6 +323,10 @@ class MethodHandlers:
                 "run/start",
                 "run/stop",
                 "run/status",
+                "prime/message",
+                "prime/newContext",
+                "prime/cancel",
+                "prime/history",
                 "agent/launch",
                 "agent/stop",
                 "agent/list",
@@ -344,8 +367,8 @@ class MethodHandlers:
                 "prime/toolCall",
                 "prime/toolResult",
                 "prime/done",
-                "prime/minionLaunched",
-                "prime/minionDone",
+                "prime/subAgentLaunched",
+                "prime/subAgentDone",
                 "prime/agentLaunched",
                 "approval/request",
                 "clarificationRequired",
@@ -906,323 +929,81 @@ class MethodHandlers:
 
     # ── Prime ─────────────────────────────────────────────────────────────────
 
+    def _get_prime(self) -> Any:
+        """Lazily create and return the persistent PrimeAgent."""
+        if self._prime_agent is None:
+            from taui.agent.prime import PrimeAgent
+
+            self._prime_agent = PrimeAgent(
+                workspace=Path(self.specs.workspace),
+                spec_service=self.specs,
+                agent_manager=self.agent_manager,
+                resolve_llm=lambda: self._resolve_llm_for_tier("medium", {}),
+                emit_notification=self._emit_notification,
+                history_db=self.history_db,
+            )
+            self.agent_manager.set_prime_agent(self._prime_agent)
+        return self._prime_agent
+
     async def _handle_prime_message(self, params: dict[str, Any]) -> DispatchResult:
-        """Send a message to Prime and kick off streaming response.
+        """Send a message to Prime.
+
+        Prime is persistent — it maintains conversation history across calls.
+        If Prime is idle, starts the think loop. If busy, interrupts and pivots.
 
         The RPC returns immediately with {ok: true}.  The think→tool→observe
         loop runs as a background task, emitting notifications:
-          prime/token      — streamed text chunks
-          prime/toolCall   — a tool call is starting
-          prime/toolResult — a tool call finished
-          prime/done       — the full response is complete
+          prime/token         — streamed text chunks
+          prime/toolCall      — a tool call is starting
+          prime/toolResult    — a tool call finished
+          prime/interrupted   — Prime pivoted to a new message
+          prime/stateChanged  — Prime state changed (thinking/tool_execution)
+          prime/done          — the full response is complete
 
         Required params: messages (list of {role, content})
-        Optional params: max_turns (default 20)
         """
         raw_messages = params.get("messages")
         if not isinstance(raw_messages, list) or not raw_messages:
             raise JsonRpcProtocolError(
                 INVALID_PARAMS, "messages must be a non-empty list"
             )
-        max_turns: int = int(params.get("max_turns", 20))
 
-        # Launch the streaming loop as a background task
-        task = asyncio.create_task(self._run_prime_loop(list(raw_messages), max_turns, params))
-        task.add_done_callback(self._on_prime_task_done)
+        prime = self._get_prime()
+
+        # Send the last user message (the new one) to persistent Prime
+        last_msg = raw_messages[-1]
+        if isinstance(last_msg, dict) and "content" in last_msg:
+            await prime.send_message(
+                last_msg["content"],
+                role=last_msg.get("role", "user"),
+            )
 
         return DispatchResult(result={"ok": True}, notifications=[])
 
-    def _on_prime_task_done(self, task: asyncio.Task[None]) -> None:
-        """Callback for completed Prime tasks — log unhandled exceptions."""
-        if task.cancelled():
-            return
-        exc = task.exception()
-        if exc is not None:
-            logger.error("Prime background task failed: %s", exc, exc_info=exc)
+    async def _handle_prime_cancel(self) -> DispatchResult:
+        """Cancel Prime's current think loop."""
+        prime = self._get_prime()
+        await prime.cancel()
+        return DispatchResult(result={"ok": True}, notifications=[])
 
-    async def _run_prime_loop(
-        self,
-        raw_messages: list[Any],
-        max_turns: int,
-        params: dict[str, Any],
-    ) -> None:
-        """Background task: Prime's think→tool→observe loop with streaming notifications."""
-        try:
-            await self._run_prime_loop_inner(raw_messages, max_turns, params)
-        except Exception as exc:
-            logger.error("Prime loop setup failed: %s", exc, exc_info=True)
-            error_text = f"Sorry, I couldn't respond right now: {exc}"
-            self._emit_notification(
-                notification_message("prime/token", {"text": error_text})
+    async def _handle_prime_new_context(self, params: dict[str, Any]) -> DispatchResult:
+        """Start a new Prime context, optionally seeded with a first user message."""
+        prime = self._get_prime()
+        seed = params.get("seed")
+        if seed is not None and not isinstance(seed, str):
+            raise JsonRpcProtocolError(
+                INVALID_PARAMS, "seed must be a string when provided"
             )
-        finally:
-            # Always signal completion so the frontend exits streaming state
-            self._emit_notification(notification_message("prime/done", {}))
+        await prime.new_context(seed_message=(seed.strip() if isinstance(seed, str) and seed.strip() else None))
+        return DispatchResult(result={"ok": True}, notifications=[])
 
-    async def _run_prime_loop_inner(
-        self,
-        raw_messages: list[Any],
-        max_turns: int,
-        params: dict[str, Any],
-    ) -> None:
-        """Inner implementation of Prime's think→tool→observe loop."""
-
-        # ── Build tool registry (all builtins + spec-tree) ─────────────────
-        # Prime gets launch_minion and launch_root but not the sub-agent
-        # "task" tool (which is for root agents, not Prime).
-        from taui.tools.registry import ToolRegistry
-        from taui.tools.base import ToolCategory, ToolContext, ToolResult
-        from taui.tools.builtins import register_builtin_tools
-        from taui.tools.builtins.spec_tree import register_spec_tree_tools
-        from taui.config.policies import Policy
-        from taui.config.settings import BashPolicySettings
-
-        registry = ToolRegistry()
-        register_builtin_tools(registry)
-        register_spec_tree_tools(registry)
-
-        # Remove the sub-agent "task" tool — Prime uses launch_minion/launch_root instead
-        try:
-            registry.unregister("task")
-        except ValueError:
-            pass
-
-        tool_schemas = registry.list_schemas()
-
-        # ── System prompt ──────────────────────────────────────────────────
-        tool_names = [t["function"]["name"] for t in tool_schemas]
-        context_parts: list[str] = [
-            "You are Prime, the user's main AI assistant in Taui — "
-            "a spec-driven development environment.\n\n"
-            "IMPORTANT: You have direct access to tools. When the user asks "
-            "you to create, edit, or write files, you MUST call the "
-            "appropriate tool (e.g. 'write' to create a file, 'edit' to "
-            "modify one, 'bash' to run commands). NEVER just print code "
-            "and ask the user to save it. NEVER ask 'shall I write this?' — "
-            "just do it.\n\n"
-            "You can delegate work:\n"
-            "- Use 'launch_minion' for quick lookups (reading files, searching code, "
-            "answering factual questions). Minions block until done and return "
-            "their result to you.\n"
-            "- Use 'launch_root' for large autonomous tasks (implementing features, "
-            "refactoring, writing tests). Root agents run in the background "
-            "as separate tabs.\n\n"
-            "Available tools: " + ", ".join(tool_names) + "\n\n"
-            "Be concise and helpful.",
-        ]
-
-        workspace = self.specs.workspace
-        context_parts.append(f"\nWorkspace: {workspace}")
-
-        # Inject spec tree outline so Prime knows the project structure
-        try:
-            await self.specs.ensure_initialized()
-            nodes = await self.specs.get_tree()
-            if nodes:
-                lines: list[str] = []
-                for n in nodes:
-                    indent = "  " * n.depth
-                    title = (
-                        n.markdown.split("\n")[0].lstrip("# ").strip()
-                        if n.markdown
-                        else n.anchor
-                    )
-                    lines.append(f"{indent}- {n.spec_ref}: {title}")
-                context_parts.append("\n\n## Project Spec Tree\n" + "\n".join(lines))
-        except Exception:
-            pass  # specs may not be available
-
-        # ── Build LLM message list ────────────────────────────────────────
-        llm_messages: list[dict[str, Any]] = [
-            {"role": "system", "content": "\n".join(context_parts)}
-        ]
-        for m in raw_messages:
-            if isinstance(m, dict) and "role" in m and "content" in m:
-                llm_messages.append({"role": m["role"], "content": m["content"]})
-
-        # ── Tool execution context ────────────────────────────────────────
-        auto_approve = {
-            "spec_get_tree",
-            "spec_get_node",
-            "spec_get_branch",
-            "spec_create_node",
-            "spec_create_sibling",
-            "spec_update_node",
-            "spec_move_node",
-            "read",
-            "glob",
-            "grep",
-            "find",
-            "codesearch",
-            "bash",
-            "git",
-            "lsp",
-            "plan",
-            "todowrite",
-            "question",
-            "skill",
-            "monty",
-            "launch_minion",
-            "launch_root",
-        }
-        policy = Policy(
-            auto_approve=auto_approve,
-            confirm={
-                "spec_delete_node",
-                "write",
-                "edit",
-                "apply_patch",
-                "multiedit",
-                "skill_import",
-            },
-            deny=set(),
-            bash=BashPolicySettings(default_timeout_sec=60),
+    async def _handle_prime_history(self) -> DispatchResult:
+        """Return Prime's full conversation history."""
+        prime = self._get_prime()
+        return DispatchResult(
+            result={"messages": prime.get_history()},
+            notifications=[],
         )
-
-        class _PrimeSession:
-            def __init__(
-                self,
-                spec_service: Any,
-                *,
-                agent_manager: Any = None,
-                notification_callback: Any = None,
-                llm: Any = None,
-                model: str = "",
-                tool_registry: Any = None,
-            ) -> None:
-                self.spec_service = spec_service
-                self.agent_runner = None
-                self.agent_manager = agent_manager
-                self.notification_callback = notification_callback
-                self.llm = llm
-                self.model = model
-                self.tool_registry = tool_registry
-                self._read_files: dict[str, str] = {}  # path → status
-
-            def mark_read(self, path: Any, *, status: str = "success") -> None:
-                self._read_files[str(path)] = status
-
-            def has_read(self, path: Any) -> bool:
-                return str(path) in self._read_files
-
-            def read_status(self, path: Any) -> str | None:
-                return self._read_files.get(str(path))
-
-        # ── Resolve LLM ───────────────────────────────────────────────────
-        llm, model = self._resolve_llm_for_tier("medium", params)
-
-        ctx = ToolContext(
-            working_dir=Path(workspace),
-            session=_PrimeSession(
-                self.specs,
-                agent_manager=self.agent_manager,
-                notification_callback=self._notification_callback,
-                llm=llm,
-                model=model,
-                tool_registry=registry,
-            ),
-            policy=policy,
-        )
-
-        logger.debug(
-            "Prime: %d tools, %d messages, model=%s",
-            len(tool_schemas),
-            len(llm_messages),
-            model,
-        )
-
-        # ── Think → tool → observe loop (background, with notifications) ──
-        try:
-            for _turn in range(max_turns):
-                result = await llm.create_turn(
-                    llm_messages,
-                    model,
-                    tools=tool_schemas or None,
-                )
-
-                # Collect assistant text
-                text = result.text or ""
-
-                # Stream the text as a token notification
-                if text:
-                    self._emit_notification(
-                        notification_message("prime/token", {"text": text})
-                    )
-
-                # Build assistant message for history
-                assistant_msg: dict[str, Any] = {"role": "assistant", "content": text}
-                if result.tool_calls:
-                    assistant_msg["tool_calls"] = [
-                        {
-                            "id": tc.call_id,
-                            "type": "function",
-                            "function": {
-                                "name": tc.name,
-                                "arguments": json.dumps(tc.arguments),
-                            },
-                        }
-                        for tc in result.tool_calls
-                    ]
-                llm_messages.append(assistant_msg)
-
-                if not result.tool_calls:
-                    break
-
-                # Execute each tool call
-                for tc in result.tool_calls:
-                    # Notify: tool call starting
-                    self._emit_notification(
-                        notification_message(
-                            "prime/toolCall",
-                            {
-                                "call_id": tc.call_id,
-                                "tool_name": tc.name,
-                                "arguments": tc.arguments,
-                            },
-                        )
-                    )
-
-                    started = time.perf_counter()
-                    tool_output: str
-                    tool_error: str | None = None
-                    try:
-                        tool = registry.get(tc.name)
-                        tool_result = await tool.execute(tc.arguments, ctx)
-                        tool_output = tool_result.content
-                    except Exception as exc:
-                        tool_output = f"Tool error: {exc}"
-                        tool_error = str(exc)
-
-                    duration_ms = int((time.perf_counter() - started) * 1000)
-
-                    # Notify: tool call finished
-                    self._emit_notification(
-                        notification_message(
-                            "prime/toolResult",
-                            {
-                                "call_id": tc.call_id,
-                                "output": tool_output if not tool_error else None,
-                                "error": tool_error,
-                                "duration_ms": duration_ms,
-                            },
-                        )
-                    )
-
-                    llm_messages.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": tc.call_id,
-                            "content": tool_output,
-                        }
-                    )
-
-        except Exception as exc:
-            logger.error("Prime LLM call failed: %s", exc, exc_info=True)
-            # Emit error text as a token so the user sees something
-            error_text = f"Sorry, I couldn't respond right now: {exc}"
-            self._emit_notification(
-                notification_message("prime/token", {"text": error_text})
-            )
 
     async def _handle_agent_launch(self, params: dict[str, Any]) -> DispatchResult:
         """Launch a root agent on a spec branch.
@@ -1560,6 +1341,28 @@ class MethodHandlers:
             target.write_text(content, encoding="utf-8")
         except OSError as exc:
             raise ValueError(f"cannot write file: {exc}") from exc
+
+        return {"ok": True}
+
+    async def _handle_fs_create_dir(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Create a directory.
+
+        Required params: path (string)
+        Returns: {ok: True}
+        """
+        rel_path = self._require_str(params, "path")
+
+        workspace = self.specs.workspace.resolve()
+        target = (workspace / rel_path).resolve()
+
+        # Security: ensure target is within workspace
+        if not str(target).startswith(str(workspace)):
+            raise ValueError("path escapes workspace")
+
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise ValueError(f"cannot create directory: {exc}") from exc
 
         return {"ok": True}
 

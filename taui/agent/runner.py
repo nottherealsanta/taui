@@ -110,9 +110,12 @@ def _build_system_prompt(
 
     builder.append_section(
         "# Getting Started\n"
-        "Start by understanding the project using read, glob, grep, and "
-        "spec-tree tools. Then proceed with the task. When finished, provide "
-        "a summary."
+        "IMPORTANT: You MUST use tools to complete your task. Do NOT just describe "
+        "what you plan to do — actually do it by calling the appropriate tools.\n\n"
+        "Start by understanding the project using read, glob, grep, find, and "
+        "spec-tree tools. Then proceed with the task. Always call at least one "
+        "tool before providing your final answer.\n\n"
+        "When finished, provide a summary of what you found or accomplished."
     )
 
     return builder.render()
@@ -143,9 +146,10 @@ class AgentRunner:
         parent_agent_id: str | None = None,
         max_turns: int = 50,
         working_dir: Any | None = None,  # Path — workspace root for tool context
-        agent_type: str = "root",  # "root" | "minion"
+        agent_type: str = "root",  # "root" | "sub_agent"
         display_name: str | None = None,
         agent_definition: Any | None = None,  # AgentDefinition — for tool restrictions
+        history_db: Any | None = None,  # HistoryDB — global message history
     ) -> None:
         self.agent_id = agent_id
         self.session_id = session_id
@@ -164,6 +168,7 @@ class AgentRunner:
         self.agent_type = agent_type
         self.display_name = display_name or agent_id
         self.agent_definition = agent_definition
+        self.history_db = history_db
 
         self.state: AgentState = AgentState.IDLE
         self._stop_flag = asyncio.Event()
@@ -902,7 +907,7 @@ class AgentRunner:
         name: str | None = None,
     ) -> int:
         try:
-            return await self.db.record_agent_message(
+            msg_id = await self.db.record_agent_message(
                 agent_id=self.agent_id,
                 role=role,
                 content=content,
@@ -915,4 +920,21 @@ class AgentRunner:
                 self.agent_id,
                 role,
             )
-            return 0
+            msg_id = 0
+
+        if self.history_db is not None:
+            try:
+                await self.history_db.record_message(
+                    agent_id=self.agent_id,
+                    role=role,
+                    content=content,
+                    tool_call_id=tool_call_id,
+                    name=name,
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to record message in history DB agent_id=%s",
+                    self.agent_id,
+                )
+
+        return msg_id

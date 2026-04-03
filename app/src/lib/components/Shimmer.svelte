@@ -1,6 +1,6 @@
 <!--
   Shimmer.svelte
-  Shared animated shimmer bar used on tool cards, minion cards,
+  Shared animated shimmer bar used on tool cards, sub-agent cards,
   agent tabs, and any other "in-progress" indicator surfaces.
 -->
 <script lang="ts">

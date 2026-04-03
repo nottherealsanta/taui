@@ -12,6 +12,7 @@
     selectedFilePath: string | null
     ontoggle: (key: string) => void
     onselect: (item: SpecNavHeadingItem) => void
+    oncontextmenu?: (e: MouseEvent, item: SpecNavItemType) => void
   }
 
   const {
@@ -22,7 +23,14 @@
     selectedFilePath,
     ontoggle,
     onselect,
+    oncontextmenu: onCtxMenu,
   }: Props = $props()
+
+  function handleContextMenu(e: MouseEvent) {
+    e.preventDefault()
+    e.stopPropagation()
+    onCtxMenu?.(e, item)
+  }
 
   const isCollapsed = $derived(collapsedKeys.has(item.key))
   const isActive = $derived(
@@ -51,7 +59,7 @@
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div class="nav-item" style:padding-left="{4 + depth * 14}px">
   {#if item.kind === 'folder'}
-    <div class="nav-row folder" onclick={item.children.length > 0 ? toggleItem : undefined}>
+    <div class="nav-row folder" onclick={item.children.length > 0 ? toggleItem : undefined} oncontextmenu={handleContextMenu}>
       <span class="chevron">{item.children.length > 0 ? (isCollapsed ? '▸' : '▾') : '·'}</span>
       <span class="label">{item.label}</span>
     </div>
@@ -65,11 +73,12 @@
           {selectedFilePath}
           {ontoggle}
           {onselect}
+          oncontextmenu={onCtxMenu}
         />
       {/each}
     {/if}
   {:else}
-    <div class="nav-row heading" class:active={isActive} onclick={selectItem}>
+    <div class="nav-row heading" class:active={isActive} onclick={selectItem} oncontextmenu={handleContextMenu}>
       <span class="label">{item.label}</span>
     </div>
     {#if item.children.length > 0 && !isCollapsed}
@@ -82,6 +91,7 @@
           {selectedFilePath}
           {ontoggle}
           {onselect}
+          oncontextmenu={onCtxMenu}
         />
       {/each}
     {/if}

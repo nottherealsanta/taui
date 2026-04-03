@@ -6,7 +6,7 @@
   import { appState } from '$stores/app-state.svelte'
   import { PRIME_AGENT_ID, AGENT_COLOR_HEX, agentStateIsActive } from '$types/index'
 
-  /** Only root agents (not minions) get tabs; hide idle agents. */
+  /** Only root agents (not sub-agents) get tabs; hide idle agents. */
   const agentTabs = $derived.by(() => {
     return [...appState.agents.values()].filter(
       (agent) => agent.state !== 'idle' && agent.agentType === 'root',

@@ -1,5 +1,5 @@
 """
-Agent-launching tools — launch_minion and launch_root.
+Agent-launching tools — launch_sub_agent and launch_root.
 
 These tools are intended for Prime's tool loop. They rely on the session
 having an ``agent_manager`` and ``notification_callback`` so they can
@@ -43,27 +43,27 @@ def _emit(context: ToolContext, method: str, params: dict[str, Any]) -> None:
             logger.exception("Failed to emit notification %s", method)
 
 
-# ── LaunchMinionTool ──────────────────────────────────────────────────────────
+# ── LaunchSubAgentTool ────────────────────────────────────────────────────────
 
 
 @dataclass(slots=True)
-class LaunchMinionTool:
-    """Launch a lightweight minion agent for a quick lookup or sub-task.
+class LaunchSubAgentTool:
+    """Launch a lightweight sub-agent for a quick lookup or sub-task.
 
-    The minion runs autonomously and this tool blocks until the minion
-    finishes, returning its result directly. The frontend sees the minion
+    The sub-agent runs autonomously and this tool blocks until the sub-agent
+    finishes, returning its result directly. The frontend sees the sub-agent
     as an inline card in Prime's chat.
     """
 
-    name: str = "launch_minion"
+    name: str = "launch_sub_agent"
     description: str = (
-        "Launch a lightweight minion agent for a focused sub-task such as "
+        "Launch a lightweight sub-agent for a focused sub-task such as "
         "reading files, searching code, or answering a factual question.\n\n"
-        "The minion runs autonomously and returns its result when done. "
+        "The sub-agent runs autonomously and returns its result when done. "
         "Use this when you need to gather information without interrupting "
         "your main reasoning flow.\n\n"
         "Parameters:\n"
-        "  task (required): what the minion should do\n"
+        "  task (required): what the sub-agent should do\n"
         "  spec_ref: spec branch context (optional)"
     )
     schema: dict[str, Any] = field(
@@ -72,11 +72,11 @@ class LaunchMinionTool:
             "properties": {
                 "task": {
                     "type": "string",
-                    "description": "Description of the task for the minion.",
+                    "description": "Description of the task for the sub-agent.",
                 },
                 "spec_ref": {
                     "type": "string",
-                    "description": "Spec ref context for the minion (optional).",
+                    "description": "Spec ref context for the sub-agent (optional).",
                 },
             },
             "required": ["task"],
@@ -98,7 +98,7 @@ class LaunchMinionTool:
         agent_manager = _get_agent_manager(context)
         if agent_manager is None:
             return ToolResult.fail(
-                "No agent manager available — minion launching requires "
+                "No agent manager available — sub-agent launching requires "
                 "an active Prime session with an AgentManager."
             )
 
@@ -111,7 +111,7 @@ class LaunchMinionTool:
 
         if not llm or not tool_registry:
             return ToolResult.fail(
-                "Cannot launch minion: missing LLM or tool registry in session."
+                "Cannot launch sub-agent: missing LLM or tool registry in session."
             )
 
         if not spec_ref:
@@ -127,22 +127,22 @@ class LaunchMinionTool:
                 tool_registry=tool_registry,
                 spec_service=spec_service,
                 working_dir=context.working_dir,
-                agent_type="minion",
+                agent_type="sub_agent",
             )
 
-            minion_id = runner.agent_id
+            sub_agent_id = runner.agent_id
 
-            # Notify frontend: minion launched
+            # Notify frontend: sub-agent launched
             _emit(
                 context,
-                "prime/minionLaunched",
+                "prime/subAgentLaunched",
                 {
-                    "minion_id": minion_id,
+                    "sub_agent_id": sub_agent_id,
                     "task": task_desc,
                 },
             )
 
-            # Block until the minion finishes
+            # Block until the sub-agent finishes
             if runner._task is not None:
                 try:
                     await asyncio.wait_for(runner._task, timeout=120.0)
@@ -150,17 +150,17 @@ class LaunchMinionTool:
                     await runner.stop_safely()
                     _emit(
                         context,
-                        "prime/minionDone",
+                        "prime/subAgentDone",
                         {
-                            "minion_id": minion_id,
-                            "result": f"Minion timed out after 120 seconds. Task: {task_desc[:200]}",
+                            "sub_agent_id": sub_agent_id,
+                            "result": f"Sub-agent timed out after 120 seconds. Task: {task_desc[:200]}",
                         },
                     )
                     return ToolResult.fail(
-                        f"Minion timed out after 120 seconds. Task: {task_desc[:200]}"
+                        f"Sub-agent timed out after 120 seconds. Task: {task_desc[:200]}"
                     )
 
-            # Gather the final assistant message from the minion
+            # Gather the final assistant message from the sub-agent
             final_messages = runner._messages
             result_text = ""
             for msg in reversed(final_messages):
@@ -169,29 +169,29 @@ class LaunchMinionTool:
                     break
 
             if not result_text:
-                result_text = "Minion completed task without producing a summary."
+                result_text = "Sub-agent completed task without producing a summary."
 
-            # Notify frontend: minion done
+            # Notify frontend: sub-agent done
             _emit(
                 context,
-                "prime/minionDone",
+                "prime/subAgentDone",
                 {
-                    "minion_id": minion_id,
+                    "sub_agent_id": sub_agent_id,
                     "result": result_text,
                 },
             )
 
             return ToolResult.ok(
-                f"Minion result:\n\n{result_text}",
+                f"Sub-agent result:\n\n{result_text}",
                 metadata={
-                    "minion_id": minion_id,
+                    "sub_agent_id": sub_agent_id,
                     "task": task_desc,
                 },
             )
 
         except Exception as exc:
-            logger.exception("Failed to launch minion: %s", exc)
-            return ToolResult.fail(f"Failed to launch minion: {exc}")
+            logger.exception("Failed to launch sub-agent: %s", exc)
+            return ToolResult.fail(f"Failed to launch sub-agent: {exc}")
 
 
 # ── LaunchRootTool ────────────────────────────────────────────────────────────
@@ -201,7 +201,7 @@ class LaunchMinionTool:
 class LaunchRootTool:
     """Launch a root agent for a large autonomous task.
 
-    Unlike minions, root agents are non-blocking — they run in the
+    Unlike sub-agents, root agents are non-blocking — they run in the
     background and appear as a new tab in the agent pane. Prime can
     reference them but doesn't wait for them to finish.
     """
@@ -316,3 +316,71 @@ class LaunchRootTool:
         except Exception as exc:
             logger.exception("Failed to launch root agent: %s", exc)
             return ToolResult.fail(f"Failed to launch root agent: {exc}")
+
+
+# ── ReportToPrimeTool ─────────────────────────────────────────────────────────
+
+
+@dataclass(slots=True)
+class ReportToPrimeTool:
+    """Report back to Prime from a root agent.
+
+    Root agents use this tool when they need to communicate with Prime —
+    for example, to report progress, ask for guidance, or signal completion.
+    The message is injected into Prime's conversation as if the user sent it,
+    and Prime will respond to it.
+    """
+
+    name: str = "report_to_prime"
+    description: str = (
+        "Send a message to Prime (the user's main AI assistant).\n\n"
+        "Use this to report progress, ask for guidance, signal completion, "
+        "or escalate issues. Prime will see your message in its conversation "
+        "and can respond or relay to the user.\n\n"
+        "Parameters:\n"
+        "  message (required): the message to send to Prime"
+    )
+    schema: dict[str, Any] = field(
+        default_factory=lambda: {
+            "type": "object",
+            "properties": {
+                "message": {
+                    "type": "string",
+                    "description": "The message to send to Prime.",
+                },
+            },
+            "required": ["message"],
+            "additionalProperties": False,
+        }
+    )
+    origin: str = "builtin"
+    category: ToolCategory = ToolCategory.AGENT
+
+    async def execute(
+        self, arguments: dict[str, Any], context: ToolContext
+    ) -> ToolResult:
+        message = arguments.get("message", "")
+        if not message:
+            return ToolResult.fail("message is required.")
+
+        agent_manager = _get_agent_manager(context)
+        if agent_manager is None:
+            return ToolResult.fail(
+                "No agent manager available — cannot reach Prime."
+            )
+
+        prime = getattr(agent_manager, "_prime_agent", None)
+        if prime is None:
+            return ToolResult.fail("Prime is not active.")
+
+        # Identify the sending agent
+        agent_name = getattr(context, "agent_name", None) or "Agent"
+
+        try:
+            await prime.send_message(message, sender=agent_name)
+            return ToolResult.ok(
+                f"Message sent to Prime. Prime will process it and may respond."
+            )
+        except Exception as exc:
+            logger.exception("Failed to report to Prime: %s", exc)
+            return ToolResult.fail(f"Failed to send message to Prime: {exc}")

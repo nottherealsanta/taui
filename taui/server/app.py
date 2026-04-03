@@ -59,6 +59,7 @@ def create_app(
         started = time.perf_counter()
         logger.info("Application startup: initializing spec service")
         await handlers.specs.ensure_initialized()
+        await handlers.history_db.connect()
         logger.info(
             "Application startup: running persistence recovery",
         )
@@ -77,6 +78,7 @@ def create_app(
             await handlers.agent_manager.shutdown()
             await handlers.specs.writer.flush()
             await handlers.specs.db.close()
+            await handlers.history_db.close()
             logger.info(
                 "Application shutdown complete duration_ms=%s",
                 int((time.perf_counter() - shutdown_started) * 1000),

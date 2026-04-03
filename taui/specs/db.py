@@ -494,6 +494,21 @@ END
                 "ALTER TABLE node_refs ADD COLUMN kind TEXT NOT NULL DEFAULT 'depends_on'"
             )
 
+        # ── agent_sessions schema migration ──────────────────────────────
+        agent_session_columns = {
+            str(row["name"])
+            for row in await self._all("PRAGMA table_info(agent_sessions)")
+        }
+        if agent_session_columns:  # table exists from a snapshot
+            if "agent_type" not in agent_session_columns:
+                await self._execute(
+                    "ALTER TABLE agent_sessions ADD COLUMN agent_type TEXT NOT NULL DEFAULT 'root'"
+                )
+            if "display_name" not in agent_session_columns:
+                await self._execute(
+                    "ALTER TABLE agent_sessions ADD COLUMN display_name TEXT"
+                )
+
         metadata_exists = await self._one(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='node_metadata'"
         )

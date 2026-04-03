@@ -16,15 +16,45 @@ class ToolCall:
     arguments: dict[str, Any]
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        """Serialize to OpenAI Chat Completions API format."""
+        import json as _json
+
+        return {
+            "id": self.id,
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "arguments": _json.dumps(self.arguments),
+            },
+        }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ToolCall":
-        args = data.get("arguments")
+        # Support both flat format and nested OpenAI format
+        func = data.get("function")
+        if isinstance(func, dict):
+            import json as _json
+
+            name = str(func.get("name", data.get("name", "")))
+            raw_args = func.get("arguments", "{}")
+            if isinstance(raw_args, str):
+                try:
+                    args = _json.loads(raw_args)
+                except (ValueError, TypeError):
+                    args = {}
+            elif isinstance(raw_args, dict):
+                args = raw_args
+            else:
+                args = {}
+        else:
+            name = str(data.get("name", ""))
+            args = data.get("arguments")
+            if not isinstance(args, dict):
+                args = {}
         return cls(
             id=str(data["id"]),
-            name=str(data["name"]),
-            arguments=args if isinstance(args, dict) else {},
+            name=name,
+            arguments=args,
         )
 
 
@@ -37,9 +67,15 @@ class Message:
     name: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        payload = asdict(self)
+        payload: dict[str, Any] = {"role": self.role}
+        if self.content is not None:
+            payload["content"] = self.content
         if self.tool_calls is not None:
             payload["tool_calls"] = [call.to_dict() for call in self.tool_calls]
+        if self.tool_call_id is not None:
+            payload["tool_call_id"] = self.tool_call_id
+        if self.name is not None:
+            payload["name"] = self.name
         return payload
 
     @classmethod

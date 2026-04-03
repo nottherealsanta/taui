@@ -7,12 +7,14 @@ from __future__ import annotations
 import json
 import logging
 import time
+from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
 
 from taui.agent.agents import get_agent_definition, AGENT_DEFINITIONS
 from taui.agent.runner import AgentEvent, AgentRunner, AgentState
-from taui.agent.naming import AgentNamePool, generate_minion_id, AGENT_COLOR_HEX
+from taui.agent.naming import AgentNamePool, generate_sub_agent_id, AGENT_COLOR_HEX
+from taui.history import HistoryDB
 from taui.specs.db import SpecDB
 
 logger = logging.getLogger(__name__)
@@ -33,8 +35,16 @@ class AgentManager:
     - Forward events as notifications over the WebSocket
     """
 
-    def __init__(self, db: SpecDB) -> None:
+    def __init__(
+        self,
+        db: SpecDB,
+        *,
+        history_db: HistoryDB | None = None,
+        workspace: Path | None = None,
+    ) -> None:
         self.db = db
+        self.history_db = history_db
+        self._workspace = workspace
         self._runners: dict[str, AgentRunner] = {}  # agent_id → runner
         self._event_buffers: dict[str, list[AgentEvent]] = {}  # agent_id → events
         self._subscriptions: set[str] = (
@@ -42,9 +52,14 @@ class AgentManager:
         )  # agent_ids with active detail subscribers
         self._notification_callback: NotificationCallback | None = None
         self._name_pool = AgentNamePool()
+        self._prime_agent: Any | None = None  # Set by MethodHandlers after creation
 
     def set_notification_callback(self, callback: NotificationCallback | None) -> None:
         self._notification_callback = callback
+
+    def set_prime_agent(self, prime_agent: Any) -> None:
+        """Set a reference to the persistent PrimeAgent for root agent → Prime communication."""
+        self._prime_agent = prime_agent
 
     # ── Launch ─────────────────────────────────────────────────────────────────
 
@@ -60,14 +75,14 @@ class AgentManager:
         spec_service: Any | None = None,  # SpecService — for spec-tree tools
         parent_agent_id: str | None = None,
         working_dir: Any | None = None,  # Path — workspace root
-        agent_type: str = "root",  # "root" | "minion"
+        agent_type: str = "root",  # "root" | "sub_agent"
     ) -> AgentRunner:
         agent_id = str(uuid4())
         session_id = str(uuid4())
 
         # Assign display name based on agent type
-        if agent_type == "minion":
-            display_name = generate_minion_id()
+        if agent_type == "sub_agent":
+            display_name = generate_sub_agent_id()
             max_turns = 15
         else:
             display_name = self._name_pool.allocate()
@@ -84,6 +99,20 @@ class AgentManager:
             agent_type=agent_type,
             display_name=display_name,
         )
+
+        if self.history_db is not None:
+            try:
+                await self.history_db.record_session(
+                    agent_id=agent_id,
+                    workspace=str(self._workspace) if self._workspace else None,
+                    spec_ref=spec_ref,
+                    task=task,
+                    display_name=display_name,
+                    model=model,
+                    agent_type=agent_type,
+                )
+            except Exception:
+                logger.exception("Failed to record session in history DB")
 
         # Resolve agent definition for tool/prompt restrictions (claw-code pattern)
         agent_def = None
@@ -111,6 +140,7 @@ class AgentManager:
             display_name=display_name,
             max_turns=max_turns,
             agent_definition=agent_def,
+            history_db=self.history_db,
         )
 
         self._runners[agent_id] = runner

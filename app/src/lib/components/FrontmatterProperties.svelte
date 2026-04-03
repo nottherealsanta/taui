@@ -1,8 +1,8 @@
 <!--
-  FrontmatterProperties.svelte — YAML frontmatter property display/editor.
+  FrontmatterProperties.svelte — YAML frontmatter property display.
 
   Shown at the top of the editor pane when a file has YAML frontmatter.
-  Renders each field as a labeled row with appropriate formatting.
+  Renders title, status, and last_updated as a clean horizontal bar.
 -->
 <script lang="ts">
   interface Props {
@@ -11,155 +11,98 @@
   }
   const { frontmatter }: Props = $props()
 
-  let collapsed = $state(false)
+  const title = $derived(frontmatter.title ? String(frontmatter.title) : null)
+  const status = $derived(frontmatter.status ? String(frontmatter.status) : null)
+  const lastUpdated = $derived(frontmatter.last_updated ? formatDateTime(String(frontmatter.last_updated)) : null)
 
-  function formatValue(value: unknown): string {
-    if (value === null || value === undefined) return '—'
-    if (Array.isArray(value)) return value.join(', ')
-    if (typeof value === 'object') return JSON.stringify(value)
-    return String(value)
-  }
-
-  function getValueClass(key: string, value: unknown): string {
-    if (key === 'status') {
-      const s = String(value).toLowerCase()
-      if (s === 'done' || s === 'complete') return 'status-done'
-      if (s === 'in_progress' || s === 'in-progress') return 'status-progress'
-      if (s === 'draft') return 'status-draft'
-      if (s === 'blocked') return 'status-blocked'
-    }
-    if (Array.isArray(value)) return 'array-value'
+  function statusClass(s: string): string {
+    const v = s.toLowerCase()
+    if (v === 'done' || v === 'complete' || v === 'verified') return 'status-done'
+    if (v === 'in_progress' || v === 'in-progress' || v === 'active') return 'status-active'
+    if (v === 'draft') return 'status-draft'
+    if (v === 'blocked') return 'status-blocked'
+    if (v === 'deprecated') return 'status-deprecated'
     return ''
   }
 
-  const entries = $derived(Object.entries(frontmatter))
+  function statusLabel(s: string): string {
+    return s.replace(/_/g, ' ')
+  }
+
+  function formatDateTime(raw: string): string {
+    // Try to parse as date/datetime
+    const d = new Date(raw)
+    if (isNaN(d.getTime())) return raw
+    const hasTime = raw.includes('T') || raw.includes(' ')
+    if (hasTime) {
+      return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }) +
+        ' ' + d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
+    }
+    return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
+  }
 </script>
 
-<div class="frontmatter-props" class:collapsed>
-  <button
-    class="toggle-btn"
-    onclick={() => { collapsed = !collapsed }}
-    aria-label={collapsed ? 'Expand properties' : 'Collapse properties'}
-  >
-    <span class="toggle-icon">{collapsed ? '▸' : '▾'}</span>
-    <span class="toggle-label">Properties</span>
-    <span class="prop-count">{entries.length}</span>
-  </button>
-
-  {#if !collapsed}
-    <div class="props-grid">
-      {#each entries as [key, value] (key)}
-        <div class="prop-row">
-          <span class="prop-key">{key}</span>
-          <span class="prop-value {getValueClass(key, value)}">
-            {#if Array.isArray(value)}
-              <span class="tags">
-                {#each value as tag}
-                  <span class="tag">{tag}</span>
-                {/each}
-              </span>
-            {:else}
-              {formatValue(value)}
-            {/if}
-          </span>
-        </div>
-      {/each}
-    </div>
-  {/if}
-</div>
+{#if title || status || lastUpdated}
+  <div class="frontmatter-bar">
+    {#if status}
+      <span class="status-badge {statusClass(status)}">
+        <span class="status-dot"></span>
+        {statusLabel(status)}
+      </span>
+    {/if}
+    {#if lastUpdated}
+      <span class="last-updated" title="Last updated">{lastUpdated}</span>
+    {/if}
+  </div>
+{/if}
 
 <style lang="postcss">
-  .frontmatter-props {
+  .frontmatter-bar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 6px 16px;
     border-bottom: 1px solid var(--border-variant);
     background-color: var(--bg-surface);
     flex-shrink: 0;
-  }
-
-  .toggle-btn {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    width: 100%;
-    background: transparent;
-    border: none;
-    color: var(--fg-muted);
-    cursor: pointer;
-    font-size: 11px;
-    padding: 6px 12px;
-    text-align: left;
-    transition: background-color 0.1s;
-  }
-
-  .toggle-btn:hover {
-    background-color: var(--element-hover);
-  }
-
-  .toggle-icon {
-    font-size: 10px;
-    width: 10px;
-    flex-shrink: 0;
-  }
-
-  .toggle-label {
-    font-weight: 500;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-  }
-
-  .prop-count {
-    font-size: 10px;
-    background: var(--element-bg);
-    border-radius: 8px;
-    padding: 0 5px;
-    margin-left: auto;
-  }
-
-  .props-grid {
-    padding: 4px 12px 8px;
-  }
-
-  .prop-row {
-    display: flex;
-    align-items: baseline;
-    gap: 12px;
-    padding: 2px 0;
     font-size: 12px;
   }
 
-  .prop-key {
-    color: var(--fg-muted);
+  .status-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 11px;
     font-weight: 500;
-    min-width: 80px;
-    flex-shrink: 0;
-    font-size: 11px;
-  }
-
-  .prop-value {
-    color: var(--fg-primary);
-    font-family: var(--font-mono);
-    font-size: 11px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .prop-value.status-done { color: var(--status-done); }
-  .prop-value.status-progress { color: var(--status-in-progress); }
-  .prop-value.status-draft { color: var(--status-draft); }
-  .prop-value.status-blocked { color: var(--status-blocked); }
-
-  .tags {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 3px;
-  }
-
-  .tag {
+    text-transform: capitalize;
+    padding: 2px 8px;
+    border-radius: 10px;
     background: var(--element-bg);
     border: 1px solid var(--border-variant);
-    border-radius: 3px;
-    padding: 0 5px;
-    font-size: 10px;
-    color: var(--fg-accent);
+  }
+
+  .status-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--fg-muted);
+  }
+
+  .status-done .status-dot { background: var(--status-done); }
+  .status-active .status-dot { background: var(--status-in-progress); }
+  .status-draft .status-dot { background: var(--status-draft); }
+  .status-blocked .status-dot { background: var(--status-blocked); }
+  .status-deprecated .status-dot { background: var(--fg-muted); }
+
+  .status-done { color: var(--status-done); border-color: var(--status-done); }
+  .status-active { color: var(--status-in-progress); border-color: var(--status-in-progress); }
+  .status-draft { color: var(--status-draft); border-color: var(--status-draft); }
+  .status-blocked { color: var(--status-blocked); border-color: var(--status-blocked); }
+  .status-deprecated { color: var(--fg-muted); border-color: var(--fg-muted); }
+
+  .last-updated {
+    color: var(--fg-muted);
+    font-size: 11px;
+    margin-left: auto;
   }
 </style>

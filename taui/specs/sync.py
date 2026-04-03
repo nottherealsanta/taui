@@ -335,13 +335,6 @@ class SpecSync:
         # Apply frontmatter metadata to root node
         status = fm.get("status")
         root_node.status = str(status) if status else None
-        code_refs = fm.get("code_refs") or []
-        root_node.code_refs = [str(r) for r in code_refs] if code_refs else []
-        test_refs = fm.get("test_refs") or []
-        if test_refs:
-            root_node.verification = "; ".join(str(r) for r in test_refs)
-        depends_on = fm.get("depends_on") or []
-        root_node.depends_on_targets = [str(d) for d in depends_on] if depends_on else []
 
         out.append(root_node)
 

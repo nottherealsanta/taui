@@ -1,8 +1,12 @@
 <script lang="ts">
   import SpecNavItem from '$components/SpecNavItem.svelte'
+  import ContextMenu from '$components/ContextMenu.svelte'
+  import type { MenuItem } from '$components/ContextMenu.svelte'
+  import InlineCreateInput from '$components/InlineCreateInput.svelte'
   import { appState } from '$stores/app-state.svelte'
   import { tabStore } from '$stores/tabs.svelte'
-  import type { SpecNavFolderItem, SpecNavHeadingItem } from '$types/spec-nav'
+  import { backendClient } from '$services/backend-client'
+  import type { SpecNavFolderItem, SpecNavHeadingItem, SpecNavItemType } from '$types/spec-nav'
   import { basenameWithoutMarkdown, commonLeadingSegments, formatPathSegment, markdownLineLabel, specRefToFilePath } from '$lib/utils/specs'
 
   const STORAGE_KEY = 'taui-spec-nav-collapsed'
@@ -132,6 +136,90 @@
   function handleSelect(_item: SpecNavHeadingItem) {
     // Selection is handled in the child item before file open.
   }
+
+  // ── Context menu state ─────────────────────────────────────────────────────
+  let ctxMenu: { x: number; y: number; items: MenuItem[] } | null = $state(null)
+  let pendingCreate: { dirPath: string; isDir: boolean } | null = $state(null)
+
+  function resolveItemDirPath(item: SpecNavItemType): string {
+    if (item.kind === 'folder') {
+      // Extract real path from the key: "folder:root/segment1/segment2"
+      const keyPath = item.key.replace(/^folder:/, '')
+      // Remove leading 'root' and rejoin with the common root
+      const segs = keyPath.split('/').slice(1) // drop 'root'
+      const filePaths = [...new Set(appState.nodes.map((n) => specRefToFilePath(n.specRef)).filter(Boolean))]
+      const commonRoot = commonLeadingSegments(filePaths)
+      return [...commonRoot, ...segs].join('/')
+    }
+    // For heading items, use the parent directory of the file
+    const fp = item.filePath
+    const lastSlash = fp.lastIndexOf('/')
+    return lastSlash > 0 ? fp.substring(0, lastSlash) : ''
+  }
+
+  function handleItemContextMenu(e: MouseEvent, item: SpecNavItemType) {
+    const dirPath = resolveItemDirPath(item)
+    ctxMenu = {
+      x: e.clientX,
+      y: e.clientY,
+      items: [
+        { label: 'New File', action: () => startCreate(dirPath, false) },
+        { label: 'New Folder', action: () => startCreate(dirPath, true) },
+      ],
+    }
+  }
+
+  function handleSidebarContextMenu(e: MouseEvent) {
+    e.preventDefault()
+    // Determine root dir for the specs
+    const filePaths = [...new Set(appState.nodes.map((n) => specRefToFilePath(n.specRef)).filter(Boolean))]
+    const rootDir = commonLeadingSegments(filePaths).join('/')
+    ctxMenu = {
+      x: e.clientX,
+      y: e.clientY,
+      items: [
+        { label: 'New File', action: () => startCreate(rootDir, false) },
+        { label: 'New Folder', action: () => startCreate(rootDir, true) },
+      ],
+    }
+  }
+
+  function startCreate(dirPath: string, isDir: boolean) {
+    pendingCreate = { dirPath, isDir }
+  }
+
+  async function commitCreate(name: string) {
+    if (!pendingCreate || !name.trim()) {
+      pendingCreate = null
+      return
+    }
+    const { dirPath, isDir } = pendingCreate
+    const fullPath = dirPath ? `${dirPath}/${name}` : name
+    try {
+      if (isDir) {
+        await backendClient.createDir(fullPath)
+      } else {
+        // Create a new spec markdown file with a heading
+        const baseName = name.replace(/\.md$/i, '')
+        const fileName = name.endsWith('.md') ? name : `${name}.md`
+        const filePath = dirPath ? `${dirPath}/${fileName}` : fileName
+        await backendClient.writeFile(filePath, `# ${baseName}\n`)
+        // Refresh the spec tree so the new file appears
+        const tree = await backendClient.getTreeDetailed()
+        appState.hydrateFromBackend(tree.nodes)
+        // Open the new file
+        await tabStore.openFile(filePath)
+      }
+    } catch (err) {
+      console.error('[spec-nav] Failed to create:', err)
+    } finally {
+      pendingCreate = null
+    }
+  }
+
+  function cancelCreate() {
+    pendingCreate = null
+  }
 </script>
 
 <aside class="spec-nav-sidebar">
@@ -139,8 +227,17 @@
     <span class="header-label">Specs</span>
   </div>
 
-  <div class="sidebar-content">
-    {#if navItems.length === 0}
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div class="sidebar-content" oncontextmenu={handleSidebarContextMenu}>
+    {#if pendingCreate}
+      <InlineCreateInput
+        isDir={pendingCreate.isDir}
+        depth={0}
+        oncommit={commitCreate}
+        oncancel={cancelCreate}
+      />
+    {/if}
+    {#if navItems.length === 0 && !pendingCreate}
       <div class="empty-state">No spec content loaded</div>
     {:else}
       {#each navItems as item (item.key)}
@@ -151,11 +248,21 @@
           {selectedFilePath}
           ontoggle={toggleKey}
           onselect={handleSelect}
+          oncontextmenu={handleItemContextMenu}
         />
       {/each}
     {/if}
   </div>
 </aside>
+
+{#if ctxMenu}
+  <ContextMenu
+    x={ctxMenu.x}
+    y={ctxMenu.y}
+    items={ctxMenu.items}
+    onclose={() => { ctxMenu = null }}
+  />
+{/if}
 
 <style lang="postcss">
   .spec-nav-sidebar {

@@ -17,19 +17,6 @@
   const isRunning = $derived(tool.status === 'running')
   const hasError = $derived(tool.status === 'error')
 
-  /** Short summary of arguments for the collapsed view. */
-  const argsSummary = $derived.by(() => {
-    if (!tool.arguments || typeof tool.arguments !== 'object') return ''
-    const obj = tool.arguments as Record<string, unknown>
-    const keys = Object.keys(obj)
-    if (keys.length === 0) return ''
-    // Show first key=value pair, truncated
-    const first = keys[0]
-    const val = String(obj[first] ?? '').slice(0, 60)
-    const suffix = keys.length > 1 ? ` +${keys.length - 1}` : ''
-    return `${first}=${val}${suffix}`
-  })
-
   /** Full output text for expanded view. */
   const outputText = $derived(tool.error ?? tool.result ?? '')
 </script>
@@ -46,15 +33,7 @@
   <div class="tool-header">
     <span class="tool-icon">{isRunning ? '⟳' : hasError ? '✗' : '✓'}</span>
     <span class="tool-name">{tool.toolName}</span>
-    {#if tool.durationMs != null}
-      <span class="tool-duration">{tool.durationMs}ms</span>
-    {/if}
-    <span class="tool-chevron">{expanded ? '▾' : '▸'}</span>
   </div>
-
-  {#if !expanded && argsSummary}
-    <div class="tool-args-summary">{argsSummary}</div>
-  {/if}
 
   {#if expanded}
     <div class="tool-detail">
@@ -78,33 +57,19 @@
 
 <style lang="postcss">
   .tool-card {
-    border: 1px solid var(--border-variant);
-    border-radius: 6px;
-    background-color: var(--element-bg);
+    width: 100%;
     cursor: pointer;
     overflow: hidden;
-    transition: border-color 0.15s;
     position: relative;
-  }
-
-  .tool-card.running {
-    border-color: var(--fg-accent);
-  }
-
-  .tool-card.error {
-    border-color: var(--status-error);
-  }
-
-  .tool-card.done {
-    border-color: var(--border-variant);
   }
 
   .tool-header {
     display: flex;
     align-items: center;
     gap: 6px;
-    padding: 6px 10px;
+    padding: 1px 0;
     font-size: 12px;
+    line-height: 1;
   }
 
   .tool-icon {
@@ -113,7 +78,7 @@
   }
 
   .tool-card.running .tool-icon {
-    color: var(--fg-accent);
+    color: var(--fg-muted);
     animation: spin 1.2s linear infinite;
   }
 
@@ -122,41 +87,17 @@
   }
 
   .tool-card.done .tool-icon {
-    color: var(--status-done);
+    color: var(--fg-muted);
   }
 
   .tool-name {
-    font-weight: 600;
-    color: var(--fg-primary);
+    font-weight: 500;
+    color: var(--fg-muted);
     white-space: nowrap;
-  }
-
-  .tool-duration {
-    margin-left: auto;
-    font-size: 10px;
-    color: var(--fg-muted);
-    flex-shrink: 0;
-  }
-
-  .tool-chevron {
-    font-size: 10px;
-    color: var(--fg-muted);
-    flex-shrink: 0;
-  }
-
-  .tool-args-summary {
-    padding: 0 10px 6px;
-    font-size: 11px;
-    color: var(--fg-muted);
-    font-family: var(--font-mono, monospace);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
   }
 
   .tool-detail {
-    border-top: 1px solid var(--border-variant);
-    padding: 8px 10px;
+    padding: 4px 0;
     display: flex;
     flex-direction: column;
     gap: 8px;

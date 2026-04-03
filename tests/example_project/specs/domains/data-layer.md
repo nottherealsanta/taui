@@ -1,9 +1,6 @@
 ---
 title: Data Layer
 status: active
-domain: data-layer
-code_refs:
-  - src/database.py
 last_updated: 2026-03-20
 ---
 
@@ -11,28 +8,38 @@ last_updated: 2026-03-20
 
 ## Responsibility
 
-Database abstraction and operations. Defines data models and relationships.
+Database abstraction and operations. Defines connection management and transaction handling.
 
 ## Invariants
 
-- All database operations must go through this layer.
-- Schema changes require a migration.
+- All database operations must go through `src/database.py#DatabaseService`.
+- Connections are managed by `src/database.py#ConnectionPool` with configurable pool size and overflow.
+- Schema changes require a migration via `src/database.py#run_migrations`.
 
 ## Interfaces
 
-- `get_user(user_id)` → user
-- `create_task(data)` → task
-- `update_task(task_id, data)` → task
-- `delete_task(task_id)` → None
+- `src/database.py#health_check` — verify database connectivity.
+- `src/database.py#transaction` — context manager for atomic operations with auto-commit/rollback.
+- `src/database.py#run_migrations` — run pending schema migrations sequentially.
+- `src/database.py#get_connection` — acquire a connection from the pool.
+- `src/database.py#release_connection` — return a connection to the pool.
 
 ## Key Components
 
-- **Users Table** (`src/database.py#L1-L20`): Stores user records with id, username, and password hash.
-- **Tasks Table** (`src/database.py#L22-L45`): Stores task records with id, title, description, assignee, and archived status.
+- **DatabaseService** (`src/database.py#DatabaseService`): Top-level service providing health checks, transactions, and migrations.
+- **ConnectionPool** (`src/database.py#ConnectionPool`): Manages a pool of `src/database.py#DatabaseConnection` instances. Configurable `pool_size`, `max_overflow`, and `timeout`.
+- **DatabaseConnection** (`src/database.py#DatabaseConnection`): Single connection with `execute`, `commit`, and `rollback` methods.
+- **Transaction Manager** (`src/database.py#transaction`): Context manager that auto-commits on success and rolls back on exception.
+- **Migration Runner** (`src/database.py#run_migrations`): Runs migrations sequentially with rollback support.
 
 ## Important Code References
 
-- `src/database.py`
+- `src/database.py#DatabaseService`
+- `src/database.py#ConnectionPool`
+- `src/database.py#DatabaseConnection`
+- `src/database.py#health_check`
+- `src/database.py#transaction`
+- `src/database.py#run_migrations`
 
 ## Verification
 

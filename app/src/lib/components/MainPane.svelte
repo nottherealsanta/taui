@@ -66,7 +66,6 @@
     flex: 1;
     min-width: 0;
     min-height: 0;
-    border-left: 1px solid var(--border);
     overflow: hidden;
   }
 </style>

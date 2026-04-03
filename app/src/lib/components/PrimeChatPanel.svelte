@@ -1,14 +1,14 @@
 <!--
   PrimeChatPanel.svelte
   Chat panel for the Prime agent — the user's main conversational surface.
-  Renders streaming text, tool call cards, minion cards, and agent-launch notices.
+  Renders streaming text, tool call cards, sub-agent cards, and agent-launch notices.
 -->
 <script lang="ts">
   import { appState } from '$stores/app-state.svelte'
   import { tick } from 'svelte'
   import { marked } from 'marked'
   import PrimeToolCard from '$components/PrimeToolCard.svelte'
-  import MinionCard from '$components/MinionCard.svelte'
+  import SubAgentCard from '$components/SubAgentCard.svelte'
 
   marked.setOptions({ breaks: true, gfm: true })
 
@@ -62,13 +62,17 @@
               <span class="cursor-blink">|</span>
             </div>
           </div>
+        {:else if entry.kind === 'context-divider'}
+          <div class="context-divider" role="separator" aria-label={entry.label}>
+            <span>{entry.label}</span>
+          </div>
         {:else if entry.kind === 'tool'}
           <div class="tool-entry">
             <PrimeToolCard tool={entry.tool} />
           </div>
-        {:else if entry.kind === 'minion'}
-          <div class="minion-entry">
-            <MinionCard minion={entry.minion} />
+        {:else if entry.kind === 'sub_agent'}
+          <div class="sub-agent-entry">
+            <SubAgentCard subAgent={entry.subAgent} />
           </div>
         {:else if entry.kind === 'agent-launched'}
           <div class="agent-launched-entry">
@@ -236,6 +240,27 @@
     font-weight: 300;
   }
 
+  .context-divider {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 10px 0 6px;
+    color: var(--fg-muted);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    opacity: 0.85;
+  }
+
+  .context-divider::before,
+  .context-divider::after {
+    content: '';
+    height: 1px;
+    background: var(--border-variant);
+    flex: 1;
+    min-width: 20px;
+  }
+
   @keyframes blink {
     0%, 100% { opacity: 1; }
     50% { opacity: 0; }
@@ -248,9 +273,9 @@
     max-width: 560px;
   }
 
-  /* ── Minion entries ───────────────────────────────────────────────────── */
+  /* ── Sub-agent entries ───────────────────────────────────────────────────────────── */
 
-  .minion-entry {
+  .sub-agent-entry {
     padding: 0 12px;
     max-width: 560px;
   }

@@ -1,16 +1,12 @@
 ---
 title: Edit Task
 status: draft
-domain: task-management
-depends_on:
-  - specs/domains/task-management.md
-  - specs/features/create-task.md
-code_refs:
-  - src/task_board.py#L47-L89
 last_updated: 2026-03-20
 ---
 
 # Edit Task
+
+Depends on: [Task Management](../domains/task-management.md), [Create Task](create-task.md)
 
 ## Purpose
 
@@ -27,15 +23,18 @@ Users can keep task information up to date as work progresses.
 
 ## Constraints
 
-Depends on Create Task — cannot edit a task that doesn't exist.
+Depends on Create Task — cannot edit a task that doesn't exist. The card must be retrievable via `src/task_board.py#list_cards`.
 
 ## Design
 
-Call `update_card(card_id, fields)` on the task board. The board validates the card exists before updating.
+Call `update_card(card_id, fields)` on `src/task_board.py#TaskBoard`. The board validates the card exists before updating. Persistence is handled through `src/database.py#transaction` for atomic updates.
 
 ## Code References
 
-- `src/task_board.py#L47-L89`
+- `src/task_board.py#TaskBoard` — board class owning update logic.
+- `src/task_board.py#Card` — card data model being updated.
+- `src/task_board.py#list_cards` — used to verify card exists.
+- `src/database.py#transaction` — atomic persistence for updates.
 
 ## Tests / Verification
 

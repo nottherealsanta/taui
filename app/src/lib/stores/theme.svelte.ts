@@ -1,21 +1,14 @@
 /**
- * Theme store — dark / light toggle, persisted in localStorage.
- * Applies `data-theme` attribute to the document root so CSS variables
- * defined in app.css switch correctly.
+ * Theme store — auto-detects system preference (prefers-color-scheme),
+ * listens for changes, and applies `data-theme` attribute to the document
+ * root so CSS variables defined in app.css switch correctly.
  */
 
 type Theme = 'dark' | 'light'
 
-const STORAGE_KEY = 'taui-theme'
-
-function readStored(): Theme {
-  try {
-    const v = localStorage.getItem(STORAGE_KEY)
-    if (v === 'light' || v === 'dark') return v
-  } catch {
-    // SSR / restricted environment
-  }
-  return 'dark'
+function detectSystemTheme(): Theme {
+  if (typeof window === 'undefined') return 'dark'
+  return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'
 }
 
 function applyTheme(theme: Theme): void {
@@ -25,30 +18,32 @@ function applyTheme(theme: Theme): void {
   } else {
     document.documentElement.removeAttribute('data-theme')
   }
-  try {
-    localStorage.setItem(STORAGE_KEY, theme)
-  } catch {
-    // ignore
-  }
 }
 
 // ─── Reactive store ────────────────────────────────────────────────────────────
 
 class ThemeStore {
-  current: Theme = $state(readStored())
+  current: Theme = $state(detectSystemTheme())
 
   constructor() {
-    // Apply immediately (before first render) to avoid flash.
     applyTheme(this.current)
-  }
 
-  toggle(): void {
-    this.set(this.current === 'dark' ? 'light' : 'dark')
+    // Listen for system theme changes
+    if (typeof window !== 'undefined') {
+      const mql = window.matchMedia('(prefers-color-scheme: light)')
+      mql.addEventListener('change', (e) => {
+        this.set(e.matches ? 'light' : 'dark')
+      })
+    }
   }
 
   set(theme: Theme): void {
     this.current = theme
     applyTheme(theme)
+  }
+
+  toggle(): void {
+    this.set(this.current === 'dark' ? 'light' : 'dark')
   }
 
   get isDark(): boolean {

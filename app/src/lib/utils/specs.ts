@@ -2,6 +2,21 @@ export function specRefToFilePath(specRef: string): string {
   return specRef.split('#')[0] ?? specRef
 }
 
+/**
+ * Strip YAML frontmatter (--- delimited block at start) from markdown content.
+ * Returns the body content after the closing ---.
+ */
+export function stripFrontmatter(content: string): string {
+  if (!content.startsWith('---\n') && !content.startsWith('---\r\n')) return content
+  const end = content.indexOf('\n---\n', 4)
+  if (end === -1) {
+    const endR = content.indexOf('\r\n---\r\n', 4)
+    if (endR === -1) return content
+    return content.slice(endR + 7).replace(/^\n+/, '')
+  }
+  return content.slice(end + 5).replace(/^\n+/, '')
+}
+
 export function basenameWithoutMarkdown(filePath: string): string {
   const name = filePath.split('/').pop() ?? filePath
   return name.replace(/\.md$/i, '')

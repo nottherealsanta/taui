@@ -11,6 +11,7 @@ import { backendClient } from '$services/backend-client'
 import { handleNotification } from '$services/notifications'
 import { applyPersistedFoldState } from '$services/fold-state'
 import type { NotificationEvent } from '$services/backend-client'
+import { agentStateFromString } from '$types/index'
 
 function onConnectionState(ev: Event): void {
   const state = (ev as CustomEvent<string>).detail
@@ -45,6 +46,43 @@ async function _initialize(): Promise<void> {
   const tree = await backendClient.getTreeDetailed()
   appState.hydrateFromBackend(tree.nodes)
   applyPersistedFoldState()
+
+  // 3. Restore Prime conversation history
+  try {
+    const { messages } = await backendClient.primeHistory()
+    if (messages && messages.length > 0) {
+      appState.restorePrimeHistory(messages)
+    }
+  } catch (err) {
+    console.warn('[connection] failed to restore prime history', err)
+  }
+
+  // 4. Re-subscribe to active agents
+  try {
+    const { agents } = await backendClient.agentList()
+    for (const agent of agents) {
+      // Update agent state in the store
+      appState.upsertAgent({
+        agentId: agent.agent_id,
+        specRef: agent.spec_ref,
+        state: agentStateFromString(agent.state),
+        tier: (agent.tier as 'high' | 'medium' | 'low') ?? 'medium',
+        agentType: (agent.agent_type as 'root' | 'minion') ?? 'root',
+        displayName: agent.display_name,
+      })
+      // Re-subscribe for live events
+      try {
+        const backlog = await backendClient.agentSubscribe(agent.agent_id)
+        if (backlog && backlog.length > 0) {
+          appState.setDetailBacklog(agent.agent_id, backlog as Parameters<typeof appState.setDetailBacklog>[1])
+        }
+      } catch {
+        // Agent may have finished between list and subscribe
+      }
+    }
+  } catch (err) {
+    console.warn('[connection] failed to restore agents', err)
+  }
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────

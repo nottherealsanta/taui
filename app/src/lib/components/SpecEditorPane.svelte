@@ -1,9 +1,12 @@
 <script lang="ts">
   import TabBar from '$components/TabBar.svelte'
   import LiveMarkdownEditor from '$components/LiveMarkdownEditor.svelte'
+  import FrontmatterProperties from '$components/FrontmatterProperties.svelte'
   import { tabStore } from '$stores/tabs.svelte'
+  import { stripFrontmatter } from '$lib/utils/specs'
 
   const activeTab = $derived(tabStore.activeTab)
+  const editorContent = $derived(activeTab ? stripFrontmatter(activeTab.content) : '')
 </script>
 
 <section class="spec-editor-pane">
@@ -11,9 +14,15 @@
 
   <div class="editor-area">
     {#if activeTab}
+      {#if activeTab.frontmatter && Object.keys(activeTab.frontmatter).length > 0}
+        <FrontmatterProperties
+          frontmatter={activeTab.frontmatter}
+          tabId={activeTab.id}
+        />
+      {/if}
       {#key activeTab.id}
         <LiveMarkdownEditor
-          content={activeTab.content}
+          content={editorContent}
           filePath={activeTab.filePath}
           tabId={activeTab.id}
         />

@@ -1,6 +1,6 @@
-"""Box handoff — structured return from minion agents to parent.
+"""Box handoff — structured return from sub-agents to parent.
 
-Inspired by claw-code's structured handoff pattern: when a minion agent
+Inspired by claw-code's structured handoff pattern: when a sub-agent
 completes its task, it packages its results into a ``Box`` — a structured
 container with a summary, status, artifacts, and optional spec patches.
 
@@ -10,7 +10,7 @@ its own context without parsing free-form text.
 Usage::
 
     box = Box(
-        agent_id="minion-42",
+        agent_id="sub_agent-42",
         spec_ref="feature/auth",
         status=BoxStatus.COMPLETED,
         summary="Implemented JWT authentication with refresh tokens.",
@@ -29,7 +29,7 @@ from typing import Any
 
 
 class BoxStatus(str, Enum):
-    """Outcome status of a minion agent's work."""
+    """Outcome status of a sub-agent's work."""
 
     COMPLETED = "completed"
     PARTIAL = "partial"
@@ -40,7 +40,7 @@ class BoxStatus(str, Enum):
 
 @dataclass(slots=True)
 class Artifact:
-    """A concrete output produced by the minion."""
+    """A concrete output produced by the sub-agent."""
 
     path: str  # file path or resource identifier
     description: str = ""
@@ -72,7 +72,7 @@ class SpecPatch:
 
 @dataclass(slots=True)
 class Box:
-    """Structured handoff container from minion to parent agent.
+    """Structured handoff container from sub-agent to parent agent.
 
     Encapsulates the results of a delegated task in a machine-readable
     format so the parent agent doesn't need to parse free-form text.
@@ -95,7 +95,7 @@ class Box:
     def to_message_content(self) -> str:
         """Format as a structured message for the parent agent's context."""
         lines = [
-            f"## Minion Result: {self.spec_ref}",
+            f"## Sub-Agent Result: {self.spec_ref}",
             f"**Status**: {self.status.value}",
             f"**Agent**: {self.agent_id}",
             f"**Cost**: ${self.cost_usd:.4f} ({self.turn_count} turns)",

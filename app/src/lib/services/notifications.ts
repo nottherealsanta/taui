@@ -116,9 +116,9 @@ export function handleNotification(notification: ServerNotification): void {
       break
     }
 
-    case 'prime/minionLaunched': {
-      appState.addPrimeMinion({
-        minionId: (p['minion_id'] as string) ?? '',
+    case 'prime/subAgentLaunched': {
+      appState.addPrimeSubAgent({
+        subAgentId: (p['sub_agent_id'] as string) ?? '',
         task: (p['task'] as string) ?? '',
         status: 'running',
         events: [],
@@ -126,9 +126,9 @@ export function handleNotification(notification: ServerNotification): void {
       break
     }
 
-    case 'prime/minionDone': {
-      appState.completePrimeMinion(
-        (p['minion_id'] as string) ?? '',
+    case 'prime/subAgentDone': {
+      appState.completePrimeSubAgent(
+        (p['sub_agent_id'] as string) ?? '',
         (p['result'] as string) ?? null,
       )
       break

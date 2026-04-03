@@ -3,11 +3,15 @@
 
   Handles indent, icon, label, active/selected state.
   Supports folder expand/collapse and file click-to-open.
+  Right-click context menu for creating new files/folders.
 -->
 <script lang="ts">
   import type { FileEntry } from '$types/index'
+  import type { MenuItem } from '$components/ContextMenu.svelte'
   import { fileTree } from '$stores/file-tree.svelte'
   import { tabStore } from '$stores/tabs.svelte'
+  import ContextMenu from '$components/ContextMenu.svelte'
+  import InlineCreateInput from '$components/InlineCreateInput.svelte'
 
   interface Props {
     entry: FileEntry
@@ -20,6 +24,13 @@
   const isLoading = $derived(entry.isDir && fileTree.isLoading(entry.path))
   const children = $derived(entry.isDir ? fileTree.getChildren(entry.path) : [])
 
+  // Check if the pending creation targets this directory
+  const pendingHere = $derived(
+    fileTree.pendingCreation?.parentPath === entry.path ? fileTree.pendingCreation : null
+  )
+
+  let contextMenu: { x: number; y: number } | null = $state(null)
+
   function handleClick() {
     if (entry.isDir) {
       fileTree.toggleDir(entry.path)
@@ -27,6 +38,36 @@
       fileTree.selectFile(entry.path)
       tabStore.openFile(entry.path)
     }
+  }
+
+  function handleContextMenu(e: MouseEvent) {
+    e.preventDefault()
+    e.stopPropagation()
+    contextMenu = { x: e.clientX, y: e.clientY }
+  }
+
+  function getContextMenuItems(): MenuItem[] {
+    // For directories: "New File" and "New Folder" create inside this dir
+    if (entry.isDir) {
+      return [
+        { label: 'New File', action: () => fileTree.startCreation(entry.path, false) },
+        { label: 'New Folder', action: () => fileTree.startCreation(entry.path, true) },
+      ]
+    }
+    // For files: create sibling in parent dir
+    const parentPath = entry.path.includes('/') ? entry.path.substring(0, entry.path.lastIndexOf('/')) : ''
+    return [
+      { label: 'New File', action: () => fileTree.startCreation(parentPath, false) },
+      { label: 'New Folder', action: () => fileTree.startCreation(parentPath, true) },
+    ]
+  }
+
+  function handleCommitCreate(name: string) {
+    fileTree.commitCreation(name)
+  }
+
+  function handleCancelCreate() {
+    fileTree.cancelCreation()
   }
 
   function getFileIcon(entry: FileEntry): string {
@@ -60,6 +101,7 @@
   class:directory={entry.isDir}
   style="padding-left: {12 + depth * 16}px"
   onclick={handleClick}
+  oncontextmenu={handleContextMenu}
 >
   <span class="icon" class:dir-icon={entry.isDir}>
     {getFileIcon(entry)}
@@ -73,9 +115,26 @@
 </div>
 
 {#if entry.isDir && isExpanded}
+  {#if pendingHere}
+    <InlineCreateInput
+      isDir={pendingHere.isDir}
+      depth={depth + 1}
+      oncommit={handleCommitCreate}
+      oncancel={handleCancelCreate}
+    />
+  {/if}
   {#each children as child (child.path)}
     <svelte:self entry={child} depth={depth + 1} />
   {/each}
+{/if}
+
+{#if contextMenu}
+  <ContextMenu
+    x={contextMenu.x}
+    y={contextMenu.y}
+    items={getContextMenuItems()}
+    onclose={() => { contextMenu = null }}
+  />
 {/if}
 
 <style lang="postcss">

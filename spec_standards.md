@@ -35,13 +35,13 @@ This means:
 
 - predictable file locations,
 - predictable headings,
-- lightweight frontmatter,
-- explicit links to related specs, code, tests, and decisions,
+- lightweight frontmatter (only title, status, last_updated),
+- explicit links to related specs, code, tests, and decisions in the body,
 - stable section anchors for important sections.
 
-### 3. Specs should describe intent and constraints, not duplicate implementation
+### 3. Specs should describe intent and constraints, grounded in code references
 
-Specs must not become a second copy of the codebase.
+Specs must not become a second copy of the codebase. Instead, they should reference code densely.
 
 Specs should primarily contain:
 
@@ -50,10 +50,10 @@ Specs should primarily contain:
 - constraints,
 - architecture and design context,
 - decisions,
-- references to implementation,
+- **dense references to implementation code** (classes, functions, methods, line ranges),
 - references to verification.
 
-Implementation details should live in code. Specs should refer to code rather than reproduce it, except when a small snippet is needed to explain a design or review a specific change.
+Implementation details should live in code. Specs should refer to code rather than reproduce it. Every class, function, or method that is relevant to a spec should be referenced — both in frontmatter `code_refs` and inline throughout the document body. When a spec references code, the UI renders the referenced code inline, so readers can see the actual implementation without leaving the spec. This makes code references the primary bridge between intent and implementation.
 
 ### 4. Hierarchy is for context inheritance, not ontology purity
 
@@ -68,15 +68,19 @@ For example:
 
 This hierarchy exists to help humans and agents load the right slice of context. It must not force every project concept into a rigid tree.
 
-### 5. Every important spec must link outward to reality
+### 5. Every important spec must link outward to reality through code
 
-A spec is only useful if it is grounded in the actual project. Important spec files should link to:
+A spec is only useful if it is grounded in the actual project. Code references are the most important type of link because they are rendered inline in the UI — readers see the actual source code directly within the spec.
 
-- relevant code,
+Important spec files should link to:
+
+- **relevant code — as many references as needed** (classes, functions, methods, constants),
 - relevant tests,
 - relevant decisions,
 - related specs,
 - operational or verification evidence when appropriate.
+
+A well-written spec should reference every significant function, class, or method involved in the feature or domain it describes. The goal is that a reader can understand the full implementation landscape by reading the spec alone, with code rendered inline.
 
 ---
 
@@ -204,22 +208,13 @@ A decision file should explain:
 
 Every file in `specs/` except templates must begin with YAML frontmatter.
 
-The minimum standard is:
+The minimum frontmatter is:
 
 ```yaml
 ---
 title: Login Flow
 status: active
-domain: auth
-depends_on:
-  - specs/domains/auth.md
-decision_refs:
-  - specs/decisions/0001-auth-strategy.md
-code_refs:
-  - app/auth/routes.py#login_handler
-test_refs:
-  - tests/auth/test_login.py
-last_updated: 2026-03-20
+last_updated: 2026-03-20T14:30:00
 ---
 ```
 
@@ -227,17 +222,21 @@ last_updated: 2026-03-20
 
 - **title**: human-readable title
 - **status**: one of `draft`, `active`, `verified`, `deprecated`
-- **last_updated**: date of last meaningful update
+- **last_updated**: datetime of last meaningful update (ISO 8601 with time, e.g. `2026-03-20T14:30:00`)
 
-### Recommended frontmatter fields
+Frontmatter must remain lightweight. Only metadata that applies to the entire file belongs here. Do not turn it into a complex database schema. The body of the document is the primary source of meaning.
 
-- **domain**
-- **depends_on**
-- **decision_refs**
-- **code_refs**
-- **test_refs**
+### Fields that belong in the body, not frontmatter
 
-Frontmatter must remain lightweight. Do not turn it into a complex database schema. The body of the document remains the primary source of meaning.
+The following fields must be written as sections or inline references in the note body rather than as frontmatter properties:
+
+- **domain** — state as prose or a heading in the body (e.g. `Domain: auth`)
+- **depends_on** — list dependencies in a `## Dependencies` section or inline
+- **code_refs** — reference code inline throughout the body using `file.py#symbol` syntax; the UI renders them as viewable code
+- **test_refs** — list test references in a `## Tests / Verification` section
+- **decision_refs** — link decisions inline or in a `## Related Decisions` section
+
+Code refs should be **dense** — reference every class, function, and method that participates in the feature. Each code ref is rendered inline in the UI, so the reader sees the actual implementation code directly within the spec view.
 
 ---
 
@@ -362,11 +361,14 @@ Example:
 
 ### Code reference format
 
+Code references are rendered inline in the UI. When a spec includes a code ref, the referenced code is fetched and displayed directly in the spec view. This makes code refs the most powerful tool for grounding specs in reality.
+
 Prefer file path plus symbol reference rather than line numbers.
 
 Recommended formats:
 
 - `app/auth/routes.py#login_handler`
+- `app/auth/service.py#AuthService`
 - `app/auth/service.py#authenticate_user`
 - `tests/auth/test_login.py#test_successful_login`
 
@@ -374,11 +376,31 @@ If a more explicit syntax is supported by tooling, use:
 
 - `file:app/auth/routes.py#symbol=login_handler`
 
-Line ranges may be used only as snapshots or fallbacks:
+Line ranges may be used as an alternative:
 
-- `file:app/auth/routes.py#L120-L180`
+- `app/auth/routes.py#L120-L180`
 
-Line-based references are less stable and should not be the primary form when symbol-based references are possible.
+Symbol-based references are preferred because they survive refactoring, but line ranges are acceptable.
+
+### How many code refs to include
+
+Include **all** classes, functions, and methods that are relevant to the spec. A feature spec should reference:
+
+- the main entry point function or method,
+- all helper functions called by the entry point,
+- data models and types involved,
+- validation functions,
+- error handling,
+- related test functions.
+
+A domain spec should reference:
+
+- all public-facing classes and their key methods,
+- data models owned by the domain,
+- important internal helpers,
+- test files and key test functions.
+
+Do not hold back on code refs. More is better. Each ref renders as viewable code in the UI, giving the reader a complete picture of the implementation.
 
 ---
 
@@ -592,7 +614,7 @@ The following anti-patterns must be avoided:
 
 ### 1. Specs as a second codebase
 
-Do not mirror the implementation line by line in markdown.
+Do not mirror the implementation line by line in markdown. Instead, use dense code references — the UI renders referenced code inline, so there is no need to copy code into the spec body.
 
 ### 2. Giant top-heavy documents
 
@@ -608,7 +630,7 @@ Do not rely on ad hoc notes without headings, references, or ownership.
 
 ### 5. Ambiguous references
 
-Do not write phrases like "the auth code" when an exact file or symbol can be named.
+Do not write phrases like "the auth code" when an exact file or symbol can be named. Always use a code ref (`file.py#ClassName` or `file.py#function_name`) so the UI can render the actual code inline.
 
 ### 6. Silent divergence
 

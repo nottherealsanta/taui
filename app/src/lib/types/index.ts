@@ -42,7 +42,7 @@ export function agentStateFromString(s: string): AgentState {
 
 export type AgentTier = 'high' | 'medium' | 'low'
 
-export type AgentType = 'root' | 'minion'
+export type AgentType = 'root' | 'sub_agent'
 
 export const PRIME_AGENT_ID = '__prime__'
 
@@ -76,22 +76,23 @@ export interface PrimeToolCall {
   status: 'running' | 'done' | 'error'
 }
 
-/** A minion launched from Prime's context. */
-export interface PrimeMinionEntry {
-  minionId: string
+/** A sub-agent launched from Prime's context. */
+export interface PrimeSubAgentEntry {
+  subAgentId: string
   task: string
   status: 'running' | 'done' | 'error'
   result?: string | null
   events: AgentDetailEvent[]
 }
 
-/** An entry in the Prime chat stream — text, tool, minion, or agent-launch. */
+/** An entry in the Prime chat stream — text, tool, sub-agent, or agent-launch. */
 export type PrimeChatEntry =
   | { kind: 'user'; content: string }
   | { kind: 'assistant'; content: string }
   | { kind: 'assistant-streaming'; content: string }
+  | { kind: 'context-divider'; label: string }
   | { kind: 'tool'; tool: PrimeToolCall }
-  | { kind: 'minion'; minion: PrimeMinionEntry }
+  | { kind: 'sub_agent'; subAgent: PrimeSubAgentEntry }
   | { kind: 'agent-launched'; agentId: string; displayName: string; task: string }
 
 export interface AgentInfo {

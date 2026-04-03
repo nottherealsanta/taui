@@ -1,55 +1,55 @@
 <!--
-  MinionCard.svelte
-  Collapsible inline card for a minion agent inside Prime's chat stream.
+  SubAgentCard.svelte
+  Collapsible inline card for a sub-agent inside Prime's chat stream.
   Shows task summary when collapsed; full scrollable output when expanded.
 -->
 <script lang="ts">
-  import type { PrimeMinionEntry } from '$types/index'
+  import type { PrimeSubAgentEntry } from '$types/index'
   import Shimmer from '$components/Shimmer.svelte'
 
   interface Props {
-    minion: PrimeMinionEntry
+    subAgent: PrimeSubAgentEntry
   }
-  const { minion }: Props = $props()
+  const { subAgent }: Props = $props()
 
   let expanded = $state(false)
 
-  const isRunning = $derived(minion.status === 'running')
-  const isDone = $derived(minion.status === 'done')
-  const hasError = $derived(minion.status === 'error')
+  const isRunning = $derived(subAgent.status === 'running')
+  const isDone = $derived(subAgent.status === 'done')
+  const hasError = $derived(subAgent.status === 'error')
 
   /** Truncated task for the header line. */
   const taskSummary = $derived(
-    minion.task.length > 80 ? minion.task.slice(0, 80) + '...' : minion.task,
+    subAgent.task.length > 80 ? subAgent.task.slice(0, 80) + '...' : subAgent.task,
   )
 
   /** The full result text. */
-  const resultText = $derived(minion.result ?? '')
+  const resultText = $derived(subAgent.result ?? '')
 </script>
 
 <!-- svelte-ignore a11y_click_events_have_key_events -->
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
-  class="minion-card"
+  class="sub-agent-card"
   class:running={isRunning}
   class:done={isDone}
   class:error={hasError}
   onclick={() => { expanded = !expanded }}
 >
-  <div class="minion-header">
-    <span class="minion-icon">{isRunning ? '⟳' : hasError ? '✗' : '✓'}</span>
-    <span class="minion-label">minion</span>
-    <span class="minion-task">{taskSummary}</span>
-    <span class="minion-chevron">{expanded ? '▾' : '▸'}</span>
+  <div class="sub-agent-header">
+    <span class="sub-agent-icon">{isRunning ? '⟳' : hasError ? '✗' : '✓'}</span>
+    <span class="sub-agent-label">sub_agent</span>
+    <span class="sub-agent-task">{taskSummary}</span>
+    <span class="sub-agent-chevron">{expanded ? '▾' : '▸'}</span>
   </div>
 
   {#if expanded && resultText}
-    <div class="minion-detail">
-      <span class="minion-section-label">Result</span>
-      <pre class="minion-output selectable">{resultText.slice(0, 4000)}{resultText.length > 4000 ? '\n...' : ''}</pre>
+    <div class="sub-agent-detail">
+      <span class="sub-agent-section-label">Result</span>
+      <pre class="sub-agent-output selectable">{resultText.slice(0, 4000)}{resultText.length > 4000 ? '\n...' : ''}</pre>
     </div>
   {:else if !expanded && isDone && resultText}
-    <div class="minion-preview">
+    <div class="sub-agent-preview">
       {resultText.slice(0, 120)}{resultText.length > 120 ? '...' : ''}
     </div>
   {/if}
@@ -60,7 +60,7 @@
 </div>
 
 <style lang="postcss">
-  .minion-card {
+  .sub-agent-card {
     border: 1px solid var(--border-variant);
     border-radius: 6px;
     background-color: var(--element-bg);
@@ -70,19 +70,19 @@
     position: relative;
   }
 
-  .minion-card.running {
+  .sub-agent-card.running {
     border-color: var(--fg-accent);
   }
 
-  .minion-card.error {
+  .sub-agent-card.error {
     border-color: var(--status-error);
   }
 
-  .minion-card.done {
+  .sub-agent-card.done {
     border-color: var(--border-variant);
   }
 
-  .minion-header {
+  .sub-agent-header {
     display: flex;
     align-items: center;
     gap: 6px;
@@ -90,25 +90,25 @@
     font-size: 12px;
   }
 
-  .minion-icon {
+  .sub-agent-icon {
     font-size: 11px;
     flex-shrink: 0;
   }
 
-  .minion-card.running .minion-icon {
+  .sub-agent-card.running .sub-agent-icon {
     color: var(--fg-accent);
     animation: spin 1.2s linear infinite;
   }
 
-  .minion-card.error .minion-icon {
+  .sub-agent-card.error .sub-agent-icon {
     color: var(--status-error);
   }
 
-  .minion-card.done .minion-icon {
+  .sub-agent-card.done .sub-agent-icon {
     color: var(--status-done);
   }
 
-  .minion-label {
+  .sub-agent-label {
     font-size: 10px;
     font-weight: 600;
     color: var(--fg-muted);
@@ -117,7 +117,7 @@
     flex-shrink: 0;
   }
 
-  .minion-task {
+  .sub-agent-task {
     color: var(--fg-primary);
     font-size: 12px;
     white-space: nowrap;
@@ -127,13 +127,13 @@
     flex: 1;
   }
 
-  .minion-chevron {
+  .sub-agent-chevron {
     font-size: 10px;
     color: var(--fg-muted);
     flex-shrink: 0;
   }
 
-  .minion-preview {
+  .sub-agent-preview {
     padding: 0 10px 6px;
     font-size: 11px;
     color: var(--fg-muted);
@@ -143,12 +143,12 @@
     text-overflow: ellipsis;
   }
 
-  .minion-detail {
+  .sub-agent-detail {
     border-top: 1px solid var(--border-variant);
     padding: 8px 10px;
   }
 
-  .minion-section-label {
+  .sub-agent-section-label {
     display: block;
     font-size: 10px;
     font-weight: 600;
@@ -158,7 +158,7 @@
     margin-bottom: 3px;
   }
 
-  .minion-output {
+  .sub-agent-output {
     margin: 0;
     font-family: var(--font-mono, monospace);
     font-size: 10px;

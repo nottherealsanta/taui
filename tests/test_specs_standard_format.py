@@ -103,9 +103,10 @@ def test_standard_format_frontmatter_metadata_populates_node(tmp_path: Path) -> 
     )
     assert tm_root is not None, f"task-management root not found in {[n.spec_ref for n in tree]}"
     assert tm_root.status == "active"
-    assert "src/task_board.py" in tm_root.code_refs
-    assert tm_root.verification is not None
-    assert "tests/test_task_board.py" in tm_root.verification
+    # code_refs, test_refs, depends_on are no longer extracted from frontmatter;
+    # they belong in the note body instead.
+    assert tm_root.code_refs == []
+    assert tm_root.verification is None
 
 
 def test_standard_format_headings_create_child_nodes(tmp_path: Path) -> None:

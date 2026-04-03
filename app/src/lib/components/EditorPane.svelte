@@ -9,8 +9,10 @@
   import MarkdownEditor from '$components/MarkdownEditor.svelte'
   import FrontmatterProperties from '$components/FrontmatterProperties.svelte'
   import { tabStore } from '$stores/tabs.svelte'
+  import { stripFrontmatter } from '$lib/utils/specs'
 
   const activeTab = $derived(tabStore.activeTab)
+  const editorContent = $derived(activeTab ? stripFrontmatter(activeTab.content) : '')
 </script>
 
 <div class="editor-pane">
@@ -28,7 +30,7 @@
 
       <!-- File editor -->
       <MarkdownEditor
-        content={activeTab.content}
+        content={editorContent}
         filePath={activeTab.filePath}
         tabId={activeTab.id}
       />

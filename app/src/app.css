@@ -135,7 +135,7 @@
   --border-variant: #e6edf7;
 
   /* Text */
-  --fg-primary: #1a2433;
+  --fg-primary: #000000;
   --fg-muted:   #5e7288;
   --fg-accent:  #0d6bcf;
 
@@ -211,7 +211,7 @@ body {
 }
 ::-webkit-scrollbar-thumb {
   background: var(--border);
-  border-radius: 3px;
+  border-radius: 0;
 }
 ::-webkit-scrollbar-thumb:hover {
   background: var(--fg-muted);

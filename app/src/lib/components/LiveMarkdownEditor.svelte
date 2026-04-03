@@ -24,6 +24,7 @@
   const strongPatterns = [/\*\*([^*\n]+)\*\*/g, /__([^_\n]+)__/g]
   const emphasisPatterns = [/(^|[^*])\*([^*\n]+)\*(?!\*)/g, /(^|[^_])_([^_\n]+)_(?!_)/g]
   const inlineCodePattern = /`([^`\n]+)`/g
+  const linkPattern = /\[([^\]]+)\]\(([^)]+)\)/g
 
   interface LineBlock {
     startLine: number
@@ -167,6 +168,35 @@
       }
     }
 
+    for (const match of lineText.matchAll(linkPattern)) {
+      const idx = match.index ?? 0
+      if (insideCodeSpan(idx)) continue
+      const full = match[0]
+      const linkText = match[1]
+      const url = match[2]
+      const start = lineFrom + idx
+      const openBracketEnd = start + 1
+      const textStart = openBracketEnd
+      const textEnd = textStart + linkText.length
+      const closePart = textEnd // position of ]
+      const closeEnd = start + full.length
+      const reveal = cursor >= start && cursor <= closeEnd
+
+      marks.push({
+        from: textStart,
+        to: textEnd,
+        decoration: Decoration.mark({
+          class: 'cm-live-link',
+          attributes: { 'data-href': url },
+        }),
+      })
+
+      if (!reveal) {
+        marks.push({ from: start, to: openBracketEnd, decoration: hiddenTokenDecoration })
+        marks.push({ from: closePart, to: closeEnd, decoration: hiddenTokenDecoration })
+      }
+    }
+
     marks.sort((a, b) => a.from - b.from || a.to - b.to)
     return marks
   }
@@ -187,16 +217,16 @@
 
         if (frontmatterLine && frontmatterBlock) {
           const reveal = cursorWithinBlock(view, frontmatterBlock)
-          const isFenceLine = lineNumber === frontmatterBlock.startLine || lineNumber === frontmatterBlock.endLine
 
-          builder.add(
-            line.from,
-            line.from,
-            Decoration.line({ attributes: { class: 'cm-live-frontmatter-line' } }),
-          )
-
-          if (isFenceLine && !reveal) {
+          if (!reveal) {
+            // Hide entire frontmatter block when cursor is outside
             builder.add(line.from, line.to, hiddenTokenDecoration)
+          } else {
+            builder.add(
+              line.from,
+              line.from,
+              Decoration.line({ attributes: { class: 'cm-live-frontmatter-line' } }),
+            )
           }
           continue
         }
@@ -266,6 +296,32 @@
     },
   )
 
+  function resolveHref(href: string): string {
+    if (href.startsWith('http://') || href.startsWith('https://')) return href
+    // Resolve relative paths against current file's directory
+    const dir = filePath.substring(0, filePath.lastIndexOf('/') + 1)
+    return dir + href
+  }
+
+  const linkClickHandler = EditorView.domEventHandlers({
+    click(event: MouseEvent) {
+      const target = event.target as HTMLElement
+      const linkEl = target.closest('.cm-live-link') as HTMLElement | null
+      if (!linkEl) return false
+      const href = linkEl.getAttribute('data-href')
+      if (!href) return false
+
+      event.preventDefault()
+      const resolved = resolveHref(href)
+      if (resolved.startsWith('http://') || resolved.startsWith('https://')) {
+        window.open(resolved, '_blank', 'noopener')
+      } else {
+        void tabStore.openFile(resolved)
+      }
+      return true
+    },
+  })
+
   const editorTheme = EditorView.theme({
     '&': {
       height: '100%',
@@ -325,6 +381,7 @@
           EditorView.lineWrapping,
           EditorState.readOnly.of(readOnly),
           livePreviewPlugin,
+          linkClickHandler,
           editorTheme,
           keymap.of([
             ...defaultKeymap,
@@ -446,6 +503,18 @@
     background-color: var(--element-bg);
     font-family: var(--font-mono);
     font-size: 0.92em;
+  }
+
+  .live-markdown-editor :global(.cm-live-link) {
+    color: var(--fg-accent);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    cursor: pointer;
+  }
+
+  .live-markdown-editor :global(.cm-live-link:hover) {
+    text-decoration-color: var(--fg-accent);
+    opacity: 0.85;
   }
 
   .live-markdown-editor :global(.cm-live-frontmatter-line) {

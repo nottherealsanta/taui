@@ -8,6 +8,11 @@
 import type { FileEntry } from '$types/index'
 import { backendClient } from '$services/backend-client'
 
+type PendingCreation = {
+  parentPath: string
+  isDir: boolean
+}
+
 class FileTreeStore {
   /** Cached directory listings keyed by path. */
   entries: Map<string, FileEntry[]> = $state(new Map())
@@ -26,6 +31,9 @@ class FileTreeStore {
 
   /** Root path for the file tree (relative, usually '' or 'specs'). */
   rootPath: string = $state('')
+
+  /** Pending inline creation (new file or folder). */
+  pendingCreation: PendingCreation | null = $state(null)
 
   // ── Methods ──────────────────────────────────────────────────────────────
 
@@ -134,6 +142,49 @@ class FileTreeStore {
    */
   isLoading(path: string): boolean {
     return this.loading.has(path)
+  }
+
+  /**
+   * Begin inline creation of a new file or folder inside parentPath.
+   */
+  startCreation(parentPath: string, isDir: boolean): void {
+    // Expand the parent so the inline input is visible
+    if (!this.expandedDirs.has(parentPath)) {
+      this.expandedDirs = new Set([...this.expandedDirs, parentPath])
+      if (!this.entries.has(parentPath)) {
+        this.loadDir(parentPath)
+      }
+    }
+    this.pendingCreation = { parentPath, isDir }
+  }
+
+  cancelCreation(): void {
+    this.pendingCreation = null
+  }
+
+  /**
+   * Commit the new file or folder creation.
+   */
+  async commitCreation(name: string): Promise<void> {
+    if (!this.pendingCreation || !name.trim()) {
+      this.pendingCreation = null
+      return
+    }
+    const { parentPath, isDir } = this.pendingCreation
+    const fullPath = parentPath ? `${parentPath}/${name}` : name
+    try {
+      if (isDir) {
+        await backendClient.createDir(fullPath)
+      } else {
+        await backendClient.writeFile(fullPath, '')
+      }
+      // Refresh the parent directory to show the new entry
+      await this.loadDir(parentPath)
+    } catch (err) {
+      console.error('[file-tree] Failed to create:', err)
+    } finally {
+      this.pendingCreation = null
+    }
   }
 }
 

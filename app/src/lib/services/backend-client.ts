@@ -320,6 +320,33 @@ export class BackendClient extends EventTarget {
     return this.call('prime/message', { messages }) as Promise<{ ok: boolean }>
   }
 
+  async primeHistory(): Promise<{ messages: Array<{ role: string; content: string }> }> {
+    return this.call('prime/history', {}) as Promise<{ messages: Array<{ role: string; content: string }> }>
+  }
+
+  async primeCancel(): Promise<{ ok: boolean }> {
+    return this.call('prime/cancel', {}) as Promise<{ ok: boolean }>
+  }
+
+  async primeNewContext(seed?: string): Promise<{ ok: boolean; unsupported?: boolean }> {
+    const params: Record<string, unknown> = {}
+    if (seed && seed.trim()) params['seed'] = seed.trim()
+    try {
+      return await this.call('prime/newContext', params) as Promise<{ ok: boolean }>
+    } catch (e) {
+      const msg = String(e)
+      // Backward compatibility for older backends that don't expose prime/newContext.
+      if (msg.includes('RPC -32601')) {
+        return { ok: false, unsupported: true }
+      }
+      throw e
+    }
+  }
+
+  async agentList(): Promise<{ agents: Array<{ agent_id: string; spec_ref: string; state: string; agent_type: string; display_name: string; tier: string }> }> {
+    return this.call('agent/list', {}) as Promise<{ agents: Array<{ agent_id: string; spec_ref: string; state: string; agent_type: string; display_name: string; tier: string }> }>
+  }
+
   // ── Filesystem RPCs ───────────────────────────────────────────────────────
 
   async listDir(path: string): Promise<{ entries: FileEntry[] }> {
@@ -342,6 +369,10 @@ export class BackendClient extends EventTarget {
 
   async writeFile(path: string, content: string): Promise<void> {
     await this.call('fs/writeFile', { path, content })
+  }
+
+  async createDir(path: string): Promise<void> {
+    await this.call('fs/createDir', { path })
   }
 
   async searchFiles(query: string, opts?: { regex?: boolean; caseSensitive?: boolean; filePattern?: string }): Promise<{ results: SearchResult[] }> {

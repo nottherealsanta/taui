@@ -11,6 +11,9 @@
   import { onMount } from 'svelte'
   import { fileTree } from '$stores/file-tree.svelte'
   import FileTreeItem from '$components/FileTreeItem.svelte'
+  import ContextMenu from '$components/ContextMenu.svelte'
+  import InlineCreateInput from '$components/InlineCreateInput.svelte'
+  import type { MenuItem } from '$components/ContextMenu.svelte'
 
   // Load root directory on mount
   onMount(() => {
@@ -20,12 +23,39 @@
   const rootEntries = $derived(fileTree.getChildren(fileTree.rootPath))
   const isLoading = $derived(fileTree.isLoading(fileTree.rootPath))
 
+  // Check if the pending creation is at root level
+  const pendingAtRoot = $derived(
+    fileTree.pendingCreation?.parentPath === fileTree.rootPath ? fileTree.pendingCreation : null
+  )
+
+  let contextMenu: { x: number; y: number } | null = $state(null)
+
   function handleRefresh() {
     fileTree.refresh()
   }
 
   function handleCollapseAll() {
     fileTree.expandedDirs = new Set()
+  }
+
+  function handleContextMenu(e: MouseEvent) {
+    e.preventDefault()
+    contextMenu = { x: e.clientX, y: e.clientY }
+  }
+
+  function getContextMenuItems(): MenuItem[] {
+    return [
+      { label: 'New File', action: () => fileTree.startCreation(fileTree.rootPath, false) },
+      { label: 'New Folder', action: () => fileTree.startCreation(fileTree.rootPath, true) },
+    ]
+  }
+
+  function handleCommitCreate(name: string) {
+    fileTree.commitCreation(name)
+  }
+
+  function handleCancelCreate() {
+    fileTree.cancelCreation()
   }
 </script>
 
@@ -48,18 +78,36 @@
     </div>
   </div>
 
-  <div class="tree-content">
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div class="tree-content" oncontextmenu={handleContextMenu}>
     {#if isLoading && rootEntries.length === 0}
       <div class="loading-state">Loading…</div>
-    {:else if rootEntries.length === 0}
+    {:else if rootEntries.length === 0 && !pendingAtRoot}
       <div class="empty-state">No files found</div>
     {:else}
+      {#if pendingAtRoot}
+        <InlineCreateInput
+          isDir={pendingAtRoot.isDir}
+          depth={0}
+          oncommit={handleCommitCreate}
+          oncancel={handleCancelCreate}
+        />
+      {/if}
       {#each rootEntries as entry (entry.path)}
         <FileTreeItem {entry} depth={0} />
       {/each}
     {/if}
   </div>
 </aside>
+
+{#if contextMenu}
+  <ContextMenu
+    x={contextMenu.x}
+    y={contextMenu.y}
+    items={getContextMenuItems()}
+    onclose={() => { contextMenu = null }}
+  />
+{/if}
 
 <style lang="postcss">
   .file-tree-sidebar {

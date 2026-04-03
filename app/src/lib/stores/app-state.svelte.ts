@@ -23,7 +23,7 @@ import type {
   RunLine,
   PrimeMessage,
   PrimeToolCall,
-  PrimeMinionEntry,
+  PrimeSubAgentEntry,
   PrimeChatEntry,
 } from '$types/index'
 import { agentStateIsActive, agentStateFromString, PRIME_AGENT_ID } from '$types/index'
@@ -62,7 +62,7 @@ class AppState {
   primeStreamBuffer: string = $state('')
   primeChatEntries: PrimeChatEntry[] = $state([])
   primeToolCalls: Map<string, PrimeToolCall> = $state(new Map())
-  primeMinions: Map<string, PrimeMinionEntry> = $state(new Map())
+  primeSubAgents: Map<string, PrimeSubAgentEntry> = $state(new Map())
 
   // Launch tier
   launchTier: AgentTier = $state('medium')
@@ -315,8 +315,39 @@ class AppState {
 
   // ── Prime mutations ────────────────────────────────────────────────────────
 
+  /** Restore Prime conversation history from backend (on reconnect/refresh). */
+  restorePrimeHistory(messages: Array<{ role: string; content: string }>): void {
+    const entries: PrimeChatEntry[] = []
+    const primeMessages: PrimeMessage[] = []
+
+    for (const msg of messages) {
+      if (msg.role === 'user') {
+        entries.push({ kind: 'user', content: msg.content })
+        primeMessages.push({ role: 'user', content: msg.content })
+      } else if (msg.role === 'assistant') {
+        entries.push({ kind: 'assistant', content: msg.content })
+        primeMessages.push({ role: 'assistant', content: msg.content })
+      }
+      // tool messages are internal — don't show in chat
+    }
+
+    this.primeChatEntries = entries
+    this.primeMessages = primeMessages
+  }
+
   addPrimeMessage(msg: PrimeMessage): void {
     this.primeMessages = [...this.primeMessages, msg]
+  }
+
+  /** Append an assistant message directly into Prime chat/history. */
+  addPrimeAssistantMessage(content: string): void {
+    this.primeChatEntries = [...this.primeChatEntries, { kind: 'assistant', content }]
+    this.primeMessages = [...this.primeMessages, { role: 'assistant', content }]
+  }
+
+  /** Visually separates Prime chat into a new context boundary. */
+  addPrimeContextDivider(label = 'New context'): void {
+    this.primeChatEntries = [...this.primeChatEntries, { kind: 'context-divider', label }]
   }
 
   /** Start a new Prime streaming response. Called when user sends a message. */
@@ -372,23 +403,23 @@ class AppState {
     }
   }
 
-  /** Add a minion entry to the Prime chat stream. */
-  addPrimeMinion(minion: PrimeMinionEntry): void {
-    this.primeMinions.set(minion.minionId, minion)
-    this.primeChatEntries = [...this.primeChatEntries, { kind: 'minion', minion }]
+  /** Add a sub-agent entry to the Prime chat stream. */
+  addPrimeSubAgent(subAgent: PrimeSubAgentEntry): void {
+    this.primeSubAgents.set(subAgent.subAgentId, subAgent)
+    this.primeChatEntries = [...this.primeChatEntries, { kind: 'sub_agent', subAgent }]
   }
 
-  /** Complete a Prime minion with its result. */
-  completePrimeMinion(minionId: string, result: string | null): void {
-    const minion = this.primeMinions.get(minionId)
-    if (minion) {
-      minion.status = 'done'
-      minion.result = result
+  /** Complete a Prime sub-agent with its result. */
+  completePrimeSubAgent(subAgentId: string, result: string | null): void {
+    const subAgent = this.primeSubAgents.get(subAgentId)
+    if (subAgent) {
+      subAgent.status = 'done'
+      subAgent.result = result
     }
     for (const entry of this.primeChatEntries) {
-      if (entry.kind === 'minion' && entry.minion.minionId === minionId) {
-        entry.minion.status = 'done'
-        entry.minion.result = result
+      if (entry.kind === 'sub_agent' && entry.subAgent.subAgentId === subAgentId) {
+        entry.subAgent.status = 'done'
+        entry.subAgent.result = result
       }
     }
   }

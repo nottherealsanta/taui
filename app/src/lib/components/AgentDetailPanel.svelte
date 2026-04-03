@@ -286,6 +286,7 @@
   }
 
   .event.message { border-color: var(--border); }
+  .event.message:not(.user) { margin-top: 6px; }
   .event.message.user { background-color: var(--element-selected); }
 
   .role {

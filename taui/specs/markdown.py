@@ -251,14 +251,15 @@ def parse_heading_tree(lines: list[str], start: int = 0) -> list[HeadingNode]:
 
 
 def extract_metadata_from_frontmatter(fm: dict[str, Any]) -> dict[str, Any]:
-    """Normalize frontmatter keys to the internal metadata format."""
+    """Normalize frontmatter keys to the internal metadata format.
+
+    Only title, status, and last_updated belong in frontmatter.
+    code_refs, test_refs, depends_on, and domain belong in the note body.
+    """
     return {
         "status": fm.get("status"),
-        "code_refs": fm.get("code_refs") or [],
-        "test_refs": fm.get("test_refs") or [],
-        "depends_on": fm.get("depends_on") or [],
         "title": fm.get("title"),
-        "domain": fm.get("domain"),
+        "last_updated": fm.get("last_updated"),
     }
 
 

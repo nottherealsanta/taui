@@ -2,7 +2,7 @@
 Agent naming — color-based name pool for root agents.
 
 Root agents get auto-assigned color names (blue, red, green, ...).
-Minions get auto-generated IDs like minion-<hex8>.
+Sub-agents get auto-generated IDs like sub_agent-<hex8>.
 """
 
 from __future__ import annotations
@@ -79,6 +79,6 @@ class AgentNamePool:
         return frozenset(self._in_use)
 
 
-def generate_minion_id() -> str:
-    """Generate a short unique ID for a minion agent."""
-    return f"minion-{uuid4().hex[:8]}"
+def generate_sub_agent_id() -> str:
+    """Generate a short unique ID for a sub-agent."""
+    return f"sub_agent-{uuid4().hex[:8]}"

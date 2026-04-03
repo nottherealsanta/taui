@@ -26,6 +26,22 @@
     'claude-haiku-4.5',
   ]
 
+  interface SlashCommand {
+    name: string
+    usage: string
+    description: string
+  }
+
+  const SLASH_COMMANDS: SlashCommand[] = [
+    { name: 'new', usage: '/new [first message]', description: 'Start a fresh Prime context and draw a divider.' },
+    { name: 'agent', usage: '/agent <task>', description: 'Force launch a root agent with the task.' },
+    { name: 'root', usage: '/root <task>', description: 'Alias for /agent.' },
+    { name: 'cancel', usage: '/cancel', description: 'Stop Prime\'s in-progress response.' },
+    { name: 'help', usage: '/help', description: 'Show available slash commands.' },
+  ]
+
+  let slashActiveIndex = $state(0)
+
   const selectedRef = $derived(appState.selectedSpecRef)
   const isPrime = $derived(appState.detailAgentId === PRIME_AGENT_ID)
 
@@ -84,6 +100,36 @@
         : `Send a message…`
   )
 
+  const slashToken = $derived(() => {
+    if (!isPrime) return null
+    const trimmed = draft.trimStart()
+    if (!trimmed.startsWith('/')) return null
+    const firstSpace = trimmed.indexOf(' ')
+    if (firstSpace >= 0) return null
+    return trimmed.slice(1).toLowerCase()
+  })
+
+  const filteredSlashCommands = $derived(() => {
+    const token = slashToken()
+    if (token === null) return []
+    return SLASH_COMMANDS.filter((cmd) => cmd.name.startsWith(token))
+  })
+
+  const slashSuggestionsOpen = $derived(
+    isPrime && !sending && !appState.primeStreaming && slashToken() !== null && filteredSlashCommands().length > 0
+  )
+
+  $effect(() => {
+    const count = filteredSlashCommands().length
+    if (count === 0 || !slashSuggestionsOpen) {
+      slashActiveIndex = 0
+      return
+    }
+    if (slashActiveIndex >= count) {
+      slashActiveIndex = 0
+    }
+  })
+
   function toggleProviderDropdown(e: MouseEvent) {
     if (!providerDropdownOpen) {
       const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
@@ -119,6 +165,96 @@
     modelDropdownOpen = false
   }
 
+  function parseSlashCommand(text: string): { name: string; args: string } | null {
+    const trimmed = text.trim()
+    const m = /^\/([a-zA-Z]+)(?:\s+([\s\S]*))?$/.exec(trimmed)
+    if (!m) return null
+    return {
+      name: m[1].toLowerCase(),
+      args: (m[2] ?? '').trim(),
+    }
+  }
+
+  function insertSlashCommand(cmd: SlashCommand) {
+    draft = `/${cmd.name} `
+    slashActiveIndex = 0
+    tick().then(() => {
+      inputEl?.focus()
+      if (inputEl) {
+        inputEl.style.height = 'auto'
+        inputEl.style.height = inputEl.scrollHeight + 'px'
+      }
+    })
+  }
+
+  async function runPrimeSlashCommand(cmd: { name: string; args: string }) {
+    if (cmd.name === 'help') {
+      const text = [
+        'Available commands:',
+        ...SLASH_COMMANDS.map((c) => `- ${c.usage}: ${c.description}`),
+      ].join('\n')
+      appState.addPrimeAssistantMessage(text)
+      return
+    }
+
+    if (cmd.name === 'cancel') {
+      await backendClient.primeCancel()
+      appState.addPrimeAssistantMessage('Cancelled current Prime response.')
+      return
+    }
+
+    if (cmd.name === 'new') {
+      appState.addPrimeContextDivider('New context')
+      const newCtx = await backendClient.primeNewContext(cmd.args || undefined)
+
+      if (newCtx.unsupported) {
+        // Older backend: best-effort boundary in UI plus cancel in-flight response.
+        await backendClient.primeCancel()
+        appState.addPrimeAssistantMessage('Started a visual new context. Full context reset requires restarting the backend.')
+      }
+
+      if (cmd.args) {
+        appState.startPrimeStream(cmd.args)
+        try {
+          await backendClient.primeMessage([{ role: 'user', content: cmd.args }])
+        } catch (e) {
+          console.error('[MessageBar] prime /new seed failed:', e)
+          appState.appendPrimeStreamToken(`Error: ${e}`)
+          appState.finalizePrimeStream()
+        }
+      }
+      return
+    }
+
+    if (cmd.name === 'agent' || cmd.name === 'root') {
+      if (!cmd.args) {
+        appState.addPrimeAssistantMessage('Usage: /agent <task>')
+        return
+      }
+      const ref = launchRef
+      if (!ref) {
+        appState.addPrimeAssistantMessage('Cannot launch root agent: no active root spec selected.')
+        return
+      }
+
+      const result = await backendClient.agentLaunch(ref, cmd.args, appState.launchTier)
+      appState.upsertAgent({
+        agentId: result.agentId,
+        specRef: ref,
+        state: 'running',
+        tier: appState.launchTier as 'high' | 'medium' | 'low',
+      })
+      appState.addPrimeAgentLaunched({
+        agentId: result.agentId,
+        displayName: result.agentId,
+        task: cmd.args,
+      })
+      return
+    }
+
+    appState.addPrimeAssistantMessage(`Unknown slash command: /${cmd.name}. Use /help.`)
+  }
+
   async function submit() {
     const msg = draft.trim()
     if (!msg || sending || appState.primeStreaming) return
@@ -127,6 +263,12 @@
 
     try {
       if (isPrime) {
+        const slash = parseSlashCommand(msg)
+        if (slash) {
+          await runPrimeSlashCommand(slash)
+          return
+        }
+
         // Start Prime streaming — the RPC returns immediately, and
         // tokens arrive via prime/token, prime/toolCall, prime/toolResult,
         // prime/done notifications handled in notifications.ts.
@@ -189,6 +331,33 @@
   }
 
   function onKeydown(e: KeyboardEvent) {
+    if (isPrime && slashSuggestionsOpen && !e.shiftKey) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault()
+        slashActiveIndex = (slashActiveIndex + 1) % filteredSlashCommands().length
+        return
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        slashActiveIndex = (slashActiveIndex - 1 + filteredSlashCommands().length) % filteredSlashCommands().length
+        return
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        slashActiveIndex = 0
+        return
+      }
+
+      const trimmed = draft.trimStart()
+      const selectingCommandOnly = trimmed.startsWith('/') && !trimmed.includes(' ')
+      if ((e.key === 'Enter' || e.key === 'Tab') && selectingCommandOnly) {
+        e.preventDefault()
+        const selected = filteredSlashCommands()[slashActiveIndex]
+        if (selected) insertSlashCommand(selected)
+        return
+      }
+    }
+
     if (e.key === 'Enter' && e.shiftKey && steerableAgent) {
       // Shift+Enter = queue (only when agent is active)
       e.preventDefault()
@@ -221,6 +390,22 @@
 
   <div class="input-row">
     <div class="input-wrapper">
+      {#if slashSuggestionsOpen}
+        <div class="slash-suggestions">
+          {#each filteredSlashCommands() as cmd, idx (cmd.name)}
+            <button
+              type="button"
+              class="slash-item"
+              class:active={idx === slashActiveIndex}
+              onclick={() => insertSlashCommand(cmd)}
+            >
+              <span class="slash-name">/{cmd.name}</span>
+              <span class="slash-description">{cmd.description}</span>
+            </button>
+          {/each}
+        </div>
+      {/if}
+
       <textarea
         bind:this={inputEl}
         bind:value={draft}
@@ -375,7 +560,6 @@
   }
 
   .status-bar {
-    position: absolute;
     bottom: 100%;
     left: 0;
     right: 0;
@@ -427,6 +611,51 @@
   }
   .message-input::placeholder { color: var(--fg-muted); }
   .message-input:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  .slash-suggestions {
+    display: flex;
+    flex-direction: column;
+    border-bottom: 1px solid var(--border);
+    background: color-mix(in srgb, var(--bg-surface) 90%, var(--element-bg));
+    max-height: 180px;
+    overflow-y: auto;
+  }
+
+  .slash-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    border: none;
+    border-bottom: 1px solid var(--border-variant);
+    background: transparent;
+    padding: 8px 12px;
+    text-align: left;
+    cursor: pointer;
+    color: var(--fg-primary);
+  }
+
+  .slash-item:last-child {
+    border-bottom: none;
+  }
+
+  .slash-item:hover,
+  .slash-item.active {
+    background: var(--element-hover);
+  }
+
+  .slash-name {
+    min-width: 70px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--fg-accent);
+    font-family: var(--font-mono);
+  }
+
+  .slash-description {
+    font-size: 12px;
+    color: var(--fg-muted);
+  }
 
   .input-toolbar {
     display: flex;

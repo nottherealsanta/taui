@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import date
+from datetime import datetime
 from hashlib import sha256
 import os
 from pathlib import Path
@@ -164,14 +164,7 @@ class SpecMarkdownWriter:
             fm_lines: list[str] = ["---"]
             fm_lines.append(f"title: {title}" if title else "title: ''")
             fm_lines.append(f"status: {root_node.status or 'draft'}")
-            fm_lines.append(f"last_updated: {date.today().isoformat()}")
-            if root_node.code_refs:
-                fm_lines.append("code_refs:")
-                for ref in root_node.code_refs:
-                    fm_lines.append(f"  - {ref}")
-            if root_node.verification:
-                fm_lines.append("test_refs:")
-                fm_lines.append(f"  - {root_node.verification}")
+            fm_lines.append(f"last_updated: {datetime.now().strftime('%Y-%m-%dT%H:%M:%S')}")
             fm_lines.append("---")
             fm_lines.append("")
             lines.extend(fm_lines)

@@ -15,6 +15,7 @@
   import CommandPalette from '$components/CommandPalette.svelte'
   import QuickJump from '$components/QuickJump.svelte'
   import Toast from '$components/Toast.svelte'
+  import SettingsModal from '$components/SettingsModal.svelte'
 
   onMount(() => {
     startConnection()
@@ -25,17 +26,20 @@
     window.addEventListener('taui:toggle-search', handleToggleSearch)
     window.addEventListener('taui:toggle-graph', handleToggleGraph)
     window.addEventListener('taui:toggle-right-sidebar', handleToggleRightSidebar)
+    window.addEventListener('taui:toggle-settings', handleToggleSettings)
   })
   onDestroy(() => {
     stopConnection()
     window.removeEventListener('taui:toggle-search', handleToggleSearch)
     window.removeEventListener('taui:toggle-graph', handleToggleGraph)
     window.removeEventListener('taui:toggle-right-sidebar', handleToggleRightSidebar)
+    window.removeEventListener('taui:toggle-settings', handleToggleSettings)
   })
 
   function handleToggleSearch() { showSearch = !showSearch }
   function handleToggleGraph() { showGraph = !showGraph }
   function handleToggleRightSidebar() { toggleRightSidebar() }
+  function handleToggleSettings() { showSettings = !showSettings }
 
   async function listenMenuEvents() {
     try {
@@ -81,6 +85,7 @@
   // ── Modals ─────────────────────────────────────────────────────────────────
   let showPalette = $state(false)
   let showJump = $state(false)
+  let showSettings = $state(false)
 
   // ── Global keybindings ─────────────────────────────────────────────────────
   function handleGlobalKeyDown(e: KeyboardEvent) {
@@ -205,6 +210,9 @@
 {/if}
 {#if showJump}
   <QuickJump onclose={() => { showJump = false }} />
+{/if}
+{#if showSettings}
+  <SettingsModal onclose={() => { showSettings = false }} />
 {/if}
 
 <!-- Toast notifications -->
