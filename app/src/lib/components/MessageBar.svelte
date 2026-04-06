@@ -119,6 +119,8 @@
     isPrime && !sending && !appState.primeStreaming && slashToken() !== null && filteredSlashCommands().length > 0
   )
 
+  const replyTarget = $derived(isPrime ? appState.primeReplyTo : null)
+
   $effect(() => {
     const count = filteredSlashCommands().length
     if (count === 0 || !slashSuggestionsOpen) {
@@ -269,6 +271,10 @@
           return
         }
 
+        const outboundMessage = replyTarget
+          ? buildReplyPrompt(replyTarget.role, replyTarget.content, msg)
+          : msg
+
         // Start Prime streaming — the RPC returns immediately, and
         // tokens arrive via prime/token, prime/toolCall, prime/toolResult,
         // prime/done notifications handled in notifications.ts.
@@ -276,7 +282,7 @@
         try {
           const allMessages = [
             ...appState.primeMessages.map((m) => ({ role: m.role, content: m.content })),
-            { role: 'user', content: msg },
+            { role: 'user', content: outboundMessage },
           ]
           await backendClient.primeMessage(allMessages)
           // Actual response arrives via notifications — nothing to await here.
@@ -373,6 +379,17 @@
     el.style.height = 'auto'
     el.style.height = el.scrollHeight + 'px'
   }
+
+  function truncateReply(text: string, maxLen = 180): string {
+    const normalized = text.replace(/\s+/g, ' ').trim()
+    if (normalized.length <= maxLen) return normalized
+    return `${normalized.slice(0, maxLen - 1)}…`
+  }
+
+  function buildReplyPrompt(replyRole: 'user' | 'assistant', replyContent: string, message: string): string {
+    const snippet = truncateReply(replyContent, 500)
+    return `> [Replying to ${replyRole}]: ${snippet}\n\n${message}`
+  }
 </script>
 
 <div class="status-bar">
@@ -386,6 +403,16 @@
   <!-- Tool brief (ephemeral, from active agent) -->
   {#if steerableAgent?.toolBrief}
     <div class="tool-brief">{steerableAgent.toolBrief}</div>
+  {/if}
+
+  {#if replyTarget}
+    <div class="reply-preview">
+      <div class="reply-preview-main">
+        <span class="reply-preview-label">Replying to {replyTarget.role}</span>
+        <span class="reply-preview-text">{truncateReply(replyTarget.content)}</span>
+      </div>
+      <button type="button" class="reply-preview-close" aria-label="Cancel reply" onclick={() => appState.clearPrimeReplyTo()}>✕</button>
+    </div>
   {/if}
 
   <div class="input-row">
@@ -534,6 +561,54 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+
+  .reply-preview {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 6px 8px;
+    background: color-mix(in srgb, var(--fg-accent) 10%, var(--element-bg));
+    border: 1px solid var(--border-variant);
+    border-radius: 6px;
+  }
+
+  .reply-preview-main {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    gap: 2px;
+  }
+
+  .reply-preview-label {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--fg-muted);
+  }
+
+  .reply-preview-text {
+    font-size: 12px;
+    color: var(--fg-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .reply-preview-close {
+    border: 1px solid var(--border-variant);
+    border-radius: 999px;
+    width: 22px;
+    height: 22px;
+    background: var(--element-bg);
+    color: var(--fg-muted);
+    cursor: pointer;
+  }
+
+  .reply-preview-close:hover {
+    color: var(--fg-primary);
+    border-color: var(--border);
   }
 
   .input-row {

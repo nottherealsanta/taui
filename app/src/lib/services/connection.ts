@@ -49,9 +49,20 @@ async function _initialize(): Promise<void> {
 
   // 3. Restore Prime conversation history
   try {
-    const { messages } = await backendClient.primeHistory()
+    const { messages, has_more, oldest_seq } = await backendClient.primeHistory({
+      limit: 50,
+      full: true,
+    })
     if (messages && messages.length > 0) {
-      appState.restorePrimeHistory(messages)
+      appState.restorePrimeHistory(messages, {
+        hasMore: has_more,
+        oldestSeq: oldest_seq,
+      })
+    } else {
+      appState.restorePrimeHistory([], {
+        hasMore: has_more,
+        oldestSeq: oldest_seq,
+      })
     }
   } catch (err) {
     console.warn('[connection] failed to restore prime history', err)

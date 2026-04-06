@@ -39,5 +39,6 @@ class ToastStore {
 
 export const toasts: ToastStore = import.meta.hot?.data?.toasts ?? new ToastStore()
 if (import.meta.hot) {
+  import.meta.hot.data ??= {}
   import.meta.hot.data.toasts = toasts
 }

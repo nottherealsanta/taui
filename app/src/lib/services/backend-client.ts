@@ -17,6 +17,7 @@ import type {
   BackendRunState,
   FileEntry,
   SearchResult,
+  PrimeHistoryPage,
 } from '$types/index'
 import { toasts } from '$stores/toasts.svelte'
 
@@ -320,8 +321,12 @@ export class BackendClient extends EventTarget {
     return this.call('prime/message', { messages }) as Promise<{ ok: boolean }>
   }
 
-  async primeHistory(): Promise<{ messages: Array<{ role: string; content: string }> }> {
-    return this.call('prime/history', {}) as Promise<{ messages: Array<{ role: string; content: string }> }>
+  async primeHistory(opts?: { beforeSeq?: number; limit?: number; full?: boolean }): Promise<PrimeHistoryPage> {
+    const params: Record<string, unknown> = {}
+    if (opts?.beforeSeq !== undefined) params['before_seq'] = opts.beforeSeq
+    if (opts?.limit !== undefined) params['limit'] = opts.limit
+    if (opts?.full !== undefined) params['full'] = opts.full
+    return this.call('prime/history', params) as Promise<PrimeHistoryPage>
   }
 
   async primeCancel(): Promise<{ ok: boolean }> {
@@ -409,5 +414,6 @@ export class BackendClient extends EventTarget {
 
 export const backendClient: BackendClient = import.meta.hot?.data?.backendClient ?? new BackendClient()
 if (import.meta.hot) {
+  import.meta.hot.data ??= {}
   import.meta.hot.data.backendClient = backendClient
 }

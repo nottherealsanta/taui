@@ -9,6 +9,7 @@
 import type { OpenTab } from '$types/index'
 import { backendClient } from '$services/backend-client'
 import { appState } from '$stores/app-state.svelte'
+import { fileTree } from '$stores/file-tree.svelte'
 import { deriveSpecTitle, specRefToFilePath } from '$lib/utils/specs'
 
 const STORAGE_KEY = 'taui-open-tabs'
@@ -40,6 +41,7 @@ class TabStore {
     if (existing) {
       this.activeTabId = existing.id
       this._selectNodeForFile(filePath)
+      void this._syncFileTreeSelection(filePath)
       this._persistState()
       return
     }
@@ -71,6 +73,7 @@ class TabStore {
     this.tabs = [...this.tabs, tab]
     this.activeTabId = id
     this._selectNodeForFile(filePath)
+    void this._syncFileTreeSelection(filePath)
     this._persistState()
   }
 
@@ -122,6 +125,7 @@ class TabStore {
     if (tab) {
       this.activeTabId = tabId
       this._selectNodeForFile(tab.filePath)
+      void this._syncFileTreeSelection(tab.filePath)
       this._persistState()
     }
   }
@@ -253,6 +257,14 @@ class TabStore {
     const matchingNode = appState.nodes.find((node) => specRefToFilePath(node.specRef) === filePath)
     if (matchingNode) {
       appState.setSelected(matchingNode.id)
+    }
+  }
+
+  private async _syncFileTreeSelection(filePath: string): Promise<void> {
+    try {
+      await fileTree.revealPath(filePath)
+    } catch (err) {
+      console.error(`[tabs] Failed to sync file tree selection: ${filePath}`, err)
     }
   }
 }

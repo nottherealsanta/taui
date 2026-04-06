@@ -45,9 +45,13 @@ def create_app(
     workspace: Path | str | None = None,
     specs_path: Path | str | None = None,
     dev_mode: bool = False,
+    history_db_path: Path | str | None = None,
 ) -> FastAPI:
     handlers = MethodHandlers(
-        workspace=workspace, specs_path=specs_path, dev_mode=dev_mode
+        workspace=workspace,
+        specs_path=specs_path,
+        dev_mode=dev_mode,
+        history_db_path=history_db_path,
     )
     logger.info(
         "Creating FastAPI app workspace=%s",

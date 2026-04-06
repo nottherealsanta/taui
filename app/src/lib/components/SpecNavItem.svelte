@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { ChevronRight } from 'lucide-svelte'
   import Self from '$components/SpecNavItem.svelte'
   import { appState } from '$stores/app-state.svelte'
   import { tabStore } from '$stores/tabs.svelte'
@@ -60,7 +61,13 @@
 <div class="nav-item" style:padding-left="{4 + depth * 14}px">
   {#if item.kind === 'folder'}
     <div class="nav-row folder" onclick={item.children.length > 0 ? toggleItem : undefined} oncontextmenu={handleContextMenu}>
-      <span class="chevron">{item.children.length > 0 ? (isCollapsed ? '▸' : '▾') : '·'}</span>
+      <span class="chevron-slot" aria-hidden="true">
+        {#if item.children.length > 0}
+          <span class="chevron" class:expanded={!isCollapsed}>
+            <ChevronRight size={12} strokeWidth={2.25} />
+          </span>
+        {/if}
+      </span>
       <span class="label">{item.label}</span>
     </div>
     {#if !isCollapsed}
@@ -79,6 +86,7 @@
     {/if}
   {:else}
     <div class="nav-row heading" class:active={isActive} onclick={selectItem} oncontextmenu={handleContextMenu}>
+      <span class="chevron-slot" aria-hidden="true"></span>
       <span class="label">{item.label}</span>
     </div>
     {#if item.children.length > 0 && !isCollapsed}
@@ -139,33 +147,22 @@
     font-weight: 500;
   }
 
-  .chevron,
-  .chevron-btn {
+  .chevron-slot {
     width: 12px;
+    height: 12px;
     flex-shrink: 0;
     display: inline-flex;
     align-items: center;
     justify-content: center;
+  }
+
+  .chevron {
     color: var(--fg-muted);
-    font-size: 9px;
-    background: transparent;
-    border: none;
-    padding: 0;
-    margin: 0;
+    transition: transform 0.12s ease;
   }
 
-  .chevron-btn {
-    cursor: pointer;
-    border-radius: 3px;
-  }
-
-  .chevron-btn:hover {
-    background-color: var(--element-bg);
-    color: var(--fg-primary);
-  }
-
-  .spacer {
-    opacity: 0.35;
+  .chevron.expanded {
+    transform: rotate(90deg);
   }
 
   .label {

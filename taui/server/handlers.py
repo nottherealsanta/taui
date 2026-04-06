@@ -71,6 +71,7 @@ class MethodHandlers:
         workspace: Path | str | None = None,
         specs_path: Path | str | None = None,
         dev_mode: bool = False,
+        history_db_path: Path | str | None = None,
     ) -> None:
         self.specs = SpecService(
             workspace=workspace, specs_path=specs_path, dev_mode=dev_mode
@@ -78,7 +79,9 @@ class MethodHandlers:
         self.run_state = RunState()
         self._notification_callback: NotificationCallback | None = None
         workspace_path = Path(workspace).resolve() if workspace else None
-        self.history_db = HistoryDB()
+        self.history_db = HistoryDB(
+            db_path=Path(history_db_path) if history_db_path is not None else None
+        )
         self.agent_manager = AgentManager(
             db=self.specs.db,
             history_db=self.history_db,
@@ -167,7 +170,7 @@ class MethodHandlers:
             if method == "prime/cancel":
                 return await self._handle_prime_cancel()
             if method == "prime/history":
-                return await self._handle_prime_history()
+                return await self._handle_prime_history(params)
             if method == "agent/launch":
                 return await self._handle_agent_launch(params)
             if method == "agent/stop":
@@ -994,14 +997,43 @@ class MethodHandlers:
             raise JsonRpcProtocolError(
                 INVALID_PARAMS, "seed must be a string when provided"
             )
-        await prime.new_context(seed_message=(seed.strip() if isinstance(seed, str) and seed.strip() else None))
+        await prime.new_context(
+            seed_message=(
+                seed.strip() if isinstance(seed, str) and seed.strip() else None
+            )
+        )
         return DispatchResult(result={"ok": True}, notifications=[])
 
-    async def _handle_prime_history(self) -> DispatchResult:
-        """Return Prime's full conversation history."""
+    async def _handle_prime_history(self, params: dict[str, Any]) -> DispatchResult:
+        """Return Prime conversation history (supports pagination/full transcript)."""
         prime = self._get_prime()
+        raw_before = params.get("before_seq")
+        before_seq: int | None = None
+        if raw_before is not None:
+            if not isinstance(raw_before, int):
+                raise JsonRpcProtocolError(
+                    INVALID_PARAMS, "before_seq must be an integer when provided"
+                )
+            before_seq = raw_before
+
+        raw_limit = params.get("limit")
+        if raw_limit is None:
+            limit = 50
+        elif isinstance(raw_limit, int):
+            limit = raw_limit
+        else:
+            raise JsonRpcProtocolError(
+                INVALID_PARAMS, "limit must be an integer when provided"
+            )
+
+        full = bool(params.get("full", False))
+        history_page = await prime.get_history_page(
+            before_seq=before_seq,
+            limit=limit,
+            full=full,
+        )
         return DispatchResult(
-            result={"messages": prime.get_history()},
+            result=history_page,
             notifications=[],
         )
 
@@ -1113,9 +1145,7 @@ class MethodHandlers:
                 )
 
         # Fall back to a no-op stub that immediately returns "done"
-        logger.warning(
-            "No LLM provider available for tier=%s — using no-op stub", tier
-        )
+        logger.warning("No LLM provider available for tier=%s — using no-op stub", tier)
         return _NoOpLLMClient(), model
 
     async def _handle_agent_stop(self, params: dict[str, Any]) -> DispatchResult:

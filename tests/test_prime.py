@@ -63,6 +63,10 @@ def _write_specs(workspace: Path) -> None:
     )
 
 
+def _create_test_app(workspace: Path):
+    return create_app(workspace=workspace, history_db_path=workspace / "history.db")
+
+
 def _rpc(ws: Any, id_: int, method: str, params: dict[str, Any]) -> dict[str, Any]:
     """Send a JSON-RPC request and return the matching response (skip notifications)."""
     ws.send_text(
@@ -78,6 +82,7 @@ def _rpc(ws: Any, id_: int, method: str, params: dict[str, Any]) -> dict[str, An
 @dataclass
 class PrimeResult:
     """Aggregated result from collecting Prime streaming notifications."""
+
     text: str = ""
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
     tool_results: list[dict[str, Any]] = field(default_factory=list)
@@ -103,7 +108,9 @@ def _prime_send_and_collect(
         params["max_turns"] = max_turns
 
     ws.send_text(
-        json.dumps({"jsonrpc": "2.0", "id": id_, "method": "prime/message", "params": params})
+        json.dumps(
+            {"jsonrpc": "2.0", "id": id_, "method": "prime/message", "params": params}
+        )
     )
 
     rpc_resp: dict[str, Any] | None = None
@@ -126,17 +133,21 @@ def _prime_send_and_collect(
         if method == "prime/token":
             result.text += p.get("text", "")
         elif method == "prime/toolCall":
-            result.tool_calls.append({
-                "call_id": p.get("call_id", ""),
-                "tool_name": p.get("tool_name", ""),
-                "arguments": p.get("arguments", {}),
-            })
+            result.tool_calls.append(
+                {
+                    "call_id": p.get("call_id", ""),
+                    "tool_name": p.get("tool_name", ""),
+                    "arguments": p.get("arguments", {}),
+                }
+            )
         elif method == "prime/toolResult":
-            result.tool_results.append({
-                "call_id": p.get("call_id", ""),
-                "output": p.get("output"),
-                "error": p.get("error"),
-            })
+            result.tool_results.append(
+                {
+                    "call_id": p.get("call_id", ""),
+                    "output": p.get("output"),
+                    "error": p.get("error"),
+                }
+            )
         elif method == "prime/agentLaunched":
             result.notifications.append({"method": method, **p})
         elif method == "prime/done":
@@ -153,7 +164,7 @@ def _prime_send_and_collect(
 def test_prime_basic_text_response(tmp_path: Path) -> None:
     """With no-op LLM, Prime returns ok and streams text via notifications."""
     _write_specs(tmp_path)
-    app = create_app(workspace=tmp_path)
+    app = _create_test_app(tmp_path)
 
     with TestClient(app) as client:
         with client.websocket_connect("/ws") as ws:
@@ -172,7 +183,7 @@ def test_prime_basic_text_response(tmp_path: Path) -> None:
 def test_prime_missing_messages_returns_error(tmp_path: Path) -> None:
     """prime/message with missing or empty messages returns INVALID_PARAMS."""
     _write_specs(tmp_path)
-    app = create_app(workspace=tmp_path)
+    app = _create_test_app(tmp_path)
 
     with TestClient(app) as client:
         with client.websocket_connect("/ws") as ws:
@@ -218,7 +229,7 @@ def test_prime_executes_tool_calls(tmp_path: Path) -> None:
     # Create a file the LLM will "read"
     (tmp_path / "hello.txt").write_text("Hello, world!", encoding="utf-8")
 
-    app = create_app(workspace=tmp_path)
+    app = _create_test_app(tmp_path)
 
     # Build a mock LLM that:
     # 1st call: returns a tool_call for "read"
@@ -278,7 +289,7 @@ def test_prime_executes_tool_calls(tmp_path: Path) -> None:
 def test_prime_tool_error_is_returned_to_llm(tmp_path: Path) -> None:
     """When a tool call fails, the error is fed back as a tool result."""
     _write_specs(tmp_path)
-    app = create_app(workspace=tmp_path)
+    app = _create_test_app(tmp_path)
 
     call_count = 0
 
@@ -337,7 +348,7 @@ def test_prime_max_turns_limit(tmp_path: Path) -> None:
     """Prime stops after max_turns even if the LLM keeps returning tool calls."""
     _write_specs(tmp_path)
     (tmp_path / "test.txt").write_text("test", encoding="utf-8")
-    app = create_app(workspace=tmp_path)
+    app = _create_test_app(tmp_path)
 
     async def mock_create_turn(messages, model, *, tools=None, **kw):
         # Always return a tool call — never stop
@@ -392,7 +403,7 @@ def test_prime_max_turns_limit(tmp_path: Path) -> None:
 def test_prime_fallback_on_tool_api_error(tmp_path: Path) -> None:
     """If the LLM call fails, Prime reports the error via streaming."""
     _write_specs(tmp_path)
-    app = create_app(workspace=tmp_path)
+    app = _create_test_app(tmp_path)
 
     async def mock_create_turn(messages, model, *, tools=None, **kw):
         raise Exception("API does not support tools")
@@ -429,7 +440,7 @@ def test_prime_session_tracks_read_state(tmp_path: Path) -> None:
     _write_specs(tmp_path)
     target = tmp_path / "output.py"
 
-    app = create_app(workspace=tmp_path)
+    app = _create_test_app(tmp_path)
 
     call_count = 0
 
@@ -506,7 +517,7 @@ def test_prime_multiple_tool_calls_in_one_turn(tmp_path: Path) -> None:
     _write_specs(tmp_path)
     (tmp_path / "a.txt").write_text("AAA", encoding="utf-8")
     (tmp_path / "b.txt").write_text("BBB", encoding="utf-8")
-    app = create_app(workspace=tmp_path)
+    app = _create_test_app(tmp_path)
 
     call_count = 0
 
@@ -567,7 +578,7 @@ def test_prime_multiple_tool_calls_in_one_turn(tmp_path: Path) -> None:
 def test_prime_launches_root_agent(tmp_path: Path) -> None:
     """Prime can call launch_root to spin up a background root agent."""
     _write_specs(tmp_path)
-    app = create_app(workspace=tmp_path)
+    app = _create_test_app(tmp_path)
 
     call_count = 0
 
@@ -611,7 +622,9 @@ def test_prime_launches_root_agent(tmp_path: Path) -> None:
             MethodHandlers._resolve_llm_for_tier = patched_resolve
             try:
                 resp, result = _prime_send_and_collect(
-                    ws, 1, [{"role": "user", "content": "Implement auth"}],
+                    ws,
+                    1,
+                    [{"role": "user", "content": "Implement auth"}],
                     max_messages=300,
                 )
             finally:
@@ -627,7 +640,9 @@ def test_prime_launches_root_agent(tmp_path: Path) -> None:
             assert tool_output is not None
             assert "Root agent launched" in tool_output
             # prime/agentLaunched notification should have been emitted
-            launched = [n for n in result.notifications if n["method"] == "prime/agentLaunched"]
+            launched = [
+                n for n in result.notifications if n["method"] == "prime/agentLaunched"
+            ]
             assert len(launched) == 1
             assert "agent_id" in launched[0]
             assert "display_name" in launched[0]
@@ -640,7 +655,7 @@ def test_prime_launches_root_agent(tmp_path: Path) -> None:
 def test_prime_persistent_conversation_context(tmp_path: Path) -> None:
     """Consecutive prime/message calls share persistent conversation history."""
     _write_specs(tmp_path)
-    app = create_app(workspace=tmp_path)
+    app = _create_test_app(tmp_path)
 
     call_count = 0
     seen_messages: list[list[dict[str, Any]]] = []
@@ -699,7 +714,7 @@ def test_prime_persistent_conversation_context(tmp_path: Path) -> None:
 def test_prime_history_rpc(tmp_path: Path) -> None:
     """prime/history returns the conversation history."""
     _write_specs(tmp_path)
-    app = create_app(workspace=tmp_path)
+    app = _create_test_app(tmp_path)
 
     with TestClient(app) as client:
         with client.websocket_connect("/ws") as ws:
@@ -719,10 +734,92 @@ def test_prime_history_rpc(tmp_path: Path) -> None:
             assert "assistant" in roles
 
 
+def test_prime_history_includes_tool_name_and_arguments(tmp_path: Path) -> None:
+    """prime/history returns persisted tool metadata for reload rendering."""
+    _write_specs(tmp_path)
+    (tmp_path / "hello.txt").write_text("Hello, world!", encoding="utf-8")
+    app = _create_test_app(tmp_path)
+
+    call_count = 0
+
+    async def mock_create_turn(messages, model, *, tools=None, **kw):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return ProviderTurnResult(
+                response_id=None,
+                text="Let me read that file.",
+                tool_calls=[
+                    ProviderToolCall(
+                        call_id="call_hist_1",
+                        name="read",
+                        arguments={"filePath": str(tmp_path / "hello.txt")},
+                    )
+                ],
+            )
+        return ProviderTurnResult(
+            response_id=None,
+            text="Done.",
+            tool_calls=[],
+        )
+
+    from taui.server.handlers import MethodHandlers
+
+    original = MethodHandlers._resolve_llm_for_tier
+
+    class MockLLM:
+        create_turn = staticmethod(mock_create_turn)
+
+    def patched_resolve(self, tier, params):
+        return MockLLM(), "test-model"
+
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws") as ws:
+            MethodHandlers._resolve_llm_for_tier = patched_resolve
+            try:
+                resp, result = _prime_send_and_collect(
+                    ws, 1, [{"role": "user", "content": "Read hello.txt"}]
+                )
+                assert "error" not in resp, resp
+                assert result.done
+
+                hist_resp = _rpc(ws, 2, "prime/history", {"full": True, "limit": 50})
+                assert "error" not in hist_resp, hist_resp
+            finally:
+                MethodHandlers._resolve_llm_for_tier = original
+
+    messages = hist_resp["result"]["messages"]
+    assistant_msgs = [m for m in messages if m.get("role") == "assistant"]
+    tool_msgs = [m for m in messages if m.get("role") == "tool"]
+
+    assert assistant_msgs
+    assert tool_msgs
+
+    assistant_with_tools = next(
+        (
+            m
+            for m in assistant_msgs
+            if isinstance(m.get("metadata", {}).get("tool_calls"), list)
+        ),
+        None,
+    )
+    assert assistant_with_tools is not None
+
+    tool_msg = next(
+        (m for m in tool_msgs if m.get("tool_call_id") == "call_hist_1"), None
+    )
+    assert tool_msg is not None
+    assert tool_msg.get("name") == "read"
+    assert tool_msg.get("metadata", {}).get("tool_name") == "read"
+    assert tool_msg.get("metadata", {}).get("arguments", {}).get("filePath") == str(
+        tmp_path / "hello.txt"
+    )
+
+
 def test_prime_cancel_rpc(tmp_path: Path) -> None:
     """prime/cancel cancels the current Prime loop."""
     _write_specs(tmp_path)
-    app = create_app(workspace=tmp_path)
+    app = _create_test_app(tmp_path)
 
     with TestClient(app) as client:
         with client.websocket_connect("/ws") as ws:
@@ -736,7 +833,7 @@ def test_prime_interrupt_during_tool_execution(tmp_path: Path) -> None:
     """When a new message arrives during tool execution, Prime pivots."""
     _write_specs(tmp_path)
     (tmp_path / "slow.txt").write_text("slow content", encoding="utf-8")
-    app = create_app(workspace=tmp_path)
+    app = _create_test_app(tmp_path)
 
     call_count = 0
     interrupt_seen = False
@@ -797,11 +894,18 @@ def test_prime_interrupt_during_tool_execution(tmp_path: Path) -> None:
             try:
                 # Send first message
                 ws.send_text(
-                    json.dumps({
-                        "jsonrpc": "2.0", "id": 1,
-                        "method": "prime/message",
-                        "params": {"messages": [{"role": "user", "content": "Read slow file"}]},
-                    })
+                    json.dumps(
+                        {
+                            "jsonrpc": "2.0",
+                            "id": 1,
+                            "method": "prime/message",
+                            "params": {
+                                "messages": [
+                                    {"role": "user", "content": "Read slow file"}
+                                ]
+                            },
+                        }
+                    )
                 )
                 # Immediately read the RPC response
                 rpc_resp = json.loads(ws.receive_text())
@@ -809,11 +913,21 @@ def test_prime_interrupt_during_tool_execution(tmp_path: Path) -> None:
 
                 # Immediately send an interrupt message
                 ws.send_text(
-                    json.dumps({
-                        "jsonrpc": "2.0", "id": 2,
-                        "method": "prime/message",
-                        "params": {"messages": [{"role": "user", "content": "INTERRUPT: new question"}]},
-                    })
+                    json.dumps(
+                        {
+                            "jsonrpc": "2.0",
+                            "id": 2,
+                            "method": "prime/message",
+                            "params": {
+                                "messages": [
+                                    {
+                                        "role": "user",
+                                        "content": "INTERRUPT: new question",
+                                    }
+                                ]
+                            },
+                        }
+                    )
                 )
 
                 # Collect all notifications until prime/done
@@ -841,7 +955,7 @@ def test_prime_state_changes(tmp_path: Path) -> None:
     """Prime emits stateChanged notifications during execution."""
     _write_specs(tmp_path)
     (tmp_path / "test.txt").write_text("content", encoding="utf-8")
-    app = create_app(workspace=tmp_path)
+    app = _create_test_app(tmp_path)
 
     call_count = 0
 
@@ -882,11 +996,18 @@ def test_prime_state_changes(tmp_path: Path) -> None:
             MethodHandlers._resolve_llm_for_tier = patched_resolve
             try:
                 ws.send_text(
-                    json.dumps({
-                        "jsonrpc": "2.0", "id": 1,
-                        "method": "prime/message",
-                        "params": {"messages": [{"role": "user", "content": "Read test.txt"}]},
-                    })
+                    json.dumps(
+                        {
+                            "jsonrpc": "2.0",
+                            "id": 1,
+                            "method": "prime/message",
+                            "params": {
+                                "messages": [
+                                    {"role": "user", "content": "Read test.txt"}
+                                ]
+                            },
+                        }
+                    )
                 )
 
                 notifications = []

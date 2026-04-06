@@ -158,13 +158,39 @@
   }
 
   function handleItemContextMenu(e: MouseEvent, item: SpecNavItemType) {
+    e.preventDefault()
+    e.stopPropagation()
     const dirPath = resolveItemDirPath(item)
+
+    if (item.kind === 'folder') {
+      const isCollapsed = collapsedKeys.has(item.key)
+      ctxMenu = {
+        x: e.clientX,
+        y: e.clientY,
+        items: [
+          { label: isCollapsed ? 'Expand Folder' : 'Collapse Folder', action: () => toggleKey(item.key) },
+          { separator: true },
+          { label: 'New File', action: () => startCreate(dirPath, false) },
+          { label: 'New Folder', action: () => startCreate(dirPath, true) },
+          { separator: true },
+          { label: 'Copy Path', action: () => void navigator.clipboard?.writeText(dirPath) },
+        ],
+      }
+      return
+    }
+
+    const filePath = item.filePath
+    const parentPath = dirPath
     ctxMenu = {
       x: e.clientX,
       y: e.clientY,
       items: [
-        { label: 'New File', action: () => startCreate(dirPath, false) },
-        { label: 'New Folder', action: () => startCreate(dirPath, true) },
+        { label: 'Open File', action: () => void tabStore.openFile(filePath) },
+        { separator: true },
+        { label: 'New File', action: () => startCreate(parentPath, false) },
+        { label: 'New Folder', action: () => startCreate(parentPath, true) },
+        { separator: true },
+        { label: 'Copy Path', action: () => void navigator.clipboard?.writeText(filePath) },
       ],
     }
   }
@@ -180,6 +206,14 @@
       items: [
         { label: 'New File', action: () => startCreate(rootDir, false) },
         { label: 'New Folder', action: () => startCreate(rootDir, true) },
+        { separator: true },
+        {
+          label: 'Refresh',
+          action: async () => {
+            const tree = await backendClient.getTreeDetailed()
+            appState.hydrateFromBackend(tree.nodes)
+          },
+        },
       ],
     }
   }

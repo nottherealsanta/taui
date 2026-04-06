@@ -15,6 +15,7 @@ from typing import Any, Callable
 from uuid import uuid4
 
 from taui.agent.cost_tracker import CostTracker
+from taui.agent.system_prompt_loader import get_prompt_template, render_prompt_template
 from taui.llm.types import Message, ToolCall
 from taui.llms.base import ProviderTurnResult
 from taui.specs.db import SpecDB
@@ -70,6 +71,7 @@ def _build_system_prompt(
     spec_tree_outline: str = "",
     tool_names: list[str] | None = None,
     agent_definition: Any | None = None,
+    agent_type: str = "root",
 ) -> str:
     """Build a structured system prompt using the SystemPromptBuilder pattern."""
     from taui.tools.prompt_builder import ProjectContext, SystemPromptBuilder
@@ -88,6 +90,21 @@ def _build_system_prompt(
         except Exception:
             ctx = ProjectContext.discover(_Path(working_dir), "")
             builder.with_project_context(ctx)
+
+    # Agent-specific prompt section from markdown template
+    role_template = get_prompt_template(
+        "sub-agent" if agent_type == "sub_agent" else "root"
+    )
+    if role_template:
+        builder.append_section(
+            render_prompt_template(
+                role_template,
+                {
+                    "workspace": working_dir,
+                    "available_tools": ", ".join(tool_names or []),
+                },
+            )
+        )
 
     # Agent-specific prefix from definition
     if agent_definition and hasattr(agent_definition, "system_prompt_prefix"):
@@ -450,6 +467,7 @@ class AgentRunner:
             spec_tree_outline=spec_outline,
             tool_names=tool_names,
             agent_definition=self.agent_definition,
+            agent_type=self.agent_type,
         )
 
         self._messages = [
@@ -548,6 +566,26 @@ class AgentRunner:
 
             # No tool calls → agent is done with this task
             if not result.tool_calls:
+                # Sub-agents can sometimes respond with planning text before
+                # actually using tools. Nudge once or twice if no tool has
+                # been executed yet.
+                has_tool_results = any(msg.role == "tool" for msg in self._messages)
+                if self.agent_type == "sub_agent" and turn < 2 and not has_tool_results:
+                    nudge = (
+                        "You responded with text but did not call any tools. "
+                        "You MUST use tools (read, grep, glob, spec-tree tools, etc.) "
+                        "to complete your task. Do NOT just describe what you plan to do — "
+                        "actually do it now."
+                    )
+                    self._messages.append(Message(role="user", content=nudge))
+                    await self._persist_message(role="user", content=nudge)
+                    logger.info(
+                        "AgentRunner nudged sub-agent to use tools agent_id=%s turn=%s",
+                        self.agent_id,
+                        turn,
+                    )
+                    continue
+
                 logger.info(
                     "AgentRunner done (no tool calls) agent_id=%s turn=%s",
                     self.agent_id,

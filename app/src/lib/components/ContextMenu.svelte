@@ -6,8 +6,10 @@
   import { onMount } from 'svelte'
 
   export interface MenuItem {
-    label: string
-    action: () => void
+    label?: string
+    action?: () => void
+    disabled?: boolean
+    separator?: boolean
   }
 
   interface Props {
@@ -44,6 +46,7 @@
   })
 
   function handleItemClick(item: MenuItem) {
+    if (item.separator || item.disabled || !item.action) return
     item.action()
     onclose()
   }
@@ -56,10 +59,18 @@
   style="left: {x}px; top: {y}px"
 >
   {#each items as item}
-    <!-- svelte-ignore a11y_click_events_have_key_events -->
-    <div class="menu-item" onclick={() => handleItemClick(item)}>
-      {item.label}
-    </div>
+    {#if item.separator}
+      <div class="menu-separator" aria-hidden="true"></div>
+    {:else}
+      <!-- svelte-ignore a11y_click_events_have_key_events -->
+      <div
+        class="menu-item"
+        class:disabled={item.disabled}
+        onclick={() => handleItemClick(item)}
+      >
+        {item.label}
+      </div>
+    {/if}
   {/each}
 </div>
 
@@ -85,5 +96,21 @@
 
   .menu-item:hover {
     background-color: var(--element-hover);
+  }
+
+  .menu-item.disabled {
+    color: var(--fg-muted);
+    cursor: default;
+    opacity: 0.7;
+  }
+
+  .menu-item.disabled:hover {
+    background-color: transparent;
+  }
+
+  .menu-separator {
+    height: 1px;
+    margin: 4px 6px;
+    background-color: var(--border-variant);
   }
 </style>

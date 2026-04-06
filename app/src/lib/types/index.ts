@@ -65,6 +65,21 @@ export interface PrimeMessage {
   content: string
 }
 
+export interface PrimeHistoryMessage {
+  role: 'user' | 'assistant' | 'tool' | 'divider'
+  content: string
+  seq?: number | null
+  tool_call_id?: string
+  name?: string
+  metadata?: Record<string, unknown>
+}
+
+export interface PrimeHistoryPage {
+  messages: PrimeHistoryMessage[]
+  has_more: boolean
+  oldest_seq: number | null
+}
+
 /** An in-flight or completed tool call inside Prime's streaming loop. */
 export interface PrimeToolCall {
   callId: string
@@ -87,13 +102,19 @@ export interface PrimeSubAgentEntry {
 
 /** An entry in the Prime chat stream — text, tool, sub-agent, or agent-launch. */
 export type PrimeChatEntry =
-  | { kind: 'user'; content: string }
-  | { kind: 'assistant'; content: string }
-  | { kind: 'assistant-streaming'; content: string }
-  | { kind: 'context-divider'; label: string }
-  | { kind: 'tool'; tool: PrimeToolCall }
-  | { kind: 'sub_agent'; subAgent: PrimeSubAgentEntry }
-  | { kind: 'agent-launched'; agentId: string; displayName: string; task: string }
+  | { kind: 'user'; content: string; seq?: number | null }
+  | { kind: 'assistant'; content: string; seq?: number | null }
+  | { kind: 'assistant-streaming'; content: string; seq?: number | null }
+  | { kind: 'context-divider'; label: string; seq?: number | null }
+  | { kind: 'tool'; tool: PrimeToolCall; seq?: number | null }
+  | { kind: 'sub_agent'; subAgent: PrimeSubAgentEntry; seq?: number | null }
+  | { kind: 'agent-launched'; agentId: string; displayName: string; task: string; seq?: number | null }
+
+export interface PrimeReplyTarget {
+  role: 'user' | 'assistant'
+  content: string
+  index: number
+}
 
 export interface AgentInfo {
   agentId: string

@@ -21,6 +21,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Callable
 
+from taui.agent.system_prompt_loader import get_prompt_template, render_prompt_template
+
 logger = logging.getLogger(__name__)
 
 NotificationCallback = Callable[[dict[str, Any]], None]
@@ -29,6 +31,7 @@ NotificationCallback = Callable[[dict[str, Any]], None]
 _MAX_INPUT_TOKENS = 180_000
 _COMPACTION_SOFT_RATIO = 0.80
 _CONTEXT_BOUNDARY_MARKER = "[prime:new_context]"
+_DEFAULT_HISTORY_PAGE_SIZE = 50
 
 
 class PrimeState(str, Enum):
@@ -156,7 +159,8 @@ class PrimeAgent:
         await self._ensure_initialized()
 
         system_messages = [
-            m for m in self._messages
+            m
+            for m in self._messages
             if isinstance(m, dict) and m.get("role") == "system"
         ]
         self._messages = system_messages[:1]
@@ -171,7 +175,9 @@ class PrimeAgent:
 
         # Persist a context boundary marker so startup restore can recover the
         # latest context only.
-        await self._persist_message({"role": "system", "content": _CONTEXT_BOUNDARY_MARKER})
+        await self._persist_message(
+            {"role": "system", "content": _CONTEXT_BOUNDARY_MARKER}
+        )
 
         if seed_message:
             await self.send_message(seed_message, role="user")
@@ -185,9 +191,7 @@ class PrimeAgent:
 
     def _start_loop(self) -> None:
         """Start the think→tool→observe loop as a background task."""
-        self._loop_task = asyncio.create_task(
-            self._run_loop(), name="prime-think-loop"
-        )
+        self._loop_task = asyncio.create_task(self._run_loop(), name="prime-think-loop")
         self._loop_task.add_done_callback(self._on_loop_done)
 
     def _on_loop_done(self, task: asyncio.Task[None]) -> None:
@@ -207,9 +211,9 @@ class PrimeAgent:
             raise
         except Exception as exc:
             logger.error("Prime loop error: %s", exc, exc_info=True)
-            self._emit_prime("prime/token", {
-                "text": f"Sorry, I couldn't respond right now: {exc}"
-            })
+            self._emit_prime(
+                "prime/token", {"text": f"Sorry, I couldn't respond right now: {exc}"}
+            )
         finally:
             self._state = PrimeState.IDLE
             self._emit_prime("prime/done", {})
@@ -239,9 +243,10 @@ class PrimeAgent:
                 )
             except Exception as exc:
                 logger.error("Prime LLM call failed: %s", exc, exc_info=True)
-                self._emit_prime("prime/token", {
-                    "text": f"Sorry, I couldn't respond right now: {exc}"
-                })
+                self._emit_prime(
+                    "prime/token",
+                    {"text": f"Sorry, I couldn't respond right now: {exc}"},
+                )
                 break
 
             # ── Stream assistant text ──────────────────────────────────
@@ -278,36 +283,52 @@ class PrimeAgent:
                 # Check for interrupt before each tool
                 if self._interrupt.is_set():
                     self._drain_pending()
-                    self._emit_prime("prime/interrupted", {
-                        "reason": "new_message",
-                    })
+                    self._emit_prime(
+                        "prime/interrupted",
+                        {
+                            "reason": "new_message",
+                        },
+                    )
                     break  # Break out of tool loop, re-enter think
 
                 # Execute the tool
-                self._emit_prime("prime/toolCall", {
-                    "call_id": tc.call_id,
-                    "tool_name": tc.name,
-                    "arguments": tc.arguments,
-                })
+                self._emit_prime(
+                    "prime/toolCall",
+                    {
+                        "call_id": tc.call_id,
+                        "tool_name": tc.name,
+                        "arguments": tc.arguments,
+                    },
+                )
 
                 started = time.perf_counter()
                 tool_output, tool_error = await self._execute_tool(tc)
                 duration_ms = int((time.perf_counter() - started) * 1000)
 
-                self._emit_prime("prime/toolResult", {
-                    "call_id": tc.call_id,
-                    "output": tool_output if not tool_error else None,
-                    "error": tool_error,
-                    "duration_ms": duration_ms,
-                })
+                self._emit_prime(
+                    "prime/toolResult",
+                    {
+                        "call_id": tc.call_id,
+                        "output": tool_output if not tool_error else None,
+                        "error": tool_error,
+                        "duration_ms": duration_ms,
+                    },
+                )
 
                 tool_msg = {
                     "role": "tool",
                     "tool_call_id": tc.call_id,
                     "content": tool_output,
+                    "name": tc.name,
                 }
                 self._messages.append(tool_msg)
-                await self._persist_message(tool_msg)
+                await self._persist_message(
+                    tool_msg,
+                    metadata={
+                        "tool_name": tc.name,
+                        "arguments": tc.arguments,
+                    },
+                )
             else:
                 # All tools completed without interrupt — continue think loop
                 continue
@@ -346,21 +367,138 @@ class PrimeAgent:
             return result.content, None
         except Exception as exc:
             return f"Tool error: {exc}", str(exc)
+
     # ── History persistence ───────────────────────────────────────────────────────
 
-    async def _persist_message(self, msg: dict[str, Any]) -> None:
+    async def _persist_message(
+        self,
+        msg: dict[str, Any],
+        *,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
         """Persist a single message to HistoryDB (best-effort)."""
         if self._history_db is None:
             return
+        metadata_payload = metadata
+        if metadata_payload is None and isinstance(msg.get("metadata"), dict):
+            metadata_payload = msg.get("metadata")
+        if metadata_payload is None and isinstance(msg.get("tool_calls"), list):
+            metadata_payload = {"tool_calls": msg["tool_calls"]}
+        role = str(msg.get("role", "user"))
+        if role == "tool" and not msg.get("name"):
+            logger.warning(
+                "Persisting tool message without name call_id=%s",
+                msg.get("tool_call_id"),
+            )
         try:
             await self._history_db.record_message(
                 agent_id=self.AGENT_ID,
-                role=msg.get("role", "user"),
+                role=role,
                 content=msg.get("content"),
                 tool_call_id=msg.get("tool_call_id"),
+                name=msg.get("name"),
+                metadata=metadata_payload
+                if isinstance(metadata_payload, dict)
+                else None,
             )
         except Exception:
-            logger.debug("Failed to persist Prime message", exc_info=True)
+            logger.warning("Failed to persist Prime message", exc_info=True)
+
+    async def get_history_page(
+        self,
+        *,
+        before_seq: int | None = None,
+        limit: int = _DEFAULT_HISTORY_PAGE_SIZE,
+        full: bool = False,
+    ) -> dict[str, Any]:
+        """Return paginated Prime history for UI consumption.
+
+        Args:
+            before_seq: Cursor for older messages (`seq < before_seq`).
+            limit: Maximum messages to return.
+            full: When true, include context boundary dividers and all sessions.
+                When false, returns the current in-memory context (legacy behavior).
+        """
+        safe_limit = max(1, min(limit, 200))
+
+        # Legacy behavior: current context only from in-memory history.
+        if not full or self._history_db is None:
+            filtered = self.get_history()
+            page = filtered[-safe_limit:]
+            return {
+                "messages": page,
+                "has_more": len(filtered) > len(page),
+                "oldest_seq": None,
+            }
+
+        await self._ensure_history_session()
+        rows = await self._history_db.get_messages_page(
+            self.AGENT_ID,
+            before_seq=before_seq,
+            limit=safe_limit + 1,
+        )
+        has_more = len(rows) > safe_limit
+        if has_more:
+            rows = rows[1:]
+
+        messages: list[dict[str, Any]] = []
+        for row in rows:
+            item = self._history_row_to_public_message(row, include_boundaries=True)
+            if item is not None:
+                messages.append(item)
+
+        oldest_seq = messages[0].get("seq") if messages else None
+        return {
+            "messages": messages,
+            "has_more": has_more,
+            "oldest_seq": oldest_seq,
+        }
+
+    def _history_row_to_public_message(
+        self,
+        row: dict[str, Any],
+        *,
+        include_boundaries: bool,
+    ) -> dict[str, Any] | None:
+        role = str(row.get("role") or "user")
+        content = str(row.get("content") or "")
+        seq = row.get("seq")
+
+        if role == "system":
+            if include_boundaries and content == _CONTEXT_BOUNDARY_MARKER:
+                return {
+                    "role": "divider",
+                    "content": "New context",
+                    "seq": seq,
+                }
+            return None
+
+        parsed_metadata: dict[str, Any] | None = None
+        metadata_raw = row.get("metadata")
+        if isinstance(metadata_raw, str) and metadata_raw:
+            try:
+                parsed = json.loads(metadata_raw)
+                if isinstance(parsed, dict):
+                    parsed_metadata = parsed
+            except json.JSONDecodeError:
+                parsed_metadata = None
+        elif isinstance(metadata_raw, dict):
+            parsed_metadata = metadata_raw
+
+        msg: dict[str, Any] = {
+            "role": role,
+            "content": content,
+            "seq": seq,
+        }
+        tool_call_id = row.get("tool_call_id")
+        if tool_call_id:
+            msg["tool_call_id"] = tool_call_id
+        name = row.get("name")
+        if name:
+            msg["name"] = name
+        if parsed_metadata is not None:
+            msg["metadata"] = parsed_metadata
+        return msg
 
     async def _ensure_history_session(self) -> None:
         """Ensure the Prime session exists in HistoryDB and load prior messages."""
@@ -380,12 +518,34 @@ class PrimeAgent:
             )
 
             # Load any prior messages from a previous server session
-            rows = await self._history_db.get_messages(self.AGENT_ID)
+            if hasattr(self._history_db, "get_messages_page"):
+                rows = await self._history_db.get_messages_page(
+                    self.AGENT_ID,
+                    before_seq=None,
+                    limit=500,
+                )
+            else:
+                rows = await self._history_db.get_messages(self.AGENT_ID)
             if rows and not self._messages:
                 for row in rows:
-                    role = row.get("role", "user") if isinstance(row, dict) else row["role"]
-                    content = row.get("content") if isinstance(row, dict) else row["content"]
-                    tool_call_id = row.get("tool_call_id") if isinstance(row, dict) else row["tool_call_id"]
+                    role = (
+                        row.get("role", "user")
+                        if isinstance(row, dict)
+                        else row["role"]
+                    )
+                    content = (
+                        row.get("content") if isinstance(row, dict) else row["content"]
+                    )
+                    tool_call_id = (
+                        row.get("tool_call_id")
+                        if isinstance(row, dict)
+                        else row["tool_call_id"]
+                    )
+                    metadata_raw = (
+                        row.get("metadata")
+                        if isinstance(row, dict)
+                        else row["metadata"]
+                    )
                     if role == "system" and content == _CONTEXT_BOUNDARY_MARKER:
                         # Keep only messages after the latest boundary marker.
                         self._messages = []
@@ -393,13 +553,26 @@ class PrimeAgent:
                     msg: dict[str, Any] = {"role": role, "content": content or ""}
                     if tool_call_id:
                         msg["tool_call_id"] = tool_call_id
+                    if isinstance(metadata_raw, str) and metadata_raw:
+                        try:
+                            parsed = json.loads(metadata_raw)
+                            if isinstance(parsed, dict):
+                                if isinstance(parsed.get("tool_calls"), list):
+                                    msg["tool_calls"] = parsed["tool_calls"]
+                                if isinstance(parsed.get("tool_name"), str):
+                                    msg["name"] = parsed["tool_name"]
+                        except json.JSONDecodeError:
+                            pass
                     # Skip system messages — they'll be rebuilt
                     if role != "system":
                         self._messages.append(msg)
                 if self._messages:
-                    logger.info("Prime restored %d messages from history", len(self._messages))
+                    logger.info(
+                        "Prime restored %d messages from history", len(self._messages)
+                    )
         except Exception:
             logger.debug("Failed to load Prime history", exc_info=True)
+
     # ── Initialization ─────────────────────────────────────────────────────────
 
     async def _ensure_initialized(self) -> None:
@@ -431,17 +604,38 @@ class PrimeAgent:
         tool_names = [t["function"]["name"] for t in self._tool_schemas]
 
         auto_approve = {
-            "spec_get_tree", "spec_get_node", "spec_get_branch",
-            "spec_create_node", "spec_create_sibling", "spec_update_node",
-            "spec_move_node", "read", "glob", "grep", "find", "codesearch",
-            "bash", "git", "lsp", "plan", "todowrite", "question", "skill",
-            "monty", "launch_sub_agent", "launch_root",
+            "spec_get_tree",
+            "spec_get_node",
+            "spec_get_branch",
+            "spec_create_node",
+            "spec_create_sibling",
+            "spec_update_node",
+            "spec_move_node",
+            "read",
+            "glob",
+            "grep",
+            "find",
+            "codesearch",
+            "bash",
+            "git",
+            "lsp",
+            "plan",
+            "todowrite",
+            "question",
+            "skill",
+            "monty",
+            "launch_sub_agent",
+            "launch_root",
         }
         self._policy = Policy(
             auto_approve=auto_approve,
             confirm={
-                "spec_delete_node", "write", "edit",
-                "apply_patch", "multiedit", "skill_import",
+                "spec_delete_node",
+                "write",
+                "edit",
+                "apply_patch",
+                "multiedit",
+                "skill_import",
             },
             deny=set(),
             bash=BashPolicySettings(default_timeout_sec=60),
@@ -469,37 +663,50 @@ class PrimeAgent:
 
     async def _build_system_prompt(self, tool_names: list[str]) -> None:
         """Build the system prompt and prepend it to message history."""
-        context_parts: list[str] = [
-            "You are Prime, the user's main AI assistant in Taui — "
-            "a spec-driven development environment.\n\n"
-            "## Your Role\n"
-            "You are a conversationalist and dispatcher. You talk directly "
-            "with the user, help them think, answer questions, and coordinate work.\n\n"
-            "## Delegation Strategy\n"
-            "You MUST delegate actual work to agents:\n"
-            "- Use 'launch_root' for BIG tasks: implementing features, "
-            "refactoring code, writing tests, creating files. Root agents run "
-            "in the background as separate tabs. You stay free for the user.\n"
-            "- Use 'launch_sub_agent' for QUICK lookups: reading files, searching "
-            "code, checking status, answering factual questions. Sub-agents block "
-            "until done and return their result to you.\n\n"
-            "## Multi-Topic Conversations\n"
-            "The user may talk about multiple topics at once. Track each topic "
-            "naturally. When the user switches topics mid-conversation, acknowledge "
-            "it and continue. You have full conversation history.\n\n"
-            "## Important Rules\n"
-            "- NEVER do heavy work yourself when you can delegate.\n"
-            "- Stay responsive. Prefer launching agents over doing multi-step "
-            "tool chains yourself.\n"
-            "- When the user asks about something while you're working, pivot "
-            "to their new question immediately.\n"
-            "- For simple questions (no file reading needed), just answer directly.\n"
-            "- When a root agent reports back, summarize the result to the user.\n\n"
-            "Available tools: " + ", ".join(tool_names) + "\n\n"
-            "Be concise and helpful.",
-        ]
+        prompt_template = get_prompt_template("prime")
+        context_parts: list[str] = []
 
-        context_parts.append(f"\nWorkspace: {self._workspace}")
+        if prompt_template:
+            context_parts.append(
+                render_prompt_template(
+                    prompt_template,
+                    {
+                        "workspace": str(self._workspace),
+                        "available_tools": ", ".join(tool_names),
+                    },
+                )
+            )
+        else:
+            context_parts.append(
+                "You are Prime, the user's main AI assistant in Taui — "
+                "a spec-driven development environment.\n\n"
+                "## Your Role\n"
+                "You are a conversationalist and dispatcher. You talk directly "
+                "with the user, help them think, answer questions, and coordinate work.\n\n"
+                "## Delegation Strategy\n"
+                "You MUST delegate actual work to agents:\n"
+                "- Use 'launch_root' for BIG tasks: implementing features, "
+                "refactoring code, writing tests, creating files. Root agents run "
+                "in the background as separate tabs. You stay free for the user.\n"
+                "- Use 'launch_sub_agent' for QUICK lookups: reading files, searching "
+                "code, checking status, answering factual questions. Sub-agents block "
+                "until done and return their result to you.\n\n"
+                "## Multi-Topic Conversations\n"
+                "The user may talk about multiple topics at once. Track each topic "
+                "naturally. When the user switches topics mid-conversation, acknowledge "
+                "it and continue. You have full conversation history.\n\n"
+                "## Important Rules\n"
+                "- NEVER do heavy work yourself when you can delegate.\n"
+                "- Stay responsive. Prefer launching agents over doing multi-step "
+                "tool chains yourself.\n"
+                "- When the user asks about something while you're working, pivot "
+                "to their new question immediately.\n"
+                "- For simple questions (no file reading needed), just answer directly.\n"
+                "- When a root agent reports back, summarize the result to the user.\n\n"
+                "Available tools: " + ", ".join(tool_names) + "\n\n"
+                "Be concise and helpful."
+            )
+            context_parts.append(f"\nWorkspace: {self._workspace}")
 
         # Inject spec tree outline
         try:
@@ -519,10 +726,13 @@ class PrimeAgent:
         except Exception:
             pass
 
-        self._messages.insert(0, {
-            "role": "system",
-            "content": "\n".join(context_parts),
-        })
+        self._messages.insert(
+            0,
+            {
+                "role": "system",
+                "content": "\n".join(context_parts),
+            },
+        )
         self._system_prompt_built = True
 
     # ── Auto-compaction ────────────────────────────────────────────────────────
@@ -557,6 +767,7 @@ class PrimeAgent:
     def _emit_prime(self, method: str, params: dict[str, Any]) -> None:
         """Emit a notification via the server's notification callback."""
         from taui.server.protocol import notification_message
+
         self._emit(notification_message(method, params))
 
 

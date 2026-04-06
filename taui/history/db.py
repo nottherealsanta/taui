@@ -7,7 +7,7 @@ can review past conversations.
 
 from __future__ import annotations
 
-import asyncio
+import json
 import logging
 import sqlite3
 import time
@@ -57,6 +57,7 @@ CREATE TABLE IF NOT EXISTS messages (
     content         TEXT,
     tool_call_id    TEXT,
     name            TEXT,
+    metadata        TEXT,
     seq             INTEGER NOT NULL,
     created_at      REAL NOT NULL
 );
@@ -141,18 +142,20 @@ INSERT OR IGNORE INTO sessions(
         content: str | None,
         tool_call_id: str | None = None,
         name: str | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> int:
         seq_row = await self._fetchone(
             "SELECT COALESCE(MAX(seq), 0) AS seq FROM messages WHERE agent_id = ?",
             (agent_id,),
         )
         next_seq = (int(seq_row["seq"]) + 1) if seq_row else 1
+        metadata_json = json.dumps(metadata) if metadata is not None else None
         cur = await self._execute(
             """
-INSERT INTO messages(agent_id, role, content, tool_call_id, name, seq, created_at)
-VALUES (?, ?, ?, ?, ?, ?, ?)
+INSERT INTO messages(agent_id, role, content, tool_call_id, name, metadata, seq, created_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 """,
-            (agent_id, role, content, tool_call_id, name, next_seq, time.time()),
+            (agent_id, role, content, tool_call_id, name, metadata_json, next_seq, time.time()),
         )
         return cur.lastrowid or 0
 
@@ -185,16 +188,49 @@ VALUES (?, ?, ?, ?, ?, ?, ?)
         )
         return [dict(r) for r in rows]
 
+    async def get_messages_page(
+        self,
+        agent_id: str,
+        *,
+        before_seq: int | None = None,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        if before_seq is None:
+            rows = await self._fetchall(
+                "SELECT * FROM messages WHERE agent_id = ? ORDER BY seq DESC LIMIT ?",
+                (agent_id, limit),
+            )
+        else:
+            rows = await self._fetchall(
+                "SELECT * FROM messages WHERE agent_id = ? AND seq < ? ORDER BY seq DESC LIMIT ?",
+                (agent_id, before_seq, limit),
+            )
+        # Queries run in DESC order for efficient "latest page" retrieval.
+        # Reverse to ascending order for chat rendering.
+        return [dict(r) for r in reversed(rows)]
+
     # ── Internal helpers ───────────────────────────────────────────────────────
 
     async def _migrate(self) -> None:
         assert self._conn is not None
         if _aiosqlite is not None:
             await self._conn.executescript(_SCHEMA)
+            await self._migrate_messages_metadata_column()
             await self._conn.commit()
         else:
             self._conn.executescript(_SCHEMA)
+            await self._migrate_messages_metadata_column()
             self._conn.commit()
+
+    async def _migrate_messages_metadata_column(self) -> None:
+        """Backfill schema change for pre-metadata history databases."""
+        columns = await self._fetchall("PRAGMA table_info(messages)")
+        column_names = {
+            c["name"] if not isinstance(c, dict) else c.get("name")
+            for c in columns
+        }
+        if "metadata" not in column_names:
+            await self._execute("ALTER TABLE messages ADD COLUMN metadata TEXT")
 
     async def _execute(self, sql: str, params: tuple[Any, ...] = ()) -> Any:
         assert self._conn is not None

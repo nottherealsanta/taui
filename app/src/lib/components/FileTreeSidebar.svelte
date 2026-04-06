@@ -47,6 +47,9 @@
     return [
       { label: 'New File', action: () => fileTree.startCreation(fileTree.rootPath, false) },
       { label: 'New Folder', action: () => fileTree.startCreation(fileTree.rootPath, true) },
+      { separator: true },
+      { label: 'Refresh', action: () => void fileTree.refresh() },
+      { label: 'Collapse All', action: handleCollapseAll },
     ]
   }
 

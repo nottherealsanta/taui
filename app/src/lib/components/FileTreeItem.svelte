@@ -6,6 +6,7 @@
   Right-click context menu for creating new files/folders.
 -->
 <script lang="ts">
+  import { ChevronRight } from 'lucide-svelte'
   import type { FileEntry } from '$types/index'
   import type { MenuItem } from '$components/ContextMenu.svelte'
   import { fileTree } from '$stores/file-tree.svelte'
@@ -47,18 +48,27 @@
   }
 
   function getContextMenuItems(): MenuItem[] {
-    // For directories: "New File" and "New Folder" create inside this dir
     if (entry.isDir) {
       return [
+        { label: isExpanded ? 'Collapse Folder' : 'Expand Folder', action: () => void fileTree.toggleDir(entry.path) },
+        { separator: true },
         { label: 'New File', action: () => fileTree.startCreation(entry.path, false) },
         { label: 'New Folder', action: () => fileTree.startCreation(entry.path, true) },
+        { separator: true },
+        { label: 'Refresh Folder', action: () => void fileTree.refresh(entry.path) },
+        { label: 'Copy Path', action: () => void navigator.clipboard?.writeText(entry.path) },
       ]
     }
-    // For files: create sibling in parent dir
+
     const parentPath = entry.path.includes('/') ? entry.path.substring(0, entry.path.lastIndexOf('/')) : ''
     return [
+      { label: 'Open File', action: () => { fileTree.selectFile(entry.path); void tabStore.openFile(entry.path) } },
+      { separator: true },
       { label: 'New File', action: () => fileTree.startCreation(parentPath, false) },
       { label: 'New Folder', action: () => fileTree.startCreation(parentPath, true) },
+      { separator: true },
+      { label: 'Refresh Parent Folder', action: () => void fileTree.refresh(parentPath) },
+      { label: 'Copy Path', action: () => void navigator.clipboard?.writeText(entry.path) },
     ]
   }
 
@@ -71,9 +81,7 @@
   }
 
   function getFileIcon(entry: FileEntry): string {
-    if (entry.isDir) {
-      return isExpanded ? '▾' : '▸'
-    }
+    if (entry.isDir) return '📁'
     switch (entry.extension) {
       case 'md': return '📄'
       case 'ts':
@@ -103,6 +111,11 @@
   onclick={handleClick}
   oncontextmenu={handleContextMenu}
 >
+  <span class="chevron-slot" aria-hidden="true">
+    {#if entry.isDir}
+      <ChevronRight class="chevron" size={12} strokeWidth={2.25} class:expanded={isExpanded} />
+    {/if}
+  </span>
   <span class="icon" class:dir-icon={entry.isDir}>
     {getFileIcon(entry)}
   </span>
@@ -141,7 +154,7 @@
   .tree-item {
     display: flex;
     align-items: center;
-    gap: 4px;
+    gap: 2px;
     padding: 2px 8px;
     cursor: pointer;
     font-size: 12px;
@@ -161,17 +174,34 @@
     background-color: var(--element-selected);
   }
 
+  .chevron-slot {
+    flex-shrink: 0;
+    width: 14px;
+    height: 14px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .chevron {
+    color: var(--fg-muted);
+    transition: transform 0.12s ease;
+  }
+
+  .chevron.expanded {
+    transform: rotate(90deg);
+  }
+
   .icon {
     flex-shrink: 0;
-    width: 16px;
+    width: 14px;
     text-align: center;
     font-size: 11px;
     line-height: 1;
   }
 
   .dir-icon {
-    color: var(--fg-muted);
-    font-size: 10px;
+    font-size: 12px;
   }
 
   .label {

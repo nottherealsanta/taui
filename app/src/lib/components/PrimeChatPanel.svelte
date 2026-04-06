@@ -5,14 +5,19 @@
 -->
 <script lang="ts">
   import { appState } from '$stores/app-state.svelte'
-  import { tick } from 'svelte'
+  import { backendClient } from '$services/backend-client'
+  import { tick, onMount, onDestroy } from 'svelte'
   import { marked } from 'marked'
   import PrimeToolCard from '$components/PrimeToolCard.svelte'
   import SubAgentCard from '$components/SubAgentCard.svelte'
+  import type { PrimeChatEntry } from '$types/index'
 
   marked.setOptions({ breaks: true, gfm: true })
 
   let scrollEl: HTMLElement | undefined = $state()
+  let topSentinelEl: HTMLElement | undefined = $state()
+  let topObserver: IntersectionObserver | null = null
+  let suppressAutoScroll = false
 
   const entries = $derived(appState.primeChatEntries)
 
@@ -24,8 +29,86 @@
     void entries.length
     // Also react to streaming buffer updates
     void appState.primeStreamBuffer
-    scrollToBottom()
+    if (!suppressAutoScroll && shouldStickToBottom()) {
+      scrollToBottom()
+    }
   })
+
+  onMount(() => {
+    topObserver = new IntersectionObserver(
+      (records) => {
+        for (const record of records) {
+          if (record.isIntersecting) {
+            void loadOlderHistory()
+            break
+          }
+        }
+      },
+      {
+        root: scrollEl,
+        threshold: 0.2,
+      },
+    )
+
+    if (topSentinelEl) {
+      topObserver.observe(topSentinelEl)
+    }
+  })
+
+  onDestroy(() => {
+    if (topObserver) {
+      topObserver.disconnect()
+      topObserver = null
+    }
+  })
+
+  function shouldStickToBottom(): boolean {
+    if (!scrollEl) return true
+    const distance = scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight
+    return distance < 120
+  }
+
+  async function loadOlderHistory() {
+    if (!appState.primeHistoryHasMore || appState.primeHistoryLoading) return
+    if (appState.primeOldestSeq === null) return
+    if (!scrollEl) return
+
+    appState.setPrimeHistoryLoading(true)
+    const prevHeight = scrollEl.scrollHeight
+    const prevTop = scrollEl.scrollTop
+
+    try {
+      const page = await backendClient.primeHistory({
+        beforeSeq: appState.primeOldestSeq,
+        limit: 50,
+        full: true,
+      })
+
+      if (page.messages.length > 0) {
+        suppressAutoScroll = true
+        appState.prependPrimeHistoryPage(page.messages, page.has_more, page.oldest_seq)
+        await tick()
+        const nextHeight = scrollEl.scrollHeight
+        scrollEl.scrollTop = nextHeight - prevHeight + prevTop
+      } else {
+        appState.primeHistoryHasMore = page.has_more
+        appState.primeOldestSeq = page.oldest_seq
+      }
+    } catch (err) {
+      console.warn('[PrimeChatPanel] failed to load older history', err)
+    } finally {
+      suppressAutoScroll = false
+      appState.setPrimeHistoryLoading(false)
+    }
+  }
+
+  function selectReply(entry: Extract<PrimeChatEntry, { kind: 'user' | 'assistant' }>, index: number) {
+    appState.setPrimeReplyTo({
+      role: entry.kind,
+      content: entry.content,
+      index,
+    })
+  }
 
   async function scrollToBottom() {
     await tick()
@@ -42,16 +125,24 @@
     </div>
   {:else}
     <div class="prime-messages">
+      <div class="top-sentinel" bind:this={topSentinelEl}></div>
+      {#if appState.primeHistoryLoading}
+        <div class="history-loading">Loading older messages…</div>
+      {/if}
       {#each entries as entry, i (i)}
         {#if entry.kind === 'user'}
-          <div class="user-wrapper">
+          <div class="message-row user-wrapper">
+            <button class="reply-btn" type="button" onclick={() => selectReply(entry, i)} aria-label="Reply to message">↩</button>
             <div class="prime-bubble user">
               <div class="bubble-content">{@html renderMarkdown(entry.content)}</div>
             </div>
           </div>
         {:else if entry.kind === 'assistant'}
-          <div class="prime-bubble assistant">
-            <div class="bubble-content">{@html renderMarkdown(entry.content)}</div>
+          <div class="message-row">
+            <button class="reply-btn" type="button" onclick={() => selectReply(entry, i)} aria-label="Reply to message">↩</button>
+            <div class="prime-bubble assistant">
+              <div class="bubble-content">{@html renderMarkdown(entry.content)}</div>
+            </div>
           </div>
         {:else if entry.kind === 'assistant-streaming'}
           <div class="prime-bubble assistant streaming">
@@ -132,6 +223,48 @@
     display: flex;
     flex-direction: column;
     gap: 10px;
+  }
+
+  .top-sentinel {
+    height: 1px;
+    width: 100%;
+  }
+
+  .history-loading {
+    font-size: 11px;
+    color: var(--fg-muted);
+    padding: 2px 12px;
+  }
+
+  .message-row {
+    position: relative;
+  }
+
+  .message-row .reply-btn {
+    position: absolute;
+    right: 6px;
+    top: 4px;
+    width: 22px;
+    height: 22px;
+    border: 1px solid var(--border-variant);
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--element-bg) 88%, transparent);
+    color: var(--fg-muted);
+    cursor: pointer;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.12s ease;
+    z-index: 2;
+  }
+
+  .message-row:hover .reply-btn {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .message-row .reply-btn:hover {
+    color: var(--fg-primary);
+    border-color: var(--border);
   }
 
   .user-wrapper {

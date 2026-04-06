@@ -25,6 +25,8 @@ import type {
   PrimeToolCall,
   PrimeSubAgentEntry,
   PrimeChatEntry,
+  PrimeHistoryMessage,
+  PrimeReplyTarget,
 } from '$types/index'
 import { agentStateIsActive, agentStateFromString, PRIME_AGENT_ID } from '$types/index'
 
@@ -63,6 +65,10 @@ class AppState {
   primeChatEntries: PrimeChatEntry[] = $state([])
   primeToolCalls: Map<string, PrimeToolCall> = $state(new Map())
   primeSubAgents: Map<string, PrimeSubAgentEntry> = $state(new Map())
+  primeHistoryHasMore: boolean = $state(false)
+  primeOldestSeq: number | null = $state(null)
+  primeHistoryLoading: boolean = $state(false)
+  primeReplyTo: PrimeReplyTarget | null = $state(null)
 
   // Launch tier
   launchTier: AgentTier = $state('medium')
@@ -316,23 +322,43 @@ class AppState {
   // ── Prime mutations ────────────────────────────────────────────────────────
 
   /** Restore Prime conversation history from backend (on reconnect/refresh). */
-  restorePrimeHistory(messages: Array<{ role: string; content: string }>): void {
-    const entries: PrimeChatEntry[] = []
-    const primeMessages: PrimeMessage[] = []
+  restorePrimeHistory(
+    messages: PrimeHistoryMessage[],
+    opts?: { hasMore?: boolean; oldestSeq?: number | null },
+  ): void {
+    const built = this._buildPrimeEntriesFromHistory(messages)
+    this.primeChatEntries = built.entries
+    this.primeMessages = built.primeMessages
+    this.primeToolCalls = built.toolCalls
+    this.primeOldestSeq = opts?.oldestSeq ?? this._inferOldestSeq(messages)
+    this.primeHistoryHasMore = opts?.hasMore ?? false
+  }
 
-    for (const msg of messages) {
-      if (msg.role === 'user') {
-        entries.push({ kind: 'user', content: msg.content })
-        primeMessages.push({ role: 'user', content: msg.content })
-      } else if (msg.role === 'assistant') {
-        entries.push({ kind: 'assistant', content: msg.content })
-        primeMessages.push({ role: 'assistant', content: msg.content })
-      }
-      // tool messages are internal — don't show in chat
+  prependPrimeHistoryPage(messages: PrimeHistoryMessage[], hasMore: boolean, oldestSeq: number | null): void {
+    const built = this._buildPrimeEntriesFromHistory(messages)
+    this.primeChatEntries = [...built.entries, ...this.primeChatEntries]
+
+    for (const msg of built.primeMessages) {
+      this.primeMessages = [msg, ...this.primeMessages]
+    }
+    for (const [callId, tool] of built.toolCalls.entries()) {
+      this.primeToolCalls.set(callId, tool)
     }
 
-    this.primeChatEntries = entries
-    this.primeMessages = primeMessages
+    this.primeHistoryHasMore = hasMore
+    this.primeOldestSeq = oldestSeq
+  }
+
+  setPrimeHistoryLoading(value: boolean): void {
+    this.primeHistoryLoading = value
+  }
+
+  setPrimeReplyTo(target: PrimeReplyTarget | null): void {
+    this.primeReplyTo = target
+  }
+
+  clearPrimeReplyTo(): void {
+    this.primeReplyTo = null
   }
 
   addPrimeMessage(msg: PrimeMessage): void {
@@ -354,6 +380,7 @@ class AppState {
   startPrimeStream(userMessage: string): void {
     this.primeStreaming = true
     this.primeStreamBuffer = ''
+    this.primeReplyTo = null
     this.primeChatEntries = [...this.primeChatEntries, { kind: 'user', content: userMessage }]
   }
 
@@ -447,6 +474,99 @@ class AppState {
     }
     this.primeStreaming = false
     this.primeStreamBuffer = ''
+  }
+
+  private _buildPrimeEntriesFromHistory(messages: PrimeHistoryMessage[]): {
+    entries: PrimeChatEntry[]
+    primeMessages: PrimeMessage[]
+    toolCalls: Map<string, PrimeToolCall>
+  } {
+    const entries: PrimeChatEntry[] = []
+    const primeMessages: PrimeMessage[] = []
+    const toolCalls = new Map<string, PrimeToolCall>()
+    const assistantToolMeta = new Map<string, { toolName: string; arguments: unknown }>()
+
+    for (const msg of messages) {
+      const seq = msg.seq ?? null
+
+      if (msg.role === 'divider') {
+        entries.push({ kind: 'context-divider', label: msg.content || 'New context', seq })
+        continue
+      }
+
+      if (msg.role === 'user') {
+        entries.push({ kind: 'user', content: msg.content, seq })
+        primeMessages.push({ role: 'user', content: msg.content })
+        continue
+      }
+
+      if (msg.role === 'assistant') {
+        const toolCallsMeta = msg.metadata?.['tool_calls']
+        if (Array.isArray(toolCallsMeta)) {
+          for (const item of toolCallsMeta) {
+            if (!item || typeof item !== 'object') continue
+            const obj = item as Record<string, unknown>
+            const callId = typeof obj['id'] === 'string' ? obj['id'] : ''
+            if (!callId) continue
+
+            const fn = obj['function'] as Record<string, unknown> | undefined
+            const toolName = typeof fn?.['name'] === 'string' ? fn['name'] : ''
+            let args: unknown = {}
+            if (typeof fn?.['arguments'] === 'string') {
+              try {
+                args = JSON.parse(fn['arguments'])
+              } catch {
+                args = fn['arguments']
+              }
+            }
+            assistantToolMeta.set(callId, { toolName, arguments: args })
+          }
+        }
+
+        const assistantContent = (msg.content ?? '').trim()
+        if (assistantContent.length > 0) {
+          entries.push({ kind: 'assistant', content: msg.content, seq })
+          primeMessages.push({ role: 'assistant', content: msg.content })
+        }
+        continue
+      }
+
+      if (msg.role === 'tool') {
+        const callId = msg.tool_call_id ?? ''
+        const toolName =
+          (typeof msg.name === 'string' && msg.name) ||
+          (typeof msg.metadata?.['tool_name'] === 'string' ? msg.metadata['tool_name'] : '') ||
+          assistantToolMeta.get(callId)?.toolName ||
+          'tool'
+        const args =
+          msg.metadata?.['arguments'] ??
+          assistantToolMeta.get(callId)?.arguments ??
+          {}
+
+        const tool: PrimeToolCall = {
+          callId,
+          toolName,
+          arguments: args,
+          result: msg.content,
+          error: null,
+          durationMs: null,
+          status: 'done',
+        }
+        toolCalls.set(callId, tool)
+        entries.push({ kind: 'tool', tool, seq })
+      }
+    }
+
+    return { entries, primeMessages, toolCalls }
+  }
+
+  private _inferOldestSeq(messages: PrimeHistoryMessage[]): number | null {
+    for (const msg of messages) {
+      if (typeof msg.seq === 'number') {
+        return msg.seq
+      }
+    }
+    return null
   }
 
   // ── Run mutations ─────────────────────────────────────────────────────────
@@ -548,6 +668,7 @@ class AppState {
 
 export const appState: AppState = import.meta.hot?.data?.appState ?? new AppState()
 if (import.meta.hot) {
+  import.meta.hot.data ??= {}
   import.meta.hot.data.appState = appState
 }
 
@@ -575,6 +696,16 @@ export function resetAppState(): void {
   appState.pendingQuestions = []
   appState.detailEvents = new Map()
   appState.detailAgentId = null
+  appState.primeMessages = []
+  appState.primeStreaming = false
+  appState.primeStreamBuffer = ''
+  appState.primeChatEntries = []
+  appState.primeToolCalls = new Map()
+  appState.primeSubAgents = new Map()
+  appState.primeHistoryHasMore = false
+  appState.primeOldestSeq = null
+  appState.primeHistoryLoading = false
+  appState.primeReplyTo = null
   appState.launchTier = 'medium'
   appState.metadataEditTarget = null
   appState.runState = { status: 'idle', runId: null, specRef: null, command: null, exitCode: null, lines: [] }
