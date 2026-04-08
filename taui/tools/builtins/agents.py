@@ -295,6 +295,19 @@ class LaunchRootTool:
                 agent_type="root",
             )
 
+            # Notify frontend: agent/stateChanged so the tab appears immediately.
+            _emit(
+                context,
+                "agent/stateChanged",
+                {
+                    "agent_id": runner.agent_id,
+                    "state": "running",
+                    "tangle_ref": spec_ref,
+                    "spec_ref": spec_ref,
+                    "agent_type": "root",
+                    "display_name": runner.display_name,
+                },
+            )
             # Notify frontend: agent launched (from Prime)
             _emit(
                 context,

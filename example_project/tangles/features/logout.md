@@ -6,8 +6,6 @@ last_updated: 2026-04-08T09:32:33
 
 # Logout
 
-# Logout
-
 Depends on: [Authentication](../domains/authentication.md)
 
 ## Purpose

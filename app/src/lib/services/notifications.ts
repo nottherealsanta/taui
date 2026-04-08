@@ -136,11 +136,19 @@ export function handleNotification(notification: ServerNotification): void {
     }
 
     case 'prime/agentLaunched': {
-      appState.addPrimeAgentLaunched({
-        agentId: (p['agent_id'] as string) ?? '',
-        displayName: (p['display_name'] as string) ?? '',
-        task: (p['task'] as string) ?? '',
+      const agentId = (p['agent_id'] as string) ?? ''
+      const displayName = (p['display_name'] as string) ?? agentId
+      const task = (p['task'] as string) ?? ''
+      // Add the agent to the agents map so a tab appears immediately.
+      appState.upsertAgent({
+        agentId,
+        specRef: (p['tangle_ref'] as string) ?? (p['spec_ref'] as string) ?? '',
+        state: 'running',
+        tier: 'medium',
+        agentType: 'root',
+        displayName,
       })
+      appState.addPrimeAgentLaunched({ agentId, displayName, task })
       break
     }
 

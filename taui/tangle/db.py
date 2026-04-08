@@ -577,7 +577,7 @@ ON CONFLICT(rel_path) DO UPDATE SET
         for node in nodes:
             await self._execute(
                 """
-INSERT INTO tangle_nodes(id, file_id, heading, depth, anchor, body, line_start, line_end)
+INSERT OR REPLACE INTO tangle_nodes(id, file_id, heading, depth, anchor, body, line_start, line_end)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 """,
                 (

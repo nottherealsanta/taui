@@ -35,6 +35,7 @@ def parse_tangle_document(
     heading_nodes = parse_heading_tree(lines, start=body_start)
 
     nodes: list[TangleNode] = []
+    seen_slugs: dict[str, int] = {}
     for idx, heading in enumerate(heading_nodes):
         body = "\n".join(heading.body_lines).strip()
         line_start = heading.line_index + 1
@@ -43,13 +44,21 @@ def parse_tangle_document(
             if idx + 1 < len(heading_nodes)
             else len(lines)
         )
+        base_slug = slugify(heading.title)
+        if base_slug in seen_slugs:
+            count = seen_slugs[base_slug]
+            anchor = f"{base_slug}-{count}"
+            seen_slugs[base_slug] = count + 1
+        else:
+            anchor = base_slug
+            seen_slugs[base_slug] = 1
         nodes.append(
             TangleNode(
-                id=f"{rel_path}#{slugify(heading.title)}",
+                id=f"{rel_path}#{anchor}",
                 tangle_path=rel_path,
                 heading=heading.title,
                 depth=max(0, heading.level - 1),
-                anchor=slugify(heading.title),
+                anchor=anchor,
                 body=body,
                 refs=[],
                 line_start=line_start,
