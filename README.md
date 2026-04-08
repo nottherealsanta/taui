@@ -11,7 +11,7 @@ uv sync
 
 2. Run the backend server:
 ```bash
-uv run taui --path tests/example_project/specs
+uv run taui --path example_project/specs
 ```
 
 3. Run the Rust GPUI app:
