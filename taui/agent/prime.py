@@ -71,6 +71,7 @@ class PrimeAgent:
         emit_notification: NotificationCallback,
         history_db: Any | None = None,
         max_turns: int = 30,
+        stream_client: Any | None = None,
     ) -> None:
         self._workspace = workspace
         self._spec_service = spec_service
@@ -79,11 +80,13 @@ class PrimeAgent:
         self._emit = emit_notification
         self._history_db = history_db
         self._max_turns = max_turns
+        self._stream_client = stream_client  # Durable streams client
 
         # Persistent conversation history (grows across all interactions)
         self._messages: list[dict[str, Any]] = []
         self._system_prompt_built = False
         self._history_initialized = False
+        self._stream_initialized = False
 
         # Concurrency primitives
         self._interrupt = asyncio.Event()
@@ -96,6 +99,10 @@ class PrimeAgent:
         self._tool_schemas: list[dict[str, Any]] | None = None
         self._policy: Any | None = None
         self._session: Any | None = None
+
+        # Durable stream IDs for prime
+        self._stream_id = "prime"
+        self._token_stream_id = "prime/tokens"
 
     @property
     def state(self) -> PrimeState:
@@ -160,6 +167,10 @@ class PrimeAgent:
         # Stop ongoing work before resetting context.
         await self.cancel()
         await self._ensure_initialized()
+
+        # Close durable streams for the old context; new streams will be
+        # created lazily on the next _think_loop iteration.
+        await self._close_streams()
 
         # Reset to empty — system prompt will be freshly rebuilt below.
         self._messages = []
@@ -226,6 +237,8 @@ class PrimeAgent:
     async def _think_loop(self) -> None:
         """Core think→tool→observe loop with interrupt-and-pivot."""
         llm, model = self._resolve_llm()
+        # Ensure durable streams exist for Prime
+        await self._ensure_streams()
 
         for _turn in range(self._max_turns):
             # ── Check for interrupts before thinking ───────────────────
@@ -258,6 +271,8 @@ class PrimeAgent:
             text = result.text or ""
             if text:
                 self._emit_prime("prime/token", {"text": text})
+                # Also append to durable token stream for replay
+                asyncio.create_task(self._append_token_to_stream(text))
 
             # Build assistant message for history
             assistant_msg: dict[str, Any] = {"role": "assistant", "content": text}
@@ -305,6 +320,17 @@ class PrimeAgent:
                         "arguments": tc.arguments,
                     },
                 )
+                # Append tool call to durable stream
+                asyncio.create_task(
+                    self._append_to_stream(
+                        "tool_call",
+                        {
+                            "call_id": tc.call_id,
+                            "tool_name": tc.name,
+                            "arguments": tc.arguments,
+                        },
+                    )
+                )
 
                 started = time.perf_counter()
                 tool_output, tool_error = await self._execute_tool(tc)
@@ -318,6 +344,18 @@ class PrimeAgent:
                         "error": tool_error,
                         "duration_ms": duration_ms,
                     },
+                )
+                # Append tool result to durable stream
+                asyncio.create_task(
+                    self._append_to_stream(
+                        "tool_result",
+                        {
+                            "call_id": tc.call_id,
+                            "output": tool_output if not tool_error else None,
+                            "error": tool_error,
+                            "duration_ms": duration_ms,
+                        },
+                    )
                 )
 
                 tool_msg = {
@@ -865,6 +903,54 @@ class PrimeAgent:
 
         if removed > 0:
             logger.info("Prime auto-compacted %d messages", removed)
+
+    # ── Durable stream helpers ──────────────────────────────────────────────
+
+    async def _ensure_streams(self) -> None:
+        """Create durable streams for Prime events and tokens if not yet created."""
+        if self._stream_initialized or self._stream_client is None:
+            return
+        try:
+            await self._stream_client.ensure_stream(self._stream_id)
+            await self._stream_client.ensure_stream(self._token_stream_id)
+            self._stream_initialized = True
+        except Exception:
+            logger.warning("Failed to create Prime durable streams", exc_info=True)
+
+    async def _close_streams(self) -> None:
+        """Close durable streams for Prime (called on new_context / shutdown)."""
+        if self._stream_client is None:
+            return
+        for sid in (self._stream_id, self._token_stream_id):
+            try:
+                await self._stream_client.close_stream(sid)
+            except Exception:
+                logger.debug("Failed to close Prime stream %s", sid, exc_info=True)
+        self._stream_initialized = False
+
+    async def _append_to_stream(self, event_type: str, payload: dict[str, Any]) -> None:
+        """Append an event to the Prime event stream (best-effort)."""
+        if self._stream_client is None:
+            return
+        try:
+            await self._stream_client.append_event(self._stream_id, event_type, payload)
+        except Exception:
+            logger.warning(
+                "Failed to append to Prime stream event_type=%s",
+                event_type,
+                exc_info=True,
+            )
+
+    async def _append_token_to_stream(self, text: str) -> None:
+        """Append a token chunk to the Prime token stream (best-effort)."""
+        if self._stream_client is None:
+            return
+        try:
+            await self._stream_client.append_event(
+                self._token_stream_id, "token", {"text": text}
+            )
+        except Exception:
+            logger.warning("Failed to append token to Prime stream", exc_info=True)
 
     # ── Notification helper ────────────────────────────────────────────────────
 

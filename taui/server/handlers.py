@@ -193,6 +193,8 @@ class MethodHandlers:
                 return await self._handle_agent_launch(params)
             if method == "agent/stop":
                 return await self._handle_agent_stop(params)
+            if method == "agent/close":
+                return await self._handle_agent_close(params)
             if method == "agent/list":
                 return await self._handle_agent_list()
             if method == "agent/steer":
@@ -375,6 +377,7 @@ class MethodHandlers:
                 "prime/history",
                 "agent/launch",
                 "agent/stop",
+                "agent/close",
                 "agent/list",
                 "agent/steer",
                 "agent/queue",
@@ -1064,6 +1067,7 @@ class MethodHandlers:
                 resolve_llm=lambda: self._resolve_llm_for_tier("medium", {}),
                 emit_notification=self._emit_notification,
                 history_db=self.history_db,
+                stream_client=getattr(self, "stream_client", None),
             )
             self.agent_manager.set_prime_agent(self._prime_agent)
         return self._prime_agent
@@ -1273,6 +1277,18 @@ class MethodHandlers:
         await self.agent_manager.stop(agent_id)
         return DispatchResult(result={"ok": True}, notifications=[])
 
+    async def _handle_agent_close(self, params: dict[str, Any]) -> DispatchResult:
+        """User-initiated close of a root agent tab.
+
+        Cleans up event buffers, subscriptions, pending questions, and branch
+        locks. If the agent is still running it is force-stopped first.
+        Returns ``{"ok": True}`` on success; does not raise if the agent is
+        already gone (idempotent).
+        """
+        agent_id = self._require_str(params, "agent_id")
+        await self.agent_manager.close(agent_id)
+        return DispatchResult(result={"ok": True}, notifications=[])
+
     async def _handle_agent_list(self) -> DispatchResult:
         await self._ensure_tangles()
         agents = self.agent_manager.list_active()
@@ -1304,10 +1320,20 @@ class MethodHandlers:
         """Subscribe to detail events for an agent. Returns the event backlog.
 
         Required params: agent_id
+        Optional params: from_offset (int) — if provided, uses durable streams
+            for offset-based catch-up instead of the in-memory buffer.
         Returns: {backlog: [{agent_id, event_type, payload}, ...]}
         """
         agent_id = self._require_str(params, "agent_id")
-        backlog = self.agent_manager.subscribe(agent_id)
+        from_offset = params.get("from_offset")
+        if from_offset is not None:
+            # Use durable stream for offset-based catch-up (resumable)
+            backlog = await self.agent_manager.subscribe_from_stream(
+                agent_id, from_offset=int(from_offset)
+            )
+        else:
+            # Legacy path: in-memory buffer
+            backlog = self.agent_manager.subscribe(agent_id)
         return DispatchResult(result={"backlog": backlog}, notifications=[])
 
     async def _handle_agent_unsubscribe(self, params: dict[str, Any]) -> DispatchResult:

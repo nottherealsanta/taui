@@ -19,7 +19,7 @@ const DARK = {
   surface:  '#000000',
   elevated: '#0b0b0b',
   border:   '#2d3749',
-  fgPrimary:'#ededed',
+  fgPrimary:'#f7f7f7',
   fgMuted:  '#9fb0c2',
   fgAccent: '#7cc7ff',
   elementBg:'#1d2532',
@@ -43,7 +43,7 @@ const DARK = {
 
 const LIGHT = {
   bg:       '#ffffff',
-  surface:  '#ededed',
+  surface:  '#f7f7f7',
   elevated: '#f6f6f6',
   border:   '#d8e1ee',
   fgPrimary:'#1a2433',

@@ -83,14 +83,14 @@
   --bg-elevated:   #0b0b0b;
 
   /* Prime accent */
-  --prime-accent: #ededed;
+  --prime-accent: #f7f7f7;
 
   /* Borders */
   --border:         #2d3749;
   --border-variant: #1f2735;
 
   /* Text */
-  --fg-primary: #ededed;
+  --fg-primary: #f7f7f7;
   --fg-muted:   #9fb0c2;
   --fg-accent:  #7cc7ff;
 
@@ -129,7 +129,7 @@
   color-scheme: light;
 
   /* Surface hierarchy (from ThemeColors::taui_light) */
-  --bg-base:     #ededed;
+  --bg-base:     #f7f7f7;
   --bg-surface:  #ffffff;
   --bg-elevated: #f6f6f6;
 

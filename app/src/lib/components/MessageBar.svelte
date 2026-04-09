@@ -96,8 +96,10 @@
     isPrime
       ? `Message Prime…`
       : steerableAgent
-        ? `Steer active agent (Shift+Enter to queue)…`
-        : `Send a message…`
+        ? `Message ${steerableAgent.displayName ?? 'agent'}…`
+        : activeAgent
+          ? `Message ${activeAgent.displayName ?? 'agent'}…`
+          : `Send a message…`
   )
 
   const slashToken = $derived(() => {
@@ -476,7 +478,7 @@
             </div>
           {/if}
 
-          {#if !isPrime && !steerableAgent}
+          {#if !isPrime && !activeAgent && !steerableAgent}
             <div class="tier-radios" role="radiogroup" aria-label="Agent tier">
               {#each TIERS as tier}
                 <button
@@ -487,11 +489,6 @@
                   aria-checked={appState.launchTier === tier}
                 >{tier === 'low' ? 'L' : tier === 'medium' ? 'M' : 'H'}</button>
               {/each}
-            </div>
-          {:else if steerableAgent}
-            <div class="agent-indicator">
-              <span class="agent-dot"></span>
-              <span class="agent-label">{steerableAgent.tier}</span>
             </div>
           {/if}
         </div>

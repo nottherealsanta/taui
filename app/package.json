@@ -11,7 +11,10 @@
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "test:e2e": "playwright test",
+    "test:e2e:ui": "playwright test --ui",
+    "test:e2e:headed": "playwright test --headed"
   },
   "dependencies": {
     "@codemirror/commands": "^6.10.3",
@@ -35,17 +38,20 @@
     "monaco-editor": "^0.52"
   },
   "devDependencies": {
+    "@playwright/test": "^1.59.1",
     "@sveltejs/vite-plugin-svelte": "^5",
     "@tailwindcss/vite": "^4",
     "@tauri-apps/cli": "^2",
     "@testing-library/jest-dom": "^6",
     "@testing-library/svelte": "^5",
     "@types/node": "^25.5.0",
+    "@types/ws": "^8.18.1",
     "jsdom": "^26",
     "svelte": "^5",
     "tailwindcss": "^4",
     "typescript": "^5",
     "vite": "^6",
-    "vitest": "^3"
+    "vitest": "^3",
+    "ws": "^8.20.0"
   }
 }

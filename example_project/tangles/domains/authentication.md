@@ -1,8 +1,10 @@
 ---
 title: Authentication
 status: active
-last_updated: 2026-03-20
+last_updated: 2026-04-09T08:11:36
 ---
+
+# Authentication
 
 # Authentication
 
@@ -45,7 +47,8 @@ User authentication system. Owns login and logout flows, session handling, and c
 
 ## Verification
 
-Manual testing with valid and invalid credentials.
+- `tests/test_authentication.py::test_hello_world_auth` — Hello world sanity test: instantiates `AuthService`, validates credentials, creates a session, and revokes it end-to-end.
+- Manual testing with valid and invalid credentials.
 
 ## Related Features
 

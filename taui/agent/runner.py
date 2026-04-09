@@ -174,6 +174,7 @@ class AgentRunner:
         display_name: str | None = None,
         agent_definition: Any | None = None,  # AgentDefinition — for tool restrictions
         history_db: Any | None = None,  # HistoryDB — global message history
+        stream_client: Any | None = None,  # StreamClient — durable streams
     ) -> None:
         self.agent_id = agent_id
         self.session_id = session_id
@@ -194,6 +195,7 @@ class AgentRunner:
         self.display_name = display_name or agent_id
         self.agent_definition = agent_definition
         self.history_db = history_db
+        self._stream_client = stream_client  # Durable streams client
 
         self.state: AgentState = AgentState.IDLE
         self._stop_flag = asyncio.Event()
@@ -213,6 +215,9 @@ class AgentRunner:
 
         # In-memory conversation history
         self._messages: list[Message] = []
+
+        # Durable stream ID for this agent run
+        self._stream_id: str = f"agents/{agent_id}"
 
     # ── Public API ─────────────────────────────────────────────────────────────
 
@@ -359,6 +364,47 @@ class AgentRunner:
                     event.event_type,
                 )
 
+    async def _ensure_stream(self) -> None:
+        """Create the durable stream for this agent run if a stream client is available."""
+        if self._stream_client is not None:
+            try:
+                await self._stream_client.ensure_stream(self._stream_id)
+            except Exception:
+                logger.exception(
+                    "Failed to create durable stream agent_id=%s stream_id=%s",
+                    self.agent_id,
+                    self._stream_id,
+                )
+
+    async def _append_to_stream(self, event: AgentEvent) -> None:
+        """Append an event to the durable stream (best-effort, non-blocking)."""
+        if self._stream_client is None:
+            return
+        try:
+            await self._stream_client.append_event(
+                self._stream_id,
+                event.event_type,
+                event.payload,
+            )
+        except Exception:
+            logger.exception(
+                "Failed to append to durable stream agent_id=%s event=%s",
+                self.agent_id,
+                event.event_type,
+            )
+
+    async def _close_stream(self) -> None:
+        """Close the durable stream (signal EOF — agent run complete)."""
+        if self._stream_client is None:
+            return
+        try:
+            await self._stream_client.close_stream(self._stream_id)
+        except Exception:
+            logger.exception(
+                "Failed to close durable stream agent_id=%s",
+                self.agent_id,
+            )
+
     async def _persist_event(self, event: AgentEvent) -> None:
         try:
             await self.db.add_agent_event(
@@ -368,6 +414,8 @@ class AgentRunner:
             )
         except Exception:
             logger.exception("Failed to persist agent event agent_id=%s", self.agent_id)
+        # Also append to durable stream for offset-based replay
+        await self._append_to_stream(event)
 
     # ── Main loop ──────────────────────────────────────────────────────────────
 
@@ -378,6 +426,8 @@ class AgentRunner:
             self.spec_ref,
             len(self.task),
         )
+        # Create the durable stream for this agent run
+        await self._ensure_stream()
         try:
             await self._run_task_with_writeback(self.task)
 
@@ -415,6 +465,8 @@ class AgentRunner:
                 await self._set_state(AgentState.DONE)
             else:
                 await self._set_state(AgentState.DONE)
+            # Close the durable stream (EOF)
+            await self._close_stream()
             logger.info(
                 "AgentRunner finished agent_id=%s state=%s", self.agent_id, self.state
             )

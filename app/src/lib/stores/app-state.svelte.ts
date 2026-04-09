@@ -29,6 +29,7 @@ import type {
   PrimeReplyTarget,
 } from '$types/index'
 import { agentStateIsActive, agentStateFromString, PRIME_AGENT_ID } from '$types/index'
+import { SvelteMap, SvelteSet } from 'svelte/reactivity'
 
 // ─── AppState class ───────────────────────────────────────────────────────────
 
@@ -36,7 +37,7 @@ class AppState {
   // Tree storage
   nodes: SpecNode[] = $state([])
   rootNodes: NodeId[] = $state([])
-  specRefIndex: Map<SpecRef, NodeId> = $state(new Map())
+  specRefIndex: Map<SpecRef, NodeId> = $state(new SvelteMap())
 
   // Selection
   selectedNode: NodeId | null = $state(null)
@@ -50,10 +51,10 @@ class AppState {
   connectionState: BackendConnectionState = $state('offline')
 
   // Agents
-  agents: Map<string, AgentInfo> = $state(new Map())
-  lockedBranches: Set<SpecRef> = $state(new Set())
+  agents: Map<string, AgentInfo> = $state(new SvelteMap())
+  lockedBranches: Set<SpecRef> = $state(new SvelteSet())
   pendingQuestions: PendingQuestion[] = $state([])
-  detailEvents: Map<string, AgentDetailEvent[]> = $state(new Map())
+  detailEvents: Map<string, AgentDetailEvent[]> = $state(new SvelteMap())
   detailAgentId: string | null = $state(PRIME_AGENT_ID)
 
   // Prime
@@ -63,8 +64,8 @@ class AppState {
   primeStreaming: boolean = $state(false)
   primeStreamBuffer: string = $state('')
   primeChatEntries: PrimeChatEntry[] = $state([])
-  primeToolCalls: Map<string, PrimeToolCall> = $state(new Map())
-  primeSubAgents: Map<string, PrimeSubAgentEntry> = $state(new Map())
+  primeToolCalls: Map<string, PrimeToolCall> = $state(new SvelteMap())
+  primeSubAgents: Map<string, PrimeSubAgentEntry> = $state(new SvelteMap())
   primeHistoryHasMore: boolean = $state(false)
   primeOldestSeq: number | null = $state(null)
   primeHistoryLoading: boolean = $state(false)
@@ -196,7 +197,7 @@ class AppState {
 
     this.nodes = []
     this.rootNodes = []
-    this.specRefIndex = new Map()
+    this.specRefIndex = new SvelteMap()
 
     if (rawNodes.length === 0) {
       this.connectionState = 'ready'
@@ -279,7 +280,8 @@ class AppState {
   upsertAgent(info: Partial<AgentInfo> & { agentId: string }): void {
     const existing = this.agents.get(info.agentId)
     if (existing) {
-      Object.assign(existing, info)
+      // Always re-set the map entry so Svelte 5's reactive Map proxy triggers updates.
+      this.agents.set(info.agentId, { ...existing, ...info })
     } else {
       this.agents.set(info.agentId, {
         agentId: info.agentId,
@@ -295,7 +297,7 @@ class AppState {
 
   setAgentState(agentId: string, state: AgentState): void {
     const agent = this.agents.get(agentId)
-    if (agent) agent.state = state
+    if (agent) this.agents.set(agentId, { ...agent, state })
   }
 
   setToolBrief(agentId: string, brief: string | null): void {
@@ -303,8 +305,21 @@ class AppState {
     if (agent) agent.toolBrief = brief
   }
 
+  /**
+   * Remove a root agent from the reactive state — triggered when the user
+   * explicitly closes the agent tab. Cleans up event buffers and switches
+   * focus back to Prime if the closed agent was selected.
+   */
+  removeAgent(agentId: string): void {
+    this.agents.delete(agentId)
+    this.detailEvents.delete(agentId)
+    if (this.detailAgentId === agentId) {
+      this.detailAgentId = PRIME_AGENT_ID
+    }
+  }
+
   setLockedBranches(branches: SpecRef[]): void {
-    this.lockedBranches = new Set(branches)
+    this.lockedBranches = new SvelteSet(branches)
   }
 
   addPendingQuestion(q: PendingQuestion): void {
@@ -492,7 +507,7 @@ class AppState {
   } {
     const entries: PrimeChatEntry[] = []
     const primeMessages: PrimeMessage[] = []
-    const toolCalls = new Map<string, PrimeToolCall>()
+    const toolCalls = new SvelteMap<string, PrimeToolCall>()
     const assistantToolMeta = new Map<string, { toolName: string; arguments: unknown }>()
 
     for (const msg of messages) {
@@ -694,23 +709,23 @@ export { agentStateFromString, agentStateIsActive }
 export function resetAppState(): void {
   appState.nodes = []
   appState.rootNodes = []
-  appState.specRefIndex = new Map()
+  appState.specRefIndex = new SvelteMap()
   appState.selectedNode = null
   appState.selectedSpecRef = null
   appState.editorMode = 'normal'
   appState.chatDraft = ''
   appState.connectionState = 'offline'
-  appState.agents = new Map()
-  appState.lockedBranches = new Set()
+  appState.agents = new SvelteMap()
+  appState.lockedBranches = new SvelteSet()
   appState.pendingQuestions = []
-  appState.detailEvents = new Map()
+  appState.detailEvents = new SvelteMap()
   appState.detailAgentId = null
   appState.primeMessages = []
   appState.primeStreaming = false
   appState.primeStreamBuffer = ''
   appState.primeChatEntries = []
-  appState.primeToolCalls = new Map()
-  appState.primeSubAgents = new Map()
+  appState.primeToolCalls = new SvelteMap()
+  appState.primeSubAgents = new SvelteMap()
   appState.primeHistoryHasMore = false
   appState.primeOldestSeq = null
   appState.primeHistoryLoading = false

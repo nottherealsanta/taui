@@ -341,3 +341,33 @@ class TestGetSession:
         with pytest.raises(APIError) as exc_info:
             api.get_session(token)
         assert exc_info.value.code == "UNAUTHORIZED"
+
+
+# ---------------------------------------------------------------------------
+# Hello World test — sanity check that the authentication module is importable
+# ---------------------------------------------------------------------------
+
+
+def test_hello_world_auth() -> None:
+    """Hello world test: verify the AuthService can be instantiated and sessions work end-to-end."""
+    # Arrange
+    svc = AuthService()
+
+    # Act: validate known credentials
+    user_id = svc.validate_credentials("admin", "admin123", "127.0.0.1")
+
+    # Assert: we got a user back
+    assert user_id is not None, "Hello, Authentication! validate_credentials should return a user_id."
+
+    # Act: create a session
+    session = svc.create_session(user_id)
+
+    # Assert: session is alive
+    assert session.is_valid(), "Hello, Session! Freshly created session should be valid."
+
+    # Act: revoke the session
+    revoked = svc.revoke_session(session.token)
+
+    # Assert: session is gone
+    assert revoked is True, "Hello, Logout! revoke_session should return True."
+    assert svc.validate_session(session.token) is None, "Hello, Security! Revoked session should no longer validate."

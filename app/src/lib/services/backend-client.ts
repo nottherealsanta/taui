@@ -294,6 +294,10 @@ export class BackendClient extends EventTarget {
     await this.call('agent/stop', { agent_id: agentId })
   }
 
+  async agentClose(agentId: string): Promise<void> {
+    await this.call('agent/close', { agent_id: agentId })
+  }
+
   async agentSteer(agentId: string, message: string): Promise<void> {
     await this.call('agent/steer', { agent_id: agentId, message })
   }

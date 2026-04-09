@@ -40,10 +40,12 @@ class AgentManager:
         *,
         history_db: Any | None = None,
         workspace: Path | None = None,
+        stream_client: Any | None = None,
     ) -> None:
         self.db = db
         self.history_db = history_db
         self._workspace = workspace
+        self._stream_client = stream_client  # StreamClient for durable streams
         self._runners: dict[str, AgentRunner] = {}  # agent_id → runner
         self._event_buffers: dict[str, list[AgentEvent]] = {}  # agent_id → events
         self._subscriptions: set[str] = (
@@ -55,6 +57,10 @@ class AgentManager:
 
     def set_notification_callback(self, callback: NotificationCallback | None) -> None:
         self._notification_callback = callback
+
+    def set_stream_client(self, stream_client: Any) -> None:
+        """Set the durable streams client (called from app setup)."""
+        self._stream_client = stream_client
 
     def set_prime_agent(self, prime_agent: Any) -> None:
         """Set a reference to the persistent PrimeAgent for root agent → Prime communication."""
@@ -144,6 +150,7 @@ class AgentManager:
             max_turns=max_turns,
             agent_definition=agent_def,
             history_db=self.history_db,
+            stream_client=self._stream_client,
         )
 
         self._runners[agent_id] = runner
@@ -171,6 +178,52 @@ class AgentManager:
             self._name_pool.release(runner.display_name)
         self._runners.pop(agent_id, None)
         logger.info("AgentManager stopped agent_id=%s", agent_id)
+
+    # ── Close ──────────────────────────────────────────────────────────────────
+
+    async def close(self, agent_id: str) -> None:
+        """Close a root agent and clean up all associated resources.
+
+        Unlike ``stop``, this is the user-initiated "dismiss" action. It:
+        1. Stops the runner if still active (force-stop).
+        2. Releases the display name back to the pool.
+        3. Dismisses any pending questions the agent was waiting on.
+        4. Releases any branch locks held by the agent.
+        5. Clears the in-memory event buffer and subscription.
+
+        It is safe to call on an agent that is already done/idle — in that
+        case only the cleanup in steps 3–5 happens (no runner to stop).
+        """
+        runner = self._runners.get(agent_id)
+        if runner is not None:
+            await runner.stop_safely()
+            if runner.agent_type == "root":
+                self._name_pool.release(runner.display_name)
+            self._runners.pop(agent_id, None)
+
+        # Dismiss any pending questions
+        try:
+            await self.db.dismiss_all_agent_questions(agent_id)
+        except Exception:
+            logger.exception(
+                "AgentManager.close: error dismissing questions agent_id=%s", agent_id
+            )
+
+        # Release any branch locks still held
+        try:
+            locks = await self.db.list_branch_locks_for_agent(agent_id)
+            for lock in locks:
+                await self.db.release_branch_lock(lock["spec_ref"], agent_id)
+        except Exception:
+            logger.exception(
+                "AgentManager.close: error releasing locks agent_id=%s", agent_id
+            )
+
+        # Clear in-memory buffers
+        self._event_buffers.pop(agent_id, None)
+        self._subscriptions.discard(agent_id)
+
+        logger.info("AgentManager closed agent_id=%s", agent_id)
 
     # ── Steer ──────────────────────────────────────────────────────────────────
 
@@ -202,6 +255,48 @@ class AgentManager:
         ``parseEvent`` function expects.
         """
         self._subscriptions.add(agent_id)
+        buf = self._event_buffers.get(agent_id, [])
+        return [{"type": e.event_type, **e.payload} for e in buf]
+
+    async def subscribe_from_stream(
+        self, agent_id: str, from_offset: int = 0
+    ) -> list[dict[str, Any]]:
+        """Subscribe to detail events for agent using durable streams.
+
+        Returns the event backlog starting from ``from_offset``, reading
+        from the durable stream instead of the in-memory buffer. Falls back
+        to the in-memory buffer if no stream client is available.
+
+        This is the durable alternative to ``subscribe()`` — clients that
+        reconnect can resume from their last-seen offset without missing events.
+        """
+        self._subscriptions.add(agent_id)
+
+        if self._stream_client is not None:
+            try:
+                stream_id = f"agents/{agent_id}"
+                if await self._stream_client.stream_exists(stream_id):
+                    import json as _json
+
+                    chunks = await self._stream_client.read(
+                        stream_id, from_offset=from_offset, limit=10000
+                    )
+                    events: list[dict[str, Any]] = []
+                    for chunk in chunks:
+                        try:
+                            data = _json.loads(chunk.data)
+                            if isinstance(data, dict):
+                                events.append(data)
+                        except (ValueError, UnicodeDecodeError):
+                            pass
+                    return events
+            except Exception:
+                logger.exception(
+                    "subscribe_from_stream: stream read failed, falling back to buffer agent_id=%s",
+                    agent_id,
+                )
+
+        # Fallback to in-memory buffer
         buf = self._event_buffers.get(agent_id, [])
         return [{"type": e.event_type, **e.payload} for e in buf]
 
@@ -394,6 +489,7 @@ class AgentManager:
         3. Dismiss any pending questions (the runner that would have answered
            them no longer exists).
         4. Release any branch locks that were held by these orphaned sessions.
+        5. Append a synthetic ``stopped`` event to the durable stream (if available).
         """
         interrupted = await self.db.list_agent_sessions_by_states(_INTERRUPTED_STATES)
         if not interrupted:
@@ -442,6 +538,23 @@ class AgentManager:
                 event_type=recovery_event.event_type,
                 payload=json.dumps(recovery_event.payload),
             )
+
+            # 5. Append recovery event to durable stream and close it
+            if self._stream_client is not None:
+                stream_id = f"agents/{agent_id}"
+                try:
+                    if await self._stream_client.stream_exists(stream_id):
+                        await self._stream_client.append_event(
+                            stream_id,
+                            recovery_event.event_type,
+                            recovery_event.payload,
+                        )
+                        await self._stream_client.close_stream(stream_id)
+                except Exception:
+                    logger.exception(
+                        "startup_recovery: failed to append recovery event to stream agent_id=%s",
+                        agent_id,
+                    )
 
             # 3. Dismiss pending questions
             await self.db.dismiss_all_agent_questions(agent_id)
