@@ -13,6 +13,9 @@ import type {
   AgentInfo,
   AgentState,
   AgentTier,
+  ModelModeKey,
+  ModelModes,
+  ModelModeConfig,
   PendingQuestion,
   AgentDetailEvent,
   EditorMode,
@@ -55,6 +58,8 @@ class AppState {
   lockedBranches: Set<SpecRef> = $state(new SvelteSet())
   pendingQuestions: PendingQuestion[] = $state([])
   detailEvents: Map<string, AgentDetailEvent[]> = $state(new SvelteMap())
+  /** Last-seen durable stream offset per agent (for resumable catch-up). */
+  detailOffsets: Map<string, number> = $state(new SvelteMap())
   detailAgentId: string | null = $state(PRIME_AGENT_ID)
 
   // Prime
@@ -63,6 +68,8 @@ class AppState {
   // Prime streaming state
   primeStreaming: boolean = $state(false)
   primeStreamBuffer: string = $state('')
+  /** Last-seen durable stream offset for prime token stream. */
+  primeStreamOffset: number = $state(0)
   primeChatEntries: PrimeChatEntry[] = $state([])
   primeToolCalls: Map<string, PrimeToolCall> = $state(new SvelteMap())
   primeSubAgents: Map<string, PrimeSubAgentEntry> = $state(new SvelteMap())
@@ -76,6 +83,26 @@ class AppState {
 
   // Current model
   currentModel: string = $state('')
+
+  // Model modes (L/M/H)
+  activeModelMode: ModelModeKey = $state('medium')
+  modelModes: ModelModes = $state({
+    low: {
+      primary: { provider: 'copilot', model: 'claude-haiku-4.5' },
+      secondary: null,
+      tertiary: null,
+    },
+    medium: {
+      primary: { provider: 'copilot', model: 'claude-sonnet-4.6' },
+      secondary: null,
+      tertiary: null,
+    },
+    high: {
+      primary: { provider: 'copilot', model: 'claude-opus-4.6' },
+      secondary: null,
+      tertiary: null,
+    },
+  })
 
   // Project title (from index.md front-matter; falls back to folder name)
   projectTitle: string | null = $state(null)
@@ -313,6 +340,7 @@ class AppState {
   removeAgent(agentId: string): void {
     this.agents.delete(agentId)
     this.detailEvents.delete(agentId)
+    this.detailOffsets.delete(agentId)
     if (this.detailAgentId === agentId) {
       this.detailAgentId = PRIME_AGENT_ID
     }
@@ -330,17 +358,28 @@ class AppState {
     this.pendingQuestions = this.pendingQuestions.filter((q) => q.agentId !== agentId)
   }
 
-  appendDetailEvent(agentId: string, event: AgentDetailEvent): void {
+  appendDetailEvent(agentId: string, event: AgentDetailEvent, offset?: number): void {
     const existing = this.detailEvents.get(agentId)
     if (existing) {
       existing.push(event)
     } else {
       this.detailEvents.set(agentId, [event])
     }
+    if (offset !== undefined) {
+      this.detailOffsets.set(agentId, offset)
+    }
   }
 
-  setDetailBacklog(agentId: string, events: AgentDetailEvent[]): void {
+  setDetailBacklog(agentId: string, events: AgentDetailEvent[], lastOffset?: number): void {
     this.detailEvents.set(agentId, events)
+    if (lastOffset !== undefined) {
+      this.detailOffsets.set(agentId, lastOffset)
+    }
+  }
+
+  /** Get the last-seen durable stream offset for an agent (for resumable subscribe). */
+  getDetailOffset(agentId: string): number | undefined {
+    return this.detailOffsets.get(agentId)
   }
 
   // ── Prime mutations ────────────────────────────────────────────────────────
@@ -485,6 +524,17 @@ class AppState {
     }]
   }
 
+  /** Add an agent reply card to Prime's chat (sub-agent or root agent → user). */
+  addPrimeAgentReply(info: { agentId: string; agentName: string; message: string; title: string | null }): void {
+    this.primeChatEntries = [...this.primeChatEntries, {
+      kind: 'agent-reply',
+      agentId: info.agentId,
+      agentName: info.agentName,
+      message: info.message,
+      title: info.title,
+    }]
+  }
+
   /** Finalize the streaming response — convert streaming entry to final assistant message. */
   finalizePrimeStream(): void {
     const content = this.primeStreamBuffer
@@ -612,6 +662,35 @@ class AppState {
     this.runState.exitCode = null
   }
 
+  // ── Model mode mutations ─────────────────────────────────────────────────
+
+  setActiveModelMode(mode: ModelModeKey): void {
+    this.activeModelMode = mode
+    this.launchTier = mode
+    const cfg = this.modelModes[mode]
+    this.currentModel = `${cfg.primary.provider}:${cfg.primary.model}`
+  }
+
+  setModelModeConfig(mode: ModelModeKey, config: ModelModeConfig): void {
+    this.modelModes = { ...this.modelModes, [mode]: config }
+    // If this is the active mode, update currentModel to reflect the new primary
+    if (this.activeModelMode === mode) {
+      this.currentModel = `${config.primary.provider}:${config.primary.model}`
+    }
+  }
+
+  /** The resolved model string for the currently active mode. */
+  get activeModelDisplay(): string {
+    const cfg = this.modelModes[this.activeModelMode]
+    return cfg.primary.model
+  }
+
+  /** The resolved provider string for the currently active mode. */
+  get activeProviderDisplay(): string {
+    const cfg = this.modelModes[this.activeModelMode]
+    return cfg.primary.provider
+  }
+
   // ── Private tree traversal ────────────────────────────────────────────────
 
   private _collectFlat(
@@ -719,10 +798,12 @@ export function resetAppState(): void {
   appState.lockedBranches = new SvelteSet()
   appState.pendingQuestions = []
   appState.detailEvents = new SvelteMap()
+  appState.detailOffsets = new SvelteMap()
   appState.detailAgentId = null
   appState.primeMessages = []
   appState.primeStreaming = false
   appState.primeStreamBuffer = ''
+  appState.primeStreamOffset = 0
   appState.primeChatEntries = []
   appState.primeToolCalls = new SvelteMap()
   appState.primeSubAgents = new SvelteMap()
@@ -732,6 +813,24 @@ export function resetAppState(): void {
   appState.primeReplyTo = null
   appState.launchTier = 'medium'
   appState.currentModel = ''
+  appState.activeModelMode = 'medium'
+  appState.modelModes = {
+    low: {
+      primary: { provider: 'copilot', model: 'claude-haiku-4.5' },
+      secondary: null,
+      tertiary: null,
+    },
+    medium: {
+      primary: { provider: 'copilot', model: 'claude-sonnet-4.6' },
+      secondary: null,
+      tertiary: null,
+    },
+    high: {
+      primary: { provider: 'copilot', model: 'claude-opus-4.6' },
+      secondary: null,
+      tertiary: null,
+    },
+  }
   appState.projectTitle = null
   appState.metadataEditTarget = null
   appState.runState = { status: 'idle', runId: null, specRef: null, command: null, exitCode: null, lines: [] }

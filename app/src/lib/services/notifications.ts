@@ -80,7 +80,9 @@ export function handleNotification(notification: ServerNotification): void {
         if (event.type === 'stateChange') {
           appState.setAgentState(agentId, event.state)
         }
-        appState.appendDetailEvent(agentId, event)
+        // Track durable stream offset when present (for resumable catch-up)
+        const offset = typeof p['offset'] === 'number' ? p['offset'] as number : undefined
+        appState.appendDetailEvent(agentId, event, offset)
       }
       break
     }
@@ -89,6 +91,10 @@ export function handleNotification(notification: ServerNotification): void {
     case 'prime/token': {
       const text = (p['text'] as string) ?? ''
       appState.appendPrimeStreamToken(text)
+      // Track durable stream offset for prime token stream (for resumable catch-up)
+      if (typeof p['offset'] === 'number') {
+        appState.primeStreamOffset = p['offset'] as number
+      }
       break
     }
 
@@ -149,6 +155,16 @@ export function handleNotification(notification: ServerNotification): void {
         displayName,
       })
       appState.addPrimeAgentLaunched({ agentId, displayName, task })
+      break
+    }
+
+    case 'prime/agentReply': {
+      appState.addPrimeAgentReply({
+        agentId: (p['agent_id'] as string) ?? '',
+        agentName: (p['agent_name'] as string) ?? 'Agent',
+        message: (p['message'] as string) ?? '',
+        title: (p['title'] as string) ?? null,
+      })
       break
     }
 

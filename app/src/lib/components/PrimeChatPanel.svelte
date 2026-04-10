@@ -10,6 +10,7 @@
   import { marked } from 'marked'
   import PrimeToolCard from '$components/PrimeToolCard.svelte'
   import SubAgentCard from '$components/SubAgentCard.svelte'
+  import AgentReplyCard from '$components/AgentReplyCard.svelte'
   import type { PrimeChatEntry } from '$types/index'
 
   marked.setOptions({ breaks: true, gfm: true })
@@ -159,7 +160,7 @@
           </div>
         {:else if entry.kind === 'tool'}
           <div class="tool-entry">
-            <PrimeToolCard tool={entry.tool} />
+            <PrimeToolCard tool={entry.tool} agentColor="var(--prime-accent)" />
           </div>
         {:else if entry.kind === 'sub_agent'}
           <div class="sub-agent-entry">
@@ -171,6 +172,10 @@
             <span class="agent-launched-text">
               Launched <strong>{entry.displayName}</strong>: {entry.task}
             </span>
+          </div>
+        {:else if entry.kind === 'agent-reply'}
+          <div class="agent-reply-entry">
+            <AgentReplyCard agentName={entry.agentName} message={entry.message} title={entry.title} />
           </div>
         {/if}
       {/each}
@@ -433,5 +438,12 @@
     color: var(--fg-accent);
     font-weight: 600;
     text-transform: capitalize;
+  }
+
+  /* ── Agent-reply entries ─────────────────────────────────────────────────── */
+
+  .agent-reply-entry {
+    padding: 0 12px;
+    max-width: 560px;
   }
 </style>

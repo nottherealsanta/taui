@@ -139,7 +139,12 @@ def _build_system_prompt(
         "Start by understanding the project using read, glob, grep, find, and "
         "spec-tree tools. Then proceed with the task. Always call at least one "
         "tool before providing your final answer.\n\n"
-        "When finished, provide a summary of what you found or accomplished."
+        "When finished, provide a summary of what you found or accomplished.\n\n"
+        "# Response Format\n"
+        "ALWAYS format your replies in **Markdown**. Use headings, bold, "
+        "code blocks, lists, and other Markdown syntax to structure your "
+        "responses clearly. Wrap code snippets in fenced code blocks with "
+        "the appropriate language tag (e.g. ```python)."
     )
 
     return builder.render()

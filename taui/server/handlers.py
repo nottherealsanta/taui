@@ -1322,19 +1322,23 @@ class MethodHandlers:
         Required params: agent_id
         Optional params: from_offset (int) — if provided, uses durable streams
             for offset-based catch-up instead of the in-memory buffer.
-        Returns: {backlog: [{agent_id, event_type, payload}, ...]}
+        Returns: {backlog: [{agent_id, event_type, payload}, ...], last_offset?: int}
         """
         agent_id = self._require_str(params, "agent_id")
         from_offset = params.get("from_offset")
         if from_offset is not None:
             # Use durable stream for offset-based catch-up (resumable)
-            backlog = await self.agent_manager.subscribe_from_stream(
+            backlog, last_offset = await self.agent_manager.subscribe_from_stream(
                 agent_id, from_offset=int(from_offset)
             )
+            result: dict[str, Any] = {"backlog": backlog}
+            if last_offset is not None:
+                result["last_offset"] = last_offset
+            return DispatchResult(result=result, notifications=[])
         else:
             # Legacy path: in-memory buffer
-            backlog = self.agent_manager.subscribe(agent_id)
-        return DispatchResult(result={"backlog": backlog}, notifications=[])
+            backlog_legacy = self.agent_manager.subscribe(agent_id)
+            return DispatchResult(result={"backlog": backlog_legacy}, notifications=[])
 
     async def _handle_agent_unsubscribe(self, params: dict[str, Any]) -> DispatchResult:
         """Unsubscribe from detail events for an agent.
@@ -1370,7 +1374,7 @@ class MethodHandlers:
             result={
                 "tabs": settings.get("tabs", {}),
                 "layout": settings.get("layout", {}),
-                "theme": settings.get("theme", "dark"),
+                "theme": settings.get("theme"),
                 "prompts": settings.get("prompts", {}),
                 "tangleTree": tree,
                 "agentSessions": sessions,
@@ -1430,8 +1434,11 @@ class MethodHandlers:
 
     async def _handle_ui_set_theme(self, params: dict[str, Any]) -> DispatchResult:
         theme = self._require_str(params, "theme")
+        if theme not in ("dark", "light", "system"):
+            raise ValueError("theme must be 'dark', 'light', or 'system'")
         settings = self.settings.load()
-        settings["theme"] = theme
+        # Store None for "system" so the snapshot signals "no explicit override"
+        settings["theme"] = None if theme == "system" else theme
         self.settings.save(settings)
         return DispatchResult(result={"theme": theme}, notifications=[])
 

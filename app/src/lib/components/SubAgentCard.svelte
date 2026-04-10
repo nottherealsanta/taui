@@ -37,7 +37,9 @@
   onclick={() => { expanded = !expanded }}
 >
   <div class="sub-agent-header">
-    <span class="sub-agent-icon">{isRunning ? '⟳' : hasError ? '✗' : '✓'}</span>
+    <span class="sub-agent-icon" class:running={isRunning} class:error={hasError} class:done={isDone}>
+      <span class="icon-square"></span>
+    </span>
     <span class="sub-agent-label">sub_agent</span>
     <span class="sub-agent-task">{taskSummary}</span>
     <span class="sub-agent-chevron">{expanded ? '▾' : '▸'}</span>
@@ -61,51 +63,70 @@
 
 <style lang="postcss">
   .sub-agent-card {
-    border: 1px solid var(--border-variant);
-    border-radius: 6px;
-    background-color: var(--element-bg);
+    background-color: color-mix(in srgb, var(--fg-accent) 4%, transparent);
+    border-left: 2px solid var(--border-variant);
     cursor: pointer;
     overflow: hidden;
-    transition: border-color 0.15s;
+    transition: border-color 0.15s, background-color 0.15s;
     position: relative;
   }
 
   .sub-agent-card.running {
-    border-color: var(--fg-accent);
+    border-left-color: var(--fg-accent);
+    background-color: color-mix(in srgb, var(--fg-accent) 6%, transparent);
   }
 
   .sub-agent-card.error {
-    border-color: var(--status-error);
+    border-left-color: var(--status-error);
+    background-color: color-mix(in srgb, var(--status-error) 4%, transparent);
   }
 
   .sub-agent-card.done {
-    border-color: var(--border-variant);
+    border-left-color: var(--border-variant);
   }
 
   .sub-agent-header {
     display: flex;
     align-items: center;
     gap: 6px;
-    padding: 6px 10px;
+    padding: 5px 10px;
     font-size: 12px;
   }
 
   .sub-agent-icon {
-    font-size: 11px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     flex-shrink: 0;
+    width: 14px;
+    height: 14px;
   }
 
-  .sub-agent-card.running .sub-agent-icon {
-    color: var(--fg-accent);
-    animation: spin 1.2s linear infinite;
+  .icon-square {
+    display: block;
+    width: 7px;
+    height: 7px;
+    background-color: var(--fg-muted);
+    transition: background-color 0.2s;
   }
 
-  .sub-agent-card.error .sub-agent-icon {
-    color: var(--status-error);
+  .sub-agent-icon.running .icon-square {
+    background-color: var(--fg-accent);
+    animation: square-breathe 2s ease-in-out infinite;
   }
 
-  .sub-agent-card.done .sub-agent-icon {
-    color: var(--status-done);
+  .sub-agent-icon.error .icon-square {
+    background-color: var(--status-error);
+  }
+
+  .sub-agent-icon.done .icon-square {
+    background-color: var(--status-done);
+    opacity: 0.6;
+  }
+
+  @keyframes square-breathe {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50%      { opacity: 0.4; transform: scale(0.7); }
   }
 
   .sub-agent-label {
@@ -134,7 +155,7 @@
   }
 
   .sub-agent-preview {
-    padding: 0 10px 6px;
+    padding: 0 10px 5px;
     font-size: 11px;
     color: var(--fg-muted);
     font-family: var(--font-mono, monospace);
@@ -167,10 +188,5 @@
     word-break: break-all;
     max-height: 300px;
     overflow-y: auto;
-  }
-
-  @keyframes spin {
-    from { transform: rotate(0deg); }
-    to { transform: rotate(360deg); }
   }
 </style>

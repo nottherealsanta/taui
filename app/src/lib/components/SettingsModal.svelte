@@ -82,7 +82,15 @@
       <div class="setting-row">
         <div class="setting-info">
           <span class="setting-label">Theme</span>
-          <span class="setting-desc">Current: {theme.isDark ? 'Dark' : 'Light'} (follows system)</span>
+          <span class="setting-desc">
+            {theme.userOverride ? `Pinned: ${theme.isDark ? 'Dark' : 'Light'}` : `System (${theme.isDark ? 'Dark' : 'Light'})`}
+          </span>
+        </div>
+        <div style="display:flex; gap:6px;">
+          <button class="action-btn" onclick={() => theme.toggle()}>Toggle</button>
+          {#if theme.userOverride}
+            <button class="action-btn" onclick={() => theme.followSystem()}>Follow system</button>
+          {/if}
         </div>
       </div>
 

@@ -12,8 +12,27 @@
   import { marked } from 'marked'
   import PrimeToolCard from '$components/PrimeToolCard.svelte'
   import type { PrimeToolCall } from '$types/index'
+  import { AGENT_COLOR_HEX } from '$types/index'
 
   marked.setOptions({ breaks: true, gfm: true })
+
+  const AGENT_FALLBACK_PALETTE = ['#3ab6e4', '#72e93a', '#f5d700', '#da63de', '#ff5a00'] as const
+
+  function hashString(value: string): number {
+    let hash = 0
+    for (let i = 0; i < value.length; i += 1) {
+      hash = (hash << 5) - hash + value.charCodeAt(i)
+      hash |= 0
+    }
+    return Math.abs(hash)
+  }
+
+  function colorForAgent(displayName: string, id: string): string {
+    const named = AGENT_COLOR_HEX[displayName.toLowerCase()]
+    if (named) return named
+    const idx = hashString(id) % AGENT_FALLBACK_PALETTE.length
+    return AGENT_FALLBACK_PALETTE[idx]
+  }
 
   interface Props {
     agentId: string
@@ -23,6 +42,9 @@
 
   const agent = $derived(appState.agents.get(agentId))
   const events = $derived(appState.detailEvents.get(agentId) ?? [])
+  const agentColor = $derived(
+    agent ? colorForAgent(agent.displayName, agentId) : '#3ab6e4'
+  )
 
   let scrollEl: HTMLElement | undefined = $state()
   let subscribed = $state(false)
@@ -34,11 +56,24 @@
   onMount(async () => {
     if (appState.connectionState !== 'ready') return
     try {
-      const backlog = await backendClient.agentSubscribe(agentId)
+      // Use offset-based catch-up if we've seen events before (e.g. tab re-mount)
+      const lastOffset = appState.getDetailOffset(agentId)
+      const fromOffset = lastOffset !== undefined ? lastOffset + 1 : undefined
+      const { backlog, lastOffset: newLastOffset } = await backendClient.agentSubscribe(agentId, fromOffset)
       const parsed = backlog
         .map((raw) => parseEvent(raw as Record<string, unknown>))
         .filter((e): e is AgentDetailEvent => e !== null)
-      appState.setDetailBacklog(agentId, parsed)
+      if (fromOffset !== undefined) {
+        // Append missed events instead of replacing existing ones
+        for (const event of parsed) {
+          appState.appendDetailEvent(agentId, event)
+        }
+      } else {
+        appState.setDetailBacklog(agentId, parsed, newLastOffset)
+      }
+      if (newLastOffset !== undefined) {
+        appState.detailOffsets.set(agentId, newLastOffset)
+      }
       appState.detailAgentId = agentId
       subscribed = true
     } catch (e) {
@@ -191,7 +226,7 @@
             </div>
           {:else if item.kind === 'tool'}
             <div class="tool-entry">
-              <PrimeToolCard tool={item.tool} />
+              <PrimeToolCard tool={item.tool} agentColor={agentColor} />
             </div>
           {/if}
         {/each}

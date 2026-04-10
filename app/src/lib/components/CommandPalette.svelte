@@ -30,6 +30,11 @@
       run: () => theme.toggle(),
     },
     {
+      label: 'Follow system theme',
+      description: 'Reset to OS dark/light preference',
+      run: () => theme.followSystem(),
+    },
+    {
       label: 'Select next node',
       description: '↓ Move selection down',
       run: () => dispatch({ type: 'selectNext' }),

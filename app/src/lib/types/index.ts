@@ -42,6 +42,26 @@ export function agentStateFromString(s: string): AgentState {
 
 export type AgentTier = 'high' | 'medium' | 'low'
 
+// ─── Model mode types ────────────────────────────────────────────────────────
+
+export type ModelModeKey = 'low' | 'medium' | 'high'
+
+/** A single model slot: "provider:model" string. */
+export interface ModelSlot {
+  provider: string
+  model: string
+}
+
+/** Configuration for a single mode (L/M/H). Up to 3 fallback slots. */
+export interface ModelModeConfig {
+  primary: ModelSlot
+  secondary: ModelSlot | null
+  tertiary: ModelSlot | null
+}
+
+/** Full model mode configuration. */
+export type ModelModes = Record<ModelModeKey, ModelModeConfig>
+
 export type AgentType = 'root' | 'sub_agent'
 
 export const PRIME_AGENT_ID = '__prime__'
@@ -109,6 +129,7 @@ export type PrimeChatEntry =
   | { kind: 'tool'; tool: PrimeToolCall; seq?: number | null }
   | { kind: 'sub_agent'; subAgent: PrimeSubAgentEntry; seq?: number | null }
   | { kind: 'agent-launched'; agentId: string; displayName: string; task: string; seq?: number | null }
+  | { kind: 'agent-reply'; agentId: string; agentName: string; message: string; title: string | null; seq?: number | null }
 
 export interface PrimeReplyTarget {
   role: 'user' | 'assistant'

@@ -1,3 +1,8 @@
+---
+title: Example Project
+last_updated: 2026-04-10
+---
+
 # Example Project
 
 ## Purpose

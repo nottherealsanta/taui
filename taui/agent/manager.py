@@ -260,12 +260,16 @@ class AgentManager:
 
     async def subscribe_from_stream(
         self, agent_id: str, from_offset: int = 0
-    ) -> list[dict[str, Any]]:
+    ) -> tuple[list[dict[str, Any]], int | None]:
         """Subscribe to detail events for agent using durable streams.
 
-        Returns the event backlog starting from ``from_offset``, reading
-        from the durable stream instead of the in-memory buffer. Falls back
-        to the in-memory buffer if no stream client is available.
+        Returns a tuple of (event backlog, last_offset) starting from
+        ``from_offset``, reading from the durable stream instead of the
+        in-memory buffer. Falls back to the in-memory buffer if no stream
+        client is available.
+
+        ``last_offset`` is the highest offset in the returned backlog, or
+        ``None`` when falling back to the in-memory buffer.
 
         This is the durable alternative to ``subscribe()`` — clients that
         reconnect can resume from their last-seen offset without missing events.
@@ -282,14 +286,17 @@ class AgentManager:
                         stream_id, from_offset=from_offset, limit=10000
                     )
                     events: list[dict[str, Any]] = []
+                    last_offset: int | None = None
                     for chunk in chunks:
                         try:
                             data = _json.loads(chunk.data)
                             if isinstance(data, dict):
+                                data["_offset"] = chunk.offset
                                 events.append(data)
+                                last_offset = chunk.offset
                         except (ValueError, UnicodeDecodeError):
                             pass
-                    return events
+                    return events, last_offset
             except Exception:
                 logger.exception(
                     "subscribe_from_stream: stream read failed, falling back to buffer agent_id=%s",
@@ -298,7 +305,7 @@ class AgentManager:
 
         # Fallback to in-memory buffer
         buf = self._event_buffers.get(agent_id, [])
-        return [{"type": e.event_type, **e.payload} for e in buf]
+        return [{"type": e.event_type, **e.payload} for e in buf], None
 
     def unsubscribe(self, agent_id: str) -> None:
         """Stop streaming detail events for agent."""

@@ -749,6 +749,11 @@ class PrimeAgent:
                 "to their new question immediately.\n"
                 "- For simple questions (no file reading needed), just answer directly.\n"
                 "- When a root agent reports back, summarize the result to the user.\n\n"
+                "## Response Format\n"
+                "ALWAYS format your replies in **Markdown**. Use headings, bold, "
+                "code blocks, lists, and other Markdown syntax to structure your "
+                "responses clearly. Wrap code snippets in fenced code blocks with "
+                "the appropriate language tag (e.g. ```python).\n\n"
                 "## Critical: Act, Don't Narrate\n"
                 "When you decide to use a tool, CALL IT in the same response. "
                 "Never respond with only text describing what you plan to do — "
@@ -798,27 +803,22 @@ class PrimeAgent:
         """Return a clean copy of _messages suitable for the OpenAI chat API.
 
         The in-memory list may contain extra keys (``metadata``, ``seq``) added
-        by history restoration that the API does not accept.  Sending unknown
-        keys can cause some API implementations to silently refuse tool use.
+        by history restoration that the API does not accept.
 
-        This method also repairs tool_call / tool_result pairing issues that
-        arise when history is partially restored after a server restart:
+        This method also repairs tool_call / tool_result pairing issues:
 
         * Every ``assistant`` message that declares ``tool_calls`` must be
-          followed by exactly one ``tool`` message per call_id.  Orphaned
-          assistant tool_calls or orphaned tool results are dropped so the
-          API always receives a consistent pairing.
+          immediately followed by one ``tool`` message per call_id.
+        * Missing tool results get a synthetic placeholder so the API always
+          receives a consistent pairing (required by Anthropic-backed proxies).
+        * Orphaned tool results (no matching assistant tool_call) are dropped.
         * ``content`` on an assistant message that only contains tool_calls
           is set to ``None`` (not ``""``) per the OpenAI spec.
         """
         _API_KEYS = {
-            # role is always present
             "role",
-            # text content
             "content",
-            # assistant → tool_calls list
             "tool_calls",
-            # tool result message fields
             "tool_call_id",
             "name",
         }
@@ -828,52 +828,103 @@ class PrimeAgent:
         for msg in self._messages:
             role = msg.get("role", "user")
             stripped: dict[str, Any] = {k: v for k, v in msg.items() if k in _API_KEYS}
-            # For assistant messages with tool_calls, null-out empty content
             if role == "assistant" and stripped.get("tool_calls"):
                 if not stripped.get("content"):
                     stripped["content"] = None
             clean.append(stripped)
 
-        # ── Pass 2: validate tool_call / tool_result pairing ──────────────
-        # Collect the set of call_ids that have a matching tool-result message.
-        result_ids: set[str] = set()
+        # ── Pass 2: build index of existing tool results by call_id ───────
+        result_by_id: dict[str, dict[str, Any]] = {}
         for msg in clean:
             if msg.get("role") == "tool":
                 cid = msg.get("tool_call_id")
                 if cid:
-                    result_ids.add(str(cid))
+                    result_by_id[str(cid)] = msg
 
-        # Drop tool_calls entries in assistant messages that have no result,
-        # and drop tool-result messages that reference no assistant tool_call.
-        # We walk the list in order and build the final output.
-        declared_ids: set[str] = set()  # call_ids declared by assistant messages
+        # ── Pass 3: walk messages, ensure every tool_call has a result ─────
+        # We collect declared call_ids so we can drop orphaned tool-results.
+        declared_ids: set[str] = set()
         output: list[dict[str, Any]] = []
+        repairs = 0
+
         for msg in clean:
             role = msg.get("role", "user")
+
             if role == "assistant" and msg.get("tool_calls"):
-                # Keep only calls that have a matching result
+                # Validate each tool_call entry has proper structure
                 valid_calls = [
                     tc
                     for tc in msg["tool_calls"]
-                    if isinstance(tc, dict) and str(tc.get("id", "")) in result_ids
+                    if isinstance(tc, dict) and tc.get("id")
                 ]
-                if valid_calls:
-                    msg = dict(msg)
-                    msg["tool_calls"] = valid_calls
-                    for tc in valid_calls:
-                        declared_ids.add(str(tc.get("id", "")))
-                else:
-                    # All calls are orphaned — drop tool_calls entirely
+                if not valid_calls:
+                    # No valid calls — drop tool_calls key
                     msg = {k: v for k, v in msg.items() if k != "tool_calls"}
                     if not msg.get("content"):
-                        # Nothing left of value; skip the message entirely
                         continue
+                    output.append(msg)
+                    continue
+
+                msg = dict(msg)
+                msg["tool_calls"] = valid_calls
+                if not msg.get("content"):
+                    msg["content"] = None
+                output.append(msg)
+
+                # Record declared ids
+                for tc in valid_calls:
+                    declared_ids.add(str(tc["id"]))
+
+                # Ensure a tool result exists for each call — inject synthetic
+                # ones right after the assistant message for any that are missing.
+                for tc in valid_calls:
+                    cid = str(tc["id"])
+                    if cid not in result_by_id:
+                        tool_name = ""
+                        func = tc.get("function")
+                        if isinstance(func, dict):
+                            tool_name = func.get("name", "")
+                        synthetic: dict[str, Any] = {
+                            "role": "tool",
+                            "tool_call_id": cid,
+                            "content": "[Tool call was interrupted before producing a result.]",
+                        }
+                        if tool_name:
+                            synthetic["name"] = tool_name
+                        output.append(synthetic)
+                        result_by_id[cid] = synthetic
+                        repairs += 1
+
             elif role == "tool":
                 cid = str(msg.get("tool_call_id", ""))
                 if cid not in declared_ids:
-                    # Orphaned result — skip
+                    # Orphaned result — skip it
+                    repairs += 1
                     continue
-            output.append(msg)
+                # Check if we already injected a synthetic for this id
+                # (the real result appears later in the message list).
+                # Replace the synthetic with the real one in-place.
+                existing_idx = None
+                for i in range(len(output) - 1, -1, -1):
+                    if (
+                        output[i].get("role") == "tool"
+                        and output[i].get("tool_call_id") == cid
+                    ):
+                        existing_idx = i
+                        break
+                if existing_idx is not None:
+                    output[existing_idx] = msg
+                else:
+                    output.append(msg)
+            else:
+                output.append(msg)
+
+        if repairs > 0:
+            logger.info(
+                "Sanitizer repaired %d tool_call/result pairing issues in %d messages",
+                repairs,
+                len(self._messages),
+            )
 
         return output
 

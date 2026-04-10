@@ -218,5 +218,6 @@ taui/static/
 .playwright-mcp/
 
 .taui/
+tangles/.taui.db
 
 /*.png

@@ -306,9 +306,11 @@ export class BackendClient extends EventTarget {
     await this.call('agent/queue', { agent_id: agentId, message })
   }
 
-  async agentSubscribe(agentId: string): Promise<unknown[]> {
-    const result = await this.call('agent/subscribe', { agent_id: agentId }) as { backlog: unknown[] }
-    return result.backlog ?? []
+  async agentSubscribe(agentId: string, fromOffset?: number): Promise<{ backlog: unknown[]; lastOffset?: number }> {
+    const params: Record<string, unknown> = { agent_id: agentId }
+    if (fromOffset !== undefined) params['from_offset'] = fromOffset
+    const result = await this.call('agent/subscribe', params) as { backlog: unknown[]; last_offset?: number }
+    return { backlog: result.backlog ?? [], lastOffset: result.last_offset }
   }
 
   async agentUnsubscribe(agentId: string): Promise<void> {
@@ -433,7 +435,7 @@ export class BackendClient extends EventTarget {
     await this.call('ui/updateLayout', { layout })
   }
 
-  async uiSetTheme(theme: 'dark' | 'light'): Promise<void> {
+  async uiSetTheme(theme: 'dark' | 'light' | 'system'): Promise<void> {
     await this.call('ui/setTheme', { theme })
   }
 

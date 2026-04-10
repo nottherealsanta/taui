@@ -11,6 +11,7 @@ import { backendClient } from '$services/backend-client'
 import { handleNotification } from '$services/notifications'
 import { applyPersistedFoldState } from '$services/fold-state'
 import type { NotificationEvent } from '$services/backend-client'
+import type { AgentDetailEvent } from '$types/index'
 import { agentStateFromString } from '$types/index'
 
 function onConnectionState(ev: Event): void {
@@ -54,7 +55,7 @@ async function _initialize(): Promise<void> {
   const snapshotRaw = await backendClient.uiSnapshot() as {
     tabs?: { open?: string[]; active?: string }
     layout?: { sidebarCollapsed?: boolean }
-    theme?: 'dark' | 'light'
+    theme?: 'dark' | 'light' | 'system' | null
     tangleTree?: Parameters<typeof appState.hydrateFromBackend>[0]
   }
   appState.hydrateFromBackend(snapshotRaw.tangleTree ?? [])
@@ -67,6 +68,8 @@ async function _initialize(): Promise<void> {
     fileTree.sidebarCollapsed = snapshotRaw.layout.sidebarCollapsed
   }
   if (snapshotRaw.theme === 'dark' || snapshotRaw.theme === 'light') {
+    // Only apply if this is an explicit user preference — 'system'/null means
+    // "follow OS", so the store's system-detection is already correct.
     const { theme } = await import('$stores/theme.svelte')
     theme.applySnapshot(snapshotRaw.theme)
   }
@@ -106,11 +109,26 @@ async function _initialize(): Promise<void> {
         agentType: (agent.agent_type as 'root' | 'minion') ?? 'root',
         displayName: agent.display_name,
       })
-      // Re-subscribe for live events
+      // Re-subscribe for live events (offset-based catch-up when available)
       try {
-        const backlog = await backendClient.agentSubscribe(agent.agent_id)
+        const lastOffset = appState.getDetailOffset(agent.agent_id)
+        const fromOffset = lastOffset !== undefined ? lastOffset + 1 : undefined
+        const { backlog, lastOffset: newLastOffset } = await backendClient.agentSubscribe(agent.agent_id, fromOffset)
         if (backlog && backlog.length > 0) {
-          appState.setDetailBacklog(agent.agent_id, backlog as Parameters<typeof appState.setDetailBacklog>[1])
+          if (fromOffset !== undefined) {
+            // Offset-based catch-up: append missed events instead of replacing
+            const parsed = (backlog as Array<Record<string, unknown>>)
+              .map((raw) => parseSubscribeEvent(raw))
+              .filter((e): e is NonNullable<typeof e> => e !== null)
+            for (const event of parsed) {
+              appState.appendDetailEvent(agent.agent_id, event)
+            }
+          } else {
+            appState.setDetailBacklog(agent.agent_id, backlog as Parameters<typeof appState.setDetailBacklog>[1], newLastOffset)
+          }
+          if (newLastOffset !== undefined) {
+            appState.detailOffsets.set(agent.agent_id, newLastOffset)
+          }
         }
       } catch {
         // Agent may have finished between list and subscribe
@@ -118,6 +136,20 @@ async function _initialize(): Promise<void> {
     }
   } catch (err) {
     console.warn('[connection] failed to restore agents', err)
+  }
+}
+
+// ─── Event parser for durable stream catch-up ────────────────────────────────
+
+function parseSubscribeEvent(raw: Record<string, unknown>): AgentDetailEvent | null {
+  const type = raw['type'] as string
+  switch (type) {
+    case 'message': return { type: 'message', role: (raw['role'] as string) ?? 'assistant', content: (raw['content'] as string) ?? '' }
+    case 'tool_call': return { type: 'toolCall', callId: (raw['call_id'] as string) ?? '', toolName: (raw['tool_name'] as string) ?? '', arguments: raw['arguments'] ?? {} }
+    case 'tool_result': return { type: 'toolResult', callId: (raw['call_id'] as string) ?? '', output: (raw['output'] as string) ?? null, error: (raw['error'] as string) ?? null, durationMs: (raw['duration_ms'] as number) ?? null }
+    case 'token': return { type: 'token', text: (raw['text'] as string) ?? '' }
+    case 'state_change': return { type: 'stateChange', state: agentStateFromString((raw['state'] as string) ?? 'idle') }
+    default: return null
   }
 }
 

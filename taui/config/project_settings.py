@@ -45,7 +45,7 @@ def default_settings() -> dict[str, Any]:
     return {
         "tabs": {"open": ["tangles/index.md"], "active": "tangles/index.md"},
         "layout": {"sidebarCollapsed": False, "splitSizes": [20, 50, 30]},
-        "theme": "dark",
+        "theme": None,
         "prompts": prompts,
     }
 

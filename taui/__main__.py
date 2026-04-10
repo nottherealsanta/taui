@@ -43,15 +43,21 @@ def _run_serve(args: argparse.Namespace) -> None:
     port = args.port if args.port > 0 else _find_free_port(host)
     dev_mode = getattr(args, "dev", False)
 
+    # Log the file-log location so users know where to find detailed logs
+    from taui.logging_file import get_log_dir
+
+    log_dir = get_log_dir()
     logger.info(
-        "Starting Taui backend server workspace=%s host=%s port=%s dev_mode=%s",
+        "Starting Taui backend server workspace=%s host=%s port=%s dev_mode=%s log_dir=%s",
         workspace,
         host,
         port,
         dev_mode,
+        log_dir,
     )
     app = create_app(workspace=workspace, dev_mode=dev_mode)
     print(f"Taui backend running at ws://{host}:{port}/ws", flush=True)
+    print(f"Detailed logs: {log_dir / 'taui.log'}", flush=True)
     uvicorn.run(app, host=host, port=port, log_level="warning", access_log=False)
 
 

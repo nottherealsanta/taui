@@ -338,6 +338,74 @@ class LaunchRootTool:
             return ToolResult.fail(f"Failed to launch root agent: {exc}")
 
 
+# ── ReplyToUserTool ──────────────────────────────────────────────────────────
+
+
+@dataclass(slots=True)
+class ReplyToUserTool:
+    """Post a message directly to the user in Prime's chat stream.
+
+    Sub-agents and root agents use this tool when they have information
+    the user should see immediately — without waiting for Prime to relay it.
+    The message appears as an inline card in Prime's chat panel.
+    """
+
+    name: str = "reply_to_user"
+    description: str = (
+        "Send a message directly to the user, visible in Prime's chat stream.\n\n"
+        "Use this when you have information the user should see immediately — "
+        "progress updates, findings, warnings, or results that are worth surfacing "
+        "without waiting for Prime to relay them.\n\n"
+        "Parameters:\n"
+        "  message (required): the message to display to the user\n"
+        "  title (optional): a short label shown above the message"
+    )
+    schema: dict[str, Any] = field(
+        default_factory=lambda: {
+            "type": "object",
+            "properties": {
+                "message": {
+                    "type": "string",
+                    "description": "The message to display to the user.",
+                },
+                "title": {
+                    "type": "string",
+                    "description": "Short label shown above the message (optional).",
+                },
+            },
+            "required": ["message"],
+            "additionalProperties": False,
+        }
+    )
+    origin: str = "builtin"
+    category: ToolCategory = ToolCategory.AGENT
+
+    async def execute(
+        self, arguments: dict[str, Any], context: ToolContext
+    ) -> ToolResult:
+        message = arguments.get("message", "")
+        title = arguments.get("title", None)
+
+        if not message:
+            return ToolResult.fail("message is required.")
+
+        agent_name = getattr(context, "agent_name", None) or "Agent"
+        agent_id = getattr(context, "session_id", None) or ""
+
+        _emit(
+            context,
+            "prime/agentReply",
+            {
+                "agent_id": agent_id,
+                "agent_name": agent_name,
+                "message": message,
+                "title": title,
+            },
+        )
+
+        return ToolResult.ok("Message sent to user.")
+
+
 # ── ReportToPrimeTool ─────────────────────────────────────────────────────────
 
 

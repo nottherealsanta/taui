@@ -46,7 +46,8 @@ def test_settings_default_layout(tmp_path: Path) -> None:
 def test_settings_default_theme(tmp_path: Path) -> None:
     store = ProjectSettingsStore(tmp_path)
     settings = store.load()
-    assert settings["theme"] in ("dark", "light")
+    # Default is None (system theme); user may have saved 'dark' or 'light'
+    assert settings["theme"] in (None, "dark", "light")
 
 
 def test_settings_file_is_valid_json(tmp_path: Path) -> None:

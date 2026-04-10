@@ -137,7 +137,7 @@ export class MockBackend {
           tangleTree: this.opts.nodes,
           tabs: { open: [], active: '' },
           layout: { sidebarCollapsed: false },
-          theme: 'dark',
+          theme: null,
         }
 
       case 'tangle/getTreeDetailed':
