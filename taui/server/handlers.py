@@ -296,6 +296,16 @@ class MethodHandlers:
                     result=await self._handle_refs_reindex(params),
                     notifications=[],
                 )
+            if method == "code/resolve":
+                return DispatchResult(
+                    result=await self._handle_code_resolve(params),
+                    notifications=[],
+                )
+            if method == "code/update":
+                return DispatchResult(
+                    result=await self._handle_code_update(params),
+                    notifications=[],
+                )
             logger.warning(
                 "Unknown method=%s request_id=%s", method, request.request_id
             )
@@ -408,6 +418,8 @@ class MethodHandlers:
                 "refs/backlinks",
                 "refs/validate",
                 "refs/reindex",
+                "code/resolve",
+                "code/update",
             ],
             "notifications": [
                 "tangle/nodeCreated",
@@ -2001,3 +2013,292 @@ class MethodHandlers:
         # Count unique files
         files = {s.file_path for s in symbols}
         return {"indexed_files": len(files), "symbols": len(symbols)}
+
+    # ── Code block RPC handlers ────────────────────────────────────────────────
+
+    async def _handle_code_resolve(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Resolve a ::code directive to get the source code content.
+
+        params: {
+            file_path: string,    # Path to the source file
+            target: string,       # Symbol name or line range (e.g., "my_func" or "10-25")
+            ref_kind: string      # "symbol" or "lines"
+        }
+        returns: {
+            file_path: string,
+            target: string,
+            ref_kind: string,
+            resolved_start: int | null,
+            resolved_end: int | null,
+            content: string | null,
+            language: string | null,
+            diagnostic: string  # "resolved" | "unresolved" | "stale"
+        }
+        """
+        await self._ensure_symbol_infra()
+
+        file_path = self._require_str(params, "file_path")
+        target = self._require_str(params, "target")
+        ref_kind = params.get("ref_kind", "symbol")
+
+        workspace = self.tangles.workspace.resolve()
+        abs_path = workspace / file_path
+
+        # Determine language from file extension
+        language = self._detect_language(file_path)
+
+        if not abs_path.exists():
+            return {
+                "file_path": file_path,
+                "target": target,
+                "ref_kind": ref_kind,
+                "resolved_start": None,
+                "resolved_end": None,
+                "content": None,
+                "language": language,
+                "diagnostic": "unresolved",
+                "error": "File not found",
+            }
+
+        if ref_kind == "lines":
+            # Parse line range: "10-25" or "10"
+            return await self._resolve_code_lines(file_path, abs_path, target, language)
+        else:
+            # Symbol resolution
+            return await self._resolve_code_symbol(
+                file_path, abs_path, target, language
+            )
+
+    async def _resolve_code_lines(
+        self, file_path: str, abs_path: Path, target: str, language: str | None
+    ) -> dict[str, Any]:
+        """Resolve a line range reference (e.g., "10-25" or "10")."""
+        # Parse the line range
+        parts = target.split("-")
+        try:
+            line_start = int(parts[0])
+            line_end = int(parts[1]) if len(parts) > 1 else line_start
+        except ValueError:
+            return {
+                "file_path": file_path,
+                "target": target,
+                "ref_kind": "lines",
+                "resolved_start": None,
+                "resolved_end": None,
+                "content": None,
+                "language": language,
+                "diagnostic": "unresolved",
+                "error": f"Invalid line range: {target}",
+            }
+
+        try:
+            content = abs_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            return {
+                "file_path": file_path,
+                "target": target,
+                "ref_kind": "lines",
+                "resolved_start": line_start,
+                "resolved_end": line_end,
+                "content": None,
+                "language": language,
+                "diagnostic": "unresolved",
+                "error": str(exc),
+            }
+
+        lines = content.splitlines()
+        total_lines = len(lines)
+
+        # Clamp to valid range
+        line_start = max(1, min(line_start, total_lines))
+        line_end = max(line_start, min(line_end, total_lines))
+
+        selected_lines = lines[line_start - 1 : line_end]
+        selected_content = "\n".join(selected_lines)
+
+        return {
+            "file_path": file_path,
+            "target": target,
+            "ref_kind": "lines",
+            "resolved_start": line_start,
+            "resolved_end": line_end,
+            "content": selected_content,
+            "language": language,
+            "diagnostic": "resolved",
+        }
+
+    async def _resolve_code_symbol(
+        self, file_path: str, abs_path: Path, target: str, language: str | None
+    ) -> dict[str, Any]:
+        """Resolve a symbol reference (e.g., "my_function" or "MyClass.method")."""
+        from taui.symbols.models import SemanticRef
+
+        # Build a SemanticRef and use the existing resolver
+        ref = SemanticRef(
+            file_path=file_path,
+            symbol_path=target,
+            ref_kind="symbol_ref",
+            language=language,
+        )
+
+        resolved = await self._symbol_resolver.resolve(ref)
+
+        return {
+            "file_path": file_path,
+            "target": target,
+            "ref_kind": "symbol",
+            "resolved_start": resolved.line_start,
+            "resolved_end": resolved.line_end,
+            "content": resolved.preview_snippet,
+            "language": language,
+            "diagnostic": resolved.diagnostic,
+            "symbol_kind": resolved.symbol_kind,
+            "symbol_metadata": resolved.symbol_metadata,
+        }
+
+    async def _handle_code_update(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Update source code from a ::code block edit.
+
+        params: {
+            file_path: string,        # Path to the source file
+            line_start: int,          # 1-based start line
+            line_end: int,            # 1-based end line
+            new_content: string       # The new code content
+        }
+        returns: {
+            success: bool,
+            file_path: string,
+            line_start: int,
+            line_end: int,
+            lines_changed: int
+        }
+        """
+        file_path = self._require_str(params, "file_path")
+        line_start = params.get("line_start")
+        line_end = params.get("line_end")
+        new_content = params.get("new_content", "")
+
+        if not isinstance(line_start, int) or not isinstance(line_end, int):
+            raise ValueError("line_start and line_end must be integers")
+        if not isinstance(new_content, str):
+            raise ValueError("new_content must be a string")
+
+        workspace = self.tangles.workspace.resolve()
+        abs_path = workspace / file_path
+
+        # Security: ensure path is within workspace
+        try:
+            resolved_path = abs_path.resolve()
+            if not str(resolved_path).startswith(str(workspace)):
+                raise ValueError("path escapes workspace")
+        except (OSError, ValueError) as exc:
+            return {
+                "success": False,
+                "file_path": file_path,
+                "error": str(exc),
+            }
+
+        if not abs_path.exists():
+            return {
+                "success": False,
+                "file_path": file_path,
+                "error": "File not found",
+            }
+
+        try:
+            content = abs_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            return {
+                "success": False,
+                "file_path": file_path,
+                "error": str(exc),
+            }
+
+        lines = content.splitlines(keepends=True)
+        total_lines = len(lines)
+
+        # Validate range
+        if line_start < 1 or line_start > total_lines:
+            return {
+                "success": False,
+                "file_path": file_path,
+                "error": f"line_start {line_start} out of range (1-{total_lines})",
+            }
+        if line_end < line_start or line_end > total_lines:
+            return {
+                "success": False,
+                "file_path": file_path,
+                "error": f"line_end {line_end} out of range ({line_start}-{total_lines})",
+            }
+
+        # Replace the lines
+        new_lines = new_content.splitlines(keepends=True)
+        # Ensure the last line has a newline if the original did
+        if new_lines and not new_lines[-1].endswith("\n"):
+            # Check if original section ended with newline
+            if line_end <= len(lines) and lines[line_end - 1].endswith("\n"):
+                new_lines[-1] += "\n"
+
+        # Reconstruct the file
+        before = lines[: line_start - 1]
+        after = lines[line_end:]
+        updated_lines = before + new_lines + after
+        updated_content = "".join(updated_lines)
+
+        try:
+            abs_path.write_text(updated_content, encoding="utf-8")
+        except OSError as exc:
+            return {
+                "success": False,
+                "file_path": file_path,
+                "error": str(exc),
+            }
+
+        # Re-index the file after edit
+        await self._ensure_symbol_infra()
+        new_symbols = self._symbol_indexer.index_file(abs_path)
+        await self._symbol_db.delete_symbols_for_file(file_path)
+        if new_symbols:
+            await self._symbol_db.upsert_symbols(new_symbols)
+
+        return {
+            "success": True,
+            "file_path": file_path,
+            "line_start": line_start,
+            "line_end": line_start + len(new_lines) - 1,
+            "lines_changed": len(new_lines),
+        }
+
+    def _detect_language(self, file_path: str) -> str | None:
+        """Detect programming language from file extension."""
+        ext = Path(file_path).suffix.lower()
+        lang_map = {
+            ".py": "python",
+            ".js": "javascript",
+            ".ts": "typescript",
+            ".tsx": "typescript",
+            ".jsx": "javascript",
+            ".rs": "rust",
+            ".go": "go",
+            ".rb": "ruby",
+            ".java": "java",
+            ".cpp": "cpp",
+            ".c": "c",
+            ".h": "c",
+            ".hpp": "cpp",
+            ".css": "css",
+            ".scss": "scss",
+            ".html": "html",
+            ".svelte": "svelte",
+            ".vue": "vue",
+            ".json": "json",
+            ".yaml": "yaml",
+            ".yml": "yaml",
+            ".toml": "toml",
+            ".md": "markdown",
+            ".sql": "sql",
+            ".sh": "bash",
+            ".bash": "bash",
+            ".zsh": "bash",
+        }
+        return lang_map.get(ext)

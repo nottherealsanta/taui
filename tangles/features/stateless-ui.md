@@ -93,11 +93,20 @@ class TabStore {
 
 ## Code References
 
-- `taui/server/handlers.py` — `ui/snapshot`, `ui/openTab`, `ui/closeTab`, `ui/setActiveTab`, `ui/updateLayout`, `ui/setTheme`
-- `app/src/stores/app-state.svelte.ts` — main app state store with `applySnapshot()`
-- `app/src/stores/tabs.svelte.ts` — tab store (should be RPC-driven)
-- `app/src/stores/theme.svelte.ts` — theme store (should be RPC-driven)
-- `app/src/services/connection.ts` — reconnection and snapshot loading
+- `taui/server/handlers.py:_handle_ui_snapshot` — snapshot construction
+- `taui/server/handlers.py:_handle_ui_open_tab` — tab opening handler
+- `taui/server/handlers.py:_handle_ui_close_tab` — tab closing handler
+- `taui/server/handlers.py:_handle_ui_set_active_tab` — active tab handler
+- `taui/server/handlers.py:_handle_ui_update_layout` — layout update handler
+- `taui/server/handlers.py:_handle_ui_set_theme` — theme handler
+- `taui/config/project_settings.py:ProjectSettingsStore` — settings persistence
+- `taui/config/project_settings.py:ProjectSettingsStore.load` — reads settings.json with defaults merge
+- `taui/config/project_settings.py:ProjectSettingsStore.save` — writes settings.json
+- `app/src/lib/stores/app-state.svelte.ts:AppState` — main reactive store
+- `app/src/lib/stores/tabs.svelte.ts:TabStore` — tab state mirror
+- `app/src/lib/stores/tabs.svelte.ts:TabStore.applySnapshot` — applies backend snapshot
+- `app/src/lib/services/backend-client.ts:BackendClient.uiSnapshot` — snapshot RPC call
+- `app/src/lib/services/connection.ts:startConnection` — init + snapshot loading
 
 ## Tests / Verification
 

@@ -470,6 +470,90 @@ export class BackendClient extends EventTarget {
     }
     return result.prompt
   }
+
+  // ── Code block RPCs ─────────────────────────────────────────────────────────
+
+  /**
+   * Resolve a ::code directive to get the actual source code content.
+   */
+  async codeResolve(filePath: string, target: string, refKind: 'symbol' | 'lines'): Promise<{
+    filePath: string
+    target: string
+    refKind: string
+    resolvedStart: number | null
+    resolvedEnd: number | null
+    content: string | null
+    language: string | null
+    diagnostic: string
+    error?: string
+    symbolKind?: string
+    symbolMetadata?: Record<string, unknown>
+  }> {
+    const raw = await this.call('code/resolve', {
+      file_path: filePath,
+      target,
+      ref_kind: refKind,
+    }) as {
+      file_path: string
+      target: string
+      ref_kind: string
+      resolved_start: number | null
+      resolved_end: number | null
+      content: string | null
+      language: string | null
+      diagnostic: string
+      error?: string
+      symbol_kind?: string
+      symbol_metadata?: Record<string, unknown>
+    }
+    return {
+      filePath: raw.file_path,
+      target: raw.target,
+      refKind: raw.ref_kind,
+      resolvedStart: raw.resolved_start,
+      resolvedEnd: raw.resolved_end,
+      content: raw.content,
+      language: raw.language,
+      diagnostic: raw.diagnostic,
+      error: raw.error,
+      symbolKind: raw.symbol_kind,
+      symbolMetadata: raw.symbol_metadata,
+    }
+  }
+
+  /**
+   * Update source code from a ::code block edit.
+   */
+  async codeUpdate(filePath: string, lineStart: number, lineEnd: number, newContent: string): Promise<{
+    success: boolean
+    filePath: string
+    lineStart?: number
+    lineEnd?: number
+    linesChanged?: number
+    error?: string
+  }> {
+    const raw = await this.call('code/update', {
+      file_path: filePath,
+      line_start: lineStart,
+      line_end: lineEnd,
+      new_content: newContent,
+    }) as {
+      success: boolean
+      file_path: string
+      line_start?: number
+      line_end?: number
+      lines_changed?: number
+      error?: string
+    }
+    return {
+      success: raw.success,
+      filePath: raw.file_path,
+      lineStart: raw.line_start,
+      lineEnd: raw.line_end,
+      linesChanged: raw.lines_changed,
+      error: raw.error,
+    }
+  }
 }
 
 // ─── Singleton ────────────────────────────────────────────────────────────────

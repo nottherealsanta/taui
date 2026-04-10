@@ -83,9 +83,21 @@ The old plan pushed `refs`, `test_refs`, `depends_on`, `tags`, `status`, `owners
 
 ## Code References
 
-- `taui/agent/system_prompt_loader.py` — loads prompts from `settings.json` with fallback to defaults
-- `taui/server/handlers.py` — `prompts/list`, `prompts/get`, `prompts/update`, `prompts/reset` RPC handlers
-- `taui/config/settings.py` — settings.json read/write
+- `taui/config/project_settings.py:default_prompt_content` — default prompt text for all 5 prompt types
+- `taui/config/project_settings.py:ProjectSettingsStore.list_prompts` — lists all prompts
+- `taui/config/project_settings.py:ProjectSettingsStore.get_prompt` — gets single prompt
+- `taui/config/project_settings.py:ProjectSettingsStore.update_prompt` — updates prompt, sets is_default=False
+- `taui/config/project_settings.py:ProjectSettingsStore.reset_prompt` — resets to default, sets is_default=True
+- `taui/agent/system_prompt_loader.py:get_prompt_template_for_workspace` — loads prompt for agent role, checks settings first then fallback to system_prompts.md
+- `taui/agent/system_prompt_loader.py:render_prompt_template` — fills template variables
+- `taui/agent/system_prompt_loader.py:_load_sections` — parses system_prompts.md into sections
+- `taui/server/handlers.py:_handle_prompts_list` — RPC handler
+- `taui/server/handlers.py:_handle_prompts_get` — RPC handler
+- `taui/server/handlers.py:_handle_prompts_update` — RPC handler
+- `taui/server/handlers.py:_handle_prompts_reset` — RPC handler
+- `app/src/lib/services/backend-client.ts:BackendClient.promptsList` — frontend RPC call
+- `app/src/lib/services/backend-client.ts:BackendClient.promptsUpdate` — frontend RPC call
+- `app/src/lib/services/backend-client.ts:BackendClient.promptsReset` — frontend RPC call
 
 ## Tests / Verification
 

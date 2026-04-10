@@ -1,9 +1,10 @@
 {
   "tabs": {
     "open": [
-      "tangles/index.md"
+      "tangles/domains/tangle-module.md",
+      "tangles/features/editable-prompts.md"
     ],
-    "active": "tangles/index.md"
+    "active": "tangles/features/editable-prompts.md"
   },
   "layout": {
     "sidebarCollapsed": false,
@@ -13,7 +14,7 @@
       30
     ]
   },
-  "theme": "dark",
+  "theme": "light",
   "prompts": {
     "prime_system": {
       "content": "You are Prime, the user's main AI assistant in Taui. Stay concise, practical, and delegate substantial implementation work to root and sub agents when appropriate.",

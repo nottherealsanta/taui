@@ -1,6 +1,6 @@
 import pytest
 
-from taui.tangle.refs import extract_tangle_refs
+from taui.tangle.refs import extract_tangle_refs, extract_code_blocks
 
 
 def test_extract_tangle_refs_arrow_and_backtick() -> None:
@@ -99,3 +99,101 @@ def test_extract_tangle_refs_multiple_lines() -> None:
     assert "src/a.py" in file_paths
     assert "src/b.py" in file_paths
     assert "src/c.py" in file_paths
+
+
+# ── ::code directive tests ──
+
+
+def test_extract_code_blocks_symbol() -> None:
+    lines = [
+        "Some prose here.",
+        "::code src/auth.py:register_handler",
+        "More prose.",
+    ]
+    blocks = extract_code_blocks(lines)
+    assert len(blocks) == 1
+    assert blocks[0].file_path == "src/auth.py"
+    assert blocks[0].target == "register_handler"
+    assert blocks[0].ref_kind == "symbol"
+    assert blocks[0].line_in_tangle == 2
+
+
+def test_extract_code_blocks_line_range() -> None:
+    lines = [
+        "::code src/db.py:45-52",
+    ]
+    blocks = extract_code_blocks(lines)
+    assert len(blocks) == 1
+    assert blocks[0].file_path == "src/db.py"
+    assert blocks[0].target == "45-52"
+    assert blocks[0].ref_kind == "lines"
+
+
+def test_extract_code_blocks_single_line() -> None:
+    lines = [
+        "::code src/config.py:10",
+    ]
+    blocks = extract_code_blocks(lines)
+    assert len(blocks) == 1
+    assert blocks[0].target == "10"
+    assert blocks[0].ref_kind == "lines"
+
+
+def test_extract_code_blocks_multiple() -> None:
+    lines = [
+        "# Code Examples",
+        "::code src/auth.py:login",
+        "::code src/auth.py:logout",
+        "::code src/db.py:100-150",
+    ]
+    blocks = extract_code_blocks(lines)
+    assert len(blocks) == 3
+    targets = [b.target for b in blocks]
+    assert "login" in targets
+    assert "logout" in targets
+    assert "100-150" in targets
+
+
+def test_extract_code_blocks_empty() -> None:
+    blocks = extract_code_blocks([])
+    assert blocks == []
+
+
+def test_extract_code_blocks_no_directives() -> None:
+    lines = [
+        "This is plain prose.",
+        "Use -> src/auth.py:login for reference.",  # inline ref, not a block
+        "`src/db.py:query` is also mentioned.",
+    ]
+    blocks = extract_code_blocks(lines)
+    assert blocks == []
+
+
+def test_extract_code_blocks_with_whitespace() -> None:
+    lines = [
+        "  ::code src/auth.py:handler  ",  # leading/trailing whitespace
+    ]
+    blocks = extract_code_blocks(lines)
+    assert len(blocks) == 1
+    assert blocks[0].file_path == "src/auth.py"
+
+
+def test_extract_code_blocks_nested_path() -> None:
+    lines = [
+        "::code src/services/auth/handlers.py:validate_token",
+    ]
+    blocks = extract_code_blocks(lines)
+    assert len(blocks) == 1
+    assert blocks[0].file_path == "src/services/auth/handlers.py"
+    assert blocks[0].target == "validate_token"
+
+
+def test_extract_code_blocks_class_method() -> None:
+    """Test extracting a class.method style symbol."""
+    lines = [
+        "::code src/auth.py:AuthService.login",
+    ]
+    blocks = extract_code_blocks(lines)
+    assert len(blocks) == 1
+    assert blocks[0].target == "AuthService.login"
+    assert blocks[0].ref_kind == "symbol"

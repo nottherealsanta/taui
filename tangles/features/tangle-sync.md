@@ -25,10 +25,10 @@ Keep the SQLite database in sync with the tangle markdown files on disk. Detects
 In scope:
 - Full filesystem scan of the tangles directory
 - Detect new files, changed files (by content hash + mtime), and deleted files
-- Parse each changed file into structured data (frontmatter, nodes, refs, links)
-- Upsert file records, nodes, refs, and links into SQLite
-- Delete stale file records for removed files
-- Compute tree coordinates (depth + sort_order) from root entry point
+- Parse each changed file into structured data (frontmatter, nodes, refs, links) via `taui/tangle/parser.py:parse_tangle_document`
+- Upsert file records, nodes, refs, and links into SQLite via `taui/tangle/db.py:SpecDB.upsert_tangle_file` and `taui/tangle/db.py:SpecDB.replace_tangle_nodes`
+- Delete stale file records for removed files via `taui/tangle/db.py:SpecDB.delete_missing_tangle_files`
+- Compute tree coordinates (depth + sort_order) from root entry point via `taui/tangle/sync.py:SpecSync._compute_tree_coordinates`
 - Populate both legacy tables and tangle-v2 tables (transitional dual-write)
 
 Out of scope:
@@ -51,10 +51,11 @@ Out of scope:
 2. For each file:
    a. Check if file is new or changed (hash/mtime comparison)
    b. If changed, parse into structured data -> `taui/tangle/sync.py:SpecSync.full_sync`
-   c. Upsert file record into `tangle_files` table
-   d. Replace nodes, refs, links for this file
-3. Delete file records for files no longer on disk
-4. Compute tree coordinates by DFS from root entry point
+      - `full_sync` reads each file's content, detects format via `taui/tangle/sync.py:SpecSync._detect_format`, invokes `taui/tangle/parser.py:parse_tangle_document` for standard-format files, and calls `taui/tangle/sync.py:SpecSync._parse_nodes_standard` to build `taui/tangle/sync.py:ParsedNode` entries
+   c. Upsert file record into `tangle_files` table via `taui/tangle/db.py:SpecDB.upsert_tangle_file`
+   d. Replace nodes, refs, links for this file via `taui/tangle/db.py:SpecDB.replace_tangle_nodes`
+3. Delete file records for files no longer on disk via `taui/tangle/db.py:SpecDB.delete_missing_tangle_files`
+4. Compute tree coordinates by DFS from root entry point via `taui/tangle/sync.py:SpecSync._compute_tree_coordinates`, which also calls `taui/tangle/db.py:SpecDB.update_tangle_coordinates` to persist depth/sort_order and `taui/tangle/db.py:SpecDB.get_tangle_tree` to read the current link graph
 5. (Transitional) Also populate legacy `files`/`nodes`/`edges` tables
 
 ### Format Detection
@@ -81,6 +82,8 @@ DFS traversal starting from the root entry point (`index.md`). Assigns `depth` a
 - `taui/tangle/db.py:SpecDB.upsert_tangle_file` — file upsert
 - `taui/tangle/db.py:SpecDB.replace_tangle_nodes` — node replacement
 - `taui/tangle/db.py:SpecDB.delete_missing_tangle_files` — stale file cleanup
+- `taui/tangle/db.py:SpecDB.get_tangle_tree` — reads link graph for tree coordinate computation
+- `taui/tangle/db.py:SpecDB.update_tangle_coordinates` — persists depth and sort_order after DFS
 
 ## Tests / Verification
 

@@ -32,8 +32,8 @@ In scope:
 
 Out of scope:
 - Code reference resolution (verifying that referenced files/symbols exist) — that's LSP's job
-- Tangle validation/verification — that's `verification.py`
-- Writing tangles back to disk — that's `writer.py`
+- Tangle validation/verification — that's `taui/tangle/verification.py`
+- Writing tangles back to disk — that's `taui/tangle/writer.py`
 
 ## Constraints
 

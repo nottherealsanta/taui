@@ -4,8 +4,14 @@ import re
 from typing import Any
 
 from .markdown import parse_heading_tree, parse_yaml_frontmatter, slugify
-from .models import TangleFileMeta, TangleDetail, TangleLink, TangleNode
-from .refs import extract_tangle_refs
+from .models import (
+    TangleFileMeta,
+    TangleDetail,
+    TangleLink,
+    TangleNode,
+    TangleCodeBlock,
+)
+from .refs import extract_tangle_refs, extract_code_blocks
 
 
 MD_LINK_RE = re.compile(r"\[[^\]]+\]\((tangles/[^)#\s]+(?:#[^)\s]+)?)\)")
@@ -31,6 +37,7 @@ def parse_tangle_document(
     last_updated = str(frontmatter.get("last_updated", "")).strip()
 
     refs = extract_tangle_refs(body_lines)
+    code_blocks = extract_code_blocks(body_lines)
     links = _extract_links(rel_path, body_lines)
     heading_nodes = parse_heading_tree(lines, start=body_start)
 
@@ -80,6 +87,7 @@ def parse_tangle_document(
         nodes=nodes,
         refs=refs,
         links=links,
+        code_blocks=code_blocks,
         frontmatter=frontmatter if isinstance(frontmatter, dict) else {},
     )
 

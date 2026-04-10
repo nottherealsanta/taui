@@ -137,6 +137,42 @@ class TangleLink:
 
 
 @dataclass(slots=True)
+class TangleCodeBlock:
+    """A ::code directive embedding source code from another file.
+
+    Format: ::code file_path:symbol_name or ::code file_path:start-end
+
+    The code block is rendered as an editable code window in the tangle editor.
+    Edits are written back to the original source file.
+    """
+
+    file_path: str
+    target: str  # symbol name or "start-end" line range
+    line_in_tangle: int  # 1-based line number in the tangle document
+    ref_kind: str = "symbol"  # "symbol" or "lines"
+
+    # Resolved fields (populated after resolution)
+    resolved_start: int | None = None  # 1-based line in source file
+    resolved_end: int | None = None  # 1-based line in source file
+    content: str | None = None  # The actual source code
+    language: str | None = None  # Language for syntax highlighting
+    diagnostic: str = "pending"  # "resolved" | "unresolved" | "stale"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "file_path": self.file_path,
+            "target": self.target,
+            "line_in_tangle": self.line_in_tangle,
+            "ref_kind": self.ref_kind,
+            "resolved_start": self.resolved_start,
+            "resolved_end": self.resolved_end,
+            "content": self.content,
+            "language": self.language,
+            "diagnostic": self.diagnostic,
+        }
+
+
+@dataclass(slots=True)
 class TangleNode:
     id: str
     tangle_path: str
@@ -155,6 +191,7 @@ class TangleDetail:
     nodes: list[TangleNode]
     refs: list[TangleRef]
     links: list[TangleLink]
+    code_blocks: list[TangleCodeBlock]
     frontmatter: dict[str, Any]
 
 
