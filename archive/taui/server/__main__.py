@@ -24,7 +24,11 @@ def _bind_free_socket() -> socket.socket:
     return sock
 
 
-def _serve(workspace: Path, specs_path: Path | str | None = None) -> int:
+def _serve(
+    workspace: Path,
+    tangles_path: Path | str | None = None,
+    specs_path: Path | str | None = None,
+) -> int:
     try:
         from .app import create_app
         import uvicorn
@@ -37,9 +41,16 @@ def _serve(workspace: Path, specs_path: Path | str | None = None) -> int:
     bound_sock = _bind_free_socket()
     port = bound_sock.getsockname()[1]
 
-    app = create_app(workspace=workspace, specs_path=specs_path)
+    app = create_app(
+        workspace=workspace,
+        tangles_path=tangles_path,
+        specs_path=specs_path,
+    )
     logger.info(
-        "Starting Taui IPC server workspace=%s specs_path=%s", workspace, specs_path
+        "Starting Taui IPC server workspace=%s tangles_path=%s specs_path=%s",
+        workspace,
+        tangles_path,
+        specs_path,
     )
 
     # Subclass Server so we can print PORT: only after startup() has finished
@@ -75,20 +86,30 @@ def main(argv: list[str] | None = None) -> int:
     serve_parser.add_argument(
         "--workspace",
         default=".",
-        help="Workspace root that contains specs/",
+        help="Workspace root that contains tangles/",
+    )
+    serve_parser.add_argument(
+        "--tangles-path",
+        dest="tangles_path",
+        default="tangles",
+        help="Path to the tangles root directory (relative to workspace by default)",
     )
     serve_parser.add_argument(
         "--path",
         "--specs-path",
         dest="specs_path",
-        default="specs",
+        default=None,
         help="Path to the specs root directory (relative to workspace by default)",
     )
 
     args = parser.parse_args(argv)
     if args.command == "serve":
         workspace = Path(args.workspace).resolve()
-        return _serve(workspace, specs_path=args.specs_path)
+        return _serve(
+            workspace,
+            tangles_path=args.tangles_path,
+            specs_path=args.specs_path,
+        )
 
     parser.print_help()
     return 2

@@ -66,7 +66,7 @@ def test_websocket_roundtrip_and_spec_update_notifications(tmp_path: Path) -> No
                     {
                         "jsonrpc": "2.0",
                         "id": 2,
-                        "method": "spec/getTree",
+                        "method": "tangle/getTree",
                         "params": {},
                     }
                 )
@@ -80,7 +80,7 @@ def test_websocket_roundtrip_and_spec_update_notifications(tmp_path: Path) -> No
                     {
                         "jsonrpc": "2.0",
                         "id": 3,
-                        "method": "spec/updateNode",
+                        "method": "tangle/updateNode",
                         "params": {
                             "spec_ref": "specs/core.md#leaf",
                             "patch": {"markdown": "Core Updated"},
@@ -97,16 +97,16 @@ def test_websocket_roundtrip_and_spec_update_notifications(tmp_path: Path) -> No
             )
 
             node_changed = json.loads(ws.receive_text())
-            assert node_changed["method"] == "spec/nodeChanged"
+            assert node_changed["method"] == "tangle/nodeChanged"
             assert (
                 node_changed["params"]["node"]["spec_ref"]
                 == "specs/core.md#core-updated"
             )
 
             tree_changed = json.loads(ws.receive_text())
-            assert tree_changed["method"] == "spec/treeChanged"
-            assert tree_changed["params"]["previous_spec_ref"] == "specs/core.md#leaf"
-            assert tree_changed["params"]["spec_ref"] == "specs/core.md#core-updated"
+            assert tree_changed["method"] == "tangle/treeChanged"
+            assert tree_changed["params"]["previous_tangle_ref"] == "specs/core.md#leaf"
+            assert tree_changed["params"]["tangle_ref"] == "specs/core.md#core-updated"
 
 
 def test_get_node_code_refs_reads_workspace_files(tmp_path: Path) -> None:
@@ -158,7 +158,7 @@ def test_get_node_code_refs_reads_workspace_files(tmp_path: Path) -> None:
                     {
                         "jsonrpc": "2.0",
                         "id": 1,
-                        "method": "spec/getNodeCodeRefs",
+                        "method": "tangle/getNodeCodeRefs",
                         "params": {"spec_ref": "specs/core.md#core", "max_lines": 50},
                     }
                 )
@@ -195,7 +195,7 @@ def test_get_tree_detailed_returns_nodes_with_content(tmp_path: Path) -> None:
                     {
                         "jsonrpc": "2.0",
                         "id": 1,
-                        "method": "spec/getTreeDetailed",
+                        "method": "tangle/getTreeDetailed",
                         "params": {},
                     }
                 )
@@ -222,7 +222,7 @@ def test_create_sibling_node_inserts_and_notifies(tmp_path: Path) -> None:
                     {
                         "jsonrpc": "2.0",
                         "id": 1,
-                        "method": "spec/createSiblingNode",
+                        "method": "tangle/createSiblingNode",
                         "params": {"spec_ref": "specs/core.md#leaf"},
                     }
                 )
@@ -238,12 +238,12 @@ def test_create_sibling_node_inserts_and_notifies(tmp_path: Path) -> None:
 
             # Next messages: treeChanged then nodeCreated notifications
             tree_changed = json.loads(ws.receive_text())
-            assert tree_changed["method"] == "spec/treeChanged"
-            assert tree_changed["params"]["previous_spec_ref"] == "specs/core.md#leaf"
-            assert tree_changed["params"]["spec_ref"] == new_ref
+            assert tree_changed["method"] == "tangle/treeChanged"
+            assert tree_changed["params"]["previous_tangle_ref"] == "specs/core.md#leaf"
+            assert tree_changed["params"]["tangle_ref"] == new_ref
 
             node_created = json.loads(ws.receive_text())
-            assert node_created["method"] == "spec/nodeCreated"
+            assert node_created["method"] == "tangle/nodeCreated"
             assert node_created["params"]["node"]["spec_ref"] == new_ref
 
 
@@ -258,7 +258,7 @@ def test_create_sibling_node_missing_spec_ref_returns_error(tmp_path: Path) -> N
                     {
                         "jsonrpc": "2.0",
                         "id": 1,
-                        "method": "spec/createSiblingNode",
+                        "method": "tangle/createSiblingNode",
                         "params": {},
                     }
                 )
@@ -309,7 +309,7 @@ def test_indent_node_makes_node_child_of_prev_sibling(tmp_path: Path) -> None:
                     {
                         "jsonrpc": "2.0",
                         "id": 1,
-                        "method": "spec/indentNode",
+                        "method": "tangle/indentNode",
                         "params": {"spec_ref": "specs/core.md#beta"},
                     }
                 )
@@ -323,7 +323,7 @@ def test_indent_node_makes_node_child_of_prev_sibling(tmp_path: Path) -> None:
             # Two notifications follow
             json.loads(ws.receive_text())  # treeChanged
             node_changed = json.loads(ws.receive_text())
-            assert node_changed["method"] == "spec/nodeChanged"
+            assert node_changed["method"] == "tangle/nodeChanged"
 
             # Verify tree: beta should now appear under alpha
             ws.send_text(
@@ -331,7 +331,7 @@ def test_indent_node_makes_node_child_of_prev_sibling(tmp_path: Path) -> None:
                     {
                         "jsonrpc": "2.0",
                         "id": 2,
-                        "method": "spec/getTree",
+                        "method": "tangle/getTree",
                         "params": {},
                     }
                 )
@@ -401,18 +401,18 @@ def test_indent_node_after_create_sibling_uses_correct_edge_order(
         with client.websocket_connect("/ws") as ws:
             # 1. Create a sibling after Alpha.
             create_resp = rpc(
-                ws, 1, "spec/createSiblingNode", {"spec_ref": "specs/core.md#alpha"}
+                ws, 1, "tangle/createSiblingNode", {"spec_ref": "specs/core.md#alpha"}
             )
             assert "error" not in create_resp, create_resp
             new_ref = create_resp["result"]["node"]["spec_ref"]
 
             # 2. Immediately indent the new sibling — it should become a child of Alpha.
-            indent_resp = rpc(ws, 2, "spec/indentNode", {"spec_ref": new_ref})
+            indent_resp = rpc(ws, 2, "tangle/indentNode", {"spec_ref": new_ref})
             assert "error" not in indent_resp, indent_resp
             assert indent_resp["result"]["tree_changed"] is True
 
             # 3. Verify the new node is now deeper than Alpha.
-            tree_resp = rpc(ws, 3, "spec/getTree", {})
+            tree_resp = rpc(ws, 3, "tangle/getTree", {})
             nodes_by_ref = {n["spec_ref"]: n for n in tree_resp["result"]["nodes"]}
             assert new_ref in nodes_by_ref, f"{new_ref!r} not in tree"
             assert (
@@ -477,18 +477,18 @@ def test_indent_node_moves_children_with_parent(tmp_path: Path) -> None:
     with TestClient(app) as client:
         with client.websocket_connect("/ws") as ws:
             # Get baseline depths.
-            tree0 = rpc(ws, 1, "spec/getTree", {})
+            tree0 = rpc(ws, 1, "tangle/getTree", {})
             nodes0 = {n["spec_ref"]: n for n in tree0["result"]["nodes"]}
             alpha_depth0 = nodes0["specs/core.md#alpha"]["depth"]
             beta_depth0 = nodes0["specs/core.md#beta"]["depth"]
             gamma_depth0 = nodes0["specs/core.md#gamma"]["depth"]
 
             # Indent Alpha (makes it a child of Charlie).
-            resp = rpc(ws, 2, "spec/indentNode", {"spec_ref": "specs/core.md#alpha"})
+            resp = rpc(ws, 2, "tangle/indentNode", {"spec_ref": "specs/core.md#alpha"})
             assert "error" not in resp, resp
 
             # Verify all three nodes shifted by +1.
-            tree1 = rpc(ws, 3, "spec/getTree", {})
+            tree1 = rpc(ws, 3, "tangle/getTree", {})
             nodes1 = {n["spec_ref"]: n for n in tree1["result"]["nodes"]}
             assert nodes1["specs/core.md#alpha"]["depth"] == alpha_depth0 + 1, (
                 "alpha depth +1"
@@ -554,18 +554,18 @@ def test_outdent_node_moves_children_with_parent(tmp_path: Path) -> None:
     with TestClient(app) as client:
         with client.websocket_connect("/ws") as ws:
             # Get baseline depths.
-            tree0 = rpc(ws, 1, "spec/getTree", {})
+            tree0 = rpc(ws, 1, "tangle/getTree", {})
             nodes0 = {n["spec_ref"]: n for n in tree0["result"]["nodes"]}
             alpha_depth0 = nodes0["specs/core.md#alpha"]["depth"]
             beta_depth0 = nodes0["specs/core.md#beta"]["depth"]
             gamma_depth0 = nodes0["specs/core.md#gamma"]["depth"]
 
             # Outdent Alpha (makes it a sibling of Core).
-            resp = rpc(ws, 2, "spec/outdentNode", {"spec_ref": "specs/core.md#alpha"})
+            resp = rpc(ws, 2, "tangle/outdentNode", {"spec_ref": "specs/core.md#alpha"})
             assert "error" not in resp, resp
 
             # Verify all three nodes shifted by -1.
-            tree1 = rpc(ws, 3, "spec/getTree", {})
+            tree1 = rpc(ws, 3, "tangle/getTree", {})
             nodes1 = {n["spec_ref"]: n for n in tree1["result"]["nodes"]}
             assert nodes1["specs/core.md#alpha"]["depth"] == alpha_depth0 - 1, (
                 "alpha depth -1"
@@ -599,7 +599,7 @@ def test_outdent_node_raises_error_at_top_level(tmp_path: Path) -> None:
                     {
                         "jsonrpc": "2.0",
                         "id": 1,
-                        "method": "spec/outdentNode",
+                        "method": "tangle/outdentNode",
                         "params": {"spec_ref": "specs/core.md#core"},
                     }
                 )
@@ -641,7 +641,7 @@ def test_outdent_node_moves_up_one_level(tmp_path: Path) -> None:
                     {
                         "jsonrpc": "2.0",
                         "id": 1,
-                        "method": "spec/outdentNode",
+                        "method": "tangle/outdentNode",
                         "params": {"spec_ref": "specs/core.md#deep"},
                     }
                 )
@@ -661,7 +661,7 @@ def test_outdent_node_moves_up_one_level(tmp_path: Path) -> None:
                     {
                         "jsonrpc": "2.0",
                         "id": 2,
-                        "method": "spec/getTree",
+                        "method": "tangle/getTree",
                         "params": {},
                     }
                 )
@@ -673,7 +673,7 @@ def test_outdent_node_moves_up_one_level(tmp_path: Path) -> None:
                 == nodes_by_ref["specs/core.md#alpha"]["depth"]
             )
 
-    specs_root = tmp_path / "example_project" / "specs"
+    specs_root = tmp_path / "example_project" / "tangles"
     specs_root.mkdir(parents=True, exist_ok=True)
     (specs_root / "main.md").write_text(
         "\n".join(
@@ -692,7 +692,7 @@ def test_outdent_node_moves_up_one_level(tmp_path: Path) -> None:
         ),
         encoding="utf-8",
     )
-    app = create_app(workspace=tmp_path, specs_path="example_project/specs")
+    app = create_app(workspace=tmp_path, specs_path="example_project/tangles")
 
     with TestClient(app) as client:
         with client.websocket_connect("/ws") as ws:
@@ -701,7 +701,7 @@ def test_outdent_node_moves_up_one_level(tmp_path: Path) -> None:
                     {
                         "jsonrpc": "2.0",
                         "id": 1,
-                        "method": "spec/getTree",
+                        "method": "tangle/getTree",
                         "params": {},
                     }
                 )
@@ -709,6 +709,8 @@ def test_outdent_node_moves_up_one_level(tmp_path: Path) -> None:
             tree_resp = json.loads(ws.receive_text())
             nodes = tree_resp["result"]["nodes"]
             assert any(
-                node["spec_ref"] == "example_project/specs/main.md#example-project"
+                node.get("tangle_ref") == "example_project/tangles/main.md#project-spec"
+                or node.get("spec_ref")
+                == "example_project/tangles/main.md#project-spec"
                 for node in nodes
             )

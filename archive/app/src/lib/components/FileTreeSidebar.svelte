@@ -63,24 +63,6 @@
 </script>
 
 <aside class="file-tree-sidebar">
-  <div class="sidebar-header">
-    <span class="header-label">SPEC</span>
-    <div class="header-actions">
-      <button
-        class="action-btn"
-        onclick={handleRefresh}
-        title="Refresh"
-        aria-label="Refresh file tree"
-      >↻</button>
-      <button
-        class="action-btn"
-        onclick={handleCollapseAll}
-        title="Collapse all"
-        aria-label="Collapse all folders"
-      >⊟</button>
-    </div>
-  </div>
-
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div class="tree-content" oncontextmenu={handleContextMenu}>
     {#if isLoading && rootEntries.length === 0}
@@ -121,44 +103,6 @@
     overflow: hidden;
   }
 
-  .sidebar-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 8px 12px;
-    border-bottom: 1px solid var(--border-variant);
-    flex-shrink: 0;
-  }
-
-  .header-label {
-    font-size: 11px;
-    font-weight: 600;
-    color: var(--fg-muted);
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-  }
-
-  .header-actions {
-    display: flex;
-    gap: 2px;
-  }
-
-  .action-btn {
-    background: transparent;
-    border: none;
-    color: var(--fg-muted);
-    cursor: pointer;
-    font-size: 12px;
-    padding: 2px 4px;
-    border-radius: 3px;
-    line-height: 1;
-    transition: all 0.15s;
-  }
-
-  .action-btn:hover {
-    background-color: var(--element-hover);
-    color: var(--fg-primary);
-  }
 
   .tree-content {
     flex: 1;

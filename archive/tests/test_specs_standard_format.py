@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from taui.specs import SpecService
+from taui.tangle import SpecService
 
 
 def _run(coro):

@@ -15,11 +15,11 @@
 // does not participate in CSS custom property resolution.
 
 const DARK = {
-  bg:       '#000000',
-  surface:  '#121822',
-  elevated: '#1b2432',
+  bg:       '#151515',
+  surface:  '#000000',
+  elevated: '#0b0b0b',
   border:   '#2d3749',
-  fgPrimary:'#e6edf3',
+  fgPrimary:'#f7f7f7',
   fgMuted:  '#9fb0c2',
   fgAccent: '#7cc7ff',
   elementBg:'#1d2532',
@@ -42,9 +42,9 @@ const DARK = {
 } as const
 
 const LIGHT = {
-  bg:       '#f5f7fb',
-  surface:  '#ffffff',
-  elevated: '#ebf0f8',
+  bg:       '#ffffff',
+  surface:  '#f7f7f7',
+  elevated: '#f6f6f6',
   border:   '#d8e1ee',
   fgPrimary:'#1a2433',
   fgMuted:  '#5e7288',

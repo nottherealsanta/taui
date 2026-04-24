@@ -10,6 +10,7 @@ from taui.tools.base import ToolCategory, ToolContext, ToolResult
 
 def _agent_names() -> list[str]:
     from taui.agent.agents import AGENT_DEFINITIONS
+
     return sorted(AGENT_DEFINITIONS)
 
 
@@ -22,33 +23,39 @@ class TaskTool:
         "Parameters:\n"
         "  task (required): description of what the sub-agent should do\n"
         "  agent_type: type of agent to launch (explorer, planner, builder, general)\n"
-        "  spec_ref: spec reference for the sub-agent (default: current)\n"
+        "  tangle_ref: tangle reference for the sub-agent (default: current)\n"
         "  max_turns: maximum number of turns (default: from agent type)"
     )
-    schema: dict[str, Any] = field(default_factory=lambda: {
-        "type": "object",
-        "properties": {
-            "task": {
-                "type": "string",
-                "description": "Description of the task for the sub-agent.",
+    schema: dict[str, Any] = field(
+        default_factory=lambda: {
+            "type": "object",
+            "properties": {
+                "task": {
+                    "type": "string",
+                    "description": "Description of the task for the sub-agent.",
+                },
+                "agent_type": {
+                    "type": "string",
+                    "enum": ["explorer", "planner", "builder", "general"],
+                    "description": "Type of agent to launch.",
+                },
+                "spec_ref": {
+                    "type": "string",
+                    "description": "Spec ref to scope the sub-agent.",
+                },
+                "tangle_ref": {
+                    "type": "string",
+                    "description": "Tangle ref to scope the sub-agent.",
+                },
+                "max_turns": {
+                    "type": "integer",
+                    "description": "Maximum turns for the sub-agent.",
+                },
             },
-            "agent_type": {
-                "type": "string",
-                "enum": ["explorer", "planner", "builder", "general"],
-                "description": "Type of agent to launch.",
-            },
-            "spec_ref": {
-                "type": "string",
-                "description": "Spec ref to scope the sub-agent.",
-            },
-            "max_turns": {
-                "type": "integer",
-                "description": "Maximum turns for the sub-agent.",
-            },
-        },
-        "required": ["task"],
-        "additionalProperties": False,
-    })
+            "required": ["task"],
+            "additionalProperties": False,
+        }
+    )
     origin: str = "builtin"
     category: ToolCategory = ToolCategory.AGENT
 
@@ -57,7 +64,7 @@ class TaskTool:
     ) -> ToolResult:
         task_desc = arguments.get("task", "")
         agent_type = arguments.get("agent_type", "general")
-        spec_ref = arguments.get("spec_ref", "")
+        spec_ref = arguments.get("tangle_ref") or arguments.get("spec_ref", "")
         max_turns = arguments.get("max_turns")
 
         if not task_desc:
@@ -78,8 +85,12 @@ class TaskTool:
         # Get LLM and model from the parent runner or session
         llm = getattr(agent_runner, "llm", None) or getattr(session, "llm", None)
         model = getattr(agent_runner, "model", None) or getattr(session, "model", "")
-        tool_registry = getattr(agent_runner, "tool_registry", None) or getattr(session, "tool_registry", None)
-        spec_service = getattr(agent_runner, "spec_service", None) or getattr(session, "spec_service", None)
+        tool_registry = getattr(agent_runner, "tool_registry", None) or getattr(
+            session, "tool_registry", None
+        )
+        spec_service = getattr(agent_runner, "spec_service", None) or getattr(
+            session, "spec_service", None
+        )
         parent_agent_id = getattr(agent_runner, "agent_id", None)
 
         if not llm or not tool_registry:
@@ -88,7 +99,11 @@ class TaskTool:
             )
 
         if not spec_ref:
-            spec_ref = getattr(agent_runner, "spec_ref", "") or "root"
+            spec_ref = (
+                getattr(agent_runner, "tangle_ref", "")
+                or getattr(agent_runner, "spec_ref", "")
+                or "root"
+            )
 
         try:
             from taui.agent.agents import get_agent_definition
@@ -96,7 +111,7 @@ class TaskTool:
             agent_def = get_agent_definition(agent_type)
 
             runner = await agent_manager.launch(
-                spec_ref=spec_ref,
+                tangle_ref=spec_ref,
                 task=task_desc,
                 tier=agent_type,
                 llm=llm,
@@ -109,6 +124,7 @@ class TaskTool:
             # Wait for the sub-agent to finish
             if runner._task is not None:
                 import asyncio
+
                 try:
                     await asyncio.wait_for(runner._task, timeout=600.0)
                 except asyncio.TimeoutError:
@@ -127,14 +143,18 @@ class TaskTool:
                     break
 
             if not result_text:
-                result_text = f"Sub-agent ({agent_type}) completed task without a summary."
+                result_text = (
+                    f"Sub-agent ({agent_type}) completed task without a summary."
+                )
 
             return ToolResult.ok(
                 f"Sub-agent result ({agent_type}):\n\n{result_text}",
                 metadata={
                     "sub_agent_id": runner.agent_id,
                     "agent_type": agent_type,
-                    "total_turns": len([m for m in final_messages if m.role == "assistant"]),
+                    "total_turns": len(
+                        [m for m in final_messages if m.role == "assistant"]
+                    ),
                 },
             )
 

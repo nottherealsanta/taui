@@ -60,7 +60,9 @@ class QuestionTool:
         # Try to route through the agent runner's ask_question
         runner = getattr(context.session, "agent_runner", None)
         if runner is not None and hasattr(runner, "ask_question"):
-            spec_ref = getattr(runner, "spec_ref", "")
+            spec_ref = getattr(runner, "tangle_ref", "") or getattr(
+                runner, "spec_ref", ""
+            )
             answer = await runner.ask_question(
                 spec_ref=spec_ref,
                 question=question,

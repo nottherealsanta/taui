@@ -34,6 +34,12 @@ COPILOT_HEADERS: dict[str, str] = {
     "Copilot-Integration-Id": "vscode-chat",
 }
 
+# Headers for agent/tool-calling requests (Copilot agent mode).
+COPILOT_AGENT_HEADERS: dict[str, str] = {
+    **COPILOT_HEADERS,
+    "Copilot-Integration-Id": "copilot-chat",
+}
+
 # Copilot token is valid for ~30 min; refresh 5 min early.
 _EXPIRY_BUFFER_MS: int = 5 * 60 * 1000
 

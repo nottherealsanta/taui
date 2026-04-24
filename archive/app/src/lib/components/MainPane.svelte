@@ -1,6 +1,6 @@
 <script lang="ts">
   import SplitPane from '$components/SplitPane.svelte'
-  import SpecEditorPane from '$components/SpecEditorPane.svelte'
+  import TangleEditorPane from '$components/TangleEditorPane.svelte'
   import AgentPane from '$components/AgentPane.svelte'
 
   interface Props {
@@ -23,7 +23,7 @@
     >
       {#snippet first()}
         <div class="spec-pane">
-          <SpecEditorPane />
+          <TangleEditorPane />
         </div>
       {/snippet}
 

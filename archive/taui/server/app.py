@@ -11,6 +11,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
 from .handlers import MethodHandlers
 from .protocol import JsonRpcProtocolError, error_message, parse_request, result_message
+from taui.streams import StreamStore, StreamClient, create_streams_router
 
 logger = logging.getLogger(__name__)
 
@@ -43,27 +44,41 @@ class _ConnectionManager:
 
 def create_app(
     workspace: Path | str | None = None,
+    tangles_path: Path | str | None = None,
     specs_path: Path | str | None = None,
     dev_mode: bool = False,
     history_db_path: Path | str | None = None,
 ) -> FastAPI:
     handlers = MethodHandlers(
         workspace=workspace,
+        tangles_path=tangles_path,
         specs_path=specs_path,
         dev_mode=dev_mode,
         history_db_path=history_db_path,
     )
+    resolved_workspace = Path(workspace).resolve() if workspace else Path.cwd()
     logger.info(
         "Creating FastAPI app workspace=%s",
-        workspace or Path.cwd(),
+        resolved_workspace,
     )
+
+    # ── Durable Streams infrastructure ────────────────────────────────────
+    stream_store = StreamStore(resolved_workspace)
+    stream_client = StreamClient(stream_store)
+
+    # Make stream_client accessible to handlers (for agent integration)
+    handlers.stream_client = stream_client  # type: ignore[attr-defined]
+    handlers.agent_manager.set_stream_client(stream_client)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         started = time.perf_counter()
-        logger.info("Application startup: initializing spec service")
-        await handlers.specs.ensure_initialized()
-        await handlers.history_db.connect()
+        logger.info("Application startup: initializing tangle service")
+        await handlers.tangles.ensure_initialized()
+        logger.info("Application startup: connecting agent history DB")
+        await handlers.agent_db.connect()
+        logger.info("Application startup: connecting stream store")
+        await stream_store.connect()
         logger.info(
             "Application startup: running persistence recovery",
         )
@@ -77,12 +92,14 @@ def create_app(
         finally:
             shutdown_started = time.perf_counter()
             logger.info(
-                "Application shutdown: stopping agents, flushing writer and closing DB"
+                "Application shutdown: stopping agents, closing stream store, "
+                "closing agent DB, flushing writer and closing tangle DB"
             )
             await handlers.agent_manager.shutdown()
-            await handlers.specs.writer.flush()
-            await handlers.specs.db.close()
-            await handlers.history_db.close()
+            await stream_store.close()
+            await handlers.agent_db.close()
+            await handlers.tangles.writer.flush()
+            await handlers.tangles.db.close()
             logger.info(
                 "Application shutdown complete duration_ms=%s",
                 int((time.perf_counter() - shutdown_started) * 1000),
@@ -90,6 +107,10 @@ def create_app(
 
     app = FastAPI(title="taui-server", version="0.1.0", lifespan=lifespan)
     manager = _ConnectionManager()
+
+    # Mount the durable streams HTTP router
+    streams_router = create_streams_router(stream_store)
+    app.include_router(streams_router, prefix="/streams", tags=["streams"])
 
     @app.get("/healthz")
     async def healthz() -> dict[str, str]:

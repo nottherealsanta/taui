@@ -3,17 +3,14 @@
  * dirty state, and content caching.
  *
  * Uses Svelte 5 $state runes for fine-grained reactivity.
- * Persists open tabs to localStorage for session restoration.
+ * Mirrors open tabs from backend snapshot for session restoration.
  */
 
 import type { OpenTab } from '$types/index'
 import { backendClient } from '$services/backend-client'
 import { appState } from '$stores/app-state.svelte'
 import { fileTree } from '$stores/file-tree.svelte'
-import { deriveSpecTitle, specRefToFilePath } from '$lib/utils/specs'
-
-const STORAGE_KEY = 'taui-open-tabs'
-const ACTIVE_TAB_KEY = 'taui-active-tab-file'
+import { deriveTangleTitle, tangleRefToFilePath } from '$lib/utils/tangles'
 
 class TabStore {
   tabs: OpenTab[] = $state([])
@@ -42,7 +39,7 @@ class TabStore {
       this.activeTabId = existing.id
       this._selectNodeForFile(filePath)
       void this._syncFileTreeSelection(filePath)
-      this._persistState()
+      void backendClient.uiSetActiveTab(filePath)
       return
     }
 
@@ -58,7 +55,7 @@ class TabStore {
       content = ''
     }
 
-    const title = deriveSpecTitle(filePath, content, frontmatter)
+    const title = deriveTangleTitle(filePath, content, frontmatter)
     const id = `tab-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 
     const tab: OpenTab = {
@@ -74,15 +71,17 @@ class TabStore {
     this.activeTabId = id
     this._selectNodeForFile(filePath)
     void this._syncFileTreeSelection(filePath)
-    this._persistState()
+    await backendClient.uiOpenTab(filePath)
   }
 
   /**
    * Close a tab by ID.
    */
-  closeTab(tabId: string): void {
+  async closeTab(tabId: string): Promise<void> {
     const index = this.tabs.findIndex((t) => t.id === tabId)
     if (index === -1) return
+
+    const closed = this.tabs[index]
 
     this.tabs = this.tabs.filter((t) => t.id !== tabId)
 
@@ -96,37 +95,39 @@ class TabStore {
         this._selectNodeForFile(this.tabs[newIndex].filePath)
       }
     }
-    this._persistState()
+    await backendClient.uiCloseTab(closed.filePath)
   }
 
   /**
    * Close all tabs except the given one.
    */
-  closeOtherTabs(tabId: string): void {
+  async closeOtherTabs(tabId: string): Promise<void> {
+    const toClose = this.tabs.filter((t) => t.id !== tabId)
     this.tabs = this.tabs.filter((t) => t.id === tabId)
     this.activeTabId = tabId
-    this._persistState()
+    await Promise.all(toClose.map((tab) => backendClient.uiCloseTab(tab.filePath)))
   }
 
   /**
    * Close all tabs.
    */
-  closeAllTabs(): void {
+  async closeAllTabs(): Promise<void> {
+    const existing = [...this.tabs]
     this.tabs = []
     this.activeTabId = null
-    this._persistState()
+    await Promise.all(existing.map((tab) => backendClient.uiCloseTab(tab.filePath)))
   }
 
   /**
    * Set the active tab.
    */
-  setActiveTab(tabId: string): void {
+  async setActiveTab(tabId: string): Promise<void> {
     const tab = this.tabs.find((t) => t.id === tabId)
     if (tab) {
       this.activeTabId = tabId
       this._selectNodeForFile(tab.filePath)
       void this._syncFileTreeSelection(tab.filePath)
-      this._persistState()
+      await backendClient.uiSetActiveTab(tab.filePath)
     }
   }
 
@@ -147,7 +148,7 @@ class TabStore {
     const tab = this.tabs.find((t) => t.id === tabId)
     if (tab) {
       tab.content = content
-      tab.title = deriveSpecTitle(tab.filePath, content, tab.frontmatter)
+      tab.title = deriveTangleTitle(tab.filePath, content, tab.frontmatter)
       tab.isDirty = true
     }
   }
@@ -163,7 +164,7 @@ class TabStore {
     if (!tab || !tab.isDirty) return
 
     try {
-      await backendClient.writeFile(tab.filePath, tab.content)
+      await backendClient.uiSaveTab(tab.filePath, tab.content)
       tab.isDirty = false
     } catch (err) {
       console.error(`[tabs] Failed to save: ${tab.filePath}`, err)
@@ -174,16 +175,7 @@ class TabStore {
    * Restore tabs from localStorage.
    */
   restoreSession(): void {
-    try {
-      const stored = localStorage.getItem(STORAGE_KEY)
-      const activeFilePath = localStorage.getItem(ACTIVE_TAB_KEY)
-      if (stored) {
-        const paths = JSON.parse(stored) as string[]
-        void this._restoreSessionAsync(paths, activeFilePath)
-      }
-    } catch {
-      // ignore
-    }
+    // No-op: session now restored via ui.snapshot in connection.ts.
   }
 
   /**
@@ -199,62 +191,78 @@ class TabStore {
     next.splice(fromIndex, 1)
     next.splice(toIndex, 0, tab)
     this.tabs = next
-    this._persistState()
   }
 
   // ── Private ──────────────────────────────────────────────────────────────
 
-  private _persistState(): void {
-    try {
-      const paths = this.tabs.map((t) => t.filePath)
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(paths))
-      const activeFilePath = this.activeTab?.filePath
-      if (activeFilePath) {
-        localStorage.setItem(ACTIVE_TAB_KEY, activeFilePath)
+  applySnapshot(snapshot: { open?: string[]; active?: string }): void {
+    const open = Array.isArray(snapshot.open) ? snapshot.open : []
+    const active = typeof snapshot.active === 'string' ? snapshot.active : ''
+    const prevByPath = new Map(this.tabs.map((t) => [t.filePath, t]))
+    const next: OpenTab[] = []
+    for (const path of open) {
+      const existing = prevByPath.get(path)
+      if (existing) {
+        next.push(existing)
+      } else {
+        next.push({
+          id: `tab-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          filePath: path,
+          title: deriveTangleTitle(path, '', undefined),
+          isDirty: false,
+          content: '',
+          frontmatter: undefined,
+        })
       }
-    } catch {
-      // ignore
     }
+    this.tabs = next
+    const activeTab = this.tabs.find((t) => t.filePath === active) ?? this.tabs[0] ?? null
+    this.activeTabId = activeTab?.id ?? null
+    if (activeTab) {
+      this._selectNodeForFile(activeTab.filePath)
+      void this._syncFileTreeSelection(activeTab.filePath)
+    }
+
+    // Load file content for all restored tabs that have empty content.
+    // applySnapshot creates placeholder tabs with content: '' — we need to
+    // fetch the actual file content from the backend so editors aren't blank.
+    void this._loadRestoredTabContent()
   }
 
-  private async _restoreSessionAsync(paths: string[], activeFilePath: string | null): Promise<void> {
-    // Wait for backend connection before attempting to read files
-    if (appState.connectionState !== 'ready') {
-      await new Promise<void>((resolve) => {
-        const check = () => {
-          if (appState.connectionState === 'ready') {
-            resolve()
-          } else if (typeof appState.connectionState === 'object' && 'error' in appState.connectionState) {
-            resolve() // Give up waiting on error
-          } else {
-            setTimeout(check, 50)
+  /**
+   * Load file content for any tabs that were restored with empty content
+   * (e.g. from session snapshot). Fetches all empty tabs in parallel.
+   */
+  private async _loadRestoredTabContent(): Promise<void> {
+    const emptyTabs = this.tabs.filter((t) => t.content === '' && !t.isDirty)
+    if (emptyTabs.length === 0) return
+
+    await Promise.all(
+      emptyTabs.map(async (tab) => {
+        try {
+          const result = await backendClient.readFile(tab.filePath)
+          // Tab may have been closed while we were loading — check it still exists
+          const current = this.tabs.find((t) => t.id === tab.id)
+          if (current && current.content === '') {
+            current.content = result.content
+            current.frontmatter = result.frontmatter ?? undefined
+            current.title = deriveTangleTitle(current.filePath, current.content, current.frontmatter)
           }
+        } catch (err) {
+          console.error(`[tabs] Failed to load restored tab content: ${tab.filePath}`, err)
         }
-        check()
-      })
-    }
-
-    for (const path of paths) {
-      await this.openFile(path)
-    }
-
-    if (!activeFilePath) return
-    const activeTab = this.tabs.find((tab) => tab.filePath === activeFilePath)
-    if (activeTab) {
-      this.activeTabId = activeTab.id
-      this._selectNodeForFile(activeTab.filePath)
-      this._persistState()
-    }
+      }),
+    )
   }
 
   private _selectNodeForFile(filePath: string): void {
     const selectedId = appState.selectedNode
     if (selectedId !== null) {
-      const selectedPath = specRefToFilePath(appState.nodes[selectedId]?.specRef ?? '')
+      const selectedPath = tangleRefToFilePath(appState.nodes[selectedId]?.specRef ?? '')
       if (selectedPath === filePath) return
     }
 
-    const matchingNode = appState.nodes.find((node) => specRefToFilePath(node.specRef) === filePath)
+    const matchingNode = appState.nodes.find((node) => tangleRefToFilePath(node.specRef) === filePath)
     if (matchingNode) {
       appState.setSelected(matchingNode.id)
     }

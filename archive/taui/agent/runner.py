@@ -15,10 +15,13 @@ from typing import Any, Callable
 from uuid import uuid4
 
 from taui.agent.cost_tracker import CostTracker
-from taui.agent.system_prompt_loader import get_prompt_template, render_prompt_template
+from taui.agent.system_prompt_loader import (
+    get_prompt_template_for_workspace,
+    render_prompt_template,
+)
 from taui.llm.types import Message, ToolCall
 from taui.llms.base import ProviderTurnResult
-from taui.specs.db import SpecDB
+from taui.tangle.agent_db import AgentHistoryDB
 from taui.tools.executor import (
     ToolExecutor,
     ExecutionCompleted,
@@ -92,8 +95,9 @@ def _build_system_prompt(
             builder.with_project_context(ctx)
 
     # Agent-specific prompt section from markdown template
-    role_template = get_prompt_template(
-        "sub-agent" if agent_type == "sub_agent" else "root"
+    role_template = get_prompt_template_for_workspace(
+        "sub-agent" if agent_type == "sub_agent" else "root",
+        workspace=working_dir or None,
     )
     if role_template:
         builder.append_section(
@@ -113,7 +117,10 @@ def _build_system_prompt(
             builder.append_section(f"# Agent Role\n{prefix}")
 
     # Task section
-    task_section = f"# Assignment\nYou are assigned to spec branch: {spec_ref!r}.\n\nYour current task is:\n{task}"
+    task_section = (
+        f"# Assignment\nYou are assigned to tangle branch: {spec_ref!r}."
+        f"\n\nYour current task is:\n{task}"
+    )
     builder.append_section(task_section)
 
     if spec_tree_outline:
@@ -132,7 +139,12 @@ def _build_system_prompt(
         "Start by understanding the project using read, glob, grep, find, and "
         "spec-tree tools. Then proceed with the task. Always call at least one "
         "tool before providing your final answer.\n\n"
-        "When finished, provide a summary of what you found or accomplished."
+        "When finished, provide a summary of what you found or accomplished.\n\n"
+        "# Response Format\n"
+        "ALWAYS format your replies in **Markdown**. Use headings, bold, "
+        "code blocks, lists, and other Markdown syntax to structure your "
+        "responses clearly. Wrap code snippets in fenced code blocks with "
+        "the appropriate language tag (e.g. ```python)."
     )
 
     return builder.render()
@@ -156,7 +168,7 @@ class AgentRunner:
         tier: str,
         llm: Any,  # BaseLLMClient — duck-typed; only create_turn() is called
         model: str,
-        db: SpecDB,
+        db: AgentHistoryDB,
         tool_registry: Any,  # ToolRegistry — imported lazily to avoid cycles
         spec_service: Any | None = None,  # SpecService — optional, for spec-tree tools
         event_callback: EventCallback | None = None,
@@ -167,10 +179,12 @@ class AgentRunner:
         display_name: str | None = None,
         agent_definition: Any | None = None,  # AgentDefinition — for tool restrictions
         history_db: Any | None = None,  # HistoryDB — global message history
+        stream_client: Any | None = None,  # StreamClient — durable streams
     ) -> None:
         self.agent_id = agent_id
         self.session_id = session_id
         self.spec_ref = spec_ref
+        self.tangle_ref = spec_ref
         self.task = task
         self.tier = tier
         self.llm = llm
@@ -186,6 +200,7 @@ class AgentRunner:
         self.display_name = display_name or agent_id
         self.agent_definition = agent_definition
         self.history_db = history_db
+        self._stream_client = stream_client  # Durable streams client
 
         self.state: AgentState = AgentState.IDLE
         self._stop_flag = asyncio.Event()
@@ -205,6 +220,9 @@ class AgentRunner:
 
         # In-memory conversation history
         self._messages: list[Message] = []
+
+        # Durable stream ID for this agent run
+        self._stream_id: str = f"agents/{agent_id}"
 
     # ── Public API ─────────────────────────────────────────────────────────────
 
@@ -313,6 +331,7 @@ class AgentRunner:
             "agent_id": self.agent_id,
             "session_id": self.session_id,
             "spec_ref": self.spec_ref,
+            "tangle_ref": self.spec_ref,
             "task": self.task,
             "tier": self.tier,
             "state": self.state.value,
@@ -330,7 +349,11 @@ class AgentRunner:
         event = AgentEvent(
             agent_id=self.agent_id,
             event_type="state_change",
-            payload={"state": new_state.value, "spec_ref": self.spec_ref},
+            payload={
+                "state": new_state.value,
+                "spec_ref": self.spec_ref,
+                "tangle_ref": self.spec_ref,
+            },
         )
         self._emit(event)
         await self._persist_event(event)
@@ -346,6 +369,47 @@ class AgentRunner:
                     event.event_type,
                 )
 
+    async def _ensure_stream(self) -> None:
+        """Create the durable stream for this agent run if a stream client is available."""
+        if self._stream_client is not None:
+            try:
+                await self._stream_client.ensure_stream(self._stream_id)
+            except Exception:
+                logger.exception(
+                    "Failed to create durable stream agent_id=%s stream_id=%s",
+                    self.agent_id,
+                    self._stream_id,
+                )
+
+    async def _append_to_stream(self, event: AgentEvent) -> None:
+        """Append an event to the durable stream (best-effort, non-blocking)."""
+        if self._stream_client is None:
+            return
+        try:
+            await self._stream_client.append_event(
+                self._stream_id,
+                event.event_type,
+                event.payload,
+            )
+        except Exception:
+            logger.exception(
+                "Failed to append to durable stream agent_id=%s event=%s",
+                self.agent_id,
+                event.event_type,
+            )
+
+    async def _close_stream(self) -> None:
+        """Close the durable stream (signal EOF — agent run complete)."""
+        if self._stream_client is None:
+            return
+        try:
+            await self._stream_client.close_stream(self._stream_id)
+        except Exception:
+            logger.exception(
+                "Failed to close durable stream agent_id=%s",
+                self.agent_id,
+            )
+
     async def _persist_event(self, event: AgentEvent) -> None:
         try:
             await self.db.add_agent_event(
@@ -355,6 +419,8 @@ class AgentRunner:
             )
         except Exception:
             logger.exception("Failed to persist agent event agent_id=%s", self.agent_id)
+        # Also append to durable stream for offset-based replay
+        await self._append_to_stream(event)
 
     # ── Main loop ──────────────────────────────────────────────────────────────
 
@@ -365,6 +431,8 @@ class AgentRunner:
             self.spec_ref,
             len(self.task),
         )
+        # Create the durable stream for this agent run
+        await self._ensure_stream()
         try:
             await self._run_task_with_writeback(self.task)
 
@@ -402,6 +470,8 @@ class AgentRunner:
                 await self._set_state(AgentState.DONE)
             else:
                 await self._set_state(AgentState.DONE)
+            # Close the durable stream (EOF)
+            await self._close_stream()
             logger.info(
                 "AgentRunner finished agent_id=%s state=%s", self.agent_id, self.state
             )

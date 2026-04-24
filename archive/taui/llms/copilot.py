@@ -5,10 +5,12 @@ Copilot LLM client — OpenAI /chat/completions wire format.
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 import httpx
 
 from taui.auth.copilot import (
+    COPILOT_AGENT_HEADERS,
     COPILOT_HEADERS,
     CopilotCredentials,
     ensure_valid_token,
@@ -21,6 +23,9 @@ from taui.llms.base import (
     ProviderToolCall,
     ProviderTurnResult,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 class CopilotLLMClient(BaseLLMClient):
@@ -152,104 +157,171 @@ class CopilotLLMClient(BaseLLMClient):
         body: dict[str, Any] = {
             "model": model,
             "messages": messages,
-            "stream": False,
+            "stream": True,
             "temperature": temperature,
         }
         if tools:
             body["tools"] = tools
             body["tool_choice"] = "auto"
 
+        _tool_names = (
+            [t.get("function", {}).get("name", "?") for t in tools] if tools else []
+        )
+        logger.info(
+            "Copilot API request: model=%s, %d messages, %d tools (%s)",
+            model,
+            len(messages),
+            len(tools) if tools else 0,
+            ", ".join(_tool_names[:8]),
+        )
+
+        # Use streaming so the Copilot proxy includes tool_calls in the response.
+        # Non-streaming responses from the enterprise proxy strip tool_calls even
+        # when finish_reason=tool_calls.
+        text_parts: list[str] = []
+        # tool_calls_map: index → {id, name, arguments_parts}
+        tc_map: dict[int, dict[str, Any]] = {}
+        finish_reason: str = ""
+        reasoning_opaque: str = ""
+        reasoning_text: str = ""
+
         async with httpx.AsyncClient(timeout=120) as client:
-            response = await client.post(
+            async with client.stream(
+                "POST",
                 f"{base_url}/chat/completions",
                 json=body,
                 headers={
                     "Authorization": f"Bearer {self.credentials.copilot_token}",
                     "Content-Type": "application/json",
-                    "Accept": "application/json",
+                    "Accept": "text/event-stream",
                     "X-Initiator": "user",
-                    "Openai-Intent": "conversation-edits",
-                    **COPILOT_HEADERS,
+                    "Openai-Intent": "conversation-panel",
+                    **COPILOT_AGENT_HEADERS,
                 },
-            )
-        if response.status_code == 401:
-            raise PermissionError(
-                "Authentication failed (401). Delete ~/.config/taui/config.toml "
-                "and re-run to log in again."
-            )
-        if not response.is_success:
-            import logging as _logging
+            ) as response:
+                if response.status_code == 401:
+                    raise PermissionError(
+                        "Authentication failed (401). Delete ~/.config/taui/config.toml "
+                        "and re-run to log in again."
+                    )
+                if not response.is_success:
+                    body_text = (await response.aread()).decode(
+                        "utf-8", errors="replace"
+                    )
+                    logger.error(
+                        "Copilot API error status=%s model=%s body=%s",
+                        response.status_code,
+                        model,
+                        body_text[:2000],
+                    )
+                    raise httpx.HTTPStatusError(
+                        f"HTTP {response.status_code}: {body_text[:500]}",
+                        request=response.request,
+                        response=response,
+                    )
 
-            _logging.getLogger(__name__).error(
-                "Copilot API error status=%s model=%s body=%s",
-                response.status_code,
-                model,
-                response.text[:2000],
-            )
-            # Include the API error body in the exception so callers can see it
-            raise httpx.HTTPStatusError(
-                f"HTTP {response.status_code}: {response.text[:500]}",
-                request=response.request,
-                response=response,
+                async for line in response.aiter_lines():
+                    if not line.startswith("data: "):
+                        continue
+                    data = line[6:]
+                    if data.strip() == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(data)
+                    except json.JSONDecodeError:
+                        continue
+
+                    choices = chunk.get("choices")
+                    if not isinstance(choices, list) or not choices:
+                        continue
+                    delta = choices[0].get("delta", {})
+                    if not isinstance(delta, dict):
+                        continue
+
+                    # Finish reason
+                    fr = choices[0].get("finish_reason")
+                    if fr:
+                        finish_reason = fr
+
+                    # Text content
+                    content_delta = delta.get("content")
+                    if isinstance(content_delta, str):
+                        text_parts.append(content_delta)
+
+                    # Reasoning
+                    ro = delta.get("reasoning_opaque")
+                    if isinstance(ro, str):
+                        reasoning_opaque += ro
+                    rt = delta.get("reasoning_text")
+                    if isinstance(rt, str):
+                        reasoning_text += rt
+
+                    # Tool call deltas (OpenAI streaming format)
+                    tc_deltas = delta.get("tool_calls")
+                    if isinstance(tc_deltas, list):
+                        for tc_delta in tc_deltas:
+                            if not isinstance(tc_delta, dict):
+                                continue
+                            idx = tc_delta.get("index", 0)
+                            if idx not in tc_map:
+                                tc_map[idx] = {"id": "", "name": "", "args": ""}
+                            entry = tc_map[idx]
+                            if "id" in tc_delta and tc_delta["id"]:
+                                entry["id"] = tc_delta["id"]
+                            func = tc_delta.get("function", {})
+                            if isinstance(func, dict):
+                                if "name" in func and func["name"]:
+                                    entry["name"] = func["name"]
+                                if "arguments" in func and isinstance(
+                                    func["arguments"], str
+                                ):
+                                    entry["args"] += func["arguments"]
+
+        text = "".join(text_parts)
+
+        # Build parsed tool calls from accumulated deltas
+        parsed_calls: list[ProviderToolCall] = []
+        for idx in sorted(tc_map.keys()):
+            entry = tc_map[idx]
+            call_id = entry.get("id", "")
+            name = entry.get("name", "")
+            args_raw = entry.get("args", "{}")
+            if not call_id or not name:
+                continue
+            try:
+                arguments = json.loads(args_raw) if args_raw else {}
+                if not isinstance(arguments, dict):
+                    arguments = {}
+            except json.JSONDecodeError:
+                arguments = {}
+            parsed_calls.append(
+                ProviderToolCall(call_id=call_id, name=name, arguments=arguments)
             )
 
-        payload = response.json()
-        choices = payload.get("choices")
-        if not isinstance(choices, list) or not choices:
-            return ProviderTurnResult(
-                response_id=None,
-                text="",
-                tool_calls=[],
-                assistant_metadata=None,
-            )
-
-        message = choices[0].get("message")
-        if not isinstance(message, dict):
-            return ProviderTurnResult(
-                response_id=None,
-                text="",
-                tool_calls=[],
-                assistant_metadata=None,
-            )
-
-        content = message.get("content")
-        text = content if isinstance(content, str) else ""
-        reasoning_opaque = message.get("reasoning_opaque")
-        reasoning_text = message.get("reasoning_text")
         assistant_metadata: dict[str, Any] | None = None
-        if isinstance(reasoning_opaque, str) and reasoning_opaque:
+        if reasoning_opaque:
             assistant_metadata = {"reasoning_opaque": reasoning_opaque}
-            if isinstance(reasoning_text, str) and reasoning_text:
+            if reasoning_text:
                 assistant_metadata["reasoning_text"] = reasoning_text
 
-        parsed_calls: list[ProviderToolCall] = []
-        raw_tool_calls = message.get("tool_calls")
-        if isinstance(raw_tool_calls, list):
-            for item in raw_tool_calls:
-                if not isinstance(item, dict):
-                    continue
-                call_id = item.get("id")
-                function = item.get("function")
-                if not isinstance(call_id, str) or not isinstance(function, dict):
-                    continue
-                name = function.get("name")
-                arguments_raw = function.get("arguments", "{}")
-                if not isinstance(name, str):
-                    continue
-                arguments: dict[str, Any] = {}
-                if isinstance(arguments_raw, str):
-                    try:
-                        decoded = json.loads(arguments_raw)
-                        if isinstance(decoded, dict):
-                            arguments = decoded
-                    except json.JSONDecodeError:
-                        arguments = {}
-                elif isinstance(arguments_raw, dict):
-                    arguments = arguments_raw
-
-                parsed_calls.append(
-                    ProviderToolCall(call_id=call_id, name=name, arguments=arguments)
-                )
+        logger.info(
+            "Copilot API response: finish_reason=%s, has_tool_calls=%s",
+            finish_reason,
+            bool(parsed_calls),
+        )
+        if parsed_calls:
+            logger.info(
+                "Copilot API parsed %d tool call(s): %s",
+                len(parsed_calls),
+                [tc.name for tc in parsed_calls],
+            )
+        elif finish_reason == "tool_calls":
+            logger.warning(
+                "Copilot API: finish_reason=tool_calls but no tool calls were parsed "
+                "(tc_map=%s, text=%r)",
+                tc_map,
+                text[:200],
+            )
 
         return ProviderTurnResult(
             response_id=None,

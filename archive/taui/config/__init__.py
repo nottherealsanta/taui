@@ -15,17 +15,23 @@ from taui.config.settings import (
     Settings,
     load_settings,
 )
+from taui.config.project_settings import (
+    ProjectSettingsStore,
+    default_settings as default_project_settings,
+)
 
 __all__ = [
     "BashPolicySettings",
     "McpServerSettings",
     "ModelSettings",
     "Policy",
+    "ProjectSettingsStore",
     "PolicySettings",
     "ProviderSettings",
     "Settings",
     "ToolDecision",
     "load_config",
+    "default_project_settings",
     "load_provider_config",
     "load_settings",
     "save_provider_config",

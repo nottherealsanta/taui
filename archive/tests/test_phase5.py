@@ -23,7 +23,7 @@ import pytest
 
 from taui.agent.manager import AgentManager
 from taui.agent.runner import AgentEvent
-from taui.specs.db import SpecDB
+from taui.tangle.agent_db import AgentHistoryDB
 
 pytestmark = pytest.mark.anyio
 
@@ -31,14 +31,14 @@ pytestmark = pytest.mark.anyio
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 
-async def _make_db(tmp_path: Path) -> SpecDB:
-    db = SpecDB(tmp_path, db_path=tmp_path / "test.db", persist_snapshot=False)
+async def _make_db(tmp_path: Path) -> AgentHistoryDB:
+    db = AgentHistoryDB(tmp_path, db_path=tmp_path / "test-agents.db")
     await db.connect()
     return db
 
 
 async def _seed_interrupted_session(
-    db: SpecDB,
+    db: AgentHistoryDB,
     *,
     agent_id: str = "agent-interrupted",
     spec_ref: str = "specs/core.md#core",

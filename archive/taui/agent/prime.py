@@ -21,7 +21,10 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Callable
 
-from taui.agent.system_prompt_loader import get_prompt_template, render_prompt_template
+from taui.agent.system_prompt_loader import (
+    get_prompt_template_for_workspace,
+    render_prompt_template,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +71,7 @@ class PrimeAgent:
         emit_notification: NotificationCallback,
         history_db: Any | None = None,
         max_turns: int = 30,
+        stream_client: Any | None = None,
     ) -> None:
         self._workspace = workspace
         self._spec_service = spec_service
@@ -76,11 +80,13 @@ class PrimeAgent:
         self._emit = emit_notification
         self._history_db = history_db
         self._max_turns = max_turns
+        self._stream_client = stream_client  # Durable streams client
 
         # Persistent conversation history (grows across all interactions)
         self._messages: list[dict[str, Any]] = []
         self._system_prompt_built = False
         self._history_initialized = False
+        self._stream_initialized = False
 
         # Concurrency primitives
         self._interrupt = asyncio.Event()
@@ -93,6 +99,10 @@ class PrimeAgent:
         self._tool_schemas: list[dict[str, Any]] | None = None
         self._policy: Any | None = None
         self._session: Any | None = None
+
+        # Durable stream IDs for prime
+        self._stream_id = "prime"
+        self._token_stream_id = "prime/tokens"
 
     @property
     def state(self) -> PrimeState:
@@ -158,12 +168,13 @@ class PrimeAgent:
         await self.cancel()
         await self._ensure_initialized()
 
-        system_messages = [
-            m
-            for m in self._messages
-            if isinstance(m, dict) and m.get("role") == "system"
-        ]
-        self._messages = system_messages[:1]
+        # Close durable streams for the old context; new streams will be
+        # created lazily on the next _think_loop iteration.
+        await self._close_streams()
+
+        # Reset to empty — system prompt will be freshly rebuilt below.
+        self._messages = []
+        self._system_prompt_built = False
 
         # Clear queued pending user messages from the previous context.
         while True:
@@ -172,6 +183,11 @@ class PrimeAgent:
             except asyncio.QueueEmpty:
                 break
         self._interrupt.clear()
+
+        # Rebuild the system prompt now so it's current.
+        if self._tool_schemas is not None:
+            tool_names = [t["function"]["name"] for t in self._tool_schemas]
+            await self._build_system_prompt(tool_names)
 
         # Persist a context boundary marker so startup restore can recover the
         # latest context only.
@@ -221,6 +237,8 @@ class PrimeAgent:
     async def _think_loop(self) -> None:
         """Core think→tool→observe loop with interrupt-and-pivot."""
         llm, model = self._resolve_llm()
+        # Ensure durable streams exist for Prime
+        await self._ensure_streams()
 
         for _turn in range(self._max_turns):
             # ── Check for interrupts before thinking ───────────────────
@@ -237,7 +255,7 @@ class PrimeAgent:
 
             try:
                 result = await llm.create_turn(
-                    self._messages,
+                    self._sanitize_messages_for_api(),
                     model,
                     tools=self._tool_schemas or None,
                 )
@@ -253,6 +271,8 @@ class PrimeAgent:
             text = result.text or ""
             if text:
                 self._emit_prime("prime/token", {"text": text})
+                # Also append to durable token stream for replay
+                asyncio.create_task(self._append_token_to_stream(text))
 
             # Build assistant message for history
             assistant_msg: dict[str, Any] = {"role": "assistant", "content": text}
@@ -300,6 +320,17 @@ class PrimeAgent:
                         "arguments": tc.arguments,
                     },
                 )
+                # Append tool call to durable stream
+                asyncio.create_task(
+                    self._append_to_stream(
+                        "tool_call",
+                        {
+                            "call_id": tc.call_id,
+                            "tool_name": tc.name,
+                            "arguments": tc.arguments,
+                        },
+                    )
+                )
 
                 started = time.perf_counter()
                 tool_output, tool_error = await self._execute_tool(tc)
@@ -313,6 +344,18 @@ class PrimeAgent:
                         "error": tool_error,
                         "duration_ms": duration_ms,
                     },
+                )
+                # Append tool result to durable stream
+                asyncio.create_task(
+                    self._append_to_stream(
+                        "tool_result",
+                        {
+                            "call_id": tc.call_id,
+                            "output": tool_output if not tool_error else None,
+                            "error": tool_error,
+                            "duration_ms": duration_ms,
+                        },
+                    )
                 )
 
                 tool_msg = {
@@ -561,6 +604,7 @@ class PrimeAgent:
                                     msg["tool_calls"] = parsed["tool_calls"]
                                 if isinstance(parsed.get("tool_name"), str):
                                     msg["name"] = parsed["tool_name"]
+                                msg["metadata"] = parsed
                         except json.JSONDecodeError:
                             pass
                     # Skip system messages — they'll be rebuilt
@@ -663,7 +707,9 @@ class PrimeAgent:
 
     async def _build_system_prompt(self, tool_names: list[str]) -> None:
         """Build the system prompt and prepend it to message history."""
-        prompt_template = get_prompt_template("prime")
+        prompt_template = get_prompt_template_for_workspace(
+            "prime", workspace=self._workspace
+        )
         context_parts: list[str] = []
 
         if prompt_template:
@@ -703,6 +749,22 @@ class PrimeAgent:
                 "to their new question immediately.\n"
                 "- For simple questions (no file reading needed), just answer directly.\n"
                 "- When a root agent reports back, summarize the result to the user.\n\n"
+                "## Response Format\n"
+                "ALWAYS format your replies in **Markdown**. Use headings, bold, "
+                "code blocks, lists, and other Markdown syntax to structure your "
+                "responses clearly. Wrap code snippets in fenced code blocks with "
+                "the appropriate language tag (e.g. ```python).\n\n"
+                "## Critical: Act, Don't Narrate\n"
+                "When you decide to use a tool, CALL IT in the same response. "
+                "Never respond with only text describing what you plan to do — "
+                "that ends your turn without taking action.\n\n"
+                "BAD (text-only, no tool call):\n"
+                '  "Let me check the authentication spec first."\n\n'
+                "GOOD (tool call in the same response):\n"
+                "  Calls launch_sub_agent or launch_root immediately.\n\n"
+                "If the user asks you to launch an agent, call launch_root or "
+                "launch_sub_agent right now. Do not say 'let me check first' and stop. "
+                "Every response that describes an action without performing it is a failure.\n\n"
                 "Available tools: " + ", ".join(tool_names) + "\n\n"
                 "Be concise and helpful."
             )
@@ -735,6 +797,137 @@ class PrimeAgent:
         )
         self._system_prompt_built = True
 
+    # ── API message sanitisation ──────────────────────────────────────────────
+
+    def _sanitize_messages_for_api(self) -> list[dict[str, Any]]:
+        """Return a clean copy of _messages suitable for the OpenAI chat API.
+
+        The in-memory list may contain extra keys (``metadata``, ``seq``) added
+        by history restoration that the API does not accept.
+
+        This method also repairs tool_call / tool_result pairing issues:
+
+        * Every ``assistant`` message that declares ``tool_calls`` must be
+          immediately followed by one ``tool`` message per call_id.
+        * Missing tool results get a synthetic placeholder so the API always
+          receives a consistent pairing (required by Anthropic-backed proxies).
+        * Orphaned tool results (no matching assistant tool_call) are dropped.
+        * ``content`` on an assistant message that only contains tool_calls
+          is set to ``None`` (not ``""``) per the OpenAI spec.
+        """
+        _API_KEYS = {
+            "role",
+            "content",
+            "tool_calls",
+            "tool_call_id",
+            "name",
+        }
+
+        # ── Pass 1: strip non-API keys and normalise content ──────────────
+        clean: list[dict[str, Any]] = []
+        for msg in self._messages:
+            role = msg.get("role", "user")
+            stripped: dict[str, Any] = {k: v for k, v in msg.items() if k in _API_KEYS}
+            if role == "assistant" and stripped.get("tool_calls"):
+                if not stripped.get("content"):
+                    stripped["content"] = None
+            clean.append(stripped)
+
+        # ── Pass 2: build index of existing tool results by call_id ───────
+        result_by_id: dict[str, dict[str, Any]] = {}
+        for msg in clean:
+            if msg.get("role") == "tool":
+                cid = msg.get("tool_call_id")
+                if cid:
+                    result_by_id[str(cid)] = msg
+
+        # ── Pass 3: walk messages, ensure every tool_call has a result ─────
+        # We collect declared call_ids so we can drop orphaned tool-results.
+        declared_ids: set[str] = set()
+        output: list[dict[str, Any]] = []
+        repairs = 0
+
+        for msg in clean:
+            role = msg.get("role", "user")
+
+            if role == "assistant" and msg.get("tool_calls"):
+                # Validate each tool_call entry has proper structure
+                valid_calls = [
+                    tc
+                    for tc in msg["tool_calls"]
+                    if isinstance(tc, dict) and tc.get("id")
+                ]
+                if not valid_calls:
+                    # No valid calls — drop tool_calls key
+                    msg = {k: v for k, v in msg.items() if k != "tool_calls"}
+                    if not msg.get("content"):
+                        continue
+                    output.append(msg)
+                    continue
+
+                msg = dict(msg)
+                msg["tool_calls"] = valid_calls
+                if not msg.get("content"):
+                    msg["content"] = None
+                output.append(msg)
+
+                # Record declared ids
+                for tc in valid_calls:
+                    declared_ids.add(str(tc["id"]))
+
+                # Ensure a tool result exists for each call — inject synthetic
+                # ones right after the assistant message for any that are missing.
+                for tc in valid_calls:
+                    cid = str(tc["id"])
+                    if cid not in result_by_id:
+                        tool_name = ""
+                        func = tc.get("function")
+                        if isinstance(func, dict):
+                            tool_name = func.get("name", "")
+                        synthetic: dict[str, Any] = {
+                            "role": "tool",
+                            "tool_call_id": cid,
+                            "content": "[Tool call was interrupted before producing a result.]",
+                        }
+                        if tool_name:
+                            synthetic["name"] = tool_name
+                        output.append(synthetic)
+                        result_by_id[cid] = synthetic
+                        repairs += 1
+
+            elif role == "tool":
+                cid = str(msg.get("tool_call_id", ""))
+                if cid not in declared_ids:
+                    # Orphaned result — skip it
+                    repairs += 1
+                    continue
+                # Check if we already injected a synthetic for this id
+                # (the real result appears later in the message list).
+                # Replace the synthetic with the real one in-place.
+                existing_idx = None
+                for i in range(len(output) - 1, -1, -1):
+                    if (
+                        output[i].get("role") == "tool"
+                        and output[i].get("tool_call_id") == cid
+                    ):
+                        existing_idx = i
+                        break
+                if existing_idx is not None:
+                    output[existing_idx] = msg
+                else:
+                    output.append(msg)
+            else:
+                output.append(msg)
+
+        if repairs > 0:
+            logger.info(
+                "Sanitizer repaired %d tool_call/result pairing issues in %d messages",
+                repairs,
+                len(self._messages),
+            )
+
+        return output
+
     # ── Auto-compaction ────────────────────────────────────────────────────────
 
     def _maybe_compact(self) -> None:
@@ -761,6 +954,54 @@ class PrimeAgent:
 
         if removed > 0:
             logger.info("Prime auto-compacted %d messages", removed)
+
+    # ── Durable stream helpers ──────────────────────────────────────────────
+
+    async def _ensure_streams(self) -> None:
+        """Create durable streams for Prime events and tokens if not yet created."""
+        if self._stream_initialized or self._stream_client is None:
+            return
+        try:
+            await self._stream_client.ensure_stream(self._stream_id)
+            await self._stream_client.ensure_stream(self._token_stream_id)
+            self._stream_initialized = True
+        except Exception:
+            logger.warning("Failed to create Prime durable streams", exc_info=True)
+
+    async def _close_streams(self) -> None:
+        """Close durable streams for Prime (called on new_context / shutdown)."""
+        if self._stream_client is None:
+            return
+        for sid in (self._stream_id, self._token_stream_id):
+            try:
+                await self._stream_client.close_stream(sid)
+            except Exception:
+                logger.debug("Failed to close Prime stream %s", sid, exc_info=True)
+        self._stream_initialized = False
+
+    async def _append_to_stream(self, event_type: str, payload: dict[str, Any]) -> None:
+        """Append an event to the Prime event stream (best-effort)."""
+        if self._stream_client is None:
+            return
+        try:
+            await self._stream_client.append_event(self._stream_id, event_type, payload)
+        except Exception:
+            logger.warning(
+                "Failed to append to Prime stream event_type=%s",
+                event_type,
+                exc_info=True,
+            )
+
+    async def _append_token_to_stream(self, text: str) -> None:
+        """Append a token chunk to the Prime token stream (best-effort)."""
+        if self._stream_client is None:
+            return
+        try:
+            await self._stream_client.append_event(
+                self._token_stream_id, "token", {"text": text}
+            )
+        except Exception:
+            logger.warning("Failed to append token to Prime stream", exc_info=True)
 
     # ── Notification helper ────────────────────────────────────────────────────
 

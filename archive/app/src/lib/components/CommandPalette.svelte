@@ -30,6 +30,11 @@
       run: () => theme.toggle(),
     },
     {
+      label: 'Follow system theme',
+      description: 'Reset to OS dark/light preference',
+      run: () => theme.followSystem(),
+    },
+    {
       label: 'Select next node',
       description: '↓ Move selection down',
       run: () => dispatch({ type: 'selectNext' }),
@@ -115,12 +120,12 @@
     {
       label: 'Close current tab',
       description: 'Close the active editor tab',
-      run: () => { if (tabStore.activeTabId) tabStore.closeTab(tabStore.activeTabId) },
+      run: () => { if (tabStore.activeTabId) void tabStore.closeTab(tabStore.activeTabId) },
     },
     {
       label: 'Close all tabs',
       description: 'Close all open editor tabs',
-      run: () => { tabStore.closeAllTabs() },
+      run: () => { void tabStore.closeAllTabs() },
     },
     {
       label: 'Save current file',

@@ -13,6 +13,9 @@ import type {
   AgentInfo,
   AgentState,
   AgentTier,
+  ModelModeKey,
+  ModelModes,
+  ModelModeConfig,
   PendingQuestion,
   AgentDetailEvent,
   EditorMode,
@@ -29,6 +32,7 @@ import type {
   PrimeReplyTarget,
 } from '$types/index'
 import { agentStateIsActive, agentStateFromString, PRIME_AGENT_ID } from '$types/index'
+import { SvelteMap, SvelteSet } from 'svelte/reactivity'
 
 // ─── AppState class ───────────────────────────────────────────────────────────
 
@@ -36,7 +40,7 @@ class AppState {
   // Tree storage
   nodes: SpecNode[] = $state([])
   rootNodes: NodeId[] = $state([])
-  specRefIndex: Map<SpecRef, NodeId> = $state(new Map())
+  specRefIndex: Map<SpecRef, NodeId> = $state(new SvelteMap())
 
   // Selection
   selectedNode: NodeId | null = $state(null)
@@ -50,10 +54,12 @@ class AppState {
   connectionState: BackendConnectionState = $state('offline')
 
   // Agents
-  agents: Map<string, AgentInfo> = $state(new Map())
-  lockedBranches: Set<SpecRef> = $state(new Set())
+  agents: Map<string, AgentInfo> = $state(new SvelteMap())
+  lockedBranches: Set<SpecRef> = $state(new SvelteSet())
   pendingQuestions: PendingQuestion[] = $state([])
-  detailEvents: Map<string, AgentDetailEvent[]> = $state(new Map())
+  detailEvents: Map<string, AgentDetailEvent[]> = $state(new SvelteMap())
+  /** Last-seen durable stream offset per agent (for resumable catch-up). */
+  detailOffsets: Map<string, number> = $state(new SvelteMap())
   detailAgentId: string | null = $state(PRIME_AGENT_ID)
 
   // Prime
@@ -62,9 +68,11 @@ class AppState {
   // Prime streaming state
   primeStreaming: boolean = $state(false)
   primeStreamBuffer: string = $state('')
+  /** Last-seen durable stream offset for prime token stream. */
+  primeStreamOffset: number = $state(0)
   primeChatEntries: PrimeChatEntry[] = $state([])
-  primeToolCalls: Map<string, PrimeToolCall> = $state(new Map())
-  primeSubAgents: Map<string, PrimeSubAgentEntry> = $state(new Map())
+  primeToolCalls: Map<string, PrimeToolCall> = $state(new SvelteMap())
+  primeSubAgents: Map<string, PrimeSubAgentEntry> = $state(new SvelteMap())
   primeHistoryHasMore: boolean = $state(false)
   primeOldestSeq: number | null = $state(null)
   primeHistoryLoading: boolean = $state(false)
@@ -75,6 +83,29 @@ class AppState {
 
   // Current model
   currentModel: string = $state('')
+
+  // Model modes (L/M/H)
+  activeModelMode: ModelModeKey = $state('medium')
+  modelModes: ModelModes = $state({
+    low: {
+      primary: { provider: 'copilot', model: 'claude-haiku-4.5' },
+      secondary: null,
+      tertiary: null,
+    },
+    medium: {
+      primary: { provider: 'copilot', model: 'claude-sonnet-4.6' },
+      secondary: null,
+      tertiary: null,
+    },
+    high: {
+      primary: { provider: 'copilot', model: 'claude-opus-4.6' },
+      secondary: null,
+      tertiary: null,
+    },
+  })
+
+  // Project title (from index.md front-matter; falls back to folder name)
+  projectTitle: string | null = $state(null)
 
   // Inline metadata editing target
   metadataEditTarget: MetadataEditTarget | null = $state(null)
@@ -91,11 +122,16 @@ class AppState {
 
   // ── Derived ────────────────────────────────────────────────────────────────
 
-  /** Human-readable primary root title (first line of root markdown). */
+  /** Human-readable primary root title.
+   *  Prefers the `title` front-matter property from index.md (set during init),
+   *  falls back to the first line of the root markdown node.
+   */
   get rootTitle(): string {
+    if (this.projectTitle) return this.projectTitle
     const rootId = this.primaryRootId
     if (rootId === null) return 'Taui'
-    return this.nodes[rootId]?.markdown.split('\n')[0].trim() || 'Taui'
+    const firstLine = this.nodes[rootId]?.markdown.split('\n')[0].trim() || 'Taui'
+    return firstLine.replace(/^#+\s*/, '') || 'Taui'
   }
 
   get primaryRootId(): NodeId | null {
@@ -188,7 +224,7 @@ class AppState {
 
     this.nodes = []
     this.rootNodes = []
-    this.specRefIndex = new Map()
+    this.specRefIndex = new SvelteMap()
 
     if (rawNodes.length === 0) {
       this.connectionState = 'ready'
@@ -204,7 +240,7 @@ class AppState {
       const depth = bn.depth - minDepth
       const parentId = depth === 0 ? null : (depthStack[depth - 1] ?? null)
 
-      const id = this.createNode(bn.spec_ref, bn.markdown, parentId)
+      const id = this.createNode(bn.tangle_ref ?? bn.spec_ref ?? '', bn.markdown, parentId)
 
       // Start fully expanded; persisted local fold state is applied after hydration.
       this.nodes[id].collapsed = false
@@ -253,7 +289,8 @@ class AppState {
    * Apply a single node change notification from `spec/nodeChanged`.
    */
   applyNodeChange(bn: BackendNode): void {
-    const existingId = this.specRefIndex.get(bn.spec_ref)
+    const specRef = bn.tangle_ref ?? bn.spec_ref ?? ''
+    const existingId = this.specRefIndex.get(specRef)
     if (existingId !== undefined) {
       const node = this.nodes[existingId]
       node.markdown = bn.markdown
@@ -270,7 +307,8 @@ class AppState {
   upsertAgent(info: Partial<AgentInfo> & { agentId: string }): void {
     const existing = this.agents.get(info.agentId)
     if (existing) {
-      Object.assign(existing, info)
+      // Always re-set the map entry so Svelte 5's reactive Map proxy triggers updates.
+      this.agents.set(info.agentId, { ...existing, ...info })
     } else {
       this.agents.set(info.agentId, {
         agentId: info.agentId,
@@ -286,7 +324,7 @@ class AppState {
 
   setAgentState(agentId: string, state: AgentState): void {
     const agent = this.agents.get(agentId)
-    if (agent) agent.state = state
+    if (agent) this.agents.set(agentId, { ...agent, state })
   }
 
   setToolBrief(agentId: string, brief: string | null): void {
@@ -294,8 +332,22 @@ class AppState {
     if (agent) agent.toolBrief = brief
   }
 
+  /**
+   * Remove a root agent from the reactive state — triggered when the user
+   * explicitly closes the agent tab. Cleans up event buffers and switches
+   * focus back to Prime if the closed agent was selected.
+   */
+  removeAgent(agentId: string): void {
+    this.agents.delete(agentId)
+    this.detailEvents.delete(agentId)
+    this.detailOffsets.delete(agentId)
+    if (this.detailAgentId === agentId) {
+      this.detailAgentId = PRIME_AGENT_ID
+    }
+  }
+
   setLockedBranches(branches: SpecRef[]): void {
-    this.lockedBranches = new Set(branches)
+    this.lockedBranches = new SvelteSet(branches)
   }
 
   addPendingQuestion(q: PendingQuestion): void {
@@ -306,17 +358,28 @@ class AppState {
     this.pendingQuestions = this.pendingQuestions.filter((q) => q.agentId !== agentId)
   }
 
-  appendDetailEvent(agentId: string, event: AgentDetailEvent): void {
+  appendDetailEvent(agentId: string, event: AgentDetailEvent, offset?: number): void {
     const existing = this.detailEvents.get(agentId)
     if (existing) {
       existing.push(event)
     } else {
       this.detailEvents.set(agentId, [event])
     }
+    if (offset !== undefined) {
+      this.detailOffsets.set(agentId, offset)
+    }
   }
 
-  setDetailBacklog(agentId: string, events: AgentDetailEvent[]): void {
+  setDetailBacklog(agentId: string, events: AgentDetailEvent[], lastOffset?: number): void {
     this.detailEvents.set(agentId, events)
+    if (lastOffset !== undefined) {
+      this.detailOffsets.set(agentId, lastOffset)
+    }
+  }
+
+  /** Get the last-seen durable stream offset for an agent (for resumable subscribe). */
+  getDetailOffset(agentId: string): number | undefined {
+    return this.detailOffsets.get(agentId)
   }
 
   // ── Prime mutations ────────────────────────────────────────────────────────
@@ -461,6 +524,17 @@ class AppState {
     }]
   }
 
+  /** Add an agent reply card to Prime's chat (sub-agent or root agent → user). */
+  addPrimeAgentReply(info: { agentId: string; agentName: string; message: string; title: string | null }): void {
+    this.primeChatEntries = [...this.primeChatEntries, {
+      kind: 'agent-reply',
+      agentId: info.agentId,
+      agentName: info.agentName,
+      message: info.message,
+      title: info.title,
+    }]
+  }
+
   /** Finalize the streaming response — convert streaming entry to final assistant message. */
   finalizePrimeStream(): void {
     const content = this.primeStreamBuffer
@@ -483,7 +557,7 @@ class AppState {
   } {
     const entries: PrimeChatEntry[] = []
     const primeMessages: PrimeMessage[] = []
-    const toolCalls = new Map<string, PrimeToolCall>()
+    const toolCalls = new SvelteMap<string, PrimeToolCall>()
     const assistantToolMeta = new Map<string, { toolName: string; arguments: unknown }>()
 
     for (const msg of messages) {
@@ -588,6 +662,35 @@ class AppState {
     this.runState.exitCode = null
   }
 
+  // ── Model mode mutations ─────────────────────────────────────────────────
+
+  setActiveModelMode(mode: ModelModeKey): void {
+    this.activeModelMode = mode
+    this.launchTier = mode
+    const cfg = this.modelModes[mode]
+    this.currentModel = `${cfg.primary.provider}:${cfg.primary.model}`
+  }
+
+  setModelModeConfig(mode: ModelModeKey, config: ModelModeConfig): void {
+    this.modelModes = { ...this.modelModes, [mode]: config }
+    // If this is the active mode, update currentModel to reflect the new primary
+    if (this.activeModelMode === mode) {
+      this.currentModel = `${config.primary.provider}:${config.primary.model}`
+    }
+  }
+
+  /** The resolved model string for the currently active mode. */
+  get activeModelDisplay(): string {
+    const cfg = this.modelModes[this.activeModelMode]
+    return cfg.primary.model
+  }
+
+  /** The resolved provider string for the currently active mode. */
+  get activeProviderDisplay(): string {
+    const cfg = this.modelModes[this.activeModelMode]
+    return cfg.primary.provider
+  }
+
   // ── Private tree traversal ────────────────────────────────────────────────
 
   private _collectFlat(
@@ -685,28 +788,50 @@ export { agentStateFromString, agentStateIsActive }
 export function resetAppState(): void {
   appState.nodes = []
   appState.rootNodes = []
-  appState.specRefIndex = new Map()
+  appState.specRefIndex = new SvelteMap()
   appState.selectedNode = null
   appState.selectedSpecRef = null
   appState.editorMode = 'normal'
   appState.chatDraft = ''
   appState.connectionState = 'offline'
-  appState.agents = new Map()
-  appState.lockedBranches = new Set()
+  appState.agents = new SvelteMap()
+  appState.lockedBranches = new SvelteSet()
   appState.pendingQuestions = []
-  appState.detailEvents = new Map()
+  appState.detailEvents = new SvelteMap()
+  appState.detailOffsets = new SvelteMap()
   appState.detailAgentId = null
   appState.primeMessages = []
   appState.primeStreaming = false
   appState.primeStreamBuffer = ''
+  appState.primeStreamOffset = 0
   appState.primeChatEntries = []
-  appState.primeToolCalls = new Map()
-  appState.primeSubAgents = new Map()
+  appState.primeToolCalls = new SvelteMap()
+  appState.primeSubAgents = new SvelteMap()
   appState.primeHistoryHasMore = false
   appState.primeOldestSeq = null
   appState.primeHistoryLoading = false
   appState.primeReplyTo = null
   appState.launchTier = 'medium'
+  appState.currentModel = ''
+  appState.activeModelMode = 'medium'
+  appState.modelModes = {
+    low: {
+      primary: { provider: 'copilot', model: 'claude-haiku-4.5' },
+      secondary: null,
+      tertiary: null,
+    },
+    medium: {
+      primary: { provider: 'copilot', model: 'claude-sonnet-4.6' },
+      secondary: null,
+      tertiary: null,
+    },
+    high: {
+      primary: { provider: 'copilot', model: 'claude-opus-4.6' },
+      secondary: null,
+      tertiary: null,
+    },
+  }
+  appState.projectTitle = null
   appState.metadataEditTarget = null
   appState.runState = { status: 'idle', runId: null, specRef: null, command: null, exitCode: null, lines: [] }
 }

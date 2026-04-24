@@ -11,25 +11,25 @@
   const activeTabId = $derived(tabStore.activeTabId)
 
   function handleTabClick(tabId: string) {
-    tabStore.setActiveTab(tabId)
+    void tabStore.setActiveTab(tabId)
   }
 
   function handleTabKeyDown(e: KeyboardEvent, tabId: string) {
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault()
-      tabStore.setActiveTab(tabId)
+      void tabStore.setActiveTab(tabId)
     }
   }
 
   function handleCloseTab(e: MouseEvent, tabId: string) {
     e.stopPropagation()
-    tabStore.closeTab(tabId)
+    void tabStore.closeTab(tabId)
   }
 
   function handleMiddleClick(e: MouseEvent, tabId: string) {
     if (e.button === 1) {
       e.preventDefault()
-      tabStore.closeTab(tabId)
+      void tabStore.closeTab(tabId)
     }
   }
 

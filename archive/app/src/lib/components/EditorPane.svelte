@@ -9,7 +9,7 @@
   import MarkdownEditor from '$components/MarkdownEditor.svelte'
   import FrontmatterProperties from '$components/FrontmatterProperties.svelte'
   import { tabStore } from '$stores/tabs.svelte'
-  import { stripFrontmatter } from '$lib/utils/specs'
+  import { stripFrontmatter } from '$lib/utils/tangles'
 
   const activeTab = $derived(tabStore.activeTab)
   const editorContent = $derived(activeTab ? stripFrontmatter(activeTab.content) : '')

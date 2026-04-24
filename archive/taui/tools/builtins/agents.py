@@ -64,7 +64,7 @@ class LaunchSubAgentTool:
         "your main reasoning flow.\n\n"
         "Parameters:\n"
         "  task (required): what the sub-agent should do\n"
-        "  spec_ref: spec branch context (optional)"
+        "  tangle_ref: tangle branch context (optional)"
     )
     schema: dict[str, Any] = field(
         default_factory=lambda: {
@@ -78,6 +78,10 @@ class LaunchSubAgentTool:
                     "type": "string",
                     "description": "Spec ref context for the sub-agent (optional).",
                 },
+                "tangle_ref": {
+                    "type": "string",
+                    "description": "Tangle ref context for the sub-agent (optional).",
+                },
             },
             "required": ["task"],
             "additionalProperties": False,
@@ -90,7 +94,7 @@ class LaunchSubAgentTool:
         self, arguments: dict[str, Any], context: ToolContext
     ) -> ToolResult:
         task_desc = arguments.get("task", "")
-        spec_ref = arguments.get("spec_ref", "root")
+        spec_ref = arguments.get("tangle_ref") or arguments.get("spec_ref", "root")
 
         if not task_desc:
             return ToolResult.fail("task is required.")
@@ -119,7 +123,7 @@ class LaunchSubAgentTool:
 
         try:
             runner = await agent_manager.launch(
-                spec_ref=spec_ref,
+                tangle_ref=spec_ref,
                 task=task_desc,
                 tier="low",
                 llm=llm,
@@ -216,7 +220,7 @@ class LaunchRootTool:
         "sustained reasoning.\n\n"
         "Parameters:\n"
         "  task (required): description of what the agent should do\n"
-        "  spec_ref (required): the spec branch the agent works on\n"
+        "  tangle_ref (required): the tangle branch the agent works on\n"
         "  tier: agent tier — 'high', 'medium', or 'low' (default: medium)"
     )
     schema: dict[str, Any] = field(
@@ -227,9 +231,13 @@ class LaunchRootTool:
                     "type": "string",
                     "description": "Description of the task for the root agent.",
                 },
-                "spec_ref": {
+                "tangle_ref": {
                     "type": "string",
-                    "description": "Spec ref branch for the agent to work on.",
+                    "description": (
+                        "Tangle ref (spec branch) for the agent to work on. "
+                        "Use the spec_ref of the most relevant spec node, "
+                        "or 'root' if no specific branch applies."
+                    ),
                 },
                 "tier": {
                     "type": "string",
@@ -237,7 +245,7 @@ class LaunchRootTool:
                     "description": "Agent tier (default: medium).",
                 },
             },
-            "required": ["task", "spec_ref"],
+            "required": ["task", "tangle_ref"],
             "additionalProperties": False,
         }
     )
@@ -248,13 +256,11 @@ class LaunchRootTool:
         self, arguments: dict[str, Any], context: ToolContext
     ) -> ToolResult:
         task_desc = arguments.get("task", "")
-        spec_ref = arguments.get("spec_ref", "")
+        spec_ref = arguments.get("tangle_ref") or arguments.get("spec_ref", "root")
         tier = arguments.get("tier", "medium")
 
         if not task_desc:
             return ToolResult.fail("task is required.")
-        if not spec_ref:
-            return ToolResult.fail("spec_ref is required.")
         if tier not in ("high", "medium", "low"):
             return ToolResult.fail("tier must be 'high', 'medium', or 'low'.")
 
@@ -278,7 +284,7 @@ class LaunchRootTool:
 
         try:
             runner = await agent_manager.launch(
-                spec_ref=spec_ref,
+                tangle_ref=spec_ref,
                 task=task_desc,
                 tier=tier,
                 llm=llm,
@@ -289,6 +295,19 @@ class LaunchRootTool:
                 agent_type="root",
             )
 
+            # Notify frontend: agent/stateChanged so the tab appears immediately.
+            _emit(
+                context,
+                "agent/stateChanged",
+                {
+                    "agent_id": runner.agent_id,
+                    "state": "running",
+                    "tangle_ref": spec_ref,
+                    "spec_ref": spec_ref,
+                    "agent_type": "root",
+                    "display_name": runner.display_name,
+                },
+            )
             # Notify frontend: agent launched (from Prime)
             _emit(
                 context,
@@ -309,6 +328,7 @@ class LaunchRootTool:
                     "agent_id": runner.agent_id,
                     "display_name": runner.display_name,
                     "agent_type": "root",
+                    "tangle_ref": spec_ref,
                     "spec_ref": spec_ref,
                 },
             )
@@ -316,6 +336,74 @@ class LaunchRootTool:
         except Exception as exc:
             logger.exception("Failed to launch root agent: %s", exc)
             return ToolResult.fail(f"Failed to launch root agent: {exc}")
+
+
+# ── ReplyToUserTool ──────────────────────────────────────────────────────────
+
+
+@dataclass(slots=True)
+class ReplyToUserTool:
+    """Post a message directly to the user in Prime's chat stream.
+
+    Sub-agents and root agents use this tool when they have information
+    the user should see immediately — without waiting for Prime to relay it.
+    The message appears as an inline card in Prime's chat panel.
+    """
+
+    name: str = "reply_to_user"
+    description: str = (
+        "Send a message directly to the user, visible in Prime's chat stream.\n\n"
+        "Use this when you have information the user should see immediately — "
+        "progress updates, findings, warnings, or results that are worth surfacing "
+        "without waiting for Prime to relay them.\n\n"
+        "Parameters:\n"
+        "  message (required): the message to display to the user\n"
+        "  title (optional): a short label shown above the message"
+    )
+    schema: dict[str, Any] = field(
+        default_factory=lambda: {
+            "type": "object",
+            "properties": {
+                "message": {
+                    "type": "string",
+                    "description": "The message to display to the user.",
+                },
+                "title": {
+                    "type": "string",
+                    "description": "Short label shown above the message (optional).",
+                },
+            },
+            "required": ["message"],
+            "additionalProperties": False,
+        }
+    )
+    origin: str = "builtin"
+    category: ToolCategory = ToolCategory.AGENT
+
+    async def execute(
+        self, arguments: dict[str, Any], context: ToolContext
+    ) -> ToolResult:
+        message = arguments.get("message", "")
+        title = arguments.get("title", None)
+
+        if not message:
+            return ToolResult.fail("message is required.")
+
+        agent_name = getattr(context, "agent_name", None) or "Agent"
+        agent_id = getattr(context, "session_id", None) or ""
+
+        _emit(
+            context,
+            "prime/agentReply",
+            {
+                "agent_id": agent_id,
+                "agent_name": agent_name,
+                "message": message,
+                "title": title,
+            },
+        )
+
+        return ToolResult.ok("Message sent to user.")
 
 
 # ── ReportToPrimeTool ─────────────────────────────────────────────────────────
@@ -365,9 +453,7 @@ class ReportToPrimeTool:
 
         agent_manager = _get_agent_manager(context)
         if agent_manager is None:
-            return ToolResult.fail(
-                "No agent manager available — cannot reach Prime."
-            )
+            return ToolResult.fail("No agent manager available — cannot reach Prime.")
 
         prime = getattr(agent_manager, "_prime_agent", None)
         if prime is None:

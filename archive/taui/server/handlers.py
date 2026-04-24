@@ -9,14 +9,16 @@ import re
 import time
 from typing import Any, Callable
 
-from taui.specs import (
+from taui.config.project_settings import ProjectSettingsStore
+from taui.tangle import (
     SpecNodePatch,
     SpecService,
     SpecServiceError,
     SpecValidationError,
 )
+from taui.tangle.agent_db import AgentHistoryDB
 from taui.agent.manager import AgentManager
-from taui.history import HistoryDB
+from taui.tangle.history_store import ProjectHistoryStore
 
 from .protocol import (
     INVALID_PARAMS,
@@ -34,6 +36,13 @@ CODE_REF_RANGE_RE = re.compile(r"^L(?P<start>\d+)(?:-L?(?P<end>\d+))?$", re.IGNO
 
 
 NotificationCallback = Callable[[dict[str, Any]], None]
+
+
+def _with_tangle_ref(node: dict[str, Any]) -> dict[str, Any]:
+    out = dict(node)
+    if "tangle_ref" not in out and "spec_ref" in out:
+        out["tangle_ref"] = out["spec_ref"]
+    return out
 
 
 class _NoOpLLMClient:
@@ -69,21 +78,27 @@ class MethodHandlers:
     def __init__(
         self,
         workspace: Path | str | None = None,
+        tangles_path: Path | str | None = None,
         specs_path: Path | str | None = None,
         dev_mode: bool = False,
         history_db_path: Path | str | None = None,
     ) -> None:
-        self.specs = SpecService(
-            workspace=workspace, specs_path=specs_path, dev_mode=dev_mode
+        self.tangles = SpecService(
+            workspace=workspace,
+            tangles_path=tangles_path,
+            specs_path=specs_path,
+            dev_mode=dev_mode,
         )
+        self.specs = self.tangles
+        self.workspace = self.tangles.workspace
+        self.settings = ProjectSettingsStore(self.workspace)
         self.run_state = RunState()
         self._notification_callback: NotificationCallback | None = None
         workspace_path = Path(workspace).resolve() if workspace else None
-        self.history_db = HistoryDB(
-            db_path=Path(history_db_path) if history_db_path is not None else None
-        )
+        self.agent_db = AgentHistoryDB(self.tangles.workspace)
+        self.history_db = ProjectHistoryStore(self.agent_db)
         self.agent_manager = AgentManager(
-            db=self.specs.db,
+            db=self.agent_db,
             history_db=self.history_db,
             workspace=workspace_path,
         )
@@ -91,6 +106,9 @@ class MethodHandlers:
         self._symbol_indexer: Any | None = None
         self._symbol_resolver: Any | None = None
         self._symbol_db: Any | None = None
+
+    async def _ensure_tangles(self) -> None:
+        await self.tangles.ensure_initialized()
 
     def set_notification_callback(self, callback: NotificationCallback | None) -> None:
         self._notification_callback = callback
@@ -122,37 +140,37 @@ class MethodHandlers:
                 return DispatchResult(result={"ok": True}, notifications=[])
             if method == "exit":
                 return DispatchResult(result=None, notifications=[])
-            if method == "spec/getTree":
+            if method == "tangle/getTree":
                 return DispatchResult(
                     result=await self._handle_spec_get_tree(), notifications=[]
                 )
-            if method == "spec/getTreeDetailed":
+            if method == "tangle/getTreeDetailed":
                 return DispatchResult(
                     result=await self._handle_spec_get_tree_detailed(), notifications=[]
                 )
-            if method == "spec/getNode":
+            if method == "tangle/getNode":
                 return DispatchResult(
                     result=await self._handle_spec_get_node(params), notifications=[]
                 )
-            if method == "spec/updateNode":
+            if method == "tangle/updateNode":
                 return await self._handle_spec_update_node(params)
-            if method == "spec/createSiblingNode":
+            if method == "tangle/createSiblingNode":
                 return await self._handle_spec_create_sibling_node(params)
-            if method == "spec/indentNode":
+            if method == "tangle/indentNode":
                 return await self._handle_spec_indent_node(params)
-            if method == "spec/outdentNode":
+            if method == "tangle/outdentNode":
                 return await self._handle_spec_outdent_node(params)
-            if method == "spec/getNodeSourceRange":
+            if method == "tangle/getNodeSourceRange":
                 return DispatchResult(
                     result=await self._handle_spec_get_node_source_range(params),
                     notifications=[],
                 )
-            if method == "spec/getNodeCodeRefs":
+            if method == "tangle/getNodeCodeRefs":
                 return DispatchResult(
                     result=await self._handle_spec_get_node_code_refs(params),
                     notifications=[],
                 )
-            if method == "spec/setNodeCollapsed":
+            if method == "tangle/setNodeCollapsed":
                 return DispatchResult(
                     result=await self._handle_spec_set_node_collapsed(params),
                     notifications=[],
@@ -175,6 +193,8 @@ class MethodHandlers:
                 return await self._handle_agent_launch(params)
             if method == "agent/stop":
                 return await self._handle_agent_stop(params)
+            if method == "agent/close":
+                return await self._handle_agent_close(params)
             if method == "agent/list":
                 return await self._handle_agent_list()
             if method == "agent/steer":
@@ -187,6 +207,20 @@ class MethodHandlers:
                 return await self._handle_agent_unsubscribe(params)
             if method == "agent/answerQuestion":
                 return await self._handle_agent_answer_question(params)
+            if method == "ui/snapshot":
+                return await self._handle_ui_snapshot()
+            if method == "ui/openTab":
+                return await self._handle_ui_open_tab(params)
+            if method == "ui/closeTab":
+                return await self._handle_ui_close_tab(params)
+            if method == "ui/setActiveTab":
+                return await self._handle_ui_set_active_tab(params)
+            if method == "ui/updateLayout":
+                return await self._handle_ui_update_layout(params)
+            if method == "ui/setTheme":
+                return await self._handle_ui_set_theme(params)
+            if method == "ui/saveTab":
+                return await self._handle_ui_save_tab(params)
             if method == "ui/nodeEdited":
                 return await self._handle_ui_node_edited(params)
             if method == "fs/listDir":
@@ -214,11 +248,19 @@ class MethodHandlers:
                     result=await self._handle_fs_search(params),
                     notifications=[],
                 )
-            if method == "spec/getBacklinks":
+            if method == "tangle/getBacklinks":
                 return DispatchResult(
                     result=await self._handle_spec_get_backlinks(params),
                     notifications=[],
                 )
+            if method == "prompts/list":
+                return await self._handle_prompts_list()
+            if method == "prompts/get":
+                return await self._handle_prompts_get(params)
+            if method == "prompts/update":
+                return await self._handle_prompts_update(params)
+            if method == "prompts/reset":
+                return await self._handle_prompts_reset(params)
             if method == "refs/search":
                 return DispatchResult(
                     result=await self._handle_refs_search(params),
@@ -252,6 +294,16 @@ class MethodHandlers:
             if method == "refs/reindex":
                 return DispatchResult(
                     result=await self._handle_refs_reindex(params),
+                    notifications=[],
+                )
+            if method == "code/resolve":
+                return DispatchResult(
+                    result=await self._handle_code_resolve(params),
+                    notifications=[],
+                )
+            if method == "code/update":
+                return DispatchResult(
+                    result=await self._handle_code_update(params),
                     notifications=[],
                 )
             logger.warning(
@@ -308,21 +360,24 @@ class MethodHandlers:
         workspace = params.get("workspace")
         if workspace is not None and not isinstance(workspace, str):
             raise ValueError("initialize.workspace must be a string")
+        # If the client did not supply a workspace, use the server's actual workspace.
+        if workspace is None:
+            workspace = str(self.tangles.workspace.resolve())
         capabilities = {
             "methods": [
                 "initialize",
                 "shutdown",
                 "exit",
-                "spec/getTree",
-                "spec/getTreeDetailed",
-                "spec/getNode",
-                "spec/updateNode",
-                "spec/createSiblingNode",
-                "spec/indentNode",
-                "spec/outdentNode",
-                "spec/getNodeSourceRange",
-                "spec/getNodeCodeRefs",
-                "spec/setNodeCollapsed",
+                "tangle/getTree",
+                "tangle/getTreeDetailed",
+                "tangle/getNode",
+                "tangle/updateNode",
+                "tangle/createSiblingNode",
+                "tangle/indentNode",
+                "tangle/outdentNode",
+                "tangle/getNodeSourceRange",
+                "tangle/getNodeCodeRefs",
+                "tangle/setNodeCollapsed",
                 "run/start",
                 "run/stop",
                 "run/status",
@@ -332,18 +387,30 @@ class MethodHandlers:
                 "prime/history",
                 "agent/launch",
                 "agent/stop",
+                "agent/close",
                 "agent/list",
                 "agent/steer",
                 "agent/queue",
                 "agent/subscribe",
                 "agent/unsubscribe",
                 "agent/answerQuestion",
+                "ui/snapshot",
+                "ui/openTab",
+                "ui/closeTab",
+                "ui/setActiveTab",
+                "ui/updateLayout",
+                "ui/setTheme",
+                "ui/saveTab",
                 "ui/nodeEdited",
                 "fs/listDir",
                 "fs/readFile",
                 "fs/writeFile",
                 "fs/search",
-                "spec/getBacklinks",
+                "tangle/getBacklinks",
+                "prompts/list",
+                "prompts/get",
+                "prompts/update",
+                "prompts/reset",
                 "refs/search",
                 "refs/resolve",
                 "refs/getDefinition",
@@ -351,12 +418,14 @@ class MethodHandlers:
                 "refs/backlinks",
                 "refs/validate",
                 "refs/reindex",
+                "code/resolve",
+                "code/update",
             ],
             "notifications": [
-                "spec/nodeCreated",
-                "spec/nodeChanged",
-                "spec/nodeDeleted",
-                "spec/treeChanged",
+                "tangle/nodeCreated",
+                "tangle/nodeChanged",
+                "tangle/nodeDeleted",
+                "tangle/treeChanged",
                 "agent/stateChanged",
                 "agent/toolBrief",
                 "agent/toolCall",
@@ -388,53 +457,98 @@ class MethodHandlers:
         except Exception:
             default_model = "unknown"
 
+        # Resolve project title from spec root index.md (front-matter title → H1 → folder name)
+        project_title: str | None = None
+        try:
+            index_path = self.tangles.spec_root / "index.md"
+            if index_path.is_file():
+                index_content = index_path.read_text(encoding="utf-8")
+                # Try YAML front-matter title first
+                if index_content.startswith("---\n"):
+                    end = index_content.find("\n---\n", 4)
+                    if end != -1:
+                        try:
+                            import yaml
+
+                            fm = yaml.safe_load(index_content[4:end])
+                            if isinstance(fm, dict) and isinstance(
+                                fm.get("title"), str
+                            ):
+                                project_title = fm["title"].strip() or None
+                        except Exception:
+                            pass
+                # Fall back to first H1 heading
+                if not project_title:
+                    import re
+
+                    m = re.search(r"^#\s+(.+)$", index_content, re.MULTILINE)
+                    if m:
+                        project_title = m.group(1).strip() or None
+        except Exception:
+            pass
+        # Last resort: workspace folder name
+        if not project_title:
+            project_title = self.tangles.workspace.resolve().name
+
         return {
             "protocolVersion": "1.0",
             "serverName": "taui-python-server",
             "workspace": workspace,
+            "projectTitle": project_title,
             "capabilities": capabilities,
             "model": default_model,
         }
 
     async def _handle_spec_get_tree(self) -> dict[str, Any]:
-        nodes = [node.to_dict() for node in await self.specs.get_tree()]
+        await self._ensure_tangles()
+        nodes = []
+        for node in await self.tangles.get_tree():
+            node_data = node.to_dict()
+            node_data["tangle_ref"] = node_data.get("spec_ref", "")
+            nodes.append(node_data)
         return {"nodes": nodes}
 
     async def _handle_spec_get_tree_detailed(self) -> dict[str, Any]:
-        nodes = await self.specs.get_tree()
+        await self._ensure_tangles()
+        nodes = await self.tangles.get_tree()
         detailed_nodes = []
         for node in nodes:
             try:
-                detailed_node = await self.specs.get_node(node.spec_ref)
+                detailed_node = await self.tangles.get_node(node.spec_ref)
                 node_dict = detailed_node.to_dict()
             except SpecServiceError:
                 node_dict = node.to_dict()
+            node_dict["tangle_ref"] = node_dict.get("spec_ref", "")
             detailed_nodes.append(node_dict)
         return {"nodes": detailed_nodes}
 
     async def _handle_spec_get_node(self, params: dict[str, Any]) -> dict[str, Any]:
-        spec_ref = self._require_str(params, "spec_ref")
-        node = await self.specs.get_node(spec_ref)
-        return {"node": node.to_dict()}
+        tangle_ref = self._require_ref(params)
+        await self._ensure_tangles()
+        node = await self.tangles.get_node(tangle_ref)
+        return {"node": _with_tangle_ref(node.to_dict())}
 
     async def _handle_spec_update_node(self, params: dict[str, Any]) -> DispatchResult:
-        spec_ref = self._require_str(params, "spec_ref")
+        tangle_ref = self._require_ref(params)
         patch_raw = params.get("patch")
         if not isinstance(patch_raw, dict):
-            raise ValueError("spec/updateNode.patch must be an object")
+            raise ValueError("tangle/updateNode.patch must be an object")
         patch = SpecNodePatch.from_mapping(patch_raw)
-        update = await self.specs.update_node(spec_ref, patch)
+        await self._ensure_tangles()
+        update = await self.tangles.update_node(tangle_ref, patch)
 
         notifications: list[dict[str, Any]] = [
-            notification_message("spec/nodeChanged", {"node": update.node.to_dict()})
+            notification_message(
+                "tangle/nodeChanged", {"node": _with_tangle_ref(update.node.to_dict())}
+            ),
         ]
         if update.tree_changed:
             notifications.append(
                 notification_message(
-                    "spec/treeChanged",
+                    "tangle/treeChanged",
                     {
-                        "previous_spec_ref": update.previous_spec_ref,
-                        "spec_ref": update.node.spec_ref,
+                        "previous_tangle_ref": update.previous_spec_ref,
+                        "tangle_ref": update.node.spec_ref,
                     },
                 )
             )
@@ -444,61 +558,71 @@ class MethodHandlers:
     async def _handle_spec_create_sibling_node(
         self, params: dict[str, Any]
     ) -> DispatchResult:
-        spec_ref = self._require_str(params, "spec_ref")
-        update = await self.specs.create_sibling_node(spec_ref)
+        tangle_ref = self._require_ref(params)
+        await self._ensure_tangles()
+        update = await self.tangles.create_sibling_node(tangle_ref)
         notifications: list[dict[str, Any]] = [
             notification_message(
-                "spec/treeChanged",
+                "tangle/treeChanged",
                 {
-                    "previous_spec_ref": update.previous_spec_ref,
-                    "spec_ref": update.node.spec_ref,
+                    "previous_tangle_ref": update.previous_spec_ref,
+                    "tangle_ref": update.node.spec_ref,
                 },
             ),
-            notification_message("spec/nodeCreated", {"node": update.node.to_dict()}),
+            notification_message(
+                "tangle/nodeCreated", {"node": _with_tangle_ref(update.node.to_dict())}
+            ),
         ]
         return DispatchResult(result=update.to_dict(), notifications=notifications)
 
     async def _handle_spec_indent_node(self, params: dict[str, Any]) -> DispatchResult:
-        spec_ref = self._require_str(params, "spec_ref")
-        update = await self.specs.indent_node(spec_ref)
+        tangle_ref = self._require_ref(params)
+        await self._ensure_tangles()
+        update = await self.tangles.indent_node(tangle_ref)
         notifications: list[dict[str, Any]] = [
             notification_message(
-                "spec/treeChanged",
+                "tangle/treeChanged",
                 {
-                    "previous_spec_ref": update.previous_spec_ref,
-                    "spec_ref": update.node.spec_ref,
+                    "previous_tangle_ref": update.previous_spec_ref,
+                    "tangle_ref": update.node.spec_ref,
                 },
             ),
-            notification_message("spec/nodeChanged", {"node": update.node.to_dict()}),
+            notification_message(
+                "tangle/nodeChanged", {"node": _with_tangle_ref(update.node.to_dict())}
+            ),
         ]
         return DispatchResult(result=update.to_dict(), notifications=notifications)
 
     async def _handle_spec_outdent_node(self, params: dict[str, Any]) -> DispatchResult:
-        spec_ref = self._require_str(params, "spec_ref")
-        update = await self.specs.outdent_node(spec_ref)
+        tangle_ref = self._require_ref(params)
+        await self._ensure_tangles()
+        update = await self.tangles.outdent_node(tangle_ref)
         notifications: list[dict[str, Any]] = [
             notification_message(
-                "spec/treeChanged",
+                "tangle/treeChanged",
                 {
-                    "previous_spec_ref": update.previous_spec_ref,
-                    "spec_ref": update.node.spec_ref,
+                    "previous_tangle_ref": update.previous_spec_ref,
+                    "tangle_ref": update.node.spec_ref,
                 },
             ),
-            notification_message("spec/nodeChanged", {"node": update.node.to_dict()}),
+            notification_message(
+                "tangle/nodeChanged", {"node": _with_tangle_ref(update.node.to_dict())}
+            ),
         ]
         return DispatchResult(result=update.to_dict(), notifications=notifications)
 
     async def _handle_spec_get_node_source_range(
         self, params: dict[str, Any]
     ) -> dict[str, Any]:
-        spec_ref = self._require_str(params, "spec_ref")
+        tangle_ref = self._require_ref(params)
         expanded = bool(params.get("expanded", False))
         max_lines = int(params.get("max_lines", 10))
         if max_lines < 1:
             max_lines = 10
 
-        node = await self.specs.get_node(spec_ref)
-        file_path = self.specs.workspace / node.file_path
+        await self._ensure_tangles()
+        node = await self.tangles.get_node(tangle_ref)
+        file_path = self.tangles.workspace / node.file_path
 
         if not file_path.exists() or not file_path.is_file():
             return {
@@ -514,7 +638,7 @@ class MethodHandlers:
 
         try:
             file_path = file_path.resolve()
-            if not str(file_path).startswith(str(self.specs.workspace.resolve())):
+            if not str(file_path).startswith(str(self.tangles.workspace.resolve())):
                 raise ValueError("path escapes workspace")
         except (OSError, ValueError) as exc:
             return {
@@ -574,14 +698,15 @@ class MethodHandlers:
     async def _handle_spec_get_node_code_refs(
         self, params: dict[str, Any]
     ) -> dict[str, Any]:
-        spec_ref = self._require_str(params, "spec_ref")
+        tangle_ref = self._require_ref(params)
         max_lines = int(params.get("max_lines", 200))
         if max_lines < 1:
             max_lines = 200
 
-        node = await self.specs.get_node(spec_ref)
+        await self._ensure_tangles()
+        node = await self.tangles.get_node(tangle_ref)
         refs: list[dict[str, Any]] = []
-        spec_file = (self.specs.workspace / node.file_path).resolve()
+        spec_file = (self.tangles.workspace / node.file_path).resolve()
         for raw_ref in node.code_refs:
             refs.append(
                 self._resolve_code_reference(
@@ -596,10 +721,11 @@ class MethodHandlers:
     async def _handle_spec_set_node_collapsed(
         self, params: dict[str, Any]
     ) -> dict[str, Any]:
-        spec_ref = self._require_str(params, "spec_ref")
+        tangle_ref = self._require_ref(params)
         collapsed = bool(params.get("collapsed", False))
-        node = await self.specs.set_node_collapsed(spec_ref, collapsed)
-        return {"node": node.to_dict()}
+        await self._ensure_tangles()
+        node = await self.tangles.set_node_collapsed(tangle_ref, collapsed)
+        return {"node": _with_tangle_ref(node.to_dict())}
 
     def _resolve_code_reference(
         self,
@@ -719,12 +845,12 @@ class MethodHandlers:
     def _resolve_workspace_file(
         self, *, raw_path: str, spec_file: Path
     ) -> tuple[Path | None, str, str | None]:
-        workspace = self.specs.workspace.resolve()
+        workspace = self.tangles.workspace.resolve()
         # Project root is the spec_root itself (the directory passed via --path,
         # which is the parent of the specs/ subdirectory).  All relative code-ref
         # paths are resolved against it first so that `src/foo.py` always means
         # <project_root>/src/foo.py regardless of which spec file contains the ref.
-        project_root = self.specs.spec_root.resolve()
+        project_root = self.tangles.spec_root.resolve()
         path_obj = Path(raw_path)
         candidates: list[Path] = []
         if path_obj.is_absolute():
@@ -767,7 +893,7 @@ class MethodHandlers:
         return None, safe_rel_path, "file not found"
 
     async def _handle_run_start(self, params: dict[str, Any]) -> DispatchResult:
-        spec_ref = self._require_str(params, "spec_ref")
+        tangle_ref = self._require_ref(params)
         command = self._require_str(params, "command")
         workdir = params.get("workdir", ".")
 
@@ -776,11 +902,11 @@ class MethodHandlers:
 
         workdir_path = Path(workdir)
         if not workdir_path.is_absolute():
-            workdir_path = self.specs.workspace / workdir_path
+            workdir_path = self.tangles.workspace / workdir_path
 
         try:
             workdir_path = workdir_path.resolve()
-            if not str(workdir_path).startswith(str(self.specs.workspace.resolve())):
+            if not str(workdir_path).startswith(str(self.tangles.workspace.resolve())):
                 raise ValueError("workdir escapes workspace")
         except (OSError, ValueError) as exc:
             raise ValueError(f"invalid workdir: {exc}") from exc
@@ -793,7 +919,7 @@ class MethodHandlers:
 
         run_process = RunProcess(
             run_id=run_id,
-            spec_ref=spec_ref,
+            tangle_ref=tangle_ref,
             command=command,
             workdir=str(workdir_path),
             started_at=time.time(),
@@ -801,14 +927,14 @@ class MethodHandlers:
         self.run_state.current_process = run_process
         self.run_state.status = "running"
         self.run_state.run_id = run_id
-        self.run_state.spec_ref = spec_ref
+        self.run_state.tangle_ref = tangle_ref
 
         asyncio.create_task(self._run_process(run_process))
 
         logger.info(
-            "Run started run_id=%s spec_ref=%s command=%s",
+            "Run started run_id=%s tangle_ref=%s command=%s",
             run_id,
-            spec_ref,
+            tangle_ref,
             command,
         )
 
@@ -928,6 +1054,15 @@ class MethodHandlers:
             raise ValueError(f"{field} must be a non-empty string")
         return value
 
+    def _require_ref(self, payload: dict[str, Any], *fields: str) -> str:
+        candidates = list(fields) if fields else ["tangle_ref", "spec_ref"]
+        for field in candidates:
+            ref = payload.get(field)
+            if isinstance(ref, str) and ref.strip():
+                return ref
+        joined = " or ".join(candidates)
+        raise ValueError(f"{joined} must be a non-empty string")
+
     # ── Agent RPC handlers ─────────────────────────────────────────────────────
 
     # ── Prime ─────────────────────────────────────────────────────────────────
@@ -938,12 +1073,13 @@ class MethodHandlers:
             from taui.agent.prime import PrimeAgent
 
             self._prime_agent = PrimeAgent(
-                workspace=Path(self.specs.workspace),
-                spec_service=self.specs,
+                workspace=Path(self.tangles.workspace),
+                spec_service=self.tangles,
                 agent_manager=self.agent_manager,
                 resolve_llm=lambda: self._resolve_llm_for_tier("medium", {}),
                 emit_notification=self._emit_notification,
                 history_db=self.history_db,
+                stream_client=getattr(self, "stream_client", None),
             )
             self.agent_manager.set_prime_agent(self._prime_agent)
         return self._prime_agent
@@ -1038,21 +1174,21 @@ class MethodHandlers:
         )
 
     async def _handle_agent_launch(self, params: dict[str, Any]) -> DispatchResult:
-        """Launch a root agent on a spec branch.
+        """Launch a root agent on a tangle branch.
 
-        Required params: spec_ref, task
+        Required params: tangle_ref, task
         Optional params: tier (default "medium"), model, provider
 
         Returns: {agent_id, session_id}
         """
-        spec_ref = self._require_str(params, "spec_ref")
+        tangle_ref = self._require_ref(params)
         task = self._require_str(params, "task")
         tier = str(params.get("tier", "medium"))
         if tier not in ("high", "medium", "low"):
             raise ValueError("tier must be 'high', 'medium', or 'low'")
 
         # Ensure DB is initialized
-        await self.specs.ensure_initialized()
+        await self._ensure_tangles()
 
         # Resolve LLM from tier — for now use a stub/None when no LLM is configured
         llm, model = self._resolve_llm_for_tier(tier, params)
@@ -1067,14 +1203,14 @@ class MethodHandlers:
         register_spec_tree_tools(registry)
 
         runner = await self.agent_manager.launch(
-            spec_ref=spec_ref,
+            tangle_ref=tangle_ref,
             task=task,
             tier=tier,
             llm=llm,
             model=model,
             tool_registry=registry,
-            spec_service=self.specs,
-            working_dir=self.specs.workspace,
+            spec_service=self.tangles,
+            working_dir=self.tangles.workspace,
             agent_type=str(params.get("agent_type", "root")),
         )
 
@@ -1085,7 +1221,7 @@ class MethodHandlers:
                 {
                     "agent_id": runner.agent_id,
                     "state": "running",
-                    "spec_ref": spec_ref,
+                    "tangle_ref": tangle_ref,
                     "agent_type": runner.agent_type,
                     "display_name": runner.display_name,
                 },
@@ -1153,8 +1289,20 @@ class MethodHandlers:
         await self.agent_manager.stop(agent_id)
         return DispatchResult(result={"ok": True}, notifications=[])
 
+    async def _handle_agent_close(self, params: dict[str, Any]) -> DispatchResult:
+        """User-initiated close of a root agent tab.
+
+        Cleans up event buffers, subscriptions, pending questions, and branch
+        locks. If the agent is still running it is force-stopped first.
+        Returns ``{"ok": True}`` on success; does not raise if the agent is
+        already gone (idempotent).
+        """
+        agent_id = self._require_str(params, "agent_id")
+        await self.agent_manager.close(agent_id)
+        return DispatchResult(result={"ok": True}, notifications=[])
+
     async def _handle_agent_list(self) -> DispatchResult:
-        await self.specs.ensure_initialized()
+        await self._ensure_tangles()
         agents = self.agent_manager.list_active()
         return DispatchResult(result={"agents": agents}, notifications=[])
 
@@ -1184,11 +1332,25 @@ class MethodHandlers:
         """Subscribe to detail events for an agent. Returns the event backlog.
 
         Required params: agent_id
-        Returns: {backlog: [{agent_id, event_type, payload}, ...]}
+        Optional params: from_offset (int) — if provided, uses durable streams
+            for offset-based catch-up instead of the in-memory buffer.
+        Returns: {backlog: [{agent_id, event_type, payload}, ...], last_offset?: int}
         """
         agent_id = self._require_str(params, "agent_id")
-        backlog = self.agent_manager.subscribe(agent_id)
-        return DispatchResult(result={"backlog": backlog}, notifications=[])
+        from_offset = params.get("from_offset")
+        if from_offset is not None:
+            # Use durable stream for offset-based catch-up (resumable)
+            backlog, last_offset = await self.agent_manager.subscribe_from_stream(
+                agent_id, from_offset=int(from_offset)
+            )
+            result: dict[str, Any] = {"backlog": backlog}
+            if last_offset is not None:
+                result["last_offset"] = last_offset
+            return DispatchResult(result=result, notifications=[])
+        else:
+            # Legacy path: in-memory buffer
+            backlog_legacy = self.agent_manager.subscribe(agent_id)
+            return DispatchResult(result={"backlog": backlog_legacy}, notifications=[])
 
     async def _handle_agent_unsubscribe(self, params: dict[str, Any]) -> DispatchResult:
         """Unsubscribe from detail events for an agent.
@@ -1213,28 +1375,144 @@ class MethodHandlers:
         handled = await self.agent_manager.answer_question(question_node_ref, answer)
         return DispatchResult(result={"ok": True, "handled": handled}, notifications=[])
 
-    async def _handle_ui_node_edited(self, params: dict[str, Any]) -> DispatchResult:
-        """Apply a user edit to a spec node and steer any agent holding the lock.
+    async def _handle_ui_snapshot(self) -> DispatchResult:
+        settings = self.settings.load()
+        await self.tangles.ensure_initialized()
+        tree = [
+            _with_tangle_ref(node.to_dict()) for node in await self.tangles.get_tree()
+        ]
+        sessions = await self.agent_manager.list_all()
+        return DispatchResult(
+            result={
+                "tabs": settings.get("tabs", {}),
+                "layout": settings.get("layout", {}),
+                "theme": settings.get("theme"),
+                "prompts": settings.get("prompts", {}),
+                "tangleTree": tree,
+                "agentSessions": sessions,
+            },
+            notifications=[],
+        )
 
-        Required params: spec_ref, new_markdown
+    async def _handle_ui_open_tab(self, params: dict[str, Any]) -> DispatchResult:
+        path = self._require_str(params, "path")
+        settings = self.settings.load()
+        tabs = settings.setdefault("tabs", {})
+        open_tabs = tabs.setdefault("open", [])
+        if not isinstance(open_tabs, list):
+            open_tabs = []
+            tabs["open"] = open_tabs
+        if path not in open_tabs:
+            open_tabs.append(path)
+        tabs["active"] = path
+        self.settings.save(settings)
+        return DispatchResult(result={"tabs": tabs}, notifications=[])
+
+    async def _handle_ui_close_tab(self, params: dict[str, Any]) -> DispatchResult:
+        path = self._require_str(params, "path")
+        settings = self.settings.load()
+        tabs = settings.setdefault("tabs", {})
+        open_tabs = tabs.setdefault("open", [])
+        if isinstance(open_tabs, list):
+            tabs["open"] = [p for p in open_tabs if p != path]
+        if tabs.get("active") == path:
+            remaining = tabs.get("open", [])
+            tabs["active"] = (
+                remaining[0] if isinstance(remaining, list) and remaining else ""
+            )
+        self.settings.save(settings)
+        return DispatchResult(result={"tabs": tabs}, notifications=[])
+
+    async def _handle_ui_set_active_tab(self, params: dict[str, Any]) -> DispatchResult:
+        path = self._require_str(params, "path")
+        settings = self.settings.load()
+        tabs = settings.setdefault("tabs", {})
+        tabs["active"] = path
+        self.settings.save(settings)
+        return DispatchResult(result={"tabs": tabs}, notifications=[])
+
+    async def _handle_ui_update_layout(self, params: dict[str, Any]) -> DispatchResult:
+        layout = params.get("layout")
+        if not isinstance(layout, dict):
+            raise ValueError("layout must be an object")
+        settings = self.settings.load()
+        current = settings.setdefault("layout", {})
+        if not isinstance(current, dict):
+            current = {}
+            settings["layout"] = current
+        current.update(layout)
+        self.settings.save(settings)
+        return DispatchResult(result={"layout": current}, notifications=[])
+
+    async def _handle_ui_set_theme(self, params: dict[str, Any]) -> DispatchResult:
+        theme = self._require_str(params, "theme")
+        if theme not in ("dark", "light", "system"):
+            raise ValueError("theme must be 'dark', 'light', or 'system'")
+        settings = self.settings.load()
+        # Store None for "system" so the snapshot signals "no explicit override"
+        settings["theme"] = None if theme == "system" else theme
+        self.settings.save(settings)
+        return DispatchResult(result={"theme": theme}, notifications=[])
+
+    async def _handle_ui_save_tab(self, params: dict[str, Any]) -> DispatchResult:
+        path = self._require_str(params, "path")
+        content = self._require_str(params, "content")
+        workspace = self.tangles.workspace.resolve()
+        target = (workspace / path).resolve()
+        if not str(target).startswith(str(workspace)):
+            raise ValueError("path escapes workspace")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+        return DispatchResult(result={"ok": True, "path": path}, notifications=[])
+
+    async def _handle_prompts_list(self) -> DispatchResult:
+        return DispatchResult(
+            result={"prompts": self.settings.list_prompts()}, notifications=[]
+        )
+
+    async def _handle_prompts_get(self, params: dict[str, Any]) -> DispatchResult:
+        key = self._require_str(params, "key")
+        prompt = self.settings.get_prompt(key)
+        if prompt is None:
+            raise ValueError(f"unknown prompt key: {key}")
+        return DispatchResult(result={"key": key, "prompt": prompt}, notifications=[])
+
+    async def _handle_prompts_update(self, params: dict[str, Any]) -> DispatchResult:
+        key = self._require_str(params, "key")
+        content = self._require_str(params, "content")
+        prompt = self.settings.update_prompt(key, content)
+        return DispatchResult(result={"key": key, "prompt": prompt}, notifications=[])
+
+    async def _handle_prompts_reset(self, params: dict[str, Any]) -> DispatchResult:
+        key = self._require_str(params, "key")
+        prompt = self.settings.reset_prompt(key)
+        if prompt is None:
+            raise ValueError(f"unknown prompt key: {key}")
+        return DispatchResult(result={"key": key, "prompt": prompt}, notifications=[])
+
+    async def _handle_ui_node_edited(self, params: dict[str, Any]) -> DispatchResult:
+        """Apply a user edit to a tangle node and steer any agent holding the lock.
+
+        Required params: tangle_ref, new_markdown
         Optional params: old_markdown
         Returns: {ok: True}
-        Notifications: spec/nodeChanged (always), plus steer injected into locked agent
+        Notifications: tangle/nodeChanged (always), plus steer injected into locked agent
         """
-        spec_ref = self._require_str(params, "spec_ref")
+        tangle_ref = self._require_ref(params)
         old_markdown = params.get("old_markdown", "")
         new_markdown = self._require_str(params, "new_markdown")
 
-        # Apply edit to spec tree
+        # Apply edit to tangle tree
         patch = SpecNodePatch.from_mapping({"markdown": new_markdown})
-        update = await self.specs.update_node(spec_ref, patch)
+        await self._ensure_tangles()
+        update = await self.tangles.update_node(tangle_ref, patch)
 
         # Find if any active agent holds a lock on this branch
-        lock = await self.agent_manager.db.get_branch_lock(spec_ref)
+        lock = await self.agent_manager.db.get_branch_lock(tangle_ref)
         if lock is not None:
             locked_agent_id = lock["agent_id"]
             steer_msg = (
-                f"<<USER_EDIT>> Node '{spec_ref}' was edited by the user.\n"
+                f"<<USER_EDIT>> Node '{tangle_ref}' was edited by the user.\n"
                 f"Previous content:\n{old_markdown}\n"
                 f"New content:\n{new_markdown}\n"
                 f"Adjust your work accordingly."
@@ -1245,15 +1523,17 @@ class MethodHandlers:
                 pass  # Agent no longer active — lock is stale
 
         notifications: list[dict[str, Any]] = [
-            notification_message("spec/nodeChanged", {"node": update.node.to_dict()})
+            notification_message(
+                "tangle/nodeChanged", {"node": _with_tangle_ref(update.node.to_dict())}
+            ),
         ]
         if update.tree_changed:
             notifications.append(
                 notification_message(
-                    "spec/treeChanged",
+                    "tangle/treeChanged",
                     {
-                        "previous_spec_ref": update.previous_spec_ref,
-                        "spec_ref": update.node.spec_ref,
+                        "previous_tangle_ref": update.previous_spec_ref,
+                        "tangle_ref": update.node.spec_ref,
                     },
                 )
             )
@@ -1271,7 +1551,7 @@ class MethodHandlers:
         if not isinstance(rel_path, str):
             raise ValueError("path must be a string")
 
-        workspace = self.specs.workspace.resolve()
+        workspace = self.tangles.workspace.resolve()
         target = (workspace / rel_path).resolve() if rel_path else workspace
 
         # Security: ensure target is within workspace
@@ -1313,7 +1593,7 @@ class MethodHandlers:
         Returns: {content: string, frontmatter?: object}
         """
         rel_path = self._require_str(params, "path")
-        workspace = self.specs.workspace.resolve()
+        workspace = self.tangles.workspace.resolve()
         target = (workspace / rel_path).resolve()
 
         # Security: ensure target is within workspace
@@ -1359,7 +1639,7 @@ class MethodHandlers:
         if not isinstance(content, str):
             raise ValueError("content must be a string")
 
-        workspace = self.specs.workspace.resolve()
+        workspace = self.tangles.workspace.resolve()
         target = (workspace / rel_path).resolve()
 
         # Security: ensure target is within workspace
@@ -1382,7 +1662,7 @@ class MethodHandlers:
         """
         rel_path = self._require_str(params, "path")
 
-        workspace = self.specs.workspace.resolve()
+        workspace = self.tangles.workspace.resolve()
         target = (workspace / rel_path).resolve()
 
         # Security: ensure target is within workspace
@@ -1397,7 +1677,7 @@ class MethodHandlers:
         return {"ok": True}
 
     async def _handle_fs_search(self, params: dict[str, Any]) -> dict[str, Any]:
-        """Full-text search across spec files.
+        """Full-text search across tangle files.
 
         Required params: query (string)
         Optional params: regex (bool), case_sensitive (bool), file_pattern (string)
@@ -1410,7 +1690,7 @@ class MethodHandlers:
         if not isinstance(file_pattern, str):
             file_pattern = "*.md"
 
-        workspace = self.specs.workspace.resolve()
+        workspace = self.tangles.workspace.resolve()
         results: list[dict[str, Any]] = []
         max_results = 200
 
@@ -1492,7 +1772,7 @@ class MethodHandlers:
         Returns: {backlinks: [{file_path, line_number, context}, ...]}
         """
         target_path = self._require_str(params, "file_path")
-        workspace = self.specs.workspace.resolve()
+        workspace = self.tangles.workspace.resolve()
         backlinks: list[dict[str, Any]] = []
 
         # Extract the file name and possible references to it
@@ -1539,11 +1819,11 @@ class MethodHandlers:
         from taui.symbols.indexer import SymbolIndexer
         from taui.symbols.resolver import SymbolResolver
 
-        await self.specs.ensure_initialized()
-        conn = self.specs.db._conn
+        await self._ensure_tangles()
+        conn = self.tangles.db._conn
         self._symbol_db = SymbolDB(conn)
-        self._symbol_indexer = SymbolIndexer(self.specs.workspace)
-        self._symbol_resolver = SymbolResolver(self.specs.workspace, self._symbol_db)
+        self._symbol_indexer = SymbolIndexer(self.tangles.workspace)
+        self._symbol_resolver = SymbolResolver(self.tangles.workspace, self._symbol_db)
 
     async def _handle_refs_search(self, params: dict[str, Any]) -> dict[str, Any]:
         """Search the symbol index.
@@ -1600,7 +1880,7 @@ class MethodHandlers:
                 "error": f"Symbol '{symbol_name}' not found in {file_path}",
             }
 
-        abs_path = self.specs.workspace / file_path
+        abs_path = self.tangles.workspace / file_path
         source_text = ""
         context_before = ""
         context_after = ""
@@ -1641,7 +1921,7 @@ class MethodHandlers:
 
         # Re-index the file after edit
         if result.get("success"):
-            abs_path = self.specs.workspace / file_path
+            abs_path = self.tangles.workspace / file_path
             if abs_path.exists():
                 new_symbols = self._symbol_indexer.index_file(abs_path)
                 await self._symbol_db.delete_symbols_for_file(file_path)
@@ -1666,17 +1946,18 @@ class MethodHandlers:
         return {"refs": refs, "count": len(refs)}
 
     async def _handle_refs_validate(self, params: dict[str, Any]) -> dict[str, Any]:
-        """Validate all semantic refs or refs on a specific spec node.
+        """Validate all semantic refs or refs on a specific tangle node.
 
-        params: { spec_ref?: string }
+        params: { tangle_ref?: string }
         returns: { results: [{ ref, diagnostic, detail }] }
         """
         await self._ensure_symbol_infra()
         from taui.symbols.models import SemanticRef
 
-        spec_ref = params.get("spec_ref")
-        if spec_ref:
-            node = await self.specs.get_node(spec_ref)
+        tangle_ref = params.get("tangle_ref") or params.get("spec_ref")
+        if isinstance(tangle_ref, str) and tangle_ref.strip():
+            await self._ensure_tangles()
+            node = await self.tangles.get_node(tangle_ref)
             ref_entries = await self._symbol_db.get_refs_for_node(node.id)
         else:
             ref_entries = await self._symbol_db.validate_all_refs()
@@ -1713,7 +1994,7 @@ class MethodHandlers:
         file_path = params.get("file_path")
 
         if file_path and isinstance(file_path, str):
-            abs_path = self.specs.workspace / file_path
+            abs_path = self.tangles.workspace / file_path
             if not abs_path.exists():
                 return {"indexed_files": 0, "symbols": 0, "error": "File not found"}
             await self._symbol_db.delete_symbols_for_file(file_path)
@@ -1732,3 +2013,292 @@ class MethodHandlers:
         # Count unique files
         files = {s.file_path for s in symbols}
         return {"indexed_files": len(files), "symbols": len(symbols)}
+
+    # ── Code block RPC handlers ────────────────────────────────────────────────
+
+    async def _handle_code_resolve(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Resolve a ::code directive to get the source code content.
+
+        params: {
+            file_path: string,    # Path to the source file
+            target: string,       # Symbol name or line range (e.g., "my_func" or "10-25")
+            ref_kind: string      # "symbol" or "lines"
+        }
+        returns: {
+            file_path: string,
+            target: string,
+            ref_kind: string,
+            resolved_start: int | null,
+            resolved_end: int | null,
+            content: string | null,
+            language: string | null,
+            diagnostic: string  # "resolved" | "unresolved" | "stale"
+        }
+        """
+        await self._ensure_symbol_infra()
+
+        file_path = self._require_str(params, "file_path")
+        target = self._require_str(params, "target")
+        ref_kind = params.get("ref_kind", "symbol")
+
+        workspace = self.tangles.workspace.resolve()
+        abs_path = workspace / file_path
+
+        # Determine language from file extension
+        language = self._detect_language(file_path)
+
+        if not abs_path.exists():
+            return {
+                "file_path": file_path,
+                "target": target,
+                "ref_kind": ref_kind,
+                "resolved_start": None,
+                "resolved_end": None,
+                "content": None,
+                "language": language,
+                "diagnostic": "unresolved",
+                "error": "File not found",
+            }
+
+        if ref_kind == "lines":
+            # Parse line range: "10-25" or "10"
+            return await self._resolve_code_lines(file_path, abs_path, target, language)
+        else:
+            # Symbol resolution
+            return await self._resolve_code_symbol(
+                file_path, abs_path, target, language
+            )
+
+    async def _resolve_code_lines(
+        self, file_path: str, abs_path: Path, target: str, language: str | None
+    ) -> dict[str, Any]:
+        """Resolve a line range reference (e.g., "10-25" or "10")."""
+        # Parse the line range
+        parts = target.split("-")
+        try:
+            line_start = int(parts[0])
+            line_end = int(parts[1]) if len(parts) > 1 else line_start
+        except ValueError:
+            return {
+                "file_path": file_path,
+                "target": target,
+                "ref_kind": "lines",
+                "resolved_start": None,
+                "resolved_end": None,
+                "content": None,
+                "language": language,
+                "diagnostic": "unresolved",
+                "error": f"Invalid line range: {target}",
+            }
+
+        try:
+            content = abs_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            return {
+                "file_path": file_path,
+                "target": target,
+                "ref_kind": "lines",
+                "resolved_start": line_start,
+                "resolved_end": line_end,
+                "content": None,
+                "language": language,
+                "diagnostic": "unresolved",
+                "error": str(exc),
+            }
+
+        lines = content.splitlines()
+        total_lines = len(lines)
+
+        # Clamp to valid range
+        line_start = max(1, min(line_start, total_lines))
+        line_end = max(line_start, min(line_end, total_lines))
+
+        selected_lines = lines[line_start - 1 : line_end]
+        selected_content = "\n".join(selected_lines)
+
+        return {
+            "file_path": file_path,
+            "target": target,
+            "ref_kind": "lines",
+            "resolved_start": line_start,
+            "resolved_end": line_end,
+            "content": selected_content,
+            "language": language,
+            "diagnostic": "resolved",
+        }
+
+    async def _resolve_code_symbol(
+        self, file_path: str, abs_path: Path, target: str, language: str | None
+    ) -> dict[str, Any]:
+        """Resolve a symbol reference (e.g., "my_function" or "MyClass.method")."""
+        from taui.symbols.models import SemanticRef
+
+        # Build a SemanticRef and use the existing resolver
+        ref = SemanticRef(
+            file_path=file_path,
+            symbol_path=target,
+            ref_kind="symbol_ref",
+            language=language,
+        )
+
+        resolved = await self._symbol_resolver.resolve(ref)
+
+        return {
+            "file_path": file_path,
+            "target": target,
+            "ref_kind": "symbol",
+            "resolved_start": resolved.line_start,
+            "resolved_end": resolved.line_end,
+            "content": resolved.preview_snippet,
+            "language": language,
+            "diagnostic": resolved.diagnostic,
+            "symbol_kind": resolved.symbol_kind,
+            "symbol_metadata": resolved.symbol_metadata,
+        }
+
+    async def _handle_code_update(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Update source code from a ::code block edit.
+
+        params: {
+            file_path: string,        # Path to the source file
+            line_start: int,          # 1-based start line
+            line_end: int,            # 1-based end line
+            new_content: string       # The new code content
+        }
+        returns: {
+            success: bool,
+            file_path: string,
+            line_start: int,
+            line_end: int,
+            lines_changed: int
+        }
+        """
+        file_path = self._require_str(params, "file_path")
+        line_start = params.get("line_start")
+        line_end = params.get("line_end")
+        new_content = params.get("new_content", "")
+
+        if not isinstance(line_start, int) or not isinstance(line_end, int):
+            raise ValueError("line_start and line_end must be integers")
+        if not isinstance(new_content, str):
+            raise ValueError("new_content must be a string")
+
+        workspace = self.tangles.workspace.resolve()
+        abs_path = workspace / file_path
+
+        # Security: ensure path is within workspace
+        try:
+            resolved_path = abs_path.resolve()
+            if not str(resolved_path).startswith(str(workspace)):
+                raise ValueError("path escapes workspace")
+        except (OSError, ValueError) as exc:
+            return {
+                "success": False,
+                "file_path": file_path,
+                "error": str(exc),
+            }
+
+        if not abs_path.exists():
+            return {
+                "success": False,
+                "file_path": file_path,
+                "error": "File not found",
+            }
+
+        try:
+            content = abs_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            return {
+                "success": False,
+                "file_path": file_path,
+                "error": str(exc),
+            }
+
+        lines = content.splitlines(keepends=True)
+        total_lines = len(lines)
+
+        # Validate range
+        if line_start < 1 or line_start > total_lines:
+            return {
+                "success": False,
+                "file_path": file_path,
+                "error": f"line_start {line_start} out of range (1-{total_lines})",
+            }
+        if line_end < line_start or line_end > total_lines:
+            return {
+                "success": False,
+                "file_path": file_path,
+                "error": f"line_end {line_end} out of range ({line_start}-{total_lines})",
+            }
+
+        # Replace the lines
+        new_lines = new_content.splitlines(keepends=True)
+        # Ensure the last line has a newline if the original did
+        if new_lines and not new_lines[-1].endswith("\n"):
+            # Check if original section ended with newline
+            if line_end <= len(lines) and lines[line_end - 1].endswith("\n"):
+                new_lines[-1] += "\n"
+
+        # Reconstruct the file
+        before = lines[: line_start - 1]
+        after = lines[line_end:]
+        updated_lines = before + new_lines + after
+        updated_content = "".join(updated_lines)
+
+        try:
+            abs_path.write_text(updated_content, encoding="utf-8")
+        except OSError as exc:
+            return {
+                "success": False,
+                "file_path": file_path,
+                "error": str(exc),
+            }
+
+        # Re-index the file after edit
+        await self._ensure_symbol_infra()
+        new_symbols = self._symbol_indexer.index_file(abs_path)
+        await self._symbol_db.delete_symbols_for_file(file_path)
+        if new_symbols:
+            await self._symbol_db.upsert_symbols(new_symbols)
+
+        return {
+            "success": True,
+            "file_path": file_path,
+            "line_start": line_start,
+            "line_end": line_start + len(new_lines) - 1,
+            "lines_changed": len(new_lines),
+        }
+
+    def _detect_language(self, file_path: str) -> str | None:
+        """Detect programming language from file extension."""
+        ext = Path(file_path).suffix.lower()
+        lang_map = {
+            ".py": "python",
+            ".js": "javascript",
+            ".ts": "typescript",
+            ".tsx": "typescript",
+            ".jsx": "javascript",
+            ".rs": "rust",
+            ".go": "go",
+            ".rb": "ruby",
+            ".java": "java",
+            ".cpp": "cpp",
+            ".c": "c",
+            ".h": "c",
+            ".hpp": "cpp",
+            ".css": "css",
+            ".scss": "scss",
+            ".html": "html",
+            ".svelte": "svelte",
+            ".vue": "vue",
+            ".json": "json",
+            ".yaml": "yaml",
+            ".yml": "yaml",
+            ".toml": "toml",
+            ".md": "markdown",
+            ".sql": "sql",
+            ".sh": "bash",
+            ".bash": "bash",
+            ".zsh": "bash",
+        }
+        return lang_map.get(ext)

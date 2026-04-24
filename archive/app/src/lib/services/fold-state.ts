@@ -1,6 +1,6 @@
 /**
  * Fold state persistence.
- * Saves/restores collapsed state for each spec node keyed by spec_ref.
+ * Saves/restores collapsed state for each tangle node keyed by tangle_ref.
  * Wire up by calling startFoldPersistence() once after tree is hydrated.
  */
 
@@ -8,19 +8,19 @@ import { appState } from '$stores/app-state.svelte'
 
 const PREFIX = 'taui-fold:'
 
-export function saveFoldState(specRef: string, collapsed: boolean): void {
+export function saveFoldState(tangleRef: string, collapsed: boolean): void {
   try {
     if (collapsed) {
-      localStorage.setItem(PREFIX + specRef, '1')
+      localStorage.setItem(PREFIX + tangleRef, '1')
     } else {
-      localStorage.removeItem(PREFIX + specRef)
+      localStorage.removeItem(PREFIX + tangleRef)
     }
   } catch { /* sandboxed */ }
 }
 
-export function loadFoldState(specRef: string): boolean {
+export function loadFoldState(tangleRef: string): boolean {
   try {
-    return localStorage.getItem(PREFIX + specRef) === '1'
+    return localStorage.getItem(PREFIX + tangleRef) === '1'
   } catch {
     return false
   }
@@ -59,10 +59,11 @@ export function watchFoldState(): () => void {
   function tick() {
     if (!active) return
     for (const node of appState.nodes) {
-      const was = prev.get(node.specRef)
+      const tangleRef = node.specRef
+      const was = prev.get(tangleRef)
       if (was !== node.collapsed) {
-        saveFoldState(node.specRef, node.collapsed)
-        prev.set(node.specRef, node.collapsed)
+        saveFoldState(tangleRef, node.collapsed)
+        prev.set(tangleRef, node.collapsed)
       }
     }
     rafId = requestAnimationFrame(tick)

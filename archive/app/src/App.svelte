@@ -7,7 +7,7 @@
   import { theme } from '$stores/theme.svelte'
   import TitleBar from '$components/TitleBar.svelte'
   import SplitPane from '$components/SplitPane.svelte'
-  import SpecNavSidebar from '$components/SpecNavSidebar.svelte'
+  import TangleNavSidebar from '$components/TangleNavSidebar.svelte'
   import MainPane from '$components/MainPane.svelte'
   import SearchPanel from '$components/SearchPanel.svelte'
   import GraphView from '$components/GraphView.svelte'
@@ -16,17 +16,18 @@
   import QuickJump from '$components/QuickJump.svelte'
   import Toast from '$components/Toast.svelte'
   import SettingsModal from '$components/SettingsModal.svelte'
+  import ModelSettingsModal from '$components/ModelSettingsModal.svelte'
 
   onMount(() => {
     startConnection()
     listenMenuEvents()
-    tabStore.restoreSession()
 
     // Listen for custom events from CommandPalette
     window.addEventListener('taui:toggle-search', handleToggleSearch)
     window.addEventListener('taui:toggle-graph', handleToggleGraph)
     window.addEventListener('taui:toggle-right-sidebar', handleToggleRightSidebar)
     window.addEventListener('taui:toggle-settings', handleToggleSettings)
+    window.addEventListener('taui:toggle-model-settings', handleToggleModelSettings)
   })
   onDestroy(() => {
     stopConnection()
@@ -34,12 +35,14 @@
     window.removeEventListener('taui:toggle-graph', handleToggleGraph)
     window.removeEventListener('taui:toggle-right-sidebar', handleToggleRightSidebar)
     window.removeEventListener('taui:toggle-settings', handleToggleSettings)
+    window.removeEventListener('taui:toggle-model-settings', handleToggleModelSettings)
   })
 
   function handleToggleSearch() { showSearch = !showSearch }
   function handleToggleGraph() { showGraph = !showGraph }
   function handleToggleRightSidebar() { toggleRightSidebar() }
   function handleToggleSettings() { showSettings = !showSettings }
+  function handleToggleModelSettings() { showModelSettings = !showModelSettings }
 
   async function listenMenuEvents() {
     try {
@@ -58,20 +61,6 @@
   // ── Agent pane state ──────────────────────────────────────────────────────
   let rightSidebarCollapsed = $state(false)
 
-  // Restore agent pane collapsed state from localStorage
-  onMount(() => {
-    try {
-      const collapsed = localStorage.getItem('taui-agent-pane-collapsed')
-      if (collapsed === 'true') rightSidebarCollapsed = true
-    } catch { /* ignore */ }
-  })
-
-  $effect(() => {
-    try {
-      localStorage.setItem('taui-agent-pane-collapsed', String(rightSidebarCollapsed))
-    } catch { /* ignore */ }
-  })
-
   function toggleRightSidebar() {
     rightSidebarCollapsed = !rightSidebarCollapsed
   }
@@ -86,6 +75,7 @@
   let showPalette = $state(false)
   let showJump = $state(false)
   let showSettings = $state(false)
+  let showModelSettings = $state(false)
 
   // ── Global keybindings ─────────────────────────────────────────────────────
   function handleGlobalKeyDown(e: KeyboardEvent) {
@@ -132,9 +122,7 @@
     } else if (e.key === 'w') {
       // Cmd+W → Close current tab
       e.preventDefault()
-      if (tabStore.activeTabId) {
-        tabStore.closeTab(tabStore.activeTabId)
-      }
+      if (tabStore.activeTabId) void tabStore.closeTab(tabStore.activeTabId)
     }
   }
 
@@ -178,7 +166,7 @@
           {#if showSearch}
             <SearchPanel onclose={() => { showSearch = false }} />
           {:else}
-            <SpecNavSidebar />
+            <TangleNavSidebar />
           {/if}
         {/snippet}
 
@@ -213,6 +201,9 @@
 {/if}
 {#if showSettings}
   <SettingsModal onclose={() => { showSettings = false }} />
+{/if}
+{#if showModelSettings}
+  <ModelSettingsModal onclose={() => { showModelSettings = false }} />
 {/if}
 
 <!-- Toast notifications -->

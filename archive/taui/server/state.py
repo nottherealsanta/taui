@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 @dataclass(slots=True)
 class RunProcess:
     run_id: int
-    spec_ref: str
+    tangle_ref: str
     command: str
     workdir: str
     process: asyncio.subprocess.Process | None = None
@@ -25,7 +25,8 @@ class RunProcess:
     def to_dict(self) -> dict[str, Any]:
         return {
             "run_id": self.run_id,
-            "spec_ref": self.spec_ref,
+            "tangle_ref": self.tangle_ref,
+            "spec_ref": self.tangle_ref,
             "command": self.command,
             "workdir": self.workdir,
             "status": self.status,
@@ -40,7 +41,7 @@ class RunState:
     next_run_id: int = 1
     status: str = "idle"
     run_id: int | None = None
-    spec_ref: str | None = None
+    tangle_ref: str | None = None
     current_process: RunProcess | None = None
     notification_queue: list[dict[str, Any]] = field(default_factory=list)
 
@@ -48,5 +49,6 @@ class RunState:
         return {
             "status": self.status,
             "run_id": self.run_id,
-            "spec_ref": self.spec_ref,
+            "tangle_ref": self.tangle_ref,
+            "spec_ref": self.tangle_ref,
         }

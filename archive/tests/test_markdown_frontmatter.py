@@ -1,7 +1,7 @@
 """Unit tests for YAML frontmatter parsing."""
 from __future__ import annotations
 
-from taui.specs.markdown import HeadingNode, parse_heading_tree, parse_yaml_frontmatter
+from taui.tangle.markdown import HeadingNode, parse_heading_tree, parse_yaml_frontmatter
 
 
 def test_parse_frontmatter_basic() -> None:

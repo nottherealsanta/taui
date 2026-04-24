@@ -4,6 +4,8 @@ import re
 from functools import lru_cache
 from pathlib import Path
 
+from taui.config.project_settings import ProjectSettingsStore
+
 
 _PROMPTS_PATH = Path(__file__).with_name("system_prompts.md")
 
@@ -28,8 +30,31 @@ def _load_sections() -> dict[str, str]:
 
 
 def get_prompt_template(role: str) -> str | None:
+    return get_prompt_template_for_workspace(role, workspace=None)
+
+
+def get_prompt_template_for_workspace(
+    role: str, workspace: Path | str | None
+) -> str | None:
+    settings_key_map = {
+        "prime": "prime_system",
+        "root": "root_agent_system",
+        "sub-agent": "sub_agent_system",
+    }
     sections = _load_sections()
     key = role.strip().lower()
+
+    if workspace is not None:
+        try:
+            store = ProjectSettingsStore(Path(workspace))
+            settings = store.get_prompt(settings_key_map.get(key, ""))
+            if settings and isinstance(settings.get("content"), str):
+                content = settings.get("content", "").strip()
+                if content:
+                    return content
+        except Exception:
+            pass
+
     if key in sections:
         return sections[key]
 
@@ -40,6 +65,16 @@ def get_prompt_template(role: str) -> str | None:
     }
     alias = aliases.get(key)
     if alias:
+        if workspace is not None:
+            try:
+                store = ProjectSettingsStore(Path(workspace))
+                settings = store.get_prompt(settings_key_map.get(alias, ""))
+                if settings and isinstance(settings.get("content"), str):
+                    content = settings.get("content", "").strip()
+                    if content:
+                        return content
+            except Exception:
+                pass
         return sections.get(alias)
     return None
 

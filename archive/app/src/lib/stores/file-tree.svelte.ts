@@ -7,6 +7,7 @@
 
 import type { FileEntry } from '$types/index'
 import { backendClient } from '$services/backend-client'
+import { SvelteMap, SvelteSet } from 'svelte/reactivity'
 
 type PendingCreation = {
   parentPath: string
@@ -15,10 +16,10 @@ type PendingCreation = {
 
 class FileTreeStore {
   /** Cached directory listings keyed by path. */
-  entries: Map<string, FileEntry[]> = $state(new Map())
+  entries: Map<string, FileEntry[]> = $state(new SvelteMap())
 
   /** Set of expanded directory paths. */
-  expandedDirs: Set<string> = $state(new Set())
+  expandedDirs: Set<string> = $state(new SvelteSet())
 
   /** Currently highlighted file path in the tree. */
   selectedFile: string | null = $state(null)
@@ -27,7 +28,7 @@ class FileTreeStore {
   sidebarCollapsed: boolean = $state(false)
 
   /** Loading state per directory. */
-  loading: Set<string> = $state(new Set())
+  loading: Set<string> = $state(new SvelteSet())
 
   /** Root path for the file tree (relative, usually '' or 'specs'). */
   rootPath: string = $state('')
@@ -121,6 +122,7 @@ class FileTreeStore {
    */
   toggleSidebar(): void {
     this.sidebarCollapsed = !this.sidebarCollapsed
+    void backendClient.uiUpdateLayout({ sidebarCollapsed: this.sidebarCollapsed })
   }
 
   /**

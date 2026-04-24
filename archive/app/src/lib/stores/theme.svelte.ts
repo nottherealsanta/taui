@@ -6,6 +6,8 @@
 
 type Theme = 'dark' | 'light'
 
+import { backendClient } from '$services/backend-client'
+
 function detectSystemTheme(): Theme {
   if (typeof window === 'undefined') return 'dark'
   return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'
@@ -24,22 +26,35 @@ function applyTheme(theme: Theme): void {
 
 class ThemeStore {
   current: Theme = $state(detectSystemTheme())
+  /** Whether the user has made an explicit choice (overriding system theme). */
+  userOverride: boolean = false
 
   constructor() {
     applyTheme(this.current)
 
-    // Listen for system theme changes
+    // Listen for system theme changes — only follow if user hasn't overridden
     if (typeof window !== 'undefined') {
       const mql = window.matchMedia('(prefers-color-scheme: light)')
       mql.addEventListener('change', (e) => {
-        this.set(e.matches ? 'light' : 'dark')
+        if (!this.userOverride) {
+          this._apply(e.matches ? 'light' : 'dark')
+        }
       })
     }
   }
 
-  set(theme: Theme): void {
+  /** Apply theme without persisting to backend (system-driven or internal use). */
+  private _apply(theme: Theme): void {
     this.current = theme
     applyTheme(theme)
+  }
+
+  /** Explicitly set theme (user action) — persists to backend. */
+  set(theme: Theme): void {
+    this.userOverride = true
+    this.current = theme
+    applyTheme(theme)
+    void backendClient.uiSetTheme(theme)
   }
 
   toggle(): void {
@@ -48,6 +63,22 @@ class ThemeStore {
 
   get isDark(): boolean {
     return this.current === 'dark'
+  }
+
+  /**
+   * Called on startup from the backend snapshot. Only applies if the snapshot
+   * represents an explicit user preference (not null/undefined/"system").
+   */
+  applySnapshot(theme: Theme): void {
+    this.userOverride = true
+    this._apply(theme)
+  }
+
+  /** Reset back to following the system theme. */
+  followSystem(): void {
+    this.userOverride = false
+    this._apply(detectSystemTheme())
+    void backendClient.uiSetTheme('system')
   }
 }
 

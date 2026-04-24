@@ -202,32 +202,32 @@ export class BackendClient extends EventTarget {
   }
 
   async getTreeDetailed(): Promise<BackendTreeResponse> {
-    return this.call('spec/getTreeDetailed', {}) as Promise<BackendTreeResponse>
+    return this.call('tangle/getTreeDetailed', {}) as Promise<BackendTreeResponse>
   }
 
   async updateNode(specRef: string, markdown: string): Promise<BackendUpdateNodeResponse> {
-    return this.call('spec/updateNode', {
-      spec_ref: specRef,
+    return this.call('tangle/updateNode', {
+      tangle_ref: specRef,
       patch: { markdown },
     }) as Promise<BackendUpdateNodeResponse>
   }
 
   async createSiblingNode(specRef: string): Promise<BackendUpdateNodeResponse> {
-    return this.call('spec/createSiblingNode', { spec_ref: specRef }) as Promise<BackendUpdateNodeResponse>
+    return this.call('tangle/createSiblingNode', { tangle_ref: specRef }) as Promise<BackendUpdateNodeResponse>
   }
 
   async indentNode(specRef: string): Promise<void> {
-    await this.call('spec/indentNode', { spec_ref: specRef })
+    await this.call('tangle/indentNode', { tangle_ref: specRef })
   }
 
   async outdentNode(specRef: string): Promise<void> {
-    await this.call('spec/outdentNode', { spec_ref: specRef })
+    await this.call('tangle/outdentNode', { tangle_ref: specRef })
   }
 
   async getNodeCodeRefs(specRef: string, maxLines?: number): Promise<CodeRefsResponse> {
-    const params: Record<string, unknown> = { spec_ref: specRef }
+    const params: Record<string, unknown> = { tangle_ref: specRef }
     if (maxLines !== undefined) params['max_lines'] = maxLines
-    const raw = await this.call('spec/getNodeCodeRefs', params) as {
+    const raw = await this.call('tangle/getNodeCodeRefs', params) as {
       refs: Array<{
         raw_ref: string
         file_path: string
@@ -261,16 +261,16 @@ export class BackendClient extends EventTarget {
     specRef: string,
     opts?: { expanded?: boolean; maxLines?: number }
   ): Promise<SourceRangeResponse> {
-    const params: Record<string, unknown> = { spec_ref: specRef }
+    const params: Record<string, unknown> = { tangle_ref: specRef }
     if (opts?.expanded !== undefined) params['expanded'] = opts.expanded
     if (opts?.maxLines !== undefined) params['max_lines'] = opts.maxLines
-    return this.call('spec/getNodeSourceRange', params) as Promise<SourceRangeResponse>
+    return this.call('tangle/getNodeSourceRange', params) as Promise<SourceRangeResponse>
   }
 
   // ── Run RPCs ──────────────────────────────────────────────────────────────
 
   async runStart(specRef: string, command: string, workdir?: string): Promise<BackendRunState> {
-    const params: Record<string, unknown> = { spec_ref: specRef, command }
+    const params: Record<string, unknown> = { tangle_ref: specRef, command }
     if (workdir) params['workdir'] = workdir
     return this.call('run/start', params) as Promise<BackendRunState>
   }
@@ -286,12 +286,16 @@ export class BackendClient extends EventTarget {
   // ── Agent RPCs ────────────────────────────────────────────────────────────
 
   async agentLaunch(specRef: string, task: string, tier: string): Promise<{ agentId: string; sessionId: string }> {
-    const result = await this.call('agent/launch', { spec_ref: specRef, task, tier }) as { agent_id: string; session_id: string }
+    const result = await this.call('agent/launch', { tangle_ref: specRef, task, tier }) as { agent_id: string; session_id: string }
     return { agentId: result.agent_id, sessionId: result.session_id }
   }
 
   async agentStop(agentId: string): Promise<void> {
     await this.call('agent/stop', { agent_id: agentId })
+  }
+
+  async agentClose(agentId: string): Promise<void> {
+    await this.call('agent/close', { agent_id: agentId })
   }
 
   async agentSteer(agentId: string, message: string): Promise<void> {
@@ -302,9 +306,11 @@ export class BackendClient extends EventTarget {
     await this.call('agent/queue', { agent_id: agentId, message })
   }
 
-  async agentSubscribe(agentId: string): Promise<unknown[]> {
-    const result = await this.call('agent/subscribe', { agent_id: agentId }) as { backlog: unknown[] }
-    return result.backlog ?? []
+  async agentSubscribe(agentId: string, fromOffset?: number): Promise<{ backlog: unknown[]; lastOffset?: number }> {
+    const params: Record<string, unknown> = { agent_id: agentId }
+    if (fromOffset !== undefined) params['from_offset'] = fromOffset
+    const result = await this.call('agent/subscribe', params) as { backlog: unknown[]; last_offset?: number }
+    return { backlog: result.backlog ?? [], lastOffset: result.last_offset }
   }
 
   async agentUnsubscribe(agentId: string): Promise<void> {
@@ -348,8 +354,8 @@ export class BackendClient extends EventTarget {
     }
   }
 
-  async agentList(): Promise<{ agents: Array<{ agent_id: string; spec_ref: string; state: string; agent_type: string; display_name: string; tier: string }> }> {
-    return this.call('agent/list', {}) as Promise<{ agents: Array<{ agent_id: string; spec_ref: string; state: string; agent_type: string; display_name: string; tier: string }> }>
+  async agentList(): Promise<{ agents: Array<{ agent_id: string; spec_ref?: string; tangle_ref?: string; state: string; agent_type: string; display_name: string; tier: string }> }> {
+    return this.call('agent/list', {}) as Promise<{ agents: Array<{ agent_id: string; spec_ref?: string; tangle_ref?: string; state: string; agent_type: string; display_name: string; tier: string }> }>
   }
 
   // ── Filesystem RPCs ───────────────────────────────────────────────────────
@@ -406,7 +412,147 @@ export class BackendClient extends EventTarget {
   }
 
   async getBacklinks(filePath: string): Promise<{ backlinks: Array<{ filePath: string; lineNumber: number; context: string }> }> {
-    return this.call('spec/getBacklinks', { file_path: filePath }) as Promise<{ backlinks: Array<{ filePath: string; lineNumber: number; context: string }> }>
+    return this.call('tangle/getBacklinks', { file_path: filePath }) as Promise<{ backlinks: Array<{ filePath: string; lineNumber: number; context: string }> }>
+  }
+
+  async uiSnapshot(): Promise<unknown> {
+    return this.call('ui/snapshot', {})
+  }
+
+  async uiOpenTab(path: string): Promise<void> {
+    await this.call('ui/openTab', { path })
+  }
+
+  async uiCloseTab(path: string): Promise<void> {
+    await this.call('ui/closeTab', { path })
+  }
+
+  async uiSetActiveTab(path: string): Promise<void> {
+    await this.call('ui/setActiveTab', { path })
+  }
+
+  async uiUpdateLayout(layout: Record<string, unknown>): Promise<void> {
+    await this.call('ui/updateLayout', { layout })
+  }
+
+  async uiSetTheme(theme: 'dark' | 'light' | 'system'): Promise<void> {
+    await this.call('ui/setTheme', { theme })
+  }
+
+  async uiSaveTab(path: string, content: string): Promise<void> {
+    await this.call('ui/saveTab', { path, content })
+  }
+
+  async promptsList(): Promise<Record<string, { content: string; is_default: boolean; last_updated: string }>> {
+    const result = await this.call('prompts/list', {}) as {
+      prompts?: Record<string, { content: string; is_default: boolean; last_updated: string }>
+    }
+    return result.prompts ?? {}
+  }
+
+  async promptsGet(key: string): Promise<{ content: string; is_default: boolean; last_updated: string }> {
+    const result = await this.call('prompts/get', { key }) as {
+      prompt: { content: string; is_default: boolean; last_updated: string }
+    }
+    return result.prompt
+  }
+
+  async promptsUpdate(key: string, content: string): Promise<{ content: string; is_default: boolean; last_updated: string }> {
+    const result = await this.call('prompts/update', { key, content }) as {
+      prompt: { content: string; is_default: boolean; last_updated: string }
+    }
+    return result.prompt
+  }
+
+  async promptsReset(key: string): Promise<{ content: string; is_default: boolean; last_updated: string }> {
+    const result = await this.call('prompts/reset', { key }) as {
+      prompt: { content: string; is_default: boolean; last_updated: string }
+    }
+    return result.prompt
+  }
+
+  // ── Code block RPCs ─────────────────────────────────────────────────────────
+
+  /**
+   * Resolve a ::code directive to get the actual source code content.
+   */
+  async codeResolve(filePath: string, target: string, refKind: 'symbol' | 'lines'): Promise<{
+    filePath: string
+    target: string
+    refKind: string
+    resolvedStart: number | null
+    resolvedEnd: number | null
+    content: string | null
+    language: string | null
+    diagnostic: string
+    error?: string
+    symbolKind?: string
+    symbolMetadata?: Record<string, unknown>
+  }> {
+    const raw = await this.call('code/resolve', {
+      file_path: filePath,
+      target,
+      ref_kind: refKind,
+    }) as {
+      file_path: string
+      target: string
+      ref_kind: string
+      resolved_start: number | null
+      resolved_end: number | null
+      content: string | null
+      language: string | null
+      diagnostic: string
+      error?: string
+      symbol_kind?: string
+      symbol_metadata?: Record<string, unknown>
+    }
+    return {
+      filePath: raw.file_path,
+      target: raw.target,
+      refKind: raw.ref_kind,
+      resolvedStart: raw.resolved_start,
+      resolvedEnd: raw.resolved_end,
+      content: raw.content,
+      language: raw.language,
+      diagnostic: raw.diagnostic,
+      error: raw.error,
+      symbolKind: raw.symbol_kind,
+      symbolMetadata: raw.symbol_metadata,
+    }
+  }
+
+  /**
+   * Update source code from a ::code block edit.
+   */
+  async codeUpdate(filePath: string, lineStart: number, lineEnd: number, newContent: string): Promise<{
+    success: boolean
+    filePath: string
+    lineStart?: number
+    lineEnd?: number
+    linesChanged?: number
+    error?: string
+  }> {
+    const raw = await this.call('code/update', {
+      file_path: filePath,
+      line_start: lineStart,
+      line_end: lineEnd,
+      new_content: newContent,
+    }) as {
+      success: boolean
+      file_path: string
+      line_start?: number
+      line_end?: number
+      lines_changed?: number
+      error?: string
+    }
+    return {
+      success: raw.success,
+      filePath: raw.file_path,
+      lineStart: raw.line_start,
+      lineEnd: raw.line_end,
+      linesChanged: raw.lines_changed,
+      error: raw.error,
+    }
   }
 }
 

@@ -4,27 +4,17 @@
 -->
 <script lang="ts">
   import { tick } from 'svelte'
-  import type { AgentTier } from '$types/index'
+  import type { ModelModeKey } from '$types/index'
   import { PRIME_AGENT_ID } from '$types/index'
   import { appState } from '$stores/app-state.svelte'
   import { backendClient } from '$services/backend-client'
 
-  const TIERS: AgentTier[] = ['low', 'medium', 'high']
+  const MODE_KEYS: ModelModeKey[] = ['low', 'medium', 'high']
+  const MODE_LABELS: Record<ModelModeKey, string> = { low: 'L', medium: 'M', high: 'H' }
 
   let inputEl: HTMLTextAreaElement | undefined = $state()
   let draft = $state('')
   let sending = $state(false)
-  let providerDropdownOpen = $state(false)
-  let modelDropdownOpen = $state(false)
-  let dropdownPos = $state({ x: 0, y: 0 })
-
-  const MODELS = [
-    'claude-sonnet-4.6',
-    'claude-opus-4.6',
-    'gpt-5.3-codex',
-    'gemini-3.1-pro-preview',
-    'claude-haiku-4.5',
-  ]
 
   interface SlashCommand {
     name: string
@@ -45,21 +35,21 @@
   const selectedRef = $derived(appState.selectedSpecRef)
   const isPrime = $derived(appState.detailAgentId === PRIME_AGENT_ID)
 
-  /** Parse "provider:model" into separate parts. */
-  const providerName = $derived(() => {
-    const m = appState.currentModel
-    if (!m) return ''
-    const idx = m.indexOf(':')
-    return idx >= 0 ? m.slice(0, idx) : ''
-  })
-  const modelName = $derived(() => {
-    const m = appState.currentModel
-    if (!m) return ''
-    const idx = m.indexOf(':')
-    return idx >= 0 ? m.slice(idx + 1) : m
+  /** Short display of the active model name for the mode bar. */
+  const activeModelShort = $derived(() => {
+    const m = appState.activeModelDisplay
+    // Truncate long model names for the toolbar display
+    if (m.length > 24) return m.slice(0, 22) + '…'
+    return m
   })
 
-  const availableModels = () => MODELS
+  function selectMode(mode: ModelModeKey) {
+    appState.setActiveModelMode(mode)
+  }
+
+  function openModelSettings() {
+    window.dispatchEvent(new CustomEvent('taui:toggle-model-settings'))
+  }
 
   /** Fallback to root spec ref when nothing is selected. */
   const launchRef = $derived(
@@ -96,8 +86,10 @@
     isPrime
       ? `Message Prime…`
       : steerableAgent
-        ? `Steer active agent (Shift+Enter to queue)…`
-        : `Send a message…`
+        ? `Message ${steerableAgent.displayName ?? 'agent'}…`
+        : activeAgent
+          ? `Message ${activeAgent.displayName ?? 'agent'}…`
+          : `Send a message…`
   )
 
   const slashToken = $derived(() => {
@@ -131,41 +123,6 @@
       slashActiveIndex = 0
     }
   })
-
-  function toggleProviderDropdown(e: MouseEvent) {
-    if (!providerDropdownOpen) {
-      const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
-      dropdownPos = { x: rect.left, y: rect.top }
-    }
-    providerDropdownOpen = !providerDropdownOpen
-    modelDropdownOpen = false
-  }
-
-  function toggleModelDropdown(e: MouseEvent) {
-    if (!modelDropdownOpen) {
-      const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
-      dropdownPos = { x: rect.left, y: rect.top }
-    }
-    modelDropdownOpen = !modelDropdownOpen
-    providerDropdownOpen = false
-  }
-
-  function closeDropdowns() {
-    providerDropdownOpen = false
-    modelDropdownOpen = false
-  }
-
-  function selectProvider(p: string) {
-    const firstModel = MODELS[0] ?? ''
-    appState.currentModel = `${p}:${firstModel}`
-    providerDropdownOpen = false
-  }
-
-  function selectModel(m: string) {
-    const p = providerName()
-    appState.currentModel = p ? `${p}:${m}` : m
-    modelDropdownOpen = false
-  }
 
   function parseSlashCommand(text: string): { name: string; args: string } | null {
     const trimmed = text.trim()
@@ -448,52 +405,25 @@
 
       <div class="input-toolbar">
         <div class="toolbar-left">
-          {#if appState.currentModel}
-            <div class="model-info">
-              {#if providerDropdownOpen || modelDropdownOpen}
-                <!-- svelte-ignore a11y_click_events_have_key_events -->
-                <!-- svelte-ignore a11y_no_static_element_interactions -->
-                <div class="dropdown-backdrop" onclick={closeDropdowns}></div>
-              {/if}
-
-              <!-- Provider selector -->
-              <span class="selector-group">
-                <!-- svelte-ignore a11y_click_events_have_key_events -->
-                <!-- svelte-ignore a11y_no_static_element_interactions -->
-                <span class="toolbar-btn provider-selector" onclick={toggleProviderDropdown}>
-                  {providerName() || 'provider'}
-                </span>
-              </span>
-
-              <!-- Model selector -->
-              <span class="selector-group">
-                <!-- svelte-ignore a11y_click_events_have_key_events -->
-                <!-- svelte-ignore a11y_no_static_element_interactions -->
-                <span class="toolbar-btn model-selector" onclick={toggleModelDropdown}>
-                  {modelName() || 'model'}
-                </span>
-              </span>
-            </div>
-          {/if}
-
-          {#if !isPrime && !steerableAgent}
-            <div class="tier-radios" role="radiogroup" aria-label="Agent tier">
-              {#each TIERS as tier}
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <div class="mode-toggle-group">
+            <div class="mode-radios" role="radiogroup" aria-label="Model mode">
+              {#each MODE_KEYS as mode}
                 <button
-                  class="tier-radio"
-                  class:active={appState.launchTier === tier}
-                  onclick={() => { appState.launchTier = tier }}
+                  class="mode-radio"
+                  class:active={appState.activeModelMode === mode}
+                  onclick={() => selectMode(mode)}
                   role="radio"
-                  aria-checked={appState.launchTier === tier}
-                >{tier === 'low' ? 'L' : tier === 'medium' ? 'M' : 'H'}</button>
+                  aria-checked={appState.activeModelMode === mode}
+                  title="{mode} — {appState.modelModes[mode].primary.model}"
+                >{MODE_LABELS[mode]}</button>
               {/each}
             </div>
-          {:else if steerableAgent}
-            <div class="agent-indicator">
-              <span class="agent-dot"></span>
-              <span class="agent-label">{steerableAgent.tier}</span>
-            </div>
-          {/if}
+
+            <!-- svelte-ignore a11y_click_events_have_key_events -->
+            <!-- svelte-ignore a11y_no_static_element_interactions -->
+            <span class="mode-model-label" onclick={openModelSettings} title="Configure models">{appState.activeProviderDisplay}<span class="model-sep">/</span>{activeModelShort()}</span>
+          </div>
         </div>
 
         <button
@@ -508,40 +438,6 @@
     </div>
   </div>
 </div>
-
-{#if providerDropdownOpen || modelDropdownOpen}
-  <!-- svelte-ignore a11y_click_events_have_key_events -->
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div class="dropdown-backdrop" onclick={closeDropdowns}></div>
-{/if}
-
-{#if providerDropdownOpen}
-  <div class="dropdown fixed-dropdown" style="left: {dropdownPos.x}px; top: {dropdownPos.y}px;">
-    {#each ['copilot'] as p}
-      <!-- svelte-ignore a11y_click_events_have_key_events -->
-      <!-- svelte-ignore a11y_no_static_element_interactions -->
-      <div
-        class="dropdown-item"
-        class:active={providerName() === p}
-        onclick={() => selectProvider(p)}
-      >{p}</div>
-    {/each}
-  </div>
-{/if}
-
-{#if modelDropdownOpen}
-  <div class="dropdown fixed-dropdown" style="left: {dropdownPos.x}px; top: {dropdownPos.y}px;">
-    {#each availableModels() as m}
-      <!-- svelte-ignore a11y_click_events_have_key_events -->
-      <!-- svelte-ignore a11y_no_static_element_interactions -->
-      <div
-        class="dropdown-item"
-        class:active={modelName() === m}
-        onclick={() => selectModel(m)}
-      >{m}</div>
-    {/each}
-  </div>
-{/if}
 
 <style lang="postcss">
   .message-bar-shell {
@@ -630,8 +526,7 @@
     overflow: hidden;
   }
   .input-wrapper:focus-within {
-    border-color: #4a90c4;
-    box-shadow: 0 0 0 1px #4a90c433;
+    border-color: var(--border);
   }
 
   .status-bar {
@@ -734,10 +629,11 @@
 
   .input-toolbar {
     display: flex;
-    align-items: center;
+    align-items: stretch;
     justify-content: space-between;
     padding: 0;
     border-top: 1px solid var(--border);
+    overflow: hidden;
   }
 
   .toolbar-left {
@@ -746,35 +642,31 @@
     gap: 0;
   }
 
-  .toolbar-btn {
-    font-size: 11px;
-    color: var(--fg-muted);
-    cursor: pointer;
-    user-select: none;
-    padding: 5px 10px;
-    border: none;
-    border-right: 1px solid var(--border);
-    border-radius: 0;
-    transition: all 0.1s;
-  }
-  .toolbar-btn:hover {
-    color: var(--fg-primary);
-    background-color: var(--element-hover);
+  /* ── Mode toggle (L/M/H) ──────────────────────────────────────────────── */
+
+  .mode-toggle-group {
+    display: flex;
+    align-items: stretch;
+    gap: 0;
+    padding: 0 4px 0 0;
   }
 
-  .tier-radios {
+  .mode-radios {
     display: flex;
+    align-items: stretch;
     gap: 0;
     flex-shrink: 0;
   }
 
-  .tier-radio {
+  .mode-radio {
     width: 26px;
-    height: 26px;
+    height: 100%;
     display: flex;
     align-items: center;
     justify-content: center;
     border: 1px solid var(--border);
+    border-top: none;
+    border-bottom: none;
     border-radius: 0;
     background: transparent;
     color: var(--fg-muted);
@@ -785,32 +677,35 @@
     transition: all 0.1s;
     margin-left: -1px;
   }
-  .tier-radio:first-child { margin-left: 0; border-radius: 4px 0 0 4px; }
-  .tier-radio:last-child { border-radius: 0 4px 4px 0; }
-  .tier-radio:hover { background-color: var(--element-hover); color: var(--fg-primary); }
-  .tier-radio.active { background-color: var(--element-selected); color: var(--fg-accent); border-color: var(--fg-accent); z-index: 1; }
+  .mode-radio:first-child { margin-left: 0; border-left: none; }
+  .mode-radio:last-child { }
+  .mode-radio:hover { background-color: var(--element-hover); color: var(--fg-primary); }
+  .mode-radio.active { background-color: var(--element-selected); color: var(--fg-accent); border-color: var(--fg-accent); z-index: 1; }
 
-  .agent-indicator {
-    display: flex;
-    align-items: center;
-    gap: 5px;
-    flex-shrink: 0;
-    height: 26px;
-    padding: 0 8px;
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    background-color: transparent;
+  .mode-model-label {
+    margin-left: 6px;
+    font-size: 11px;
+    color: var(--fg-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 220px;
+    font-family: var(--font-mono);
+    cursor: pointer;
+    padding: 2px 4px;
+    border-radius: 3px;
+    transition: color 0.1s, background-color 0.1s;
+    align-self: center;
+  }
+  .mode-model-label:hover {
+    color: var(--fg-primary);
+    background-color: var(--element-hover);
   }
 
-  .agent-dot {
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-    background-color: var(--status-in-progress);
-    animation: pulse 1.5s ease-in-out infinite;
+  .model-sep {
+    opacity: 0.4;
+    margin: 0 1px;
   }
-
-  .agent-label { font-size: 11px; color: var(--fg-muted); }
 
   .send-btn {
     width: 28px;
@@ -826,57 +721,11 @@
     justify-content: center;
     flex-shrink: 0;
     transition: all 0.15s;
+    align-self: center;
+    margin-right: 4px;
   }
   .send-btn:hover:not(:disabled) { background-color: #4a90c4; color: var(--bg-base); border-color: #4a90c4; }
   .send-btn:disabled { opacity: 0.3; cursor: not-allowed; }
-
-  /* ── Model info ─────────────────────────────────────────────────────────── */
-
-  .model-info {
-    position: relative;
-    display: flex;
-    align-items: stretch;
-    gap: 0;
-  }
-
-  .selector-group {
-    position: relative;
-  }
-
-  .dropdown-backdrop {
-    position: fixed;
-    inset: 0;
-    z-index: 99;
-  }
-
-  .dropdown {
-    min-width: 160px;
-    background: var(--bg-surface);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    z-index: 100;
-    padding: 4px 0;
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
-  }
-
-  .fixed-dropdown {
-    position: fixed;
-    transform: translateY(-100%) translateY(-4px);
-  }
-
-  .dropdown-item {
-    padding: 6px 12px;
-    font-size: 12px;
-    color: var(--fg-primary);
-    cursor: pointer;
-    white-space: nowrap;
-  }
-  .dropdown-item:hover {
-    background-color: var(--element-hover);
-  }
-  .dropdown-item.active {
-    color: var(--fg-accent);
-  }
 
   @media (max-width: 900px) {
     .input-row {

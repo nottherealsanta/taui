@@ -21,7 +21,7 @@ import pytest
 from taui.agent.manager import AgentManager
 from taui.agent.runner import AgentRunner, AgentState, AgentEvent
 from taui.llms.base import ProviderTurnResult, ProviderToolCall
-from taui.specs.db import SpecDB
+from taui.tangle.agent_db import AgentHistoryDB
 from taui.tools.registry import ToolRegistry
 
 pytestmark = pytest.mark.anyio
@@ -96,8 +96,8 @@ def _make_one_tool_llm(tool_name: str, arguments: dict[str, Any]) -> Any:
     return _OnceToolLLM()
 
 
-async def _make_db(tmp_path: Path) -> SpecDB:
-    db = SpecDB(tmp_path, db_path=tmp_path / "test.db", persist_snapshot=False)
+async def _make_db(tmp_path: Path) -> AgentHistoryDB:
+    db = AgentHistoryDB(tmp_path, db_path=tmp_path / "test-agents.db")
     await db.connect()
     return db
 
@@ -455,7 +455,7 @@ async def test_spec_tree_tool_reads_tree_with_real_service(tmp_path: Path) -> No
     """spec_get_tree tool returns the spec tree when SpecService is injected."""
     _write_specs(tmp_path)
 
-    from taui.specs.service import SpecService
+    from taui.tangle.service import SpecService
     from taui.tools.builtins.spec_tree import SpecGetTreeTool
     from taui.tools.base import ToolContext
     from taui.config.policies import Policy

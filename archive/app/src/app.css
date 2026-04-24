@@ -78,21 +78,24 @@
   color-scheme: dark;
 
   /* Surface hierarchy (from ThemeColors::taui_dark) */
-  --bg-base:       #000000;
-  --bg-surface:    #121822;
-  --bg-elevated:   #1b2432;
+  --bg-base:       #151515;
+  --bg-surface:    #000000;
+  --bg-elevated:   #0b0b0b;
+
+  /* Prime accent */
+  --prime-accent: #f7f7f7;
 
   /* Borders */
   --border:         #2d3749;
   --border-variant: #1f2735;
 
   /* Text */
-  --fg-primary: #e6edf3;
+  --fg-primary: #f7f7f7;
   --fg-muted:   #9fb0c2;
   --fg-accent:  #7cc7ff;
 
   /* Interactive elements */
-  --element-bg:       #1d2532;
+  --element-bg:       var(--bg-surface);
   --element-hover:    #243144;
   --element-selected: #2d3f59;
 
@@ -126,9 +129,12 @@
   color-scheme: light;
 
   /* Surface hierarchy (from ThemeColors::taui_light) */
-  --bg-base:     #f5f7fb;
+  --bg-base:     #f7f7f7;
   --bg-surface:  #ffffff;
-  --bg-elevated: #ebf0f8;
+  --bg-elevated: #f6f6f6;
+
+  /* Prime accent */
+  --prime-accent: #2f2f2f;
 
   /* Borders */
   --border:         #d8e1ee;
@@ -140,7 +146,7 @@
   --fg-accent:  #0d6bcf;
 
   /* Interactive elements */
-  --element-bg:       #f0f4fa;
+  --element-bg:       var(--bg-surface);
   --element-hover:    #e5edf8;
   --element-selected: #d9e7fb;
 

@@ -11,7 +11,7 @@ import uvicorn
 
 from taui.log_config import configure_logging
 from taui.server.app import create_app
-from taui.specs import SpecDB
+from taui.tangle import TangleDB
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +26,7 @@ def _find_free_port(host: str) -> int:
 
 
 async def _reinitialize_sqlite_cache(workspace: Path) -> tuple[Path, bool]:
-    db = SpecDB(workspace)
+    db = TangleDB(workspace)
     db_path = db.db_path
     removed = db_path.exists()
     if removed:
@@ -43,15 +43,21 @@ def _run_serve(args: argparse.Namespace) -> None:
     port = args.port if args.port > 0 else _find_free_port(host)
     dev_mode = getattr(args, "dev", False)
 
+    # Log the file-log location so users know where to find detailed logs
+    from taui.logging_file import get_log_dir
+
+    log_dir = get_log_dir()
     logger.info(
-        "Starting Taui backend server workspace=%s host=%s port=%s dev_mode=%s",
+        "Starting Taui backend server workspace=%s host=%s port=%s dev_mode=%s log_dir=%s",
         workspace,
         host,
         port,
         dev_mode,
+        log_dir,
     )
     app = create_app(workspace=workspace, dev_mode=dev_mode)
     print(f"Taui backend running at ws://{host}:{port}/ws", flush=True)
+    print(f"Detailed logs: {log_dir / 'taui.log'}", flush=True)
     uvicorn.run(app, host=host, port=port, log_level="warning", access_log=False)
 
 
@@ -79,7 +85,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--path",
         dest="workspace",
         default=".",
-        help="Workspace root that contains specs/",
+        help="Workspace root that contains tangles/",
     )
     serve_parser.add_argument(
         "--host",

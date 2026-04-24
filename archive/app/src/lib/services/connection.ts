@@ -1,5 +1,5 @@
 /**
- * Connection manager: initialises the WebSocket, loads the spec tree,
+ * Connection manager: initialises the WebSocket, loads the tangle snapshot,
  * and wires notification routing.
  *
  * Call `startConnection()` once on app mount.
@@ -11,6 +11,7 @@ import { backendClient } from '$services/backend-client'
 import { handleNotification } from '$services/notifications'
 import { applyPersistedFoldState } from '$services/fold-state'
 import type { NotificationEvent } from '$services/backend-client'
+import type { AgentDetailEvent } from '$types/index'
 import { agentStateFromString } from '$types/index'
 
 function onConnectionState(ev: Event): void {
@@ -42,9 +43,36 @@ async function _initialize(): Promise<void> {
     appState.currentModel = initResult.model
   }
 
-  // 2. Load the spec tree
-  const tree = await backendClient.getTreeDetailed()
-  appState.hydrateFromBackend(tree.nodes)
+  // Derive project title — prefer the value resolved by the backend (from
+  // index.md front-matter / H1 / folder name), fall back to workspace folder.
+  if (initResult.projectTitle) {
+    appState.projectTitle = initResult.projectTitle
+  } else if (initResult.workspace) {
+    appState.projectTitle = initResult.workspace.split('/').filter(Boolean).pop() ?? null
+  }
+
+  // 2. Load full UI snapshot
+  const snapshotRaw = await backendClient.uiSnapshot() as {
+    tabs?: { open?: string[]; active?: string }
+    layout?: { sidebarCollapsed?: boolean }
+    theme?: 'dark' | 'light' | 'system' | null
+    tangleTree?: Parameters<typeof appState.hydrateFromBackend>[0]
+  }
+  appState.hydrateFromBackend(snapshotRaw.tangleTree ?? [])
+
+  // Restore tabs/layout from backend snapshot
+  const { tabStore } = await import('$stores/tabs.svelte')
+  tabStore.applySnapshot(snapshotRaw.tabs ?? { open: [], active: '' })
+  if (snapshotRaw.layout && typeof snapshotRaw.layout.sidebarCollapsed === 'boolean') {
+    const { fileTree } = await import('$stores/file-tree.svelte')
+    fileTree.sidebarCollapsed = snapshotRaw.layout.sidebarCollapsed
+  }
+  if (snapshotRaw.theme === 'dark' || snapshotRaw.theme === 'light') {
+    // Only apply if this is an explicit user preference — 'system'/null means
+    // "follow OS", so the store's system-detection is already correct.
+    const { theme } = await import('$stores/theme.svelte')
+    theme.applySnapshot(snapshotRaw.theme)
+  }
   applyPersistedFoldState()
 
   // 3. Restore Prime conversation history
@@ -75,17 +103,32 @@ async function _initialize(): Promise<void> {
       // Update agent state in the store
       appState.upsertAgent({
         agentId: agent.agent_id,
-        specRef: agent.spec_ref,
+        specRef: agent.tangle_ref ?? agent.spec_ref ?? '',
         state: agentStateFromString(agent.state),
         tier: (agent.tier as 'high' | 'medium' | 'low') ?? 'medium',
         agentType: (agent.agent_type as 'root' | 'minion') ?? 'root',
         displayName: agent.display_name,
       })
-      // Re-subscribe for live events
+      // Re-subscribe for live events (offset-based catch-up when available)
       try {
-        const backlog = await backendClient.agentSubscribe(agent.agent_id)
+        const lastOffset = appState.getDetailOffset(agent.agent_id)
+        const fromOffset = lastOffset !== undefined ? lastOffset + 1 : undefined
+        const { backlog, lastOffset: newLastOffset } = await backendClient.agentSubscribe(agent.agent_id, fromOffset)
         if (backlog && backlog.length > 0) {
-          appState.setDetailBacklog(agent.agent_id, backlog as Parameters<typeof appState.setDetailBacklog>[1])
+          if (fromOffset !== undefined) {
+            // Offset-based catch-up: append missed events instead of replacing
+            const parsed = (backlog as Array<Record<string, unknown>>)
+              .map((raw) => parseSubscribeEvent(raw))
+              .filter((e): e is NonNullable<typeof e> => e !== null)
+            for (const event of parsed) {
+              appState.appendDetailEvent(agent.agent_id, event)
+            }
+          } else {
+            appState.setDetailBacklog(agent.agent_id, backlog as Parameters<typeof appState.setDetailBacklog>[1], newLastOffset)
+          }
+          if (newLastOffset !== undefined) {
+            appState.detailOffsets.set(agent.agent_id, newLastOffset)
+          }
         }
       } catch {
         // Agent may have finished between list and subscribe
@@ -93,6 +136,20 @@ async function _initialize(): Promise<void> {
     }
   } catch (err) {
     console.warn('[connection] failed to restore agents', err)
+  }
+}
+
+// ─── Event parser for durable stream catch-up ────────────────────────────────
+
+function parseSubscribeEvent(raw: Record<string, unknown>): AgentDetailEvent | null {
+  const type = raw['type'] as string
+  switch (type) {
+    case 'message': return { type: 'message', role: (raw['role'] as string) ?? 'assistant', content: (raw['content'] as string) ?? '' }
+    case 'tool_call': return { type: 'toolCall', callId: (raw['call_id'] as string) ?? '', toolName: (raw['tool_name'] as string) ?? '', arguments: raw['arguments'] ?? {} }
+    case 'tool_result': return { type: 'toolResult', callId: (raw['call_id'] as string) ?? '', output: (raw['output'] as string) ?? null, error: (raw['error'] as string) ?? null, durationMs: (raw['duration_ms'] as number) ?? null }
+    case 'token': return { type: 'token', text: (raw['text'] as string) ?? '' }
+    case 'state_change': return { type: 'stateChange', state: agentStateFromString((raw['state'] as string) ?? 'idle') }
+    default: return null
   }
 }
 

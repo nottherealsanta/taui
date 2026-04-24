@@ -1,15 +1,38 @@
 <!--
-  4.6 AgentDetailPanel.svelte
-  Slide-in right panel showing the event stream for an agent.
-  Subscribes on open, unsubscribes on close.
-  Phase 7: Monaco diff rendering for tool results containing unified diffs.
+  AgentDetailPanel.svelte
+  Chat-style panel for a root agent — mirrors PrimeChatPanel's look & feel.
+  Subscribes to the agent event stream on mount and renders messages,
+  tool cards, and state changes in the same visual language as Prime.
 -->
 <script lang="ts">
   import type { AgentDetailEvent } from '$types/index'
   import { appState, agentStateFromString } from '$stores/app-state.svelte'
   import { backendClient } from '$services/backend-client'
   import { onMount, onDestroy, tick } from 'svelte'
-  import MonacoEditor from './MonacoEditor.svelte'
+  import { marked } from 'marked'
+  import PrimeToolCard from '$components/PrimeToolCard.svelte'
+  import type { PrimeToolCall } from '$types/index'
+  import { AGENT_COLOR_HEX } from '$types/index'
+
+  marked.setOptions({ breaks: true, gfm: true })
+
+  const AGENT_FALLBACK_PALETTE = ['#3ab6e4', '#72e93a', '#f5d700', '#da63de', '#ff5a00'] as const
+
+  function hashString(value: string): number {
+    let hash = 0
+    for (let i = 0; i < value.length; i += 1) {
+      hash = (hash << 5) - hash + value.charCodeAt(i)
+      hash |= 0
+    }
+    return Math.abs(hash)
+  }
+
+  function colorForAgent(displayName: string, id: string): string {
+    const named = AGENT_COLOR_HEX[displayName.toLowerCase()]
+    if (named) return named
+    const idx = hashString(id) % AGENT_FALLBACK_PALETTE.length
+    return AGENT_FALLBACK_PALETTE[idx]
+  }
 
   interface Props {
     agentId: string
@@ -19,19 +42,38 @@
 
   const agent = $derived(appState.agents.get(agentId))
   const events = $derived(appState.detailEvents.get(agentId) ?? [])
+  const agentColor = $derived(
+    agent ? colorForAgent(agent.displayName, agentId) : '#3ab6e4'
+  )
 
   let scrollEl: HTMLElement | undefined = $state()
   let subscribed = $state(false)
 
+  function renderMarkdown(text: string): string {
+    return marked.parse(text, { async: false }) as string
+  }
+
   onMount(async () => {
     if (appState.connectionState !== 'ready') return
     try {
-      const backlog = await backendClient.agentSubscribe(agentId)
-      // Parse backlog events
+      // Use offset-based catch-up if we've seen events before (e.g. tab re-mount)
+      const lastOffset = appState.getDetailOffset(agentId)
+      const fromOffset = lastOffset !== undefined ? lastOffset + 1 : undefined
+      const { backlog, lastOffset: newLastOffset } = await backendClient.agentSubscribe(agentId, fromOffset)
       const parsed = backlog
         .map((raw) => parseEvent(raw as Record<string, unknown>))
         .filter((e): e is AgentDetailEvent => e !== null)
-      appState.setDetailBacklog(agentId, parsed)
+      if (fromOffset !== undefined) {
+        // Append missed events instead of replacing existing ones
+        for (const event of parsed) {
+          appState.appendDetailEvent(agentId, event)
+        }
+      } else {
+        appState.setDetailBacklog(agentId, parsed, newLastOffset)
+      }
+      if (newLastOffset !== undefined) {
+        appState.detailOffsets.set(agentId, newLastOffset)
+      }
       appState.detailAgentId = agentId
       subscribed = true
     } catch (e) {
@@ -49,7 +91,6 @@
     }
   })
 
-  // Auto-scroll to bottom when new events arrive
   $effect(() => {
     void events.length
     scrollToBottom()
@@ -72,112 +113,127 @@
     }
   }
 
-  // Collapse token events into the last message bubble for display
-  const displayEvents = $derived(() => {
-    const out: Array<{ kind: string; data: AgentDetailEvent }> = []
+  /** Build display items: collapse tokens into message bubbles, pair tool_call + tool_result into PrimeToolCall objects. */
+  type DisplayItem =
+    | { kind: 'message'; role: string; content: string }
+    | { kind: 'streaming'; content: string }
+    | { kind: 'tool'; tool: PrimeToolCall }
+
+  const displayItems = $derived.by(() => {
+    const out: DisplayItem[] = []
+    // Map of callId -> PrimeToolCall for pairing tool_call + tool_result
+    const toolMap = new Map<string, PrimeToolCall>()
+
     for (const ev of events) {
       if (ev.type === 'token') {
         const last = out[out.length - 1]
-        if (last?.kind === 'token-run') {
-          ;(last.data as { type: 'message'; role: string; content: string }).content += ev.text
+        if (last?.kind === 'streaming') {
+          last.content += ev.text
           continue
         }
-        out.push({ kind: 'token-run', data: { type: 'message', role: 'assistant', content: ev.text } })
-      } else {
-        out.push({ kind: ev.type, data: ev })
+        out.push({ kind: 'streaming', content: ev.text })
+      } else if (ev.type === 'message') {
+        // Finalize any streaming bubble before this message
+        const last = out[out.length - 1]
+        if (last?.kind === 'streaming') {
+          // Convert streaming to final message
+          out[out.length - 1] = { kind: 'message', role: 'assistant', content: last.content }
+        }
+        if (ev.content.trim()) {
+          out.push({ kind: 'message', role: ev.role, content: ev.content })
+        }
+      } else if (ev.type === 'toolCall') {
+        // Finalize streaming before tool
+        const last = out[out.length - 1]
+        if (last?.kind === 'streaming') {
+          out[out.length - 1] = { kind: 'message', role: 'assistant', content: last.content }
+        }
+        const tool: PrimeToolCall = {
+          callId: ev.callId,
+          toolName: ev.toolName,
+          arguments: ev.arguments,
+          result: null,
+          error: null,
+          durationMs: null,
+          status: 'running',
+        }
+        toolMap.set(ev.callId, tool)
+        out.push({ kind: 'tool', tool })
+      } else if (ev.type === 'toolResult') {
+        const tool = toolMap.get(ev.callId)
+        if (tool) {
+          tool.result = ev.output
+          tool.error = ev.error
+          tool.durationMs = ev.durationMs
+          tool.status = ev.error ? 'error' : 'done'
+        }
+        // If we didn't see the toolCall (e.g. from backlog), create one
+        if (!tool) {
+          const orphan: PrimeToolCall = {
+            callId: ev.callId,
+            toolName: 'tool',
+            arguments: {},
+            result: ev.output,
+            error: ev.error,
+            durationMs: ev.durationMs,
+            status: ev.error ? 'error' : 'done',
+          }
+          out.push({ kind: 'tool', tool: orphan })
+        }
       }
     }
     return out
   })
-
-  // ── Diff helpers ──────────────────────────────────────────────────────────
-  function isDiff(text: string | null | undefined): boolean {
-    if (!text) return false
-    const t = text.trimStart()
-    return (
-      t.startsWith('diff --git') ||
-      t.startsWith('--- ') ||
-      t.startsWith('+++') ||
-      (t.includes('\n--- ') && t.includes('\n+++ ')) ||
-      (t.includes('\n@@ ') && (t.includes('\n-') || t.includes('\n+')))
-    )
-  }
-
-  // Track which diff blocks are expanded (by event index)
-  let expandedDiffs = $state(new Set<number>())
 </script>
 
-<aside class="agent-detail-panel">
-  <!-- Header -->
-  <div class="panel-header">
-    <div class="panel-title">
-      <span class="agent-dot" class:active={agent?.state !== 'idle' && agent?.state !== 'done'}></span>
-      <span class="agent-id">{agentId}</span>
-      {#if agent}
-        <span class="agent-tier">{agent.tier}</span>
-        <span class="agent-state">{typeof agent.state === 'string' ? agent.state : 'unknown'}</span>
-      {/if}
-    </div>
-    {#if onclose}
-      <button class="close-btn" onclick={onclose} aria-label="Close agent panel">✕</button>
-    {/if}
-  </div>
-
-  <!-- Event stream -->
-  <div class="event-stream" bind:this={scrollEl}>
+<div class="agent-detail-panel">
+  <div class="agent-chat" bind:this={scrollEl}>
     {#if !subscribed}
-      <div class="loading">Connecting…</div>
-    {:else if events.length === 0}
-      <div class="empty">No events yet.</div>
+      <div class="agent-empty">
+        <p class="agent-hint">Connecting...</p>
+      </div>
+    {:else if displayItems.length === 0}
+      <div class="agent-empty">
+        <span class="agent-icon">●</span>
+        <p class="agent-title">{agent?.displayName ?? agentId}</p>
+        <p class="agent-hint">Waiting for events...</p>
+      </div>
     {:else}
-      {#each displayEvents() as item, i (item.data)}
-        {@const ev = item.data}
-        {#if ev.type === 'message' || item.kind === 'token-run'}
-          <div class="event message" class:user={ev.type === 'message' && 'role' in ev && ev.role === 'user'}>
-            <span class="role">{'role' in ev ? ev.role : ''}</span>
-            <p class="content selectable">{'content' in ev ? ev.content : ''}</p>
-          </div>
-        {:else if ev.type === 'toolCall'}
-          <div class="event tool-call">
-            <span class="tool-name">⚙ {ev.toolName}</span>
-            <pre class="tool-args selectable">{JSON.stringify(ev.arguments, null, 2)}</pre>
-          </div>
-        {:else if ev.type === 'toolResult'}
-          {@const text = ev.error ?? ev.output ?? ''}
-          {@const hasDiff = isDiff(text)}
-          {@const diffExpanded = expandedDiffs.has(i)}
-          <div class="event tool-result" class:error={!!ev.error} class:has-diff={hasDiff}>
-            <div class="result-header">
-              <span class="result-label">{ev.error ? '✗ error' : '✓ result'}</span>
-              {#if ev.durationMs !== null}<span class="duration">{ev.durationMs}ms</span>{/if}
-              {#if hasDiff}
-                <button
-                  class="diff-toggle"
-                  onclick={() => {
-                    if (diffExpanded) { expandedDiffs.delete(i); expandedDiffs = new Set(expandedDiffs) }
-                    else { expandedDiffs.add(i); expandedDiffs = new Set(expandedDiffs) }
-                  }}
-                >{diffExpanded ? 'Hide diff ⬆' : 'Show diff ⬇'}</button>
-              {/if}
-            </div>
-            {#if hasDiff && diffExpanded}
-              <div class="diff-editor-wrap">
-                <MonacoEditor value={text} language="diff" readOnly={true} lineStart={1} />
+      <div class="agent-messages">
+        {#each displayItems as item, i (i)}
+          {#if item.kind === 'message'}
+            {#if item.role === 'user'}
+              <div class="message-row user-wrapper">
+                <div class="agent-bubble user">
+                  <div class="bubble-content">{@html renderMarkdown(item.content)}</div>
+                </div>
               </div>
             {:else}
-              <pre class="result-output selectable">{text.slice(0, 800)}{text.length > 800 ? '\n…' : ''}</pre>
+              <div class="message-row">
+                <div class="agent-bubble assistant">
+                  <div class="bubble-content">{@html renderMarkdown(item.content)}</div>
+                </div>
+              </div>
             {/if}
-          </div>
-        {:else if ev.type === 'stateChange'}
-          <div class="event state-change">
-            <span>→ {typeof ev.state === 'string' ? ev.state : 'unknown'}</span>
-          </div>
-        {/if}
-      {/each}
+          {:else if item.kind === 'streaming'}
+            <div class="agent-bubble assistant streaming">
+              <div class="bubble-content">
+                {#if item.content}
+                  {@html renderMarkdown(item.content)}
+                {/if}
+                <span class="cursor-blink">|</span>
+              </div>
+            </div>
+          {:else if item.kind === 'tool'}
+            <div class="tool-entry">
+              <PrimeToolCard tool={item.tool} agentColor={agentColor} />
+            </div>
+          {/if}
+        {/each}
+      </div>
     {/if}
   </div>
 
-  <!-- Footer: stop button -->
   {#if agent && agent.state !== 'idle' && agent.state !== 'done'}
     <div class="panel-footer">
       <button
@@ -186,208 +242,183 @@
       >Stop agent</button>
     </div>
   {/if}
-</aside>
+</div>
 
 <style lang="postcss">
   .agent-detail-panel {
     display: flex;
     flex-direction: column;
     flex: 1;
-    width: auto;
     min-width: 0;
     min-height: 0;
-    background-color: var(--bg-surface);
     overflow: hidden;
   }
 
-  .panel-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 8px 12px;
-    border-bottom: 1px solid var(--border);
-    flex-shrink: 0;
-  }
-
-  .panel-title {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    min-width: 0;
-    overflow: hidden;
-  }
-
-  .agent-dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background-color: var(--fg-muted);
-    flex-shrink: 0;
-  }
-  .agent-dot.active {
-    background-color: var(--status-in-progress);
-    animation: pulse 1.5s ease-in-out infinite;
-  }
-
-  .agent-id {
-    font-size: 12px;
-    font-weight: 600;
-    color: var(--fg-primary);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  .agent-tier, .agent-state {
-    font-size: 10px;
-    color: var(--fg-muted);
-    padding: 1px 5px;
-    background: var(--element-bg);
-    border-radius: 3px;
-    white-space: nowrap;
-    flex-shrink: 0;
-  }
-
-  .close-btn {
-    background: transparent;
-    border: none;
-    color: var(--fg-muted);
-    cursor: pointer;
-    font-size: 12px;
-    padding: 4px 6px;
-    border-radius: 3px;
-    flex-shrink: 0;
-    transition: all 0.15s;
-  }
-  .close-btn:hover { background-color: var(--element-hover); color: var(--fg-primary); }
-
-  .event-stream {
+  .agent-chat {
     flex: 1;
     overflow-y: auto;
-    padding: 12px 14px;
+    padding: 0;
     display: flex;
     flex-direction: column;
-    gap: 8px;
   }
 
-  .loading, .empty {
-    color: var(--fg-muted);
-    font-size: 12px;
-    padding: 12px;
-    text-align: center;
-  }
-
-  .event {
-    padding: 6px 8px;
-    border-radius: 4px;
-    font-size: 12px;
-    background-color: var(--element-bg);
-    border: 1px solid var(--border-variant);
-  }
-
-  .event.message { border-color: var(--border); }
-  .event.message:not(.user) { margin-top: 6px; }
-  .event.message.user { background-color: var(--element-selected); }
-
-  .role {
-    display: block;
-    font-size: 10px;
-    font-weight: 600;
-    color: var(--fg-muted);
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    margin-bottom: 3px;
-  }
-
-  .content {
-    margin: 0;
-    color: var(--fg-primary);
-    line-height: 1.5;
-    white-space: pre-wrap;
-    word-break: break-word;
-  }
-
-  .event.tool-call { border-color: var(--fg-accent); }
-  .tool-name {
-    display: block;
-    font-size: 10px;
-    font-weight: 600;
-    color: var(--fg-accent);
-    margin-bottom: 3px;
-  }
-  .tool-args {
-    margin: 0;
-    font-family: var(--font-mono);
-    font-size: 10px;
-    color: var(--fg-muted);
-    white-space: pre-wrap;
-    word-break: break-all;
-    max-height: 120px;
-    overflow-y: auto;
-  }
-
-  .event.tool-result { border-color: var(--status-done); }
-  .event.tool-result.error { border-color: var(--status-error); }
-
-  .result-header {
+  .agent-empty {
     display: flex;
+    flex-direction: column;
     align-items: center;
-    gap: 6px;
-    margin-bottom: 3px;
-  }
-
-  .result-label {
-    font-size: 10px;
-    font-weight: 600;
-    color: var(--status-done);
-  }
-  .error .result-label { color: var(--status-error); }
-
-  .duration {
-    font-size: 10px;
+    justify-content: center;
+    flex: 1;
     color: var(--fg-muted);
-    margin-left: auto;
-  }
-
-  .diff-toggle {
-    background: transparent;
-    border: 1px solid var(--border);
-    border-radius: 3px;
-    color: var(--fg-accent);
-    font-size: 10px;
-    padding: 1px 6px;
-    cursor: pointer;
-    transition: all 0.15s;
-  }
-  .diff-toggle:hover { background-color: var(--element-hover); }
-
-  .diff-editor-wrap {
-    height: 260px;
-    margin-top: 4px;
-    border-radius: 3px;
-    overflow: hidden;
-    border: 1px solid var(--border);
-  }
-
-  .result-output {
-    margin: 0;
-    font-family: var(--font-mono);
-    font-size: 10px;
-    color: var(--fg-muted);
-    white-space: pre-wrap;
-    word-break: break-all;
-    max-height: 120px;
-    overflow-y: auto;
-  }
-
-  .event.state-change {
-    background: transparent;
-    border-color: transparent;
-    color: var(--fg-muted);
-    font-size: 11px;
     text-align: center;
-    padding: 2px;
+    gap: 6px;
   }
+
+  .agent-icon {
+    font-size: 32px;
+    color: var(--fg-accent);
+    margin-bottom: 8px;
+    opacity: 0.6;
+  }
+
+  .agent-title {
+    margin: 0;
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--fg-primary);
+    text-transform: capitalize;
+  }
+
+  .agent-hint {
+    margin: 0;
+    max-width: 28ch;
+    line-height: 1.5;
+    font-size: 12px;
+  }
+
+  .agent-messages {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .message-row {
+    position: relative;
+  }
+
+  .user-wrapper {
+    background-color: color-mix(in srgb, var(--fg-primary) 4%, transparent);
+    padding: 10px 12px;
+    border-radius: 6px;
+  }
+
+  .agent-bubble {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    font-size: 13px;
+    line-height: 1.6;
+    word-break: break-word;
+    max-width: 640px;
+  }
+
+  .agent-bubble.user .bubble-content {
+    color: var(--fg-accent);
+    font-weight: 500;
+  }
+
+  .agent-bubble.assistant,
+  .agent-bubble.streaming {
+    padding-left: 12px;
+  }
+
+  .agent-bubble.assistant .bubble-content,
+  .agent-bubble.streaming .bubble-content {
+    color: var(--fg-primary);
+  }
+
+  .bubble-content {
+    margin: 0;
+    min-width: 0;
+  }
+
+  .bubble-content :global(p) {
+    margin: 0 0 0.5em;
+  }
+
+  .bubble-content :global(p:last-child) {
+    margin-bottom: 0;
+  }
+
+  .bubble-content :global(strong) {
+    color: var(--fg-primary);
+    font-weight: 600;
+  }
+
+  .bubble-content :global(code) {
+    font-family: var(--font-mono, monospace);
+    font-size: 0.88em;
+    padding: 2px 5px;
+    background-color: var(--element-bg);
+    border-radius: 3px;
+  }
+
+  .bubble-content :global(pre) {
+    margin: 0.6em 0;
+    padding: 10px 12px;
+    background-color: var(--element-bg);
+    border-radius: 4px;
+    border: 1px solid var(--border-variant);
+    overflow-x: auto;
+    font-size: 0.85em;
+    line-height: 1.5;
+  }
+
+  .bubble-content :global(pre code) {
+    padding: 0;
+    background: none;
+    border-radius: 0;
+  }
+
+  .bubble-content :global(ul),
+  .bubble-content :global(ol) {
+    margin: 0.4em 0;
+    padding-left: 1.5em;
+  }
+
+  .bubble-content :global(li) {
+    margin-bottom: 0.2em;
+  }
+
+  .bubble-content :global(blockquote) {
+    margin: 0.4em 0;
+    padding-left: 10px;
+    border-left: 2px solid var(--fg-accent);
+    color: var(--fg-muted);
+  }
+
+  .bubble-content :global(hr) {
+    border: none;
+    border-top: 1px solid var(--border-variant);
+    margin: 0.8em 0;
+  }
+
+  /* ── Streaming cursor ─────────────────────────────────────────────────── */
+
+  .cursor-blink {
+    display: inline;
+    color: var(--fg-accent);
+    animation: blink 0.8s step-end infinite;
+    font-weight: 300;
+  }
+
+  /* ── Tool entries ─────────────────────────────────────────────────────── */
+
+  .tool-entry {
+    padding: 0 12px;
+    max-width: 560px;
+  }
+
+  /* ── Footer ───────────────────────────────────────────────────────────── */
 
   .panel-footer {
     padding: 8px;
@@ -408,8 +439,8 @@
   }
   .stop-btn:hover { background-color: var(--status-error); color: #fff; }
 
-  @keyframes pulse {
+  @keyframes blink {
     0%, 100% { opacity: 1; }
-    50% { opacity: 0.4; }
+    50% { opacity: 0; }
   }
 </style>
