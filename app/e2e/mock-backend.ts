@@ -41,9 +41,123 @@ const DEFAULT_NODES: BackendNode[] = [
   { id: '2', tangle_ref: 'specs/index.md#architecture', depth: 1, markdown: '## Architecture' },
   { id: '3', tangle_ref: 'specs/index.md#components', depth: 2, markdown: '### Components' },
   { id: '4', tangle_ref: 'specs/index.md#api', depth: 1, markdown: '## API' },
-  { id: '5', tangle_ref: 'specs/design.md', depth: 0, markdown: '# Design System' },
-  { id: '6', tangle_ref: 'specs/design.md#colors', depth: 1, markdown: '## Colors' },
+    {
+      id: '5',
+      tangle_ref: 'specs/design.md',
+      depth: 0,
+      markdown: '# Design System\n\n- Inline reference `src/lib/sample.ts:renderChip` should render as a boxed code ref.\n- Missing reference `src/lib/missing.ts:missingThing` should show no preview available.\n\nsrc/lib/standalone.ts:10-24',
+    },
+   { id: '6', tangle_ref: 'specs/design.md#colors', depth: 1, markdown: '## Colors' },
 ]
+
+const FILE_CONTENTS: Record<string, { content: string; frontmatter?: Record<string, unknown> }> = {
+  'specs/index.md': {
+    content: '# My Project\n\n## Overview\n\nA test project.',
+    frontmatter: {},
+  },
+  'specs/design.md': {
+    content: `# Design System
+
+- Inline reference \`src/lib/sample.ts:renderChip\` should render as a boxed code ref.
+- Missing reference \`src/lib/missing.ts:missingThing\` should show no preview available.
+
+src/lib/standalone.ts:10-24
+`,
+    frontmatter: {},
+  },
+  'src/lib/sample.ts': {
+    content: [
+      'export function renderChip(label: string): string {',
+      '  const safe = label.trim()',
+      "  const prefix = '[code-ref]'",
+      '  if (!safe) return prefix',
+      '  return `${prefix} ${safe}`',
+      '}',
+      '',
+      'export function secondaryHelper(value: string): string {',
+      '  return value.toUpperCase()',
+      '}',
+      '',
+    ].join('\n'),
+  },
+  'src/lib/standalone.ts': {
+    content: [
+      "const palette = ['blue', 'cyan', 'violet']",
+      '',
+      'export function firstColor(): string {',
+      '  return palette[0]',
+      '}',
+      '',
+      'export function lastColor(): string {',
+      '  return palette[palette.length - 1]',
+      '}',
+      '',
+      'export function renderStandalonePreview(): string {',
+      "  const preview = palette.map((item, index) => `${index}:${item}`).join(', ')",
+      '  return `standalone ${preview}`',
+      '}',
+      '',
+      'export function endMarker(): string {',
+      "  return 'done'",
+      '}',
+      '',
+    ].join('\n'),
+  },
+}
+
+function resolveCodeRef(filePath: string, target: string, refKind: string) {
+  if (filePath === 'src/lib/sample.ts' && target === 'renderChip' && refKind === 'symbol') {
+    return {
+      file_path: filePath,
+      target,
+      ref_kind: refKind,
+      resolved_start: 1,
+      resolved_end: 6,
+      content: `export function renderChip(label: string): string {
+  const safe = label.trim()
+  const prefix = '[code-ref]'
+  if (!safe) return prefix
+  return \`${'${prefix} ${safe}'}\`
+}`,
+      language: 'typescript',
+      diagnostic: 'resolved',
+      symbol_kind: 'function',
+      symbol_metadata: {},
+    }
+  }
+
+  if (filePath === 'src/lib/standalone.ts' && target === '10-24' && refKind === 'lines') {
+    return {
+      file_path: filePath,
+      target,
+      ref_kind: refKind,
+      resolved_start: 10,
+      resolved_end: 17,
+      content: `export function renderStandalonePreview(): string {
+  const preview = palette.map((item, index) => \`${'${index}:${item}'}\`).join(', ')
+  return \`standalone ${'${preview}'}\`
+}
+
+export function endMarker(): string {
+  return 'done'
+}`,
+      language: 'typescript',
+      diagnostic: 'resolved',
+    }
+  }
+
+  return {
+    file_path: filePath,
+    target,
+    ref_kind: refKind,
+    resolved_start: null,
+    resolved_end: null,
+    content: null,
+    language: filePath.endsWith('.ts') ? 'typescript' : 'plaintext',
+    diagnostic: 'unresolved',
+    error: 'Reference not found',
+  }
+}
 
 export class MockBackend {
   private wss: WebSocketServer | null = null
@@ -198,7 +312,14 @@ export class MockBackend {
         }
 
       case 'fs/readFile':
-        return { content: '# Mock File Content\n\nSome text here.', frontmatter: {} }
+        return FILE_CONTENTS[String(msg.params.path)] ?? { content: '# Mock File Content\n\nSome text here.', frontmatter: {} }
+
+      case 'code/resolve':
+        return resolveCodeRef(
+          String(msg.params.file_path ?? ''),
+          String(msg.params.target ?? ''),
+          String(msg.params.ref_kind ?? 'symbol'),
+        )
 
       case 'fs/writeFile':
       case 'fs/createDir':
@@ -255,7 +376,7 @@ export class MockBackend {
             root_agent_system: { content: 'You are a root agent.', is_default: true, last_updated: '2025-01-01' },
             sub_agent_system: { content: 'You are a sub agent.', is_default: true, last_updated: '2025-01-01' },
             tangle_maker: { content: 'You make tangles.', is_default: true, last_updated: '2025-01-01' },
-            tangle_reviewer: { content: 'You review tangles.', is_default: true, last_updated: '2025-01-01' },
+            tangle_reviewer: { content: 'Review tangles for tree structure, leaf code refs, and minimal actionable fixes.', is_default: true, last_updated: '2025-01-01' },
           },
         }
 

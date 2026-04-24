@@ -222,6 +222,37 @@ class TabStore {
       this._selectNodeForFile(activeTab.filePath)
       void this._syncFileTreeSelection(activeTab.filePath)
     }
+
+    // Load file content for all restored tabs that have empty content.
+    // applySnapshot creates placeholder tabs with content: '' — we need to
+    // fetch the actual file content from the backend so editors aren't blank.
+    void this._loadRestoredTabContent()
+  }
+
+  /**
+   * Load file content for any tabs that were restored with empty content
+   * (e.g. from session snapshot). Fetches all empty tabs in parallel.
+   */
+  private async _loadRestoredTabContent(): Promise<void> {
+    const emptyTabs = this.tabs.filter((t) => t.content === '' && !t.isDirty)
+    if (emptyTabs.length === 0) return
+
+    await Promise.all(
+      emptyTabs.map(async (tab) => {
+        try {
+          const result = await backendClient.readFile(tab.filePath)
+          // Tab may have been closed while we were loading — check it still exists
+          const current = this.tabs.find((t) => t.id === tab.id)
+          if (current && current.content === '') {
+            current.content = result.content
+            current.frontmatter = result.frontmatter ?? undefined
+            current.title = deriveTangleTitle(current.filePath, current.content, current.frontmatter)
+          }
+        } catch (err) {
+          console.error(`[tabs] Failed to load restored tab content: ${tab.filePath}`, err)
+        }
+      }),
+    )
   }
 
   private _selectNodeForFile(filePath: string): void {

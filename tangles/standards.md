@@ -1,6 +1,6 @@
 ---
 title: Tangle Standards
-last_updated: 2026-04-10
+last_updated: 2026-04-11
 ---
 
 # Tangle Standards
@@ -46,21 +46,21 @@ This means:
 - explicit links to related tangles, code, tests, and decisions in the body,
 - stable section anchors for important sections.
 
-### 3. Tangles describe intent and constraints, grounded in code references
+### 3. Tangles are trees designed for progressive disclosure
 
-Tangles must not become a second copy of the codebase. Instead, they should reference code densely.
+A tangle is a tree of ideas. When a reader opens a document, they should see the high-level shape — purpose, major concerns, key constraints. Detail is nested underneath, revealed on demand through progressive disclosure.
 
-Tangles should primarily contain:
+Structure content in 2–3 levels of depth using nested bullet lists:
 
-- purpose,
-- user or business outcomes,
-- constraints,
-- architecture and design context,
-- decisions,
-- **dense references to implementation code** (classes, functions, methods, line ranges),
-- references to verification.
+- **Level 1** — The high-level idea, constraint, or concern. This is what the reader sees when the document first opens. It should be self-contained enough to be useful without expanding.
+- **Level 2** — Design rationale, behavioral rules, subsystem descriptions, edge cases. Expanding a level-1 node reveals these.
+- **Level 3 (leaves)** — Code references, detailed specs, concrete examples, connections to other tangles. These are the grounding — the point where the idea meets reality.
 
-Implementation details should live in code. Tangles should refer to code rather than reproduce it. When a tangle references code, the UI renders the referenced code inline, so readers can see the actual implementation without leaving the tangle.
+Leaves are often code references. When you describe a constraint at level 1, the code reference that enforces it lives at level 2 or 3 underneath. When you describe a design decision, the modules that implement it are nested below.
+
+Code references are never a separate section. They belong as children of the idea they ground. A "Code References" heading that lists symbols without narrative context is an anti-pattern. The goal is literate interleaving — ideas and their implementations nested together in a tree the reader can explore at their own pace.
+
+Tangles must not become a second copy of the codebase. Implementation details live in code. Tangles refer to code rather than reproduce it. When a tangle references code, the UI renders the referenced code inline, so readers can see the actual implementation without leaving the tangle.
 
 ### 4. Hierarchy is for context inheritance, not ontology purity
 
@@ -73,17 +73,16 @@ The structure of `tangles/` is hierarchical so that context can be inherited pro
 
 This hierarchy helps humans and agents load the right slice of context. It must not force every project concept into a rigid tree.
 
-### 5. Every important tangle must link outward to reality through code
+### 5. Every important idea must link outward to reality through code
 
-A tangle is only useful if it is grounded in the actual project. Code references are the most important type of link because they are rendered inline in the UI.
+A tangle is only useful if it is grounded in the actual project. Code references are the most important type of leaf node because they are rendered inline in the UI.
 
-Important tangle files should link to:
+In the tree structure of a tangle, leaf nodes are typically:
 
-- **relevant code — as many references as needed** (classes, functions, methods, constants),
-- relevant tests,
-- relevant decisions,
-- related tangles,
-- operational or verification evidence when appropriate.
+- code references — the function, module, or line range that implements the parent idea,
+- test references — the verification that the parent constraint holds,
+- links to related tangles or decisions — connecting this idea to its broader context,
+- detailed specs or edge case descriptions — the fine-grained behavior that the parent idea implies.
 
 ---
 
@@ -119,6 +118,21 @@ All paths are relative to the project root.
 - Bare paths: `tangles/domains/data-layer.md`
 
 All tangle paths are relative to the project root. This is core markdown only — no custom syntax.
+
+### Progressive Disclosure
+
+Tangle documents are designed around **progressive disclosure**. When a reader opens a document, they see only the top-level structure — headings and first-level bullet points. Everything else starts collapsed.
+
+The editor supports disclosure at two levels:
+
+- **Heading sections** — H2 and H3 sections collapse, hiding all content until the next same-or-higher-level heading. Only the heading text is visible until expanded.
+- **Nested list items** — Any bullet point with indented children renders a collapsible chevron. Children start collapsed. Expanding a parent reveals its direct children, which may themselves be collapsed if they have children of their own.
+
+This is an editor rendering feature — it does not alter the markdown format. Collapse state is ephemeral and editor-only.
+
+Authors should structure tangle content as nested trees specifically because of this behavior. The first level of a list should make sense on its own — it is the "table of contents" of the idea. Deeper levels provide rationale, edge cases, and code grounding that readers expand when they need it.
+
+See [Progressive Disclosure](features/progressive-disclosure.md) for implementation details.
 
 ---
 
@@ -252,7 +266,6 @@ To keep files predictable for both humans and agents, use standard section headi
 - `## Invariants`
 - `## Interfaces`
 - `## Key Components`
-- `## Code References`
 - `## Verification`
 - `## Related Features`
 - `## Related Decisions`
@@ -265,7 +278,6 @@ To keep files predictable for both humans and agents, use standard section headi
 - `## Scope`
 - `## Constraints`
 - `## Design`
-- `## Code References`
 - `## Tests / Verification`
 - `## Open Questions`
 - `## Related Decisions`
@@ -285,6 +297,29 @@ Files may include additional sections when needed, but the standard headings sho
 ---
 
 ## Writing Standards
+
+### Structure content as a tree, not flat prose
+
+The primary structural tool in a tangle is the nested bullet list, not paragraphs. Headings define major sections; within each section, ideas are organized as nested lists that the reader can progressively expand.
+
+A well-structured section looks like:
+
+```
+## Authentication
+- Users authenticate via OAuth2 or email/password
+	- OAuth2 flow is handled by `src/auth/oauth.ts:handleOAuthCallback`
+	- Email/password uses bcrypt with cost factor 12
+		- `src/auth/password.ts:hashPassword`
+		- Cost factor is set in `src/config.ts:AUTH_BCRYPT_ROUNDS`
+- Session tokens expire after 24 hours of inactivity
+	- Enforced by middleware `src/auth/session.ts:validateSession`
+	- Grace period of 5 minutes to avoid mid-request expiry
+- Constraint: never reveal whether an email exists during login
+	- Login and registration return identical error shapes
+	- `src/auth/login.ts:handleLogin` — see the unified error path
+```
+
+The reader sees three high-level bullets when the section is expanded. Each one stands on its own. Code references and details are leaves they expand into when they want depth.
 
 ### Write for local usefulness first
 
@@ -425,7 +460,15 @@ Do not rely on ad hoc notes without headings, references, or ownership.
 
 Do not write phrases like "the auth code" when an exact file or symbol can be named. Always use a code ref so the UI can render the actual code inline.
 
-### 6. Silent divergence
+### 6. Code references as a standalone section
+
+Do not create a "Code References" heading that lists symbols in isolation. Code references are leaf nodes in the idea tree — they belong nested under the idea, constraint, or design element they ground. A flat list of code references without narrative context provides no progressive disclosure value and defeats the purpose of literate documentation.
+
+### 7. Flat prose where trees belong
+
+Do not write long paragraphs when the content is a set of distinct ideas with their own details. Use nested lists so the editor can provide progressive disclosure. Flat prose forces readers to read everything linearly; tree structure lets them scan the top level and drill into what matters.
+
+### 8. Silent divergence
 
 Do not change important behavior in code without updating the related tangle.
 

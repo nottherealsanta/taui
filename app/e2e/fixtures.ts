@@ -3,7 +3,7 @@
  *
  * Provides a `mockBackend` fixture that starts a mock WebSocket server
  * once per worker and shares it across all tests in that worker.
- * The frontend connects to ws://127.0.0.1:8000/ws (the default).
+ * The frontend connects to ws://127.0.0.1:8010/ws in Playwright.
  */
 import { test as base, expect, type Page } from '@playwright/test'
 import { MockBackend } from './mock-backend'
@@ -19,7 +19,7 @@ type TauiFixtures = {
 
 export const test = base.extend<TauiFixtures, TauiWorkerFixtures>({
   mockBackend: [async ({}, use) => {
-    const backend = new MockBackend({ port: 8000 })
+    const backend = new MockBackend({ port: 8010 })
     await backend.start()
     await use(backend)
     await backend.stop()

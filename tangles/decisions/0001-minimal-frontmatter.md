@@ -1,6 +1,6 @@
 ---
 title: 0001 Minimal Frontmatter
-last_updated: 2026-04-10
+last_updated: 2026-04-11
 ---
 
 # 0001 Minimal Frontmatter
@@ -11,11 +11,14 @@ Active — implemented and in use.
 
 ## Context
 
-The previous spec format pushed extensive structure into YAML frontmatter: `status`, `owners`, `refs`, `test_refs`, `depends_on`, `tags`, `code_refs`. This made the format rigid and opinionated. Every project had to conform to the same document structure regardless of domain.
-
-Different teams need different document conventions — a game studio's tangles look different from a SaaS backend team's. Baking structure into frontmatter forces a one-size-fits-all approach.
-
-Additionally, heavy frontmatter creates a maintenance burden: every structural change to the format requires updating the parser, the writer, the database schema, and the UI.
+- The previous format pushed extensive structure into YAML frontmatter
+  - Fields: `status`, `owners`, `refs`, `test_refs`, `depends_on`, `tags`, `code_refs`
+  - Made the format rigid and opinionated — every project had to conform to the same structure
+- Different teams need different document conventions
+  - A game studio's tangles look different from a SaaS backend team's
+  - Baking structure into frontmatter forces a one-size-fits-all approach
+- Heavy frontmatter creates a maintenance burden
+  - Every structural change requires updating the parser, writer, database schema, and UI
 
 ## Decision
 
@@ -28,32 +31,31 @@ last_updated: 2026-04-07
 ---
 ```
 
-Everything else — code references, dependencies, status, test refs, constraints — lives in the **body** as standard markdown content.
-
-Document structure is controlled by the **tangle-making tool's system prompt**, not by the format specification. Users can edit this prompt in Settings -> Prompts -> Tangle Maker to change what sections agents produce.
-
-The parser extracts structured data from body content using pattern matching:
-- Code refs via arrow (`->`) and backtick notation
-- Inter-tangle links via markdown links and bare paths
-- Heading hierarchy for document structure
+- Everything else — code references, dependencies, status, test refs, constraints — lives in the **body** as standard markdown content
+- Document structure is controlled by the **tangle-making tool's system prompt**, not by the format specification
+  - Users can edit this prompt in Settings → Prompts → Tangle Maker
+- The parser extracts structured data from body content using pattern matching
+  - Code refs via arrow (`->`) and backtick notation
+  - Inter-tangle links via markdown links and bare paths
+  - Heading hierarchy for document structure
 
 ## Consequences
 
 **Benefits:**
-- Tangle format is maximally flexible — any markdown structure works.
-- Different teams customize via prompt editing, not format changes.
-- Parser is simpler — fewer frontmatter fields to validate and migrate.
-- Writer is simpler — less structured data to serialize.
-- No schema migrations when conventions change — just update the prompt.
+- Tangle format is maximally flexible — any markdown structure works
+- Different teams customize via prompt editing, not format changes
+- Parser is simpler — fewer frontmatter fields to validate and migrate
+- Writer is simpler — less structured data to serialize
+- No schema migrations when conventions change — just update the prompt
 
 **Trade-offs:**
-- Less machine-readable structure out of the box — parser must infer from body patterns.
-- Code refs extracted from body content are less precise than explicit frontmatter declarations.
-- No built-in status field — status is body content, not queryable without parsing.
-- New users may need guidance on what sections to include (mitigated by good default prompt).
+- Less machine-readable structure out of the box — parser must infer from body patterns
+- Code refs extracted from body content are less precise than explicit frontmatter declarations
+- No built-in status field — status is body content, not queryable without parsing
+- New users may need guidance on what sections to include (mitigated by good default prompt)
 
 **Mitigations:**
-- Default `tangle_maker` prompt suggests standard sections (Behavior, Constraints, Dependencies, Code References, etc.)
+- Default `tangle_maker` prompt suggests standard sections (Behavior, Constraints, Dependencies, Tests) and inline code references nested under the ideas they ground
 - Parser uses well-defined regex patterns for code ref and link extraction
 - UI renders code refs inline regardless of where they appear in the body
 
@@ -73,11 +75,13 @@ tags: [auth, registration]
 ---
 ```
 
-Rejected because: too rigid, too much maintenance overhead, forces all projects into the same structure.
+- Rejected: too rigid, too much maintenance overhead, forces all projects into the same structure
 
 ### 2. No frontmatter at all
 
-Rejected because: `title` and `last_updated` provide essential metadata that the UI and indexer need. Extracting title from the first heading is fragile. Having zero frontmatter would make it harder to distinguish tangle files from regular markdown.
+- Rejected: `title` and `last_updated` provide essential metadata the UI and indexer need
+  - Extracting title from the first heading is fragile
+  - Zero frontmatter makes it harder to distinguish tangle files from regular markdown
 
 ### 3. Frontmatter with optional structured fields
 
@@ -90,7 +94,9 @@ code_refs: [...]     # optional
 ---
 ```
 
-Rejected because: "optional" frontmatter fields inevitably become expected. The parser still needs to handle them, migrations still need to support them, and teams argue about which optional fields to use.
+- Rejected: "optional" fields inevitably become expected
+  - Parser still needs to handle them; migrations still need to support them
+  - Teams argue about which optional fields to use
 
 ## References
 

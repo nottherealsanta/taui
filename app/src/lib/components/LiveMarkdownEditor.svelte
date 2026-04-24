@@ -10,7 +10,17 @@
   import { CodeBlockLowlight } from '@tiptap/extension-code-block-lowlight'
   import { Markdown } from '@tiptap/markdown'
   import { common, createLowlight } from 'lowlight'
+  import { DisclosureList } from '$lib/extensions/disclosure-list'
+  import { CodeRefDecorations } from '$lib/extensions/code-ref-decorations'
+  import CodeFileModal from '$components/CodeFileModal.svelte'
+  import { backendClient } from '$services/backend-client'
   import { tabStore } from '$stores/tabs.svelte'
+  import {
+    inferLanguage,
+    readCodeRefFromDataset,
+    resolveCodeRef,
+    type ParsedCodeRef,
+  } from '$lib/utils/code-refs'
 
   interface Props {
     content: string
@@ -25,6 +35,21 @@
   let editor: Editor | null = null
   let applyingExternalContent = false
 
+  type ModalState = {
+    filePath: string
+    target: string | null
+    snippetContent: string | null
+    fullFileContent: string | null
+    language: string | null
+    lineStart: number | null
+    lineEnd: number | null
+    loading: boolean
+    error: string | null
+    emptyMessage: string | null
+  }
+
+  let codeModal: ModalState | null = $state(null)
+
   const lowlight = createLowlight(common)
 
   function resolveHref(href: string): string {
@@ -35,6 +60,99 @@
 
   function saveCurrentTab(): void {
     void tabStore.save(tabId)
+  }
+
+  async function openCodeRefModal(ref: ParsedCodeRef): Promise<void> {
+    codeModal = {
+      filePath: ref.filePath,
+      target: ref.target,
+      snippetContent: null,
+      fullFileContent: null,
+      language: inferLanguage(ref.filePath),
+      lineStart: null,
+      lineEnd: null,
+      loading: true,
+      error: null,
+      emptyMessage: null,
+    }
+
+    try {
+      const [fullFile, resolved] = await Promise.all([
+        backendClient.readFile(ref.filePath).catch(() => null),
+        resolveCodeRef(ref).catch(() => null),
+      ])
+
+      // Normalize content: treat empty strings as null
+      const snippetContent = resolved?.content?.trim() ? resolved.content : null
+      const fullFileContent = fullFile?.content?.trim() ? fullFile.content : null
+
+      // Only show "No preview available" if BOTH are unavailable
+      if (!snippetContent && !fullFileContent) {
+        codeModal = {
+          filePath: ref.filePath,
+          target: ref.target,
+          snippetContent: null,
+          fullFileContent: null,
+          language: inferLanguage(ref.filePath),
+          lineStart: null,
+          lineEnd: null,
+          loading: false,
+          error: null,
+          emptyMessage: 'No preview available',
+        }
+        return
+      }
+
+      codeModal = {
+        filePath: ref.filePath,
+        target: ref.target,
+        snippetContent,
+        fullFileContent,
+        language: resolved?.language ?? inferLanguage(ref.filePath),
+        // Only set line range if we have actual snippet content
+        lineStart: snippetContent ? (resolved?.resolvedStart ?? null) : null,
+        lineEnd: snippetContent ? (resolved?.resolvedEnd ?? null) : null,
+        loading: false,
+        error: null,
+        emptyMessage: null,
+      }
+    } catch (error) {
+      codeModal = {
+        filePath: ref.filePath,
+        target: ref.target,
+        snippetContent: null,
+        fullFileContent: null,
+        language: inferLanguage(ref.filePath),
+        lineStart: null,
+        lineEnd: null,
+        loading: false,
+        error: null,
+        emptyMessage: 'No preview available',
+      }
+    }
+  }
+
+  function handleModalClose(): void {
+    codeModal = null
+  }
+
+  function handleOpenCodeRefEvent(event: Event): void {
+    const customEvent = event as CustomEvent<ParsedCodeRef>
+    if (!customEvent.detail) return
+    void openCodeRefModal(customEvent.detail)
+  }
+
+  function handleEditorClick(event: MouseEvent): void {
+    const target = event.target as HTMLElement | null
+    const codeRefEl = target?.closest<HTMLElement>('.code-ref-chip, .code-ref-inline-preview')
+    if (!codeRefEl) return
+
+    const ref = readCodeRefFromDataset(codeRefEl)
+    if (!ref) return
+
+    event.preventDefault()
+    event.stopPropagation()
+    void openCodeRefModal(ref)
   }
 
   function getMarkdownFromEditor(): string {
@@ -50,6 +168,9 @@
 
   onMount(() => {
     if (!editorEl) return
+
+    window.addEventListener('taui:open-code-ref', handleOpenCodeRefEvent as EventListener)
+    editorEl.addEventListener('click', handleEditorClick)
 
     editor = new Editor({
       element: editorEl,
@@ -82,6 +203,8 @@
         TaskItem.configure({
           nested: true,
         }),
+        DisclosureList,
+        CodeRefDecorations,
       ],
       onUpdate: ({ editor: ed }) => {
         if (applyingExternalContent) return
@@ -99,6 +222,15 @@
         },
         handleClick: (_view, _pos, event) => {
           const target = event.target as HTMLElement
+          const codeRefEl = target.closest<HTMLElement>('.code-ref-chip, .code-ref-inline-preview')
+          if (codeRefEl) {
+            const ref = readCodeRefFromDataset(codeRefEl)
+            if (!ref) return false
+            event.preventDefault()
+            void openCodeRefModal(ref)
+            return true
+          }
+
           const linkEl = target.closest('a')
           if (!linkEl) return false
           const href = linkEl.getAttribute('href')
@@ -122,6 +254,7 @@
       editor.commands.setContent(content, { contentType: 'markdown' })
       applyingExternalContent = false
     }
+
   })
 
   // Sync external content changes (e.g. revert, external file change)
@@ -136,12 +269,30 @@
   })
 
   onDestroy(() => {
+    window.removeEventListener('taui:open-code-ref', handleOpenCodeRefEvent as EventListener)
+    editorEl?.removeEventListener('click', handleEditorClick)
     editor?.destroy()
     editor = null
   })
 </script>
 
 <div class="live-markdown-editor selectable" bind:this={editorEl}></div>
+
+{#if codeModal}
+  <CodeFileModal
+    filePath={codeModal.filePath}
+    target={codeModal.target}
+    snippetContent={codeModal.snippetContent}
+    fullFileContent={codeModal.fullFileContent}
+    language={codeModal.language}
+    lineStart={codeModal.lineStart}
+    lineEnd={codeModal.lineEnd}
+    loading={codeModal.loading}
+    error={codeModal.error}
+    emptyMessage={codeModal.emptyMessage}
+    onclose={handleModalClose}
+  />
+{/if}
 
 <style lang="postcss">
   .live-markdown-editor {
@@ -151,6 +302,7 @@
     min-width: 0;
     min-height: 0;
     overflow: hidden;
+    position: relative;
   }
 
   /* ─── TipTap Prose Styling ─────────────────────────────────────────────────── */
@@ -234,6 +386,101 @@
     background-color: var(--element-bg);
     font-family: var(--font-mono);
     font-size: 0.88em;
+  }
+
+  .live-markdown-editor :global(.tiptap code:has(.code-ref-chip)) {
+    padding: 0;
+    background: transparent;
+  }
+
+  .live-markdown-editor :global(.tiptap .code-ref-chip) {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.18rem 0.44rem;
+    margin: 0 0.04rem;
+    border: 1px solid var(--border);
+    background: var(--bg-surface);
+    color: var(--fg-secondary);
+    cursor: pointer;
+    transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+    white-space: nowrap;
+  }
+
+  .live-markdown-editor :global(.tiptap .code-ref-chip:hover) {
+    border-color: var(--fg-muted);
+    background: var(--bg-elevated);
+    color: var(--fg-primary);
+  }
+
+  .live-markdown-editor :global(.tiptap .code-ref-standalone-paragraph) {
+    margin-bottom: 0.3rem;
+  }
+
+  .live-markdown-editor :global(.tiptap .code-ref-standalone-paragraph .code-ref-chip) {
+    font-size: 0.92em;
+  }
+
+  .live-markdown-editor :global(.tiptap .code-ref-inline-preview) {
+    margin: 0.45rem 0 1rem;
+    padding: 0.65rem 0.8rem;
+    border: 1px solid var(--border);
+    background: var(--bg-surface);
+    cursor: pointer;
+    overflow: hidden;
+  }
+
+  .live-markdown-editor :global(.tiptap .code-ref-inline-preview:hover) {
+    border-color: var(--fg-muted);
+    background: var(--bg-elevated);
+  }
+
+  .live-markdown-editor :global(.tiptap .code-ref-inline-preview__header) {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    margin-bottom: 0.55rem;
+    min-width: 0;
+  }
+
+  .live-markdown-editor :global(.tiptap .code-ref-inline-preview__badge) {
+    padding: 0.14rem 0.36rem;
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--fg-muted);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    line-height: 1;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  .live-markdown-editor :global(.tiptap .code-ref-inline-preview__title) {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--fg-primary);
+    font-family: var(--font-mono);
+    font-size: 12px;
+  }
+
+  .live-markdown-editor :global(.tiptap .code-ref-inline-preview__body) {
+    margin: 0;
+    padding: 0.72rem 0.8rem;
+    border: 1px solid var(--border);
+    background: var(--bg-base);
+    overflow-x: auto;
+    color: var(--fg-primary);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    line-height: 1.55;
+    white-space: pre-wrap;
+  }
+
+  .live-markdown-editor :global(.tiptap .code-ref-inline-preview__footer) {
+    margin-top: 0.5rem;
+    color: var(--fg-muted);
+    font-size: 11px;
   }
 
   /* ── Code Block ── */
@@ -387,4 +634,89 @@
   .live-markdown-editor :global(.tiptap .hljs-literal) { color: #56b6c2; }
   .live-markdown-editor :global(.tiptap .hljs-type) { color: #e6c07b; }
   .live-markdown-editor :global(.tiptap .hljs-meta) { color: var(--fg-muted); }
+
+  /* ── Disclosure (progressive disclosure for headings + lists) ── */
+
+  /* ── List item disclosure ── */
+
+  /* Disclosure list item: position relative so chevron can be placed absolutely */
+  .live-markdown-editor :global(.tiptap li.disclosure-item) {
+    position: relative;
+    list-style: none;
+  }
+
+  /* Chevron button — shared base style for both headings and list items */
+  .live-markdown-editor :global(.disclosure-chevron) {
+    position: absolute;
+    left: -22px;
+    top: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    padding: 0;
+    margin: 0;
+    border: none;
+    background: none;
+    border-radius: 3px;
+    color: var(--fg-muted);
+    cursor: pointer;
+    opacity: 0.6;
+    transition: transform 0.15s ease, opacity 0.15s ease, color 0.15s ease, background-color 0.15s ease;
+    outline: none;
+    transform: rotate(90deg);
+  }
+
+  .live-markdown-editor :global(.disclosure-chevron:hover) {
+    color: var(--fg-accent);
+    opacity: 1;
+    background-color: color-mix(in srgb, var(--fg-accent) 10%, transparent);
+  }
+
+  .live-markdown-editor :global(.disclosure-chevron.collapsed) {
+    transform: rotate(0deg);
+  }
+
+  /* ── Heading disclosure ── */
+
+  /* Headings with disclosure get relative positioning for the chevron */
+  .live-markdown-editor :global(.tiptap .disclosure-heading) {
+    position: relative;
+    cursor: default;
+  }
+
+  /* Heading chevron — positioned to the left of the heading text */
+  .live-markdown-editor :global(.disclosure-heading-chevron) {
+    position: absolute;
+    left: -26px;
+    width: 18px;
+    height: 18px;
+    opacity: 0.45;
+  }
+
+  /* Scale chevron position/size per heading level */
+  .live-markdown-editor :global(.tiptap h2.disclosure-heading .disclosure-heading-chevron) {
+    top: 8px;
+  }
+
+  .live-markdown-editor :global(.tiptap h3.disclosure-heading .disclosure-heading-chevron) {
+    top: 6px;
+  }
+
+  .live-markdown-editor :global(.tiptap h4.disclosure-heading .disclosure-heading-chevron),
+  .live-markdown-editor :global(.tiptap h5.disclosure-heading .disclosure-heading-chevron),
+  .live-markdown-editor :global(.tiptap h6.disclosure-heading .disclosure-heading-chevron) {
+    top: 4px;
+  }
+
+  .live-markdown-editor :global(.disclosure-heading:hover .disclosure-heading-chevron) {
+    opacity: 0.8;
+  }
+
+  /* Hidden content when parent heading or list item is collapsed */
+  .live-markdown-editor :global(.tiptap .disclosure-hidden) {
+    display: none;
+  }
+
 </style>

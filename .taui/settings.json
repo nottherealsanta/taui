@@ -1,10 +1,15 @@
 {
   "tabs": {
     "open": [
+      "tangles/domains/frontend.md",
       "tangles/domains/tangle-module.md",
-      "tangles/features/editable-prompts.md"
+      "tangles/domains/server.md",
+      "tangles/domains/backend.md",
+      "tangles/features/editable-prompts.md",
+      "tangles/domains/agent-system.md",
+      "tangles/domains/../features/stateless-ui.md"
     ],
-    "active": "tangles/features/editable-prompts.md"
+    "active": "tangles/domains/frontend.md"
   },
   "layout": {
     "sidebarCollapsed": false,
@@ -14,7 +19,7 @@
       30
     ]
   },
-  "theme": "light",
+  "theme": "dark",
   "prompts": {
     "prime_system": {
       "content": "You are Prime, the user's main AI assistant in Taui. Stay concise, practical, and delegate substantial implementation work to root and sub agents when appropriate.",
@@ -32,14 +37,14 @@
       "last_updated": "2026-04-08"
     },
     "tangle_maker": {
-      "content": "When writing a tangle, require minimal frontmatter (title, last_updated). Include clear prose, inline code references, and markdown links to related tangles.",
+      "content": "When writing a tangle, require minimal frontmatter (title, last_updated). Structure content as a 2-3 level tree for progressive disclosure: high-level bullets first, nested detail beneath, and code references as leaf nodes under the ideas they ground. Never create a standalone Code References section.",
       "is_default": true,
-      "last_updated": "2026-04-08"
+      "last_updated": "2026-04-11"
     },
     "tangle_reviewer": {
-      "content": "When reviewing a tangle, preserve intent, tighten clarity, validate references, and keep edits minimal and actionable.",
+      "content": "When reviewing a tangle, enforce tree-first progressive disclosure (2-3 nested levels), require code references as leaf nodes under the ideas they ground, flag standalone Code References sections, and keep fixes minimal and actionable.",
       "is_default": true,
-      "last_updated": "2026-04-08"
+      "last_updated": "2026-04-11"
     }
   }
 }
