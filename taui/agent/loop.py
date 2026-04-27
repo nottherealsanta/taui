@@ -19,6 +19,7 @@ from enum import Enum
 from typing import Any, Protocol
 from uuid import uuid4
 
+from taui.agent.context import compact_messages, estimate_total_tokens, DEFAULT_MAX_INPUT_TOKENS
 from taui.llm_provider.types import ProviderToolCall, ProviderTurnResult
 from taui.store.events import EventType
 from taui.store.stream import StreamClient
@@ -240,9 +241,21 @@ class AgentLoop:
 
     async def _call_llm(self) -> ProviderTurnResult:
         """Call the LLM with current conversation and tool schemas."""
+        self._maybe_compact()
         messages = self._build_llm_messages()
         tools = self._executor.registry.schemas() or None
         return await self._llm.create_turn(messages, self._model, tools=tools)
+
+    def _maybe_compact(self) -> None:
+        """Compact messages if approaching token budget."""
+        est = estimate_total_tokens(self._messages)
+        soft = int(DEFAULT_MAX_INPUT_TOKENS * 0.80)
+        if est > soft:
+            removed = compact_messages(self._messages)
+            if removed:
+                logger.info(
+                    "Compacted %d messages agent_id=%s", removed, self.agent_id
+                )
 
     async def _execute_tool(self, tc: ProviderToolCall) -> None:
         """Execute one tool call and append the result to messages."""

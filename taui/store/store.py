@@ -47,6 +47,15 @@ CREATE TABLE IF NOT EXISTS events (
 
 CREATE INDEX IF NOT EXISTS idx_events_stream_offset
     ON events(stream_id, offset);
+
+CREATE TABLE IF NOT EXISTS sessions (
+    session_id   TEXT PRIMARY KEY,
+    description  TEXT NOT NULL DEFAULT '',
+    mode         TEXT NOT NULL DEFAULT 'normal',
+    created_at   REAL NOT NULL,
+    last_active  REAL NOT NULL,
+    message_count INTEGER NOT NULL DEFAULT 0
+);
 """
 
 
@@ -326,3 +335,66 @@ class Store:
                     pass
                 if not waiters:
                     del self._waiters[stream_id]
+
+    # ── Session metadata ──────────────────────────────────────────────────
+
+    async def create_session(
+        self,
+        session_id: str,
+        *,
+        mode: str = "normal",
+    ) -> None:
+        """Create a session metadata record."""
+        now = time.time()
+        await self.db.execute(
+            "INSERT OR IGNORE INTO sessions"
+            "(session_id, description, mode, created_at, last_active, message_count)"
+            " VALUES (?, '', ?, ?, ?, 0)",
+            (session_id, mode, now, now),
+        )
+        await self.db.commit()
+
+    async def update_session(
+        self,
+        session_id: str,
+        *,
+        description: str | None = None,
+        message_count: int | None = None,
+        mode: str | None = None,
+    ) -> None:
+        """Update session metadata fields."""
+        sets: list[str] = ["last_active = ?"]
+        params: list[Any] = [time.time()]
+        if description is not None:
+            sets.append("description = ?")
+            params.append(description)
+        if message_count is not None:
+            sets.append("message_count = ?")
+            params.append(message_count)
+        if mode is not None:
+            sets.append("mode = ?")
+            params.append(mode)
+        params.append(session_id)
+        await self.db.execute(
+            f"UPDATE sessions SET {', '.join(sets)} WHERE session_id = ?",
+            params,
+        )
+        await self.db.commit()
+
+    async def list_sessions(self, *, limit: int = 20) -> list[dict[str, Any]]:
+        """List recent sessions, newest first."""
+        async with self.db.execute(
+            "SELECT * FROM sessions ORDER BY last_active DESC LIMIT ?",
+            (limit,),
+        ) as cur:
+            rows = await cur.fetchall()
+        return [dict(row) for row in rows]
+
+    async def get_session(self, session_id: str) -> dict[str, Any] | None:
+        """Get a single session's metadata."""
+        async with self.db.execute(
+            "SELECT * FROM sessions WHERE session_id = ?",
+            (session_id,),
+        ) as cur:
+            row = await cur.fetchone()
+            return dict(row) if row else None

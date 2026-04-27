@@ -34,3 +34,19 @@ class TestParseArgs:
         result = parse_args(["--provider", "codex", "--model", "o3-mini"])
         assert result["provider"] == "codex"
         assert result["model"] == "o3-mini"
+
+    def test_web_flag(self):
+        result = parse_args(["--web"])
+        assert result["mode"] == "web"
+
+    def test_tui_flag(self):
+        result = parse_args(["--tui"])
+        assert result["mode"] == "tui"
+
+    def test_web_takes_precedence_over_tui(self):
+        result = parse_args(["--web", "--tui"])
+        assert result["mode"] == "web"
+
+    def test_no_mode_by_default(self):
+        result = parse_args([])
+        assert "mode" not in result

@@ -9,7 +9,7 @@ class TestConfig:
     def test_defaults(self):
         cfg = Config()
         assert cfg.provider == "copilot"
-        assert cfg.model == "claude-sonnet-4-20250514"
+        assert cfg.model == "claude-sonnet-4.6"
         assert cfg.max_turns == 50
         assert cfg.system_prompt == DEFAULT_SYSTEM_PROMPT
 

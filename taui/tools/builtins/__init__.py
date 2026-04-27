@@ -8,6 +8,12 @@ implementing the Tool protocol from taui.tools.base.
 from taui.tools.builtins.bash import BashTool
 from taui.tools.builtins.edit import EditTool
 from taui.tools.builtins.files import GlobTool, GrepTool, ReadTool, WriteTool
+from taui.tools.builtins.git import GitTool
+from taui.tools.builtins.mcp import McpTool
+from taui.tools.builtins.memory import MemoryTool
+from taui.tools.builtins.question import QuestionTool
+from taui.tools.builtins.skills import SkillsTool
+from taui.tools.builtins.sub_agent import SubAgentTool
 from taui.tools.registry import ToolRegistry
 
 
@@ -20,6 +26,12 @@ def register_builtins(registry: ToolRegistry) -> None:
         GlobTool(),
         GrepTool(),
         BashTool(),
+        GitTool(),
+        McpTool(),
+        MemoryTool(),
+        QuestionTool(),
+        SkillsTool(),
+        SubAgentTool(),
     ]:
         registry.register(tool)
 
@@ -27,9 +39,15 @@ def register_builtins(registry: ToolRegistry) -> None:
 __all__ = [
     "BashTool",
     "EditTool",
+    "GitTool",
     "GlobTool",
     "GrepTool",
+    "McpTool",
+    "MemoryTool",
+    "QuestionTool",
     "ReadTool",
+    "SkillsTool",
+    "SubAgentTool",
     "WriteTool",
     "register_builtins",
 ]

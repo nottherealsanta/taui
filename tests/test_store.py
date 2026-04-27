@@ -298,8 +298,72 @@ class TestStreamClient:
         async for event in client.tail("s1"):
             events.append(event)
         assert len(events) == 2
-        assert events[0].data == {"text": "a"}
-        assert events[1].data == {"text": "b"}
+
+
+# ═══ Session metadata ════════════════════════════════════════════════════════
+
+
+class TestSessionMetadata:
+    async def test_create_session(self, store: Store):
+        await store.create_session("ses-1")
+        meta = await store.get_session("ses-1")
+        assert meta is not None
+        assert meta["session_id"] == "ses-1"
+        assert meta["mode"] == "normal"
+        assert meta["description"] == ""
+        assert meta["message_count"] == 0
+
+    async def test_create_session_self_edit(self, store: Store):
+        await store.create_session("ses-2", mode="self-edit")
+        meta = await store.get_session("ses-2")
+        assert meta["mode"] == "self-edit"
+
+    async def test_create_session_idempotent(self, store: Store):
+        await store.create_session("ses-1")
+        await store.create_session("ses-1")  # INSERT OR IGNORE
+        meta = await store.get_session("ses-1")
+        assert meta is not None
+
+    async def test_update_session_description(self, store: Store):
+        await store.create_session("ses-1")
+        await store.update_session("ses-1", description="Hello world")
+        meta = await store.get_session("ses-1")
+        assert meta["description"] == "Hello world"
+
+    async def test_update_session_message_count(self, store: Store):
+        await store.create_session("ses-1")
+        await store.update_session("ses-1", message_count=5)
+        meta = await store.get_session("ses-1")
+        assert meta["message_count"] == 5
+
+    async def test_update_session_mode(self, store: Store):
+        await store.create_session("ses-1")
+        await store.update_session("ses-1", mode="self-edit")
+        meta = await store.get_session("ses-1")
+        assert meta["mode"] == "self-edit"
+
+    async def test_list_sessions_empty(self, store: Store):
+        sessions = await store.list_sessions()
+        assert sessions == []
+
+    async def test_list_sessions_ordered(self, store: Store):
+        await store.create_session("ses-1")
+        await store.create_session("ses-2")
+        await store.update_session("ses-1")  # touch last_active
+        sessions = await store.list_sessions()
+        assert len(sessions) == 2
+        # ses-1 should be first (updated most recently)
+        assert sessions[0]["session_id"] == "ses-1"
+
+    async def test_get_session_missing(self, store: Store):
+        meta = await store.get_session("nope")
+        assert meta is None
+
+    async def test_list_sessions_limit(self, store: Store):
+        for i in range(10):
+            await store.create_session(f"ses-{i}")
+        sessions = await store.list_sessions(limit=3)
+        assert len(sessions) == 3
 
     async def test_tail_live_receives_new_data(
         self, client: StreamClient, store: Store

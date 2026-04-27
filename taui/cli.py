@@ -5,7 +5,8 @@ Provides:
 - Interactive prompt loop
 - Live tool call and result display
 - Interactive tool approval for writes/shell
-- Slash commands (/help, /model, /clear, /quit)
+- Slash commands via CommandRegistry
+- Cost tracking per session
 - Graceful Ctrl+C handling
 """
 
@@ -17,6 +18,8 @@ import sys
 import textwrap
 from pathlib import Path
 
+from taui.commands.builtins import register_builtins as register_builtin_commands
+from taui.commands.registry import CommandRegistry
 from taui.config import Config
 from taui.session import Session
 
@@ -55,21 +58,6 @@ def _cyan(text: str) -> str:
     return f"\033[36m{text}\033[0m" if _COLOR else text
 
 
-# ── Slash commands ─────────────────────────────────────────────────────────────
-
-HELP_TEXT = """\
-Commands:
-  /help            Show this help
-  /model [name]    Show or set the model
-  /clear           Clear conversation history
-  /quit            Exit taui
-
-Shortcuts:
-  Ctrl+C           Cancel current request
-  Ctrl+D           Exit taui
-"""
-
-
 # ── REPL ───────────────────────────────────────────────────────────────────────
 
 
@@ -79,6 +67,7 @@ class Repl:
     def __init__(self, session: Session) -> None:
         self._session = session
         self._wire_callbacks()
+        self._commands = self._build_commands()
 
     def _wire_callbacks(self) -> None:
         """Connect agent loop callbacks to CLI display."""
@@ -86,6 +75,27 @@ class Repl:
         loop._on_tool_call = self._on_tool_call
         loop._on_tool_result = self._on_tool_result
         loop._on_approval = self._on_approval
+
+        # Wire question tool callback
+        for name in self._session._registry.names:
+            tool = self._session._registry.get(name)
+            if hasattr(tool, "_ask") and tool.name == "question":
+                tool._ask = self._ask_question
+
+    def _rewire(self) -> None:
+        """Re-attach callbacks after session/loop reset."""
+        self._wire_callbacks()
+
+    def _build_commands(self) -> CommandRegistry:
+        """Build the slash command registry."""
+        registry = CommandRegistry()
+        register_builtin_commands(
+            registry,
+            get_session=lambda: self._session,
+            get_tracker=lambda: self._session.cost_tracker,
+            get_extensions=lambda: self._session._ext_registry,
+        )
+        return registry
 
     # ── Agent loop callbacks ──────────────────────────────────────────
 
@@ -124,6 +134,29 @@ class Repl:
         except (EOFError, KeyboardInterrupt):
             return False
 
+    async def _ask_question(
+        self, question: str, options: list[str] | None
+    ) -> str | None:
+        """Handle a question from the agent."""
+        print()
+        print(_yellow(f"  ? {question}"))
+        if options:
+            for i, opt in enumerate(options, 1):
+                print(_dim(f"    {i}. {opt}"))
+            print(_dim("    (enter number or text)"))
+        try:
+            answer = input(_yellow("  > ")).strip()
+            if not answer:
+                return None
+            # If options provided and answer is a number, map to option
+            if options and answer.isdigit():
+                idx = int(answer) - 1
+                if 0 <= idx < len(options):
+                    return options[idx]
+            return answer
+        except (EOFError, KeyboardInterrupt):
+            return None
+
     @staticmethod
     def _format_args(name: str, arguments: dict) -> str:
         """Format tool arguments for display — compact and readable."""
@@ -153,6 +186,40 @@ class Repl:
                 if len(cmd) > 80:
                     cmd = cmd[:77] + "..."
                 return cmd
+            case "git":
+                op = arguments.get("operation", "")
+                args = arguments.get("args", {})
+                if args:
+                    details = ", ".join(f"{k}={v}" for k, v in args.items())
+                    return f"{op} ({details})"
+                return op
+            case "question":
+                q = arguments.get("question", "")
+                if len(q) > 60:
+                    q = q[:57] + "..."
+                return q
+            case "sub_agent":
+                task = arguments.get("task", "")
+                if len(task) > 60:
+                    task = task[:57] + "..."
+                tools = arguments.get("tools")
+                if tools:
+                    return f"{task} [{', '.join(tools)}]"
+                return task
+            case "skills":
+                op = arguments.get("operation", "")
+                skill = arguments.get("skill", "")
+                return f"{op} {skill}".strip()
+            case "mcp":
+                op = arguments.get("operation", "")
+                server = arguments.get("server", "")
+                tool = arguments.get("tool", "")
+                parts = [op]
+                if server:
+                    parts.append(server)
+                if tool:
+                    parts.append(tool)
+                return " ".join(parts)
             case _:
                 parts = []
                 for k, v in arguments.items():
@@ -178,7 +245,7 @@ class Repl:
 
             # Slash commands
             if user_input.startswith("/"):
-                if self._handle_command(user_input):
+                if await self._handle_command(user_input):
                     continue
                 else:
                     break  # /quit
@@ -202,7 +269,10 @@ class Repl:
     def _prompt(self) -> str:
         """Read user input. Supports multi-line with trailing backslash."""
         try:
-            line = input(_green("> "))
+            if self._session.self_edit:
+                line = input(_yellow("⚙ > "))
+            else:
+                line = input(_green("> "))
         except EOFError:
             raise
         except KeyboardInterrupt:
@@ -218,33 +288,28 @@ class Repl:
 
         return "\n".join(lines)
 
-    def _handle_command(self, cmd: str) -> bool:
+    async def _handle_command(self, cmd: str) -> bool:
         """Handle a slash command. Returns True to continue, False to quit."""
         parts = cmd.strip().split(maxsplit=1)
         command = parts[0].lower()
-        arg = parts[1] if len(parts) > 1 else None
 
-        match command:
-            case "/help" | "/h":
-                print(HELP_TEXT)
+        if command in ("/quit", "/q", "/exit"):
+            return False
 
-            case "/model":
-                if arg:
-                    self._session.config.model = arg
-                    self._session._loop._model = arg
-                    print(_dim(f"Model set to {arg}"))
-                else:
-                    print(_dim(f"Current model: {self._session.model_name}"))
+        # Dispatch through command registry
+        result = await self._commands.execute(cmd)
+        if result.error:
+            print(_yellow(result.output))
+        else:
+            if self._session.self_edit:
+                print(_yellow(result.output))
+            else:
+                print(_dim(result.output))
 
-            case "/clear":
-                self._session._loop._messages.clear()
-                print(_dim("Conversation cleared."))
-
-            case "/quit" | "/q" | "/exit":
-                return False
-
-            case _:
-                print(_yellow(f"Unknown command: {command}. Type /help for options."))
+        # Rewire callbacks after session/mode changes
+        action = result.metadata.get("action") if result.metadata else None
+        if action in ("self_edit_on", "self_edit_off", "new_session", "session_resumed"):
+            self._rewire()
 
         return True
 
@@ -283,6 +348,9 @@ class Repl:
         summary = _dim(f"[{turns} turn{'s' if turns != 1 else ''}")
         if usage_parts:
             summary += _dim(f" | tokens: {', '.join(usage_parts)}")
+        tracker = self._session.cost_tracker
+        if tracker.total_cost_usd > 0:
+            summary += _dim(f" | ${tracker.total_cost_usd:.4f}")
         summary += _dim("]")
         print(f"\n{summary}\n")
 
@@ -307,12 +375,24 @@ def parse_args(argv: list[str] | None = None) -> dict:
     parser.add_argument(
         "-m", "--model",
         default=None,
-        help="Model name (default: claude-sonnet-4-20250514)",
+        help="Model name (default: claude-sonnet-4.6)",
     )
     parser.add_argument(
         "-d", "--dir",
         default=None,
         help="Working directory (default: current directory)",
+    )
+    parser.add_argument(
+        "--web",
+        action="store_true",
+        default=False,
+        help="Start as a WebSocket JSON-RPC server (requires fastapi + uvicorn)",
+    )
+    parser.add_argument(
+        "--tui",
+        action="store_true",
+        default=False,
+        help="Start the Textual terminal UI (requires textual)",
     )
     parser.add_argument(
         "message",
@@ -321,13 +401,17 @@ def parse_args(argv: list[str] | None = None) -> dict:
     )
 
     args = parser.parse_args(argv)
-    result = {}
+    result: dict = {}
     if args.provider:
         result["provider"] = args.provider
     if args.model:
         result["model"] = args.model
     if args.dir:
         result["working_dir"] = Path(args.dir).resolve()
+    if args.web:
+        result["mode"] = "web"
+    elif args.tui:
+        result["mode"] = "tui"
     if args.message:
         result["initial_message"] = " ".join(args.message)
     return result
@@ -337,8 +421,24 @@ async def async_main(argv: list[str] | None = None) -> None:
     """Async entry point."""
     parsed = parse_args(argv)
     initial_message = parsed.pop("initial_message", None)
+    mode = parsed.pop("mode", None)
 
     config = Config.load(**parsed)
+
+    if mode == "web":
+        from taui.server.app import serve
+        serve(config.working_dir, config=config)
+        return
+
+    if mode == "tui":
+        try:
+            from taui.tui import run_tui
+        except ImportError:
+            print("TUI requires the 'textual' package: pip install textual", file=sys.stderr)
+            return
+        run_tui(config)
+        return
+
     session = await Session.create(config)
 
     if initial_message:

@@ -13,12 +13,41 @@ taui/
 ├── __init__.py              # Package marker
 ├── __main__.py              # `python -m taui` entry → cli.main()
 ├── cli.py                   # CLI REPL, arg parsing, display callbacks
-├── config.py                # Runtime Config dataclass, system prompt
+├── config.py                # Runtime Config dataclass
+├── cost.py                  # CostTracker: per-session token/cost accounting
+├── prompt_builder.py        # SystemPromptBuilder: structured prompt + instruction discovery
 ├── session.py               # Session — wires provider + tools + agent loop
+├── tui.py                   # Textual terminal UI (opt-in --tui)
 │
 ├── agent/
 │   ├── __init__.py           # Re-exports AgentLoop, AgentState
+│   ├── context.py            # Compaction: compact_messages(), token estimation
 │   └── loop.py               # AgentLoop: think → tool → observe cycle
+│
+├── commands/
+│   ├── __init__.py           # Re-exports CommandRegistry, CommandResult
+│   ├── registry.py           # CommandRegistry: slash command dispatch
+│   └── builtins.py           # Built-in commands: help, cost, clear, model, compact, extensions
+│
+├── extensions/
+│   └── __init__.py           # ExtensionRegistry: discover + load .py extensions
+│
+├── lsp/
+│   ├── __init__.py           # Re-exports LspManager, LspClient, LspError, types
+│   ├── client.py             # LspClient: single LSP server subprocess over stdio JSON-RPC
+│   ├── manager.py            # LspManager: per-language lifecycle, high-level operations
+│   └── types.py              # Position, Range, Location, Diagnostic, SymbolInfo, HoverResult
+│
+├── mcp/
+│   └── __init__.py           # McpClient, McpManager, McpTool (MCP protocol)
+│
+├── server/
+│   ├── __init__.py           # Re-exports protocol types
+│   ├── app.py                # FastAPI app factory, serve() launcher (opt-in --web)
+│   └── protocol.py           # JSON-RPC 2.0 parse/format helpers
+│
+├── skills/
+│   └── __init__.py           # SkillRegistry: discover SKILL.md packages
 │
 ├── store/
 │   ├── __init__.py           # Re-exports Store, StreamClient, Event, EventType
@@ -26,17 +55,28 @@ taui/
 │   ├── store.py              # Store: SQLite append-only event log
 │   └── stream.py             # StreamClient: high-level read/write/tail
 │
+├── symbols/
+│   ├── __init__.py           # Re-exports SymbolIndexer, SymbolEntry
+│   ├── indexer.py            # AST-based Python symbol indexer
+│   └── models.py             # SymbolEntry dataclass
+│
 ├── tools/
 │   ├── __init__.py           # Re-exports
 │   ├── base.py               # Tool protocol, ToolResult, ToolCategory enum
 │   ├── registry.py           # ToolRegistry: named collection + schema export
 │   ├── executor.py           # ToolExecutor: policy gate + dispatch
 │   └── builtins/
-│       ├── __init__.py       # register_builtins() → registers all 6 tools
+│       ├── __init__.py       # register_builtins() → registers all 12 tools
 │       ├── common.py         # Shared: resolve_path, is_binary, suggest_similar, truncate, SKIP_DIRS
 │       ├── files.py          # ReadTool, WriteTool, GlobTool, GrepTool
 │       ├── edit.py           # EditTool: search-and-replace with fuzzy matching
-│       └── bash.py           # BashTool: sandboxed shell execution
+│       ├── bash.py           # BashTool: sandboxed shell execution
+│       ├── git.py            # GitTool: git operations (status, diff, commit, etc.)
+│       ├── memory.py         # MemoryTool: persistent cross-session knowledge
+│       ├── question.py       # QuestionTool: ask user for clarification
+│       ├── sub_agent.py      # SubAgentTool: spawn child agent loops
+│       ├── skills.py         # SkillsTool: discover/load/unload skills
+│       └── mcp.py            # McpTool: connect/call external MCP servers
 │
 └── llm_provider/
     ├── __init__.py
@@ -67,6 +107,8 @@ User types message
         │
         ▼
     session.Session.send(message)
+        │
+        ├── loop.run(user_message)
         │
         ▼
     agent.AgentLoop.run(user_message)
@@ -111,7 +153,7 @@ User types message
 @dataclass
 class Config:
     provider: str = "copilot"              # "copilot" | "codex"
-    model: str = "claude-sonnet-4-20250514"
+    model: str = "claude-sonnet-4.6"
     system_prompt: str = DEFAULT_SYSTEM_PROMPT
     max_turns: int = 50
     working_dir: Path = Path.cwd()
@@ -150,6 +192,7 @@ class Session:
         # 8. Return Session wrapping everything
 
     async def send(self, message: str) -> RunResult
+        # Runs loop, records cost from each turn's usage via CostTracker
     async def close(self) -> None
 ```
 
@@ -168,19 +211,22 @@ which triggers the OAuth flow interactively if no saved credentials exist.
 class Repl:
     def __init__(self, session: Session)
         # Wires callbacks: on_tool_call, on_tool_result, on_approval
+        # Wires question tool's _ask callback
+        # Builds slash command registry
 
     async def run(self) -> None          # Main REPL loop
     def _print_banner(self) -> None      # Provider/model/cwd header
     def _prompt(self) -> str             # Multiline input (trailing \)
-    def _handle_command(cmd) -> bool     # /help /model /clear /quit
-    async def _send(message) -> None     # Send to agent, display result
+    async def _handle_command(cmd) -> bool  # Dispatch to CommandRegistry; /quit handled directly
+    async def _send(message) -> None     # Send to agent, display result + cost
 
     # Agent loop callbacks:
     async def _on_tool_call(call_id, name, arguments)     # "▸ read(src/main.py)"
     async def _on_tool_result(call_id, name, content, is_error)  # Compact result
     async def _on_approval(call_id, name, arguments) -> bool     # "Allow? [y/N]"
+    async def _ask_question(question, options) -> str | None     # Interactive question prompt
     @staticmethod
-    def _format_args(name, arguments) -> str  # Tool-specific arg summary
+    def _format_args(name, arguments) -> str  # Tool-specific arg summary (read, write, edit, glob, grep, bash, git, question)
 ```
 
 **Arg parsing**: `parse_args(argv)` returns a dict with optional keys:
@@ -192,6 +238,31 @@ Also: `python -m taui` → `__main__.py` → `cli.main()`.
 
 **Color helpers**: `_dim`, `_bold`, `_green`, `_yellow`, `_red`, `_cyan`.
 Auto-detect TTY via `_supports_color()`. All return plain text if no TTY.
+
+---
+
+### `taui/agent/context.py` — Context Compaction
+
+```python
+DEFAULT_MAX_INPUT_TOKENS = 180_000
+COMPACTION_SOFT_RATIO = 0.80
+COMPACTION_HARD_RATIO = 0.90
+
+def estimate_message_tokens(msg: Message) -> int
+    # ~4 chars per token, includes content + tool_calls + metadata
+
+def estimate_total_tokens(messages: list[Message]) -> int
+
+def compact_messages(messages, max_input_tokens, soft_ratio, hard_ratio) -> int
+    # Phase 1: drop oldest droppable until under soft limit
+    # Phase 2: if still over hard limit, aggressive dropping
+    # Preserves: latest system, latest user, unresolved tool calls
+    # Inserts summary marker after compaction
+    # Returns: number of messages removed
+```
+
+**Integration**: `AgentLoop._maybe_compact()` calls `compact_messages()` before
+each LLM turn when estimated tokens exceed 80% of budget.
 
 ---
 
@@ -476,12 +547,160 @@ class BashTool:
     # SIGTERM→SIGKILL timeout escalation, output truncation via common.truncate()
 ```
 
+#### `git.py` — Git Operations
+
+```python
+class GitTool:
+    name = "git"
+    category = GIT
+    # Read ops: status, diff, log, show, blame, branch_list, branch_current, stash_list
+    # Write ops: commit, add, checkout, stash_push, stash_pop
+    # All operations via asyncio subprocess with 30s timeout and 50KB output limit
+    # Takes operation: str + args: dict — dispatches to per-op handlers
+```
+
+#### `question.py` — User Clarification
+
+```python
+class QuestionTool:
+    name = "question"
+    category = QUESTION
+    # Parameters: question (required), options (optional list)
+    # Uses _ask callback: async (question, options) -> answer | None
+    # CLI wires _ask to interactive prompt. Returns "best judgment" if no callback.
+```
+
+#### `memory.py` — Cross-Session Knowledge
+
+```python
+class MemoryTool:
+    name = "memory"
+    category = MEMORY
+    # Operations: save, read, list, delete
+    # Stores entries as .md files in .taui/memory/ within the workspace
+    # Path traversal prevention via key sanitization
+    # Keys are simple names (e.g. "build-commands", "architecture-notes")
+```
+
 #### `__init__.py`
 
 ```python
 def register_builtins(registry: ToolRegistry) -> None
-    # Registers: ReadTool, WriteTool, EditTool, GlobTool, GrepTool, BashTool
+    # Registers: ReadTool, WriteTool, EditTool, GlobTool, GrepTool,
+    #            BashTool, GitTool, MemoryTool, QuestionTool
 ```
+
+---
+
+### `taui/cost.py` — Cost Tracker
+
+```python
+def estimate_cost(model: str, input_tokens: int, output_tokens: int) -> float
+    # Pricing table lookup (exact → prefix → default)
+
+@dataclass
+class TurnRecord:
+    model: str; input_tokens: int; output_tokens: int; cost_usd: float; timestamp: float
+
+@dataclass
+class CostTracker:
+    def record(*, model, input_tokens, output_tokens, cost_usd=None) -> TurnRecord
+    def summary() -> str          # "tokens: 1,000in / 500out | cost: $0.0120 | turns: 2"
+    def to_dict() -> dict
+    # Running totals: total_input_tokens, total_output_tokens, total_cost_usd, turn_count
+```
+
+**Integration**: `Session.send()` records cost from each turn's usage data.
+CLI displays cumulative cost in the turn summary. `/cost` command shows full summary.
+
+---
+
+### `taui/commands/` — Slash Commands
+
+```python
+# registry.py
+@dataclass
+class CommandContext:
+    raw_input: str; args: list[str]; extras: dict
+
+@dataclass
+class CommandResult:
+    output: str; error: bool; metadata: dict
+    @classmethod ok(output, **metadata); fail(output, **metadata)
+
+class SlashCommand(Protocol):
+    name: str; description: str
+    async def execute(ctx: CommandContext) -> CommandResult
+
+class CommandRegistry:
+    def register(command: SlashCommand)
+    def alias(alias: str, command_name: str)
+    def get(name: str) -> SlashCommand | None
+    async def execute(raw_input: str) -> CommandResult
+    def help_text() -> str
+
+# builtins.py — HelpCommand, CostCommand, CompactCommand, ClearCommand, ModelCommand
+def register_builtins(registry, *, get_session=None, get_tracker=None)
+    # Aliases: /h → /help, /? → /help
+```
+
+**CLI integration**: `Repl._build_commands()` creates the registry with lambdas
+for session/tracker access. `/quit` and `/exit` are handled directly in the REPL
+loop before command dispatch.
+
+---
+
+### `taui/prompt_builder.py` — System Prompt Construction
+
+Template-based prompt builder. The system prompt is a single template string
+with `{variable}` placeholders substituted at render time.
+
+```python
+DEFAULT_TEMPLATE = """
+You are an expert coding assistant operating inside taui, a coding agent
+harness. You help users by reading files, executing commands, editing code,
+and writing new files.
+# Available tools
+{tools}
+# Guidelines
+{guidelines}
+# Environment
+- Working directory: {cwd}
+- Date: {date}
+- Platform: {platform}
+{git_status}{project_instructions}
+"""
+
+def render_template(template: str, variables: dict[str, str]) -> str
+    # Simple {key} → value substitution. Unknown vars left as-is.
+
+class SystemPromptBuilder:
+    def __init__(*, template=None, max_total_tokens=None)
+    def with_project_context(ctx) -> self     # Injects cwd, date, git, instructions
+    def with_tools(registry) -> self          # Builds tool snippets + adaptive guidelines
+    def with_tool_names(names) -> self        # Simple comma-separated {tools}
+    def set(key, value) -> self               # Sets any {variable}
+    def add_section(key, content, ...) -> self # Priority-managed extra section
+    def append(section: str) -> self          # Raw text after everything
+    def remove_section(key: str) -> self
+    def build() -> list[str]
+    def render() -> str
+```
+
+**Template variables**: `{tools}`, `{guidelines}`, `{cwd}`, `{date}`,
+`{platform}`, `{git_status}`, `{project_instructions}`.
+
+**Tool snippets**: `with_tools(registry)` generates `- name: description` lines.
+
+**Adaptive guidelines**: Built from `_build_guidelines(registry)` — core rules +
+tool-aware rules (e.g. "prefer grep over bash") + per-tool guidelines + safety.
+
+**Custom template**: Place `.taui/system_prompt.md` in project root to override.
+
+**Integration**: `Session.create()` builds prompt via
+`SystemPromptBuilder().with_project_context(ctx).with_tools(registry).render()`.
+
+See `docs/system-prompt.md` for full documentation.
 
 ---
 
@@ -650,13 +869,20 @@ Every agent action is appended to an SQLite event log. This provides:
 ```
 tests/
 ├── test_agent.py         # AgentLoop: simple responses, tool calls, max turns, errors
-├── test_builtins.py      # ReadTool, WriteTool, GlobTool, GrepTool, BashTool, register_builtins
+├── test_builtins.py      # ReadTool, WriteTool, GlobTool, GrepTool, BashTool, GitTool, MemoryTool, QuestionTool, register_builtins
 ├── test_cli.py           # parse_args
 ├── test_common.py        # resolve_path, is_binary, suggest_similar, truncate, SKIP_DIRS
 ├── test_config.py        # Config defaults, overrides, load
 ├── test_edit.py          # EditTool: exact/fuzzy/multi-edit, overlap, errors, find_match
 ├── test_session.py       # Session wiring with mock provider, multi-message, close
 ├── test_store.py         # Store lifecycle, CRUD, append, read, live-tail, StreamClient
+├── test_commands.py      # CommandRegistry, built-in commands
+├── test_context.py       # Compaction: compact_messages, token estimation
+├── test_cost.py          # CostTracker, estimate_cost
+├── test_git.py           # GitTool operations
+├── test_memory.py        # MemoryTool: save/read/list/delete, path traversal
+├── test_prompt_builder.py # SystemPromptBuilder, instruction discovery, budget fit
+├── test_question.py      # QuestionTool with mock callbacks
 └── test_tools.py         # ToolRegistry, ToolPolicy, ToolExecutor with mock tools
 ```
 

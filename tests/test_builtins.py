@@ -256,12 +256,18 @@ class TestRegisterBuiltins:
         assert "glob" in reg
         assert "grep" in reg
         assert "bash" in reg
-        assert len(reg) == 6
+        assert "git" in reg
+        assert "question" in reg
+        assert "memory" in reg
+        assert "sub_agent" in reg
+        assert "skills" in reg
+        assert "mcp" in reg
+        assert len(reg) == 12
 
     def test_schemas_exported(self):
         reg = ToolRegistry()
         register_builtins(reg)
         schemas = reg.schemas()
-        assert len(schemas) == 6
+        assert len(schemas) == 12
         names = {s["function"]["name"] for s in schemas}
-        assert names == {"read", "write", "edit", "glob", "grep", "bash"}
+        assert names == {"read", "write", "edit", "glob", "grep", "bash", "git", "question", "memory", "skills", "sub_agent", "mcp"}
