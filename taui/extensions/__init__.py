@@ -2,7 +2,7 @@
 taui.extensions — extension discovery, loading, and management.
 
 Extensions are Python files that register additional tools, commands,
-or prompt fragments. They follow a simple convention: each extension
+hooks, or prompt fragments. They follow a simple convention: each extension
 is a ``.py`` file with a ``register()`` entry point.
 
 Extension locations (later overrides earlier for same-named extensions):
@@ -15,13 +15,17 @@ Extension locations (later overrides earlier for same-named extensions):
 
 Each extension module must define::
 
-    def register(tools, commands):
+    def register(tools, commands, hooks):
         '''Register extension components.
 
         Args:
             tools: ToolRegistry — call tools.register(my_tool)
             commands: CommandRegistry — call commands.register(my_cmd)
+            hooks: HookRegistry — call hooks.prompt(fn), hooks.status(fn), etc.
         '''
+
+The ``hooks`` parameter was added later; extensions that only accept
+``(tools, commands)`` continue to work unchanged.
 
 Extensions are isolated from core — a broken extension logs a warning
 but does not crash the agent.  Use ``--no-extensions`` to skip loading.
@@ -95,14 +99,14 @@ class ExtensionRegistry:
             )
 
     def load_all(
-        self, tools: Any = None, commands: Any = None
+        self, tools: Any = None, commands: Any = None, hooks: Any = None,
     ) -> list[str]:
         """Load all enabled extensions. Returns names of loaded extensions."""
         loaded: list[str] = []
         for ext in self._extensions.values():
             if not ext.enabled:
                 continue
-            if self._load_one(ext, tools, commands):
+            if self._load_one(ext, tools, commands, hooks):
                 loaded.append(ext.name)
         return loaded
 
@@ -111,6 +115,7 @@ class ExtensionRegistry:
         ext: Extension,
         tools: Any = None,
         commands: Any = None,
+        hooks: Any = None,
     ) -> bool:
         """Load a single extension. Returns True on success."""
         if ext.loaded:
@@ -124,7 +129,14 @@ class ExtensionRegistry:
                     "Extension '%s' has no register() function", ext.name
                 )
                 return False
-            register_fn(tools=tools, commands=commands)
+            # Try new signature (tools, commands, hooks) first;
+            # fall back to legacy (tools, commands) for compat.
+            import inspect
+            sig = inspect.signature(register_fn)
+            if len(sig.parameters) >= 3 or "hooks" in sig.parameters:
+                register_fn(tools=tools, commands=commands, hooks=hooks)
+            else:
+                register_fn(tools=tools, commands=commands)
             ext.loaded = True
             ext.error = None
             logger.info("Loaded extension: %s (%s)", ext.name, ext.scope)

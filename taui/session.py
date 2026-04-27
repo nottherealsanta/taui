@@ -18,6 +18,7 @@ from taui.agent.loop import AgentLoop, Message, RunResult
 from taui.config import Config
 from taui.cost import CostTracker
 from taui.extensions import ExtensionRegistry
+from taui.hooks import HookRegistry
 from taui.llm_provider.auth import get_credentials
 from taui.llm_provider.providers import CodexProvider, CopilotProvider
 from taui.mcp import McpManager
@@ -68,6 +69,7 @@ class Session:
         loop: AgentLoop,
         cost_tracker: CostTracker | None = None,
         ext_registry: ExtensionRegistry | None = None,
+        hooks: HookRegistry | None = None,
         session_id: str | None = None,
     ) -> None:
         self.config = config
@@ -79,6 +81,7 @@ class Session:
         self._loop = loop
         self.cost_tracker = cost_tracker or CostTracker()
         self._ext_registry = ext_registry
+        self.hooks = hooks or HookRegistry()
         self.session_id = session_id or uuid4().hex[:12]
         self.self_edit = False
         self._system_prompt: str = ""
@@ -147,7 +150,13 @@ class Session:
         # Load extensions
         ext_registry = ExtensionRegistry(config.working_dir)
         ext_registry.discover()
-        ext_registry.load_all(tools=registry, commands=None)
+        hooks = HookRegistry()
+        ext_registry.load_all(tools=registry, commands=None, hooks=hooks)
+
+        # Let extensions transform the system prompt
+        if hooks.has("system_prompt"):
+            import asyncio
+            system_prompt = await hooks.transform("system_prompt", system_prompt, None)
 
         # Agent
         loop = AgentLoop(
@@ -176,6 +185,7 @@ class Session:
             stream=stream,
             loop=loop,
             ext_registry=ext_registry,
+            hooks=hooks,
         )
         session._system_prompt = system_prompt
         session._self_edit_prompt = _SELF_EDIT_SYSTEM_PROMPT
@@ -187,8 +197,14 @@ class Session:
 
     async def send(self, message: str) -> RunResult:
         """Send a user message and get the agent's response."""
+        # Pipeline hook: let extensions preprocess the message
+        message = await self.hooks.transform("before_send", message, self)
+
         result = await self._loop.run(message)
         self._message_count += 1
+
+        # Pipeline hook: let extensions postprocess the result
+        result = await self.hooks.transform("after_result", result, self)
         # Record cost from usage
         for tr in result.turn_results:
             if tr.usage:
@@ -235,9 +251,15 @@ class Session:
             mode="self-edit" if self.self_edit else "normal",
         )
 
+        # Observer hook
+        await self.hooks.run("on_session_start", self)
+
     async def toggle_self_edit(self) -> bool:
         """Toggle self-edit mode. Returns new state."""
         self.self_edit = not self.self_edit
+
+        # Set/clear write guards on file-write tools
+        self._apply_write_guard()
 
         prompt = self._self_edit_prompt if self.self_edit else self._system_prompt
 
@@ -258,6 +280,9 @@ class Session:
             self.session_id,
             mode="self-edit" if self.self_edit else "normal",
         )
+
+        # Observer hook
+        await self.hooks.run("on_mode_change", "self-edit" if self.self_edit else "normal", self)
 
         return self.self_edit
 
@@ -339,6 +364,29 @@ class Session:
     def working_dir(self) -> Path:
         return self.config.working_dir
 
+    def _apply_write_guard(self) -> None:
+        """Set or clear the write guard on file-write tools."""
+        guard = self._self_edit_guard if self.self_edit else None
+        for name in ("write", "edit"):
+            if name in self._registry:
+                tool = self._registry.get(name)
+                if hasattr(tool, "_path_guard"):
+                    tool._path_guard = guard
+
+    def _self_edit_guard(self, path: Path) -> Any:
+        """Reject writes outside .taui/ when in self-edit mode."""
+        from taui.tools.base import ToolResult
+        taui_dir = self.config.working_dir / ".taui"
+        try:
+            path.resolve().relative_to(taui_dir.resolve())
+        except ValueError:
+            return ToolResult.fail(
+                f"Self-edit mode: writes are restricted to .taui/ — "
+                f"cannot write to {path}. Create an extension in "
+                f".taui/extensions/ instead."
+            )
+        return None
+
 
 # ── Self-edit system prompt ────────────────────────────────────────────────────
 
@@ -346,9 +394,13 @@ _SELF_EDIT_SYSTEM_PROMPT = """\
 You are a taui self-edit agent. You can create, modify, or delete taui \
 extensions — Python files in .taui/extensions/.
 
+IMPORTANT: You can ONLY write to .taui/ paths. You cannot modify taui source \
+code. All customization must be done through extensions.
+
 ## Extension Convention
 
-Every extension is a single .py file with a `register(tools, commands)` function.
+Every extension is a single .py file with a `register(tools, commands, hooks)` \
+function.
 
 ### Tool Extension
 
@@ -377,7 +429,7 @@ class MyTool:
     async def execute(self, arguments: dict[str, Any]) -> ToolResult:
         return ToolResult.ok("result")
 
-def register(tools, commands):
+def register(tools, commands, hooks):
     tools.register(MyTool())
 ```
 
@@ -395,18 +447,78 @@ class MyCommand:
     async def execute(self, ctx: CommandContext) -> CommandResult:
         return CommandResult.ok("output")
 
-def register(tools, commands):
+def register(tools, commands, hooks):
     if commands:
         commands.register(MyCommand())
 ```
 
+### Hook Extension
+
+Hooks let you customize UI and behavior without modifying source code.
+
+```python
+def register(tools, commands, hooks):
+    # UI hooks (sync, return str | None):
+    hooks.prompt(lambda session: "\\033[35m❯ \\033[0m")  # custom prompt
+    hooks.banner(lambda session: "Custom banner line")
+    hooks.status(lambda session: f"msgs: {session._message_count}")
+    hooks.turn_summary(lambda result, session: f"turns: {result.turns}")
+
+    # Pipeline hooks (sync or async, transform data):
+    hooks.before_send(lambda msg, session: msg)  # preprocess user input
+    hooks.after_result(lambda result, session: result)  # postprocess output
+    hooks.system_prompt(lambda prompt, session: prompt + "\\nExtra instructions.")
+
+    # Observer hooks (sync or async, side-effects):
+    hooks.on_tool_call(lambda name, args, session: None)
+    hooks.on_tool_result(lambda name, content, is_error, session: None)
+    hooks.on_session_start(lambda session: None)
+    hooks.on_mode_change(lambda mode, session: None)
+
+    # Override hooks (sync or async, first non-None wins):
+    hooks.on_approval(lambda name, args, session: True)  # auto-approve
+
+    # Custom hooks:
+    hooks.add("my_custom_hook", my_fn)
+```
+
+#### Hook Categories
+
+| Hook | Type | Signature | Purpose |
+|------|------|-----------|---------|
+| `prompt` | UI | `(session) -> str` | Override input prompt text |
+| `banner` | UI | `(session) -> str` | Add line to startup banner |
+| `status` | UI | `(session) -> str` | Add status bar segment |
+| `turn_summary` | UI | `(result, session) -> str` | Add to turn summary line |
+| `before_send` | Pipeline | `(message, session) -> message` | Transform user input |
+| `after_result` | Pipeline | `(result, session) -> result` | Transform agent output |
+| `system_prompt` | Pipeline | `(prompt, session) -> prompt` | Modify system prompt |
+| `on_tool_call` | Observer | `(name, args, session)` | Watch tool calls |
+| `on_tool_result` | Observer | `(name, content, is_error, session)` | Watch tool results |
+| `on_session_start` | Observer | `(session)` | New session started |
+| `on_mode_change` | Observer | `(mode, session)` | Mode toggled |
+| `on_approval` | Override | `(name, args, session) -> bool` | Auto-approve/deny tools |
+
+#### Example: Context Length Display
+
+```python
+from taui.agent.context import estimate_total_tokens, DEFAULT_MAX_INPUT_TOKENS
+
+def _ctx_summary(result, session):
+    tokens = estimate_total_tokens(session._loop._messages)
+    pct = int(tokens / DEFAULT_MAX_INPUT_TOKENS * 100)
+    filled = pct // 10
+    bar = "█" * filled + "░" * (10 - filled)
+    return f"ctx: {bar} {pct}%"
+
+def register(tools, commands, hooks):
+    hooks.turn_summary(_ctx_summary)
+```
+
 ## Rules
-- Write files to .taui/extensions/<name>.py (create directory if needed)
+- Write files ONLY to .taui/extensions/<name>.py
 - Read existing extension files before modifying them
 - One extension per file
-- Never modify core taui source files
+- Never modify core taui source files — you literally cannot
 - After writing, tell the user the extension will load on next restart
-
-You also have full access to read and edit files in the workspace. You can \
-help the user build, debug, and improve their taui setup.
 """

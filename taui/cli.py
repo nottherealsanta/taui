@@ -103,6 +103,8 @@ class Repl:
         """Display a tool call as it starts."""
         args_summary = self._format_args(name, arguments)
         print(_cyan(f"  ▸ {name}") + _dim(f"({args_summary})"))
+        # Observer hook
+        await self._session.hooks.run("on_tool_call", name, arguments, self._session)
 
     async def _on_tool_result(
         self, call_id: str, name: str, content: str, is_error: bool
@@ -121,9 +123,16 @@ class Repl:
                         print(_dim(f"    {line[:150]}"))
             else:
                 print(_dim(f"    ({len(lines)} lines)"))
+        # Observer hook
+        await self._session.hooks.run("on_tool_result", name, content, is_error, self._session)
 
     async def _on_approval(self, call_id: str, name: str, arguments: dict) -> bool:
         """Prompt user for tool approval. Returns True if approved."""
+        # Override hook — let extensions auto-approve/deny
+        override = await self._session.hooks.first("on_approval", name, arguments, self._session)
+        if override is not None:
+            return override
+
         args_summary = self._format_args(name, arguments)
         print()
         print(_yellow(f"  ⚠ {name} requires approval"))
@@ -263,13 +272,34 @@ class Repl:
         print()
         print(_bold("taui") + _dim(f"  {provider}/{model}"))
         print(_dim(f"cwd: {cwd}"))
+        # Banner hooks (sync)
+        for fn in self._session.hooks._hooks.get("banner", []):
+            try:
+                line = fn(self._session)
+                if line:
+                    print(_dim(line))
+            except Exception:
+                pass
         print(_dim("Type /help for commands, Ctrl+D to exit."))
         print()
 
     def _prompt(self) -> str:
         """Read user input. Supports multi-line with trailing backslash."""
         try:
-            if self._session.self_edit:
+            # Check for prompt hook override (sync hooks only)
+            prompt_text = None
+            for fn in self._session.hooks._hooks.get("prompt", []):
+                try:
+                    result = fn(self._session)
+                    if result is not None:
+                        prompt_text = result
+                        break
+                except Exception:
+                    pass
+
+            if prompt_text:
+                line = input(prompt_text)
+            elif self._session.self_edit:
                 line = input(_yellow("⚙ > "))
             else:
                 line = input(_green("> "))
@@ -351,6 +381,14 @@ class Repl:
         tracker = self._session.cost_tracker
         if tracker.total_cost_usd > 0:
             summary += _dim(f" | ${tracker.total_cost_usd:.4f}")
+        # Turn summary hooks (sync)
+        for fn in self._session.hooks._hooks.get("turn_summary", []):
+            try:
+                extra = fn(result, self._session)
+                if extra:
+                    summary += _dim(f" | {extra}")
+            except Exception:
+                pass
         summary += _dim("]")
         print(f"\n{summary}\n")
 

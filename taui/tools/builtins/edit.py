@@ -151,6 +151,7 @@ class EditTool:
     )
     category: ToolCategory = ToolCategory.FILE_WRITE
     working_dir: Path = field(default_factory=Path.cwd)
+    _path_guard: Any = None
     guidelines: str = (
         "Keep old_text as small as possible while still being unique in the file. "
         "Include a few lines of context around the change to ensure uniqueness. "
@@ -195,6 +196,11 @@ class EditTool:
             path = resolve_path(self.working_dir, arguments["path"])
         except ValueError as e:
             return ToolResult.fail(str(e))
+
+        if self._path_guard:
+            guard_result = self._path_guard(path)
+            if guard_result is not None:
+                return guard_result
 
         if not path.is_file():
             return ToolResult.fail(f"Not a file: {path}")

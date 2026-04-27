@@ -188,10 +188,13 @@ class TestBuiltinCommands:
     def test_self_edit_system_prompt(self):
         from taui.session import _SELF_EDIT_SYSTEM_PROMPT
 
-        assert "register(tools, commands)" in _SELF_EDIT_SYSTEM_PROMPT
+        assert "register(tools, commands, hooks)" in _SELF_EDIT_SYSTEM_PROMPT
         assert ".taui/extensions/" in _SELF_EDIT_SYSTEM_PROMPT
         assert "ToolResult" in _SELF_EDIT_SYSTEM_PROMPT
         assert "CommandResult" in _SELF_EDIT_SYSTEM_PROMPT
+        assert "hooks.prompt" in _SELF_EDIT_SYSTEM_PROMPT
+        assert "hooks.turn_summary" in _SELF_EDIT_SYSTEM_PROMPT
+        assert "hooks.before_send" in _SELF_EDIT_SYSTEM_PROMPT
 
     async def test_sessions_no_session(self):
         from taui.commands.builtins import register_builtins
@@ -284,3 +287,76 @@ class TestBuiltinCommands:
         result = await reg.execute("/new")
         assert result.error
         assert "No session" in result.output
+
+
+# ═══ Write guard ══════════════════════════════════════════════════════════════
+
+
+class TestSelfEditWriteGuard:
+    def test_guard_allows_taui_dir(self, tmp_path):
+        from taui.session import Session
+        from taui.config import Config
+
+        config = Config(working_dir=tmp_path, provider="copilot", model="test")
+        # Minimal session for testing guard
+        session = Session.__new__(Session)
+        session.config = config
+
+        taui_path = tmp_path / ".taui" / "extensions" / "test.py"
+        taui_path.parent.mkdir(parents=True)
+        result = session._self_edit_guard(taui_path)
+        assert result is None  # None means allowed
+
+    def test_guard_rejects_outside(self, tmp_path):
+        from taui.session import Session
+        from taui.config import Config
+
+        config = Config(working_dir=tmp_path, provider="copilot", model="test")
+        session = Session.__new__(Session)
+        session.config = config
+
+        bad_path = tmp_path / "taui" / "cli.py"
+        result = session._self_edit_guard(bad_path)
+        assert result is not None
+        assert result.error
+        assert "restricted" in result.content.lower()
+
+    async def test_write_tool_with_guard(self, tmp_path):
+        from taui.tools.builtins.files import WriteTool
+        from taui.tools.base import ToolResult
+
+        tool = WriteTool()
+        tool.working_dir = tmp_path
+
+        # Set a guard that rejects everything
+        tool._path_guard = lambda p: ToolResult.fail("blocked")
+        result = await tool.execute({"path": "test.txt", "content": "hi"})
+        assert result.error
+        assert "blocked" in result.content
+
+    async def test_write_tool_without_guard(self, tmp_path):
+        from taui.tools.builtins.files import WriteTool
+
+        tool = WriteTool()
+        tool.working_dir = tmp_path
+        result = await tool.execute({"path": "test.txt", "content": "hi"})
+        assert not result.error
+        assert (tmp_path / "test.txt").read_text() == "hi"
+
+    async def test_edit_tool_with_guard(self, tmp_path):
+        from taui.tools.builtins.edit import EditTool
+        from taui.tools.base import ToolResult
+
+        # Create a file first
+        f = tmp_path / "test.txt"
+        f.write_text("hello world")
+
+        tool = EditTool()
+        tool.working_dir = tmp_path
+        tool._path_guard = lambda p: ToolResult.fail("blocked")
+        result = await tool.execute({
+            "path": "test.txt",
+            "edits": [{"old_text": "hello", "new_text": "hi"}],
+        })
+        assert result.error
+        assert "blocked" in result.content

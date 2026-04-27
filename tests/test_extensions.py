@@ -223,6 +223,38 @@ def register(tools, commands):
         reg.load_all()  # Second call should be no-op
         assert counter_file.read_text().strip() == "1"
 
+    def test_load_extension_with_hooks(self, tmp_path: Path):
+        """Extension with hooks parameter works."""
+        from taui.hooks import HookRegistry
+
+        code = '''
+def register(tools, commands, hooks):
+    hooks.banner(lambda session: "hello from ext")
+'''
+        _make_extension(tmp_path, "hook_ext", code)
+        reg = ExtensionRegistry(tmp_path)
+        reg.discover()
+
+        hooks = HookRegistry()
+        loaded = reg.load_all(hooks=hooks)
+        assert loaded == ["hook_ext"]
+        assert hooks.has("banner")
+        assert hooks.count("banner") == 1
+
+    def test_load_legacy_extension_without_hooks(self, tmp_path: Path):
+        """Extension without hooks parameter still loads fine."""
+        from taui.hooks import HookRegistry
+
+        code = 'def register(tools, commands): pass'
+        _make_extension(tmp_path, "legacy", code)
+        reg = ExtensionRegistry(tmp_path)
+        reg.discover()
+
+        hooks = HookRegistry()
+        loaded = reg.load_all(hooks=hooks)
+        assert loaded == ["legacy"]
+        assert reg.get("legacy").loaded
+
 
 # ═══ ExtensionsCommand ════════════════════════════════════════════════════════
 

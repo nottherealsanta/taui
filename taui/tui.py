@@ -117,12 +117,22 @@ class TauiApp(App[None]):
         p = self._session.provider_name
         m = self._session.model_name
         cwd = self._session.working_dir
+        # Collect status hook segments (sync)
+        extras: list[str] = []
+        for fn in self._session.hooks._hooks.get("status", []):
+            try:
+                seg = fn(self._session)
+                if seg:
+                    extras.append(seg)
+            except Exception:
+                pass
+        extra_str = ("  ·  " + "  ·  ".join(extras)) if extras else ""
         if self._session.self_edit:
-            status.update(f" ⚙ SELF-EDIT  ·  {p}/{m}  ·  {cwd}")
+            status.update(f" ⚙ SELF-EDIT  ·  {p}/{m}  ·  {cwd}{extra_str}")
             status.styles.background = "yellow"
             status.styles.color = "black"
         else:
-            status.update(f" {p}/{m}  ·  {cwd}")
+            status.update(f" {p}/{m}  ·  {cwd}{extra_str}")
             status.styles.background = None
             status.styles.color = None
         self.query_one("#input-bar", Input).focus()
@@ -143,6 +153,8 @@ class TauiApp(App[None]):
         tools = self.query_one("#tools", ToolLog)
         args_short = ", ".join(f"{k}={_trunc(str(v))}" for k, v in arguments.items())
         tools.write(f"[cyan]▸ {name}[/cyan]({args_short})")
+        if self._session:
+            await self._session.hooks.run("on_tool_call", name, arguments, self._session)
 
     async def _on_tool_result(
         self, call_id: str, name: str, content: str, is_error: bool
@@ -159,6 +171,8 @@ class TauiApp(App[None]):
                         tools.write(f"  [dim]{line[:150]}[/dim]")
             else:
                 tools.write(f"  [dim]({len(lines)} lines)[/dim]")
+        if self._session:
+            await self._session.hooks.run("on_tool_result", name, content, is_error, self._session)
 
     async def _on_text(self, text: str) -> None:
         pass  # shown after run completes
@@ -206,6 +220,14 @@ class TauiApp(App[None]):
             tracker = self._session.cost_tracker
             if tracker.total_cost_usd > 0:
                 summary += f" | ${tracker.total_cost_usd:.4f}"
+            # Turn summary hooks (sync)
+            for fn in self._session.hooks._hooks.get("turn_summary", []):
+                try:
+                    extra = fn(result, self._session)
+                    if extra:
+                        summary += f" | {extra}"
+                except Exception:
+                    pass
             summary += "][/dim]"
             messages.write(summary)
         except Exception as exc:

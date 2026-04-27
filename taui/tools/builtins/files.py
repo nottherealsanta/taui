@@ -140,6 +140,7 @@ class WriteTool:
     )
     category: ToolCategory = ToolCategory.FILE_WRITE
     working_dir: Path = field(default_factory=Path.cwd)
+    _path_guard: Any = None
     guidelines: str = (
         "Use `write` for creating new files or replacing entire file contents. "
         "For targeted changes to existing files, prefer `edit` instead."
@@ -168,6 +169,11 @@ class WriteTool:
             path = resolve_path(self.working_dir, arguments["path"])
         except ValueError as e:
             return ToolResult.fail(str(e))
+
+        if self._path_guard:
+            guard_result = self._path_guard(path)
+            if guard_result is not None:
+                return guard_result
 
         content = arguments.get("content", "")
 
