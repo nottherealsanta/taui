@@ -32,6 +32,8 @@ Self-edits are treated as extensions, not patches to the core. When you modify T
 
 If the agent breaks something through `/i`, you can always fall back to the CLI with extensions disabled (`taui --no-extensions`) and fix or remove the offending extension.
 
+See [self-edit.md](./_/self-edit.md) for the full extension system design — scopes, lifecycle, loading order, and what self-edit can and cannot touch.
+
 ## Core Capabilities
 
 - Sub-agents can be spawned for focused sub-tasks; each child completes by calling the sub-agent-only return-to-parent tool with required context, and the parent waits for that handoff before continuing.
@@ -65,6 +67,10 @@ Taui is meant to be a coding interface you can evolve, not just use. The default
 See [future.md](future.md) for ideas the architecture can support but that are not current requirements.
 
 ---
+
+## Self-Edit & Extensions
+
+See [self-edit.md](self-edit.md) for the extension system — how `/i` works, extension scopes, lifecycle, and boundaries.
 
 ## Architecture
 

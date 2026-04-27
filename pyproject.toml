@@ -5,6 +5,7 @@ description = "Agentic coding interface you can reshape"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "aiosqlite>=0.20",
     "httpx>=0.28",
 ]
 
@@ -13,7 +14,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project.scripts]
-taui = "taui.__main__:main"
+taui = "taui.cli:main"
 
 [tool.ruff]
 line-length = 100
@@ -21,3 +22,6 @@ target-version = "py313"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
