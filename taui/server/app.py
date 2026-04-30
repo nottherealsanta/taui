@@ -27,9 +27,11 @@ def create_app(
     dependency is only required when ``--web`` is actually used.
     """
     from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+    from fastapi.responses import HTMLResponse
 
     from taui.config import Config
     from taui.session import Session
+    from .frontend import INDEX_HTML
     from .protocol import (
         JsonRpcProtocolError,
         error_message,
@@ -65,6 +67,10 @@ def create_app(
     @app.get("/healthz")
     async def healthz() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/", response_class=HTMLResponse)
+    async def index():
+        return INDEX_HTML
 
     @app.websocket("/ws")
     async def ws_endpoint(websocket: WebSocket) -> None:
@@ -137,13 +143,13 @@ def create_app(
             return {
                 "status": "ready",
                 "session_id": _session.session_id,
-                "self_edit": _session.self_edit,
+                "extensions_mode": _session.extensions_mode,
             }
         elif method == "session/new":
             await _session.new_session()
             return {
                 "session_id": _session.session_id,
-                "mode": "self-edit" if _session.self_edit else "normal",
+                "mode": "extensions" if _session.extensions_mode else "normal",
             }
         elif method == "session/list":
             sessions = await _session.list_sessions()
@@ -159,14 +165,17 @@ def create_app(
                 raise JsonRpcProtocolError(-32602, f"Session not found: {sid}")
             return {
                 "session_id": _session.session_id,
-                "self_edit": _session.self_edit,
+                "extensions_mode": _session.extensions_mode,
             }
-        elif method == "session/toggleSelfEdit":
-            is_on = await _session.toggle_self_edit()
+        elif method == "session/toggleExtensions":
+            is_on = await _session.toggle_extensions_mode()
             return {
-                "self_edit": is_on,
+                "extensions_mode": is_on,
                 "session_id": _session.session_id,
             }
+        elif method == "extensions/reload":
+            loaded = _session.reload_extensions()
+            return {"loaded": loaded}
         else:
             raise JsonRpcProtocolError(METHOD_NOT_FOUND, f"Unknown method: {method}")
 

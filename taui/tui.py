@@ -12,6 +12,7 @@ import asyncio
 from pathlib import Path
 from typing import Any
 
+from rich.markdown import Markdown as RichMarkdown
 from textual import on, work
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
@@ -28,20 +29,7 @@ class MessageLog(RichLog):
 
     DEFAULT_CSS = """
     MessageLog {
-        border: solid $accent;
         height: 1fr;
-    }
-    """
-
-
-class ToolLog(RichLog):
-    """Tool call and result display."""
-
-    DEFAULT_CSS = """
-    ToolLog {
-        border: solid $secondary;
-        height: 10;
-        dock: bottom;
     }
     """
 
@@ -89,7 +77,6 @@ class TauiApp(App[None]):
         yield Header()
         with Vertical(id="main"):
             yield MessageLog(id="messages", wrap=True, highlight=True, markup=True)
-            yield ToolLog(id="tools", wrap=True, highlight=True, markup=True)
         yield StatusBar(id="status")
         yield Input(placeholder="Type a message… (/help for commands)", id="input-bar")
         yield Footer()
@@ -127,8 +114,8 @@ class TauiApp(App[None]):
             except Exception:
                 pass
         extra_str = ("  ·  " + "  ·  ".join(extras)) if extras else ""
-        if self._session.self_edit:
-            status.update(f" ⚙ SELF-EDIT  ·  {p}/{m}  ·  {cwd}{extra_str}")
+        if self._session.extensions_mode:
+            status.update(f" ⚙ EXTENSIONS  ·  {p}/{m}  ·  {cwd}{extra_str}")
             status.styles.background = "yellow"
             status.styles.color = "black"
         else:
@@ -150,27 +137,27 @@ class TauiApp(App[None]):
                 tool._ask = self._on_question
 
     async def _on_tool_call(self, call_id: str, name: str, arguments: dict) -> None:
-        tools = self.query_one("#tools", ToolLog)
+        messages = self.query_one("#messages", MessageLog)
         args_short = ", ".join(f"{k}={_trunc(str(v))}" for k, v in arguments.items())
-        tools.write(f"[cyan]▸ {name}[/cyan]({args_short})")
+        messages.write(f"[cyan]▸ {name}[/cyan]({args_short})")
         if self._session:
             await self._session.hooks.run("on_tool_call", name, arguments, self._session)
 
     async def _on_tool_result(
         self, call_id: str, name: str, content: str, is_error: bool
     ) -> None:
-        tools = self.query_one("#tools", ToolLog)
+        messages = self.query_one("#messages", MessageLog)
         if is_error:
             first = content.split("\n")[0][:120]
-            tools.write(f"[red]✗ {name}: {first}[/red]")
+            messages.write(f"[red]✗ {name}: {first}[/red]")
         else:
             lines = content.split("\n")
             if len(lines) <= 3:
                 for line in lines:
                     if line.strip():
-                        tools.write(f"  [dim]{line[:150]}[/dim]")
+                        messages.write(f"  [dim]{line[:150]}[/dim]")
             else:
-                tools.write(f"  [dim]({len(lines)} lines)[/dim]")
+                messages.write(f"  [dim]({len(lines)} lines)[/dim]")
         if self._session:
             await self._session.hooks.run("on_tool_result", name, content, is_error, self._session)
 
@@ -213,7 +200,7 @@ class TauiApp(App[None]):
         try:
             result = await self._session.send(text)
             if result.text:
-                messages.write(result.text)
+                messages.write(RichMarkdown(result.text))
 
             turns = result.turns
             summary = f"[dim][{turns} turn{'s' if turns != 1 else ''}"
@@ -240,6 +227,16 @@ class TauiApp(App[None]):
         parts = cmd.strip().split(maxsplit=1)
         command = parts[0].lower()
         if command in ("/quit", "/q", "/exit"):
+            # In extensions mode, /q toggles extensions off instead of exiting
+            if command == "/q" and self._session and self._session.extensions_mode:
+                result = await self._commands.execute("/i")
+                if self._session.extensions_mode:
+                    messages.write(f"[yellow]{result.output}[/yellow]")
+                else:
+                    messages.write(f"[dim]{result.output}[/dim]")
+                self._wire_callbacks()
+                self._update_status()
+                return
             self.exit()
             return
         if command == "/clear":
@@ -250,14 +247,16 @@ class TauiApp(App[None]):
         result = await self._commands.execute(cmd)
         if result.error:
             messages.write(f"[yellow]{result.output}[/yellow]")
-        elif self._session and self._session.self_edit:
+        elif self._session and self._session.extensions_mode:
             messages.write(f"[yellow]{result.output}[/yellow]")
         else:
             messages.write(f"[dim]{result.output}[/dim]")
 
         # Rewire after mode/session changes
         action = result.metadata.get("action") if result.metadata else None
-        if action in ("self_edit_on", "self_edit_off", "new_session", "session_resumed"):
+        if action == "extensions_on":
+            messages.write("[dim]/q to quit[/dim]")
+        if action in ("extensions_on", "extensions_off", "new_session", "session_resumed"):
             self._wire_callbacks()
             self._update_status()
 

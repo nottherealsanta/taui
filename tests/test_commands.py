@@ -136,14 +136,14 @@ class TestBuiltinCommands:
         assert "100" in result.output
         assert "50" in result.output
 
-    async def test_self_edit_toggle_on(self):
+    async def test_extensions_toggle_on(self):
         from taui.commands.builtins import register_builtins
 
         class FakeSession:
-            self_edit = False
-            async def toggle_self_edit(self):
-                self.self_edit = not self.self_edit
-                return self.self_edit
+            extensions_mode = False
+            async def toggle_extensions_mode(self):
+                self.extensions_mode = not self.extensions_mode
+                return self.extensions_mode
 
         session = FakeSession()
         reg = CommandRegistry()
@@ -152,14 +152,14 @@ class TestBuiltinCommands:
         assert not result.error
         assert "ON" in result.output
 
-    async def test_self_edit_toggle_off(self):
+    async def test_extensions_toggle_off(self):
         from taui.commands.builtins import register_builtins
 
         class FakeSession:
-            self_edit = True
-            async def toggle_self_edit(self):
-                self.self_edit = not self.self_edit
-                return self.self_edit
+            extensions_mode = True
+            async def toggle_extensions_mode(self):
+                self.extensions_mode = not self.extensions_mode
+                return self.extensions_mode
 
         session = FakeSession()
         reg = CommandRegistry()
@@ -168,7 +168,7 @@ class TestBuiltinCommands:
         assert not result.error
         assert "OFF" in result.output
 
-    async def test_self_edit_no_session(self):
+    async def test_extensions_no_session(self):
         from taui.commands.builtins import register_builtins
 
         reg = CommandRegistry()
@@ -177,7 +177,7 @@ class TestBuiltinCommands:
         assert result.error
         assert "No session" in result.output
 
-    async def test_self_edit_in_help(self):
+    async def test_extensions_in_help(self):
         from taui.commands.builtins import register_builtins
 
         reg = CommandRegistry()
@@ -185,16 +185,16 @@ class TestBuiltinCommands:
         result = await reg.execute("/help")
         assert "/i" in result.output
 
-    def test_self_edit_system_prompt(self):
-        from taui.session import _SELF_EDIT_SYSTEM_PROMPT
+    def test_extensions_system_prompt(self):
+        from taui.session import _EXTENSIONS_SYSTEM_PROMPT
 
-        assert "register(tools, commands, hooks)" in _SELF_EDIT_SYSTEM_PROMPT
-        assert ".taui/extensions/" in _SELF_EDIT_SYSTEM_PROMPT
-        assert "ToolResult" in _SELF_EDIT_SYSTEM_PROMPT
-        assert "CommandResult" in _SELF_EDIT_SYSTEM_PROMPT
-        assert "hooks.prompt" in _SELF_EDIT_SYSTEM_PROMPT
-        assert "hooks.turn_summary" in _SELF_EDIT_SYSTEM_PROMPT
-        assert "hooks.before_send" in _SELF_EDIT_SYSTEM_PROMPT
+        assert "register(tools, commands, hooks)" in _EXTENSIONS_SYSTEM_PROMPT
+        assert ".taui/extensions/" in _EXTENSIONS_SYSTEM_PROMPT
+        assert "ToolResult" in _EXTENSIONS_SYSTEM_PROMPT
+        assert "CommandResult" in _EXTENSIONS_SYSTEM_PROMPT
+        assert "hooks.prompt" in _EXTENSIONS_SYSTEM_PROMPT
+        assert "hooks.turn_summary" in _EXTENSIONS_SYSTEM_PROMPT
+        assert "hooks.before_send" in _EXTENSIONS_SYSTEM_PROMPT
 
     async def test_sessions_no_session(self):
         from taui.commands.builtins import register_builtins
@@ -241,7 +241,7 @@ class TestBuiltinCommands:
         from taui.commands.builtins import register_builtins
 
         class FakeSession:
-            self_edit = False
+            extensions_mode = False
             async def resume_session(self, sid):
                 return sid == "abc123"
 
@@ -268,7 +268,7 @@ class TestBuiltinCommands:
         from taui.commands.builtins import register_builtins
 
         class FakeSession:
-            self_edit = False
+            extensions_mode = False
             session_id = "old"
             async def new_session(self):
                 self.session_id = "new123"
@@ -288,11 +288,54 @@ class TestBuiltinCommands:
         assert result.error
         assert "No session" in result.output
 
+    async def test_reload_command(self):
+        from taui.commands.builtins import register_builtins
+
+        class FakeSession:
+            def reload_extensions(self):
+                return ["my_ext"]
+
+        reg = CommandRegistry()
+        register_builtins(reg, get_session=lambda: FakeSession())
+        result = await reg.execute("/reload")
+        assert not result.error
+        assert "my_ext" in result.output
+        assert "1" in result.output
+
+    async def test_reload_no_extensions(self):
+        from taui.commands.builtins import register_builtins
+
+        class FakeSession:
+            def reload_extensions(self):
+                return []
+
+        reg = CommandRegistry()
+        register_builtins(reg, get_session=lambda: FakeSession())
+        result = await reg.execute("/reload")
+        assert not result.error
+        assert "No extensions" in result.output
+
+    async def test_reload_no_session(self):
+        from taui.commands.builtins import register_builtins
+
+        reg = CommandRegistry()
+        register_builtins(reg)
+        result = await reg.execute("/reload")
+        assert result.error
+
+    async def test_reload_in_help(self):
+        from taui.commands.builtins import register_builtins
+
+        reg = CommandRegistry()
+        register_builtins(reg)
+        result = await reg.execute("/help")
+        assert "/reload" in result.output
+
 
 # ═══ Write guard ══════════════════════════════════════════════════════════════
 
 
-class TestSelfEditWriteGuard:
+class TestExtensionsWriteGuard:
     def test_guard_allows_taui_dir(self, tmp_path):
         from taui.session import Session
         from taui.config import Config
@@ -304,7 +347,7 @@ class TestSelfEditWriteGuard:
 
         taui_path = tmp_path / ".taui" / "extensions" / "test.py"
         taui_path.parent.mkdir(parents=True)
-        result = session._self_edit_guard(taui_path)
+        result = session._extensions_guard(taui_path)
         assert result is None  # None means allowed
 
     def test_guard_rejects_outside(self, tmp_path):
@@ -316,7 +359,7 @@ class TestSelfEditWriteGuard:
         session.config = config
 
         bad_path = tmp_path / "taui" / "cli.py"
-        result = session._self_edit_guard(bad_path)
+        result = session._extensions_guard(bad_path)
         assert result is not None
         assert result.error
         assert "restricted" in result.content.lower()

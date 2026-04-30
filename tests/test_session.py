@@ -152,3 +152,102 @@ class TestSessionWiring:
 
         await session.close()
         await session.close()  # double close should be safe
+
+    async def test_reload_extensions_no_registry(self, tmp_path):
+        """reload_extensions works when no ext_registry is set."""
+        from taui.agent.loop import AgentLoop
+        from taui.store.store import Store
+        from taui.store.stream import StreamClient
+        from taui.tools.executor import ToolExecutor, ToolPolicy
+        from taui.hooks import HookRegistry
+
+        config = Config(working_dir=tmp_path)
+        provider = MockProvider()
+
+        registry = ToolRegistry()
+        register_builtins(registry)
+        executor = ToolExecutor(registry=registry, policy=ToolPolicy())
+
+        store = Store(tmp_path)
+        await store.connect()
+        stream = StreamClient(store)
+
+        loop = AgentLoop(llm=provider, executor=executor, model="test")
+        hooks = HookRegistry()
+
+        session = Session(
+            config=config,
+            provider=provider,
+            registry=registry,
+            executor=executor,
+            store=store,
+            stream=stream,
+            loop=loop,
+            hooks=hooks,
+        )
+        session._builtin_tool_names = set(registry.names)
+
+        loaded = session.reload_extensions()
+        assert loaded == []
+
+        await session.close()
+
+    async def test_reload_extensions_removes_ext_tools(self, tmp_path):
+        """reload_extensions removes tools that weren't in the builtin set."""
+        from dataclasses import dataclass, field
+        from taui.agent.loop import AgentLoop
+        from taui.store.store import Store
+        from taui.store.stream import StreamClient
+        from taui.tools.executor import ToolExecutor, ToolPolicy
+        from taui.hooks import HookRegistry
+        from taui.tools.base import ToolResult
+
+        @dataclass
+        class FakeTool:
+            name: str = "ext_tool"
+            description: str = "test"
+            parameters: dict = field(default_factory=dict)
+
+            async def execute(self, arguments: dict) -> ToolResult:
+                return ToolResult(content="ok")
+
+        config = Config(working_dir=tmp_path)
+        provider = MockProvider()
+
+        registry = ToolRegistry()
+        register_builtins(registry)
+        builtin_names = set(registry.names)
+
+        # Simulate extension adding a tool
+        registry.register_or_replace(FakeTool())
+        assert "ext_tool" in registry.names
+
+        executor = ToolExecutor(registry=registry, policy=ToolPolicy())
+
+        store = Store(tmp_path)
+        await store.connect()
+        stream = StreamClient(store)
+
+        loop = AgentLoop(llm=provider, executor=executor, model="test")
+        hooks = HookRegistry()
+
+        session = Session(
+            config=config,
+            provider=provider,
+            registry=registry,
+            executor=executor,
+            store=store,
+            stream=stream,
+            loop=loop,
+            hooks=hooks,
+        )
+        session._builtin_tool_names = builtin_names
+
+        loaded = session.reload_extensions()
+        assert loaded == []
+        assert "ext_tool" not in registry.names
+        # Builtins still present
+        for name in builtin_names:
+            assert name in registry.names
+
+        await session.close()

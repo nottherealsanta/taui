@@ -9,6 +9,10 @@ dependencies = [
     "httpx>=0.28",
 ]
 
+[project.optional-dependencies]
+web = ["fastapi>=0.115", "uvicorn>=0.34", "websockets>=14.0"]
+tui = ["textual>=3.0"]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

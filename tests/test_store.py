@@ -313,10 +313,10 @@ class TestSessionMetadata:
         assert meta["description"] == ""
         assert meta["message_count"] == 0
 
-    async def test_create_session_self_edit(self, store: Store):
-        await store.create_session("ses-2", mode="self-edit")
+    async def test_create_session_extensions(self, store: Store):
+        await store.create_session("ses-2", mode="extensions")
         meta = await store.get_session("ses-2")
-        assert meta["mode"] == "self-edit"
+        assert meta["mode"] == "extensions"
 
     async def test_create_session_idempotent(self, store: Store):
         await store.create_session("ses-1")
@@ -338,9 +338,9 @@ class TestSessionMetadata:
 
     async def test_update_session_mode(self, store: Store):
         await store.create_session("ses-1")
-        await store.update_session("ses-1", mode="self-edit")
+        await store.update_session("ses-1", mode="extensions")
         meta = await store.get_session("ses-1")
-        assert meta["mode"] == "self-edit"
+        assert meta["mode"] == "extensions"
 
     async def test_list_sessions_empty(self, store: Store):
         sessions = await store.list_sessions()

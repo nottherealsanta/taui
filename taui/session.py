@@ -83,9 +83,9 @@ class Session:
         self._ext_registry = ext_registry
         self.hooks = hooks or HookRegistry()
         self.session_id = session_id or uuid4().hex[:12]
-        self.self_edit = False
+        self.extensions_mode = False
         self._system_prompt: str = ""
-        self._self_edit_prompt: str = ""
+        self._extensions_prompt: str = ""
         self._message_count = 0
 
     @classmethod
@@ -148,6 +148,7 @@ class Session:
         mcp_tool._manager = mcp_manager
 
         # Load extensions
+        builtin_tool_names = set(registry.names)
         ext_registry = ExtensionRegistry(config.working_dir)
         ext_registry.discover()
         hooks = HookRegistry()
@@ -188,7 +189,8 @@ class Session:
             hooks=hooks,
         )
         session._system_prompt = system_prompt
-        session._self_edit_prompt = _SELF_EDIT_SYSTEM_PROMPT
+        session._extensions_prompt = _EXTENSIONS_SYSTEM_PROMPT
+        session._builtin_tool_names = builtin_tool_names
 
         # Register session in store
         await store.create_session(session.session_id)
@@ -235,7 +237,7 @@ class Session:
         self.session_id = uuid4().hex[:12]
         self._message_count = 0
 
-        prompt = self._self_edit_prompt if self.self_edit else self._system_prompt
+        prompt = self._extensions_prompt if self.extensions_mode else self._system_prompt
 
         self._loop = AgentLoop(
             llm=self._provider,
@@ -248,20 +250,20 @@ class Session:
 
         await self._store.create_session(
             self.session_id,
-            mode="self-edit" if self.self_edit else "normal",
+            mode="extensions" if self.extensions_mode else "normal",
         )
 
         # Observer hook
         await self.hooks.run("on_session_start", self)
 
-    async def toggle_self_edit(self) -> bool:
-        """Toggle self-edit mode. Returns new state."""
-        self.self_edit = not self.self_edit
+    async def toggle_extensions_mode(self) -> bool:
+        """Toggle extensions mode. Returns new state."""
+        self.extensions_mode = not self.extensions_mode
 
         # Set/clear write guards on file-write tools
         self._apply_write_guard()
 
-        prompt = self._self_edit_prompt if self.self_edit else self._system_prompt
+        prompt = self._extensions_prompt if self.extensions_mode else self._system_prompt
 
         # Create a new loop with the appropriate prompt
         self._loop = AgentLoop(
@@ -278,13 +280,13 @@ class Session:
         self._message_count = 0
         await self._store.create_session(
             self.session_id,
-            mode="self-edit" if self.self_edit else "normal",
+            mode="extensions" if self.extensions_mode else "normal",
         )
 
         # Observer hook
-        await self.hooks.run("on_mode_change", "self-edit" if self.self_edit else "normal", self)
+        await self.hooks.run("on_mode_change", "extensions" if self.extensions_mode else "normal", self)
 
-        return self.self_edit
+        return self.extensions_mode
 
     async def resume_session(self, session_id: str) -> bool:
         """Resume a previous session by replaying its messages."""
@@ -302,10 +304,10 @@ class Session:
             pass
 
         self.session_id = session_id
-        self.self_edit = meta.get("mode") == "self-edit"
+        self.extensions_mode = meta.get("mode") == "extensions"
         self._message_count = meta.get("message_count", 0)
 
-        prompt = self._self_edit_prompt if self.self_edit else self._system_prompt
+        prompt = self._extensions_prompt if self.extensions_mode else self._system_prompt
 
         self._loop = AgentLoop(
             llm=self._provider,
@@ -338,6 +340,43 @@ class Session:
         """List recent sessions."""
         return await self._store.list_sessions()
 
+    def reload_extensions(self) -> list[str]:
+        """Hot-reload extensions: unload, re-discover, re-load.
+
+        Returns names of loaded extensions.
+        """
+        # Remove extension-added tools
+        builtin = getattr(self, "_builtin_tool_names", set())
+        ext_tools = [n for n in self._registry.names if n not in builtin]
+        for name in ext_tools:
+            self._registry.unregister(name)
+
+        # Clear all hooks (only extensions register hooks)
+        self.hooks.clear()
+
+        # Unload, re-discover, re-load
+        if self._ext_registry:
+            self._ext_registry.unload_all()
+            self._ext_registry.discover()
+            loaded = self._ext_registry.load_all(
+                tools=self._registry, commands=None, hooks=self.hooks,
+            )
+        else:
+            loaded = []
+
+        # Set working_dir on any new tools
+        for name in self._registry.names:
+            tool = self._registry.get(name)
+            if hasattr(tool, "working_dir"):
+                tool.working_dir = self.config.working_dir
+
+        # Re-apply write guard if in extensions mode
+        if self.extensions_mode:
+            self._apply_write_guard()
+
+        logger.info("Reloaded extensions: %s", loaded)
+        return loaded
+
     async def close(self) -> None:
         """Clean up resources."""
         # Disconnect MCP servers
@@ -366,32 +405,32 @@ class Session:
 
     def _apply_write_guard(self) -> None:
         """Set or clear the write guard on file-write tools."""
-        guard = self._self_edit_guard if self.self_edit else None
+        guard = self._extensions_guard if self.extensions_mode else None
         for name in ("write", "edit"):
             if name in self._registry:
                 tool = self._registry.get(name)
                 if hasattr(tool, "_path_guard"):
                     tool._path_guard = guard
 
-    def _self_edit_guard(self, path: Path) -> Any:
-        """Reject writes outside .taui/ when in self-edit mode."""
+    def _extensions_guard(self, path: Path) -> Any:
+        """Reject writes outside .taui/ when in extensions mode."""
         from taui.tools.base import ToolResult
         taui_dir = self.config.working_dir / ".taui"
         try:
             path.resolve().relative_to(taui_dir.resolve())
         except ValueError:
             return ToolResult.fail(
-                f"Self-edit mode: writes are restricted to .taui/ — "
+                f"Extensions mode: writes are restricted to .taui/ — "
                 f"cannot write to {path}. Create an extension in "
                 f".taui/extensions/ instead."
             )
         return None
 
 
-# ── Self-edit system prompt ────────────────────────────────────────────────────
+# ── Extensions system prompt ───────────────────────────────────────────────────
 
-_SELF_EDIT_SYSTEM_PROMPT = """\
-You are a taui self-edit agent. You can create, modify, or delete taui \
+_EXTENSIONS_SYSTEM_PROMPT = """\
+You are a taui extensions agent. You can create, modify, or delete taui \
 extensions — Python files in .taui/extensions/.
 
 IMPORTANT: You can ONLY write to .taui/ paths. You cannot modify taui source \
@@ -520,5 +559,5 @@ def register(tools, commands, hooks):
 - Read existing extension files before modifying them
 - One extension per file
 - Never modify core taui source files — you literally cannot
-- After writing, tell the user the extension will load on next restart
+- After writing, tell the user to run /reload to activate the extension
 """

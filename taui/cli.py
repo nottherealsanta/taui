@@ -299,7 +299,7 @@ class Repl:
 
             if prompt_text:
                 line = input(prompt_text)
-            elif self._session.self_edit:
+            elif self._session.extensions_mode:
                 line = input(_yellow("⚙ > "))
             else:
                 line = input(_green("> "))
@@ -324,6 +324,12 @@ class Repl:
         command = parts[0].lower()
 
         if command in ("/quit", "/q", "/exit"):
+            # In extensions mode, /q toggles extensions off instead of quitting
+            if command == "/q" and self._session.extensions_mode:
+                result = await self._commands.execute("/i")
+                print(_yellow(result.output))
+                self._rewire()
+                return True
             return False
 
         # Dispatch through command registry
@@ -331,14 +337,17 @@ class Repl:
         if result.error:
             print(_yellow(result.output))
         else:
-            if self._session.self_edit:
+            if self._session.extensions_mode:
                 print(_yellow(result.output))
             else:
                 print(_dim(result.output))
 
         # Rewire callbacks after session/mode changes
         action = result.metadata.get("action") if result.metadata else None
-        if action in ("self_edit_on", "self_edit_off", "new_session", "session_resumed"):
+        if action == "extensions_on":
+            print(_dim("/q to quit"))
+            self._rewire()
+        elif action in ("extensions_off", "new_session", "session_resumed"):
             self._rewire()
 
         return True
@@ -459,23 +468,9 @@ async def async_main(argv: list[str] | None = None) -> None:
     """Async entry point."""
     parsed = parse_args(argv)
     initial_message = parsed.pop("initial_message", None)
-    mode = parsed.pop("mode", None)
+    parsed.pop("mode", None)  # mode handled in sync main()
 
     config = Config.load(**parsed)
-
-    if mode == "web":
-        from taui.server.app import serve
-        serve(config.working_dir, config=config)
-        return
-
-    if mode == "tui":
-        try:
-            from taui.tui import run_tui
-        except ImportError:
-            print("TUI requires the 'textual' package: pip install textual", file=sys.stderr)
-            return
-        run_tui(config)
-        return
 
     session = await Session.create(config)
 
@@ -493,6 +488,32 @@ async def async_main(argv: list[str] | None = None) -> None:
 
 def main(argv: list[str] | None = None) -> None:
     """Sync entry point for console_scripts."""
+    parsed = parse_args(argv)
+    mode = parsed.get("mode")
+
+    if mode == "web":
+        config = Config.load(**{k: v for k, v in parsed.items() if k != "mode" and k != "initial_message"})
+        try:
+            import uvicorn  # noqa: F401
+            import fastapi  # noqa: F401
+        except ImportError:
+            print("Web server requires: pip install 'taui[web]'  (or: pip install fastapi uvicorn websockets)", file=sys.stderr)
+            return
+        from taui.server.app import serve
+        serve(config.working_dir, config=config)
+        return
+
+    if mode == "tui":
+        config = Config.load(**{k: v for k, v in parsed.items() if k != "mode" and k != "initial_message"})
+        try:
+            import textual  # noqa: F401
+        except ImportError:
+            print("TUI requires: pip install 'taui[tui]'  (or: pip install textual)", file=sys.stderr)
+            return
+        from taui.tui import run_tui
+        run_tui(config)
+        return
+
     try:
         asyncio.run(async_main(argv))
     except KeyboardInterrupt:

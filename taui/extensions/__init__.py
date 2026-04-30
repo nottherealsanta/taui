@@ -176,3 +176,11 @@ class ExtensionRegistry:
 
     def loaded_extensions(self) -> list[Extension]:
         return [e for e in self._extensions.values() if e.loaded]
+
+    def unload_all(self) -> None:
+        """Mark all extensions as unloaded and remove their modules from sys.modules."""
+        for ext in self._extensions.values():
+            module_name = f"taui_ext_{ext.name}"
+            sys.modules.pop(module_name, None)
+            ext.loaded = False
+            ext.error = None

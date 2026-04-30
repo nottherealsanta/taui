@@ -82,11 +82,11 @@ class ModelCommand:
 
 
 @dataclass(slots=True)
-class SelfEditCommand:
-    """Toggle self-edit mode. Creates a new session with the self-edit prompt."""
+class ExtensionsModeCommand:
+    """Toggle extensions mode. Creates a new session with the extensions prompt."""
 
     name: str = "i"
-    description: str = "Toggle self-edit mode (yellow UI)"
+    description: str = "Toggle extensions mode (yellow UI)"
     _get_session: Any = None
 
     async def execute(self, ctx: CommandContext) -> CommandResult:
@@ -94,19 +94,19 @@ class SelfEditCommand:
             return CommandResult.fail("No session.")
 
         session = self._get_session()
-        is_on = await session.toggle_self_edit()
+        is_on = await session.toggle_extensions_mode()
 
         if is_on:
             # If user provided a description, send it as the first message
-            msg = "Self-edit mode ON"
+            msg = "Extensions mode ON"
             if ctx.args:
                 desc = " ".join(ctx.args)
                 msg += f" — starting with: {desc}"
-            return CommandResult.ok(msg, action="self_edit_on")
+            return CommandResult.ok(msg, action="extensions_on")
         else:
             return CommandResult.ok(
-                "Self-edit mode OFF — back to normal.",
-                action="self_edit_off",
+                "Extensions mode OFF — back to normal.",
+                action="extensions_off",
             )
 
 
@@ -129,12 +129,12 @@ class SessionsCommand:
             target = ctx.args[0]
             ok = await session.resume_session(target)
             if ok:
-                mode = " [self-edit]" if session.self_edit else ""
+                mode = " [extensions]" if session.extensions_mode else ""
                 return CommandResult.ok(
                     f"Resumed session {target}{mode}",
                     action="session_resumed",
                     session_id=target,
-                    self_edit=session.self_edit,
+                    extensions_mode=session.extensions_mode,
                 )
             return CommandResult.fail(f"Session not found: {target}")
 
@@ -150,7 +150,7 @@ class SessionsCommand:
             mode = s.get("mode", "normal")
             msgs = s.get("message_count", 0)
             ago = _time_ago(s.get("last_active", 0))
-            mode_tag = " [self-edit]" if mode == "self-edit" else ""
+            mode_tag = " [extensions]" if mode == "extensions" else ""
             lines.append(
                 f"  {sid}  {desc[:50]:50s}  {msgs:>3} msgs  {ago}{mode_tag}"
             )
@@ -173,7 +173,7 @@ class NewSessionCommand:
 
         session = self._get_session()
         await session.new_session()
-        mode = "self-edit" if session.self_edit else "normal"
+        mode = "extensions" if session.extensions_mode else "normal"
         return CommandResult.ok(
             f"New session started ({mode}).",
             action="new_session",
@@ -206,6 +206,28 @@ class ExtensionsCommand:
         return CommandResult.ok("\n".join(lines))
 
 
+@dataclass(slots=True)
+class ReloadCommand:
+    """Hot-reload extensions without restarting."""
+
+    name: str = "reload"
+    description: str = "Reload extensions"
+    _get_session: Any = None
+
+    async def execute(self, ctx: CommandContext) -> CommandResult:
+        if not self._get_session:
+            return CommandResult.fail("No session.")
+
+        session = self._get_session()
+        loaded = session.reload_extensions()
+        if loaded:
+            return CommandResult.ok(
+                f"Reloaded {len(loaded)} extension(s): {', '.join(loaded)}",
+                action="reloaded",
+            )
+        return CommandResult.ok("No extensions loaded.", action="reloaded")
+
+
 def _time_ago(ts: float) -> str:
     """Format a timestamp as a relative time string."""
     if ts <= 0:
@@ -234,33 +256,36 @@ def register_builtins(
     clear_cmd = ClearCommand()
     model_cmd = ModelCommand()
     cost_cmd = CostCommand()
-    ext_cmd = ExtensionsCommand()
-    self_edit_cmd = SelfEditCommand()
+    ext_mode_cmd = ExtensionsModeCommand()
+    ext_list_cmd = ExtensionsCommand()
     sessions_cmd = SessionsCommand()
     new_cmd = NewSessionCommand()
+    reload_cmd = ReloadCommand()
 
     if get_session:
         clear_cmd._get_loop = lambda: get_session()._loop
         model_cmd._get_session = get_session
-        self_edit_cmd._get_session = get_session
+        ext_mode_cmd._get_session = get_session
         sessions_cmd._get_session = get_session
         new_cmd._get_session = get_session
+        reload_cmd._get_session = get_session
 
     if get_tracker:
         cost_cmd._get_tracker = get_tracker
 
     if get_extensions:
-        ext_cmd._get_extensions = get_extensions
+        ext_list_cmd._get_extensions = get_extensions
 
     registry.register(help_cmd)
     registry.register(cost_cmd)
     registry.register(CompactCommand())
     registry.register(clear_cmd)
     registry.register(model_cmd)
-    registry.register(ext_cmd)
-    registry.register(self_edit_cmd)
+    registry.register(ext_list_cmd)
+    registry.register(ext_mode_cmd)
     registry.register(sessions_cmd)
     registry.register(new_cmd)
+    registry.register(reload_cmd)
 
     registry.alias("h", "help")
     registry.alias("?", "help")

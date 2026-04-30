@@ -560,6 +560,6 @@ export class BackendClient extends EventTarget {
 
 export const backendClient: BackendClient = import.meta.hot?.data?.backendClient ?? new BackendClient()
 if (import.meta.hot) {
-  import.meta.hot.data ??= {}
+  // import.meta.hot.data ??= {}
   import.meta.hot.data.backendClient = backendClient
 }

@@ -98,6 +98,10 @@ class HookRegistry:
         """True if at least one hook is registered under *name*."""
         return bool(self._hooks.get(name))
 
+    def clear(self) -> None:
+        """Remove all registered hooks."""
+        self._hooks.clear()
+
     @property
     def hook_names(self) -> list[str]:
         return sorted(self._hooks)

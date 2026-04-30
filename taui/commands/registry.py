@@ -62,6 +62,12 @@ class CommandRegistry:
             raise ValueError(f"Command '/{command.name}' already registered")
         self._commands[command.name] = command
 
+    def unregister(self, name: str) -> None:
+        """Remove a command by name. No-op if not registered."""
+        self._commands.pop(name, None)
+        # Clean up aliases pointing to this command
+        self._aliases = {a: t for a, t in self._aliases.items() if t != name}
+
     def alias(self, alias: str, command_name: str) -> None:
         if command_name not in self._commands:
             raise ValueError(f"Cannot alias unknown command '/{command_name}'")
