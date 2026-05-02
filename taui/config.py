@@ -36,7 +36,7 @@ class Config:
 
     # LLM
     provider: str = "copilot"
-    model: str = "claude-sonnet-4.6"
+    model: str = ""
 
     # Agent
     system_prompt: str = DEFAULT_SYSTEM_PROMPT
@@ -47,6 +47,11 @@ class Config:
 
     # Tool policy
     auto_approve_reads: bool = True
+
+    # CLI display
+    verbose_tools: bool = True  # show full tool output (toggle with /verbose)
+    theme: dict = field(default_factory=dict)  # style overrides
+    keybindings: dict = field(default_factory=dict)  # custom keybindings
 
     @classmethod
     def load(cls, **overrides) -> Config:
@@ -59,7 +64,23 @@ class Config:
             if fld in taui_cfg:
                 kwargs[fld] = taui_cfg[fld]
 
+        # CLI display settings
+        if "verbose_tools" in taui_cfg:
+            kwargs["verbose_tools"] = taui_cfg["verbose_tools"]
+        if "theme" in taui_cfg:
+            kwargs["theme"] = taui_cfg["theme"]
+        if "keybindings" in taui_cfg:
+            kwargs["keybindings"] = taui_cfg["keybindings"]
+
         # CLI/env overrides win
         kwargs.update({k: v for k, v in overrides.items() if v is not None})
 
-        return cls(**kwargs)
+        cfg = cls(**kwargs)
+
+        # If no model was set from any source, pick the best for this provider
+        if not cfg.model:
+            from taui.llm_provider.models import get_default_model
+
+            cfg.model = get_default_model(cfg.provider)
+
+        return cfg

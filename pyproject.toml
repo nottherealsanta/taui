@@ -1,13 +1,31 @@
 [project]
 name = "taui"
-version = "0.1.0"
+version = "0.2.0"
 description = "Agentic coding interface you can reshape"
 readme = "README.md"
 requires-python = ">=3.13"
+license = "MIT"
+authors = [{ name = "Santosh", email = "santosh.rajan.work@gmail.com" }]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development",
+]
+keywords = ["ai", "agent", "coding", "cli", "llm"]
 dependencies = [
     "aiosqlite>=0.20",
     "httpx>=0.28",
+    "prompt-toolkit>=3.0",
+    "rich>=13.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/nottherealsanta/taui"
+Repository = "https://github.com/nottherealsanta/taui"
+Issues = "https://github.com/nottherealsanta/taui/issues"
 
 [project.optional-dependencies]
 web = ["fastapi>=0.115", "uvicorn>=0.34", "websockets>=14.0"]

@@ -185,7 +185,6 @@ def get_codex_credentials() -> CodexCredentials:
         refresh_token = saved.get("refresh_token")
         account_id = saved.get("account_id", "")
         if refresh_token:
-            print("Authenticating with saved Codex credentials...")
             try:
                 creds = CodexCredentials(
                     access_token="",

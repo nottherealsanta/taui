@@ -15,11 +15,11 @@ from __future__ import annotations
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from enum import Enum
-from typing import Any, Protocol
+from enum import StrEnum
+from typing import Any
 from uuid import uuid4
 
-from taui.agent.context import compact_messages, estimate_total_tokens, DEFAULT_MAX_INPUT_TOKENS
+from taui.agent.context import DEFAULT_MAX_INPUT_TOKENS, compact_messages, estimate_total_tokens
 from taui.llm_provider.types import ProviderToolCall, ProviderTurnResult
 from taui.store.events import EventType
 from taui.store.stream import StreamClient
@@ -28,7 +28,7 @@ from taui.tools.executor import Completed, Denied, NeedsApproval, ToolExecutor
 logger = logging.getLogger(__name__)
 
 
-class AgentState(str, Enum):
+class AgentState(StrEnum):
     IDLE = "idle"
     THINKING = "thinking"
     TOOL_EXECUTION = "tool_execution"
@@ -55,6 +55,7 @@ class TurnResult:
     tool_calls_count: int
     turn_number: int
     usage: dict[str, Any] | None = None
+    metadata: dict[str, Any] | None = None
 
 
 @dataclass
@@ -96,6 +97,7 @@ class AgentLoop:
         on_tool_result: Callable[[str, str, str, bool], Awaitable[None]] | None = None,
         on_approval: Callable[[str, str, dict], Awaitable[bool]] | None = None,
         on_text: Callable[[str], Awaitable[None]] | None = None,
+        on_text_delta: Callable[[str], None] | None = None,
     ) -> None:
         self.agent_id = agent_id or uuid4().hex[:12]
         self.stream_id = f"agents/{self.agent_id}"
@@ -111,9 +113,11 @@ class AgentLoop:
         self._on_tool_result = on_tool_result
         self._on_approval = on_approval
         self._on_text = on_text
+        self._on_text_delta = on_text_delta
 
         self.state = AgentState.IDLE
         self._messages: list[Message] = []
+        self._steering_queue: list[str] = []
 
     @property
     def messages(self) -> list[Message]:
@@ -221,6 +225,7 @@ class AgentLoop:
                 tool_calls_count=0,
                 turn_number=turn,
                 usage=usage_data,
+                metadata=llm_result.assistant_metadata,
             )
 
         # Act: execute each tool call
@@ -231,20 +236,38 @@ class AgentLoop:
 
         for tc in llm_result.tool_calls:
             await self._execute_tool(tc)
+            # Drain any steering messages injected while tool ran
+            self._drain_steering()
 
         return TurnResult(
             text=llm_result.text,
             tool_calls_count=len(llm_result.tool_calls),
             turn_number=turn,
             usage=usage_data,
+            metadata=llm_result.assistant_metadata,
         )
+
+    def steer(self, message: str) -> None:
+        """Enqueue a steering message to be injected between tool calls."""
+        self._steering_queue.append(message)
+
+    def _drain_steering(self) -> None:
+        """Inject any pending steering messages into the conversation."""
+        while self._steering_queue:
+            msg = self._steering_queue.pop(0)
+            self._messages.append(Message(role="user", content=msg))
 
     async def _call_llm(self) -> ProviderTurnResult:
         """Call the LLM with current conversation and tool schemas."""
         self._maybe_compact()
         messages = self._build_llm_messages()
         tools = self._executor.registry.schemas() or None
-        return await self._llm.create_turn(messages, self._model, tools=tools)
+        # Wire streaming text delta callback to provider
+        self._llm.on_text_delta = self._on_text_delta
+        try:
+            return await self._llm.create_turn(messages, self._model, tools=tools)
+        finally:
+            self._llm.on_text_delta = None
 
     def _maybe_compact(self) -> None:
         """Compact messages if approaching token budget."""

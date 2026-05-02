@@ -24,7 +24,7 @@ import logging
 import re
 import time
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from typing import Any
 
 import httpx
@@ -103,6 +103,9 @@ class BaseLLMProvider(ABC):
     """
 
     api_format: ApiFormat = "chat_completions"
+
+    # Optional streaming callback — set by agent loop for live output
+    on_text_delta: Callable[[str], Any] | None = None
 
     # ── Abstract interface ─────────────────────────────────────────
 
@@ -314,6 +317,8 @@ class BaseLLMProvider(ABC):
                 case "text_delta":
                     if event.delta:
                         text_parts.append(event.delta)
+                        if self.on_text_delta:
+                            self.on_text_delta(event.delta)
 
                 case "reasoning_delta":
                     if event.reasoning_text:

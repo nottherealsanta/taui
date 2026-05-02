@@ -256,7 +256,6 @@ def get_copilot_credentials() -> CopilotCredentials:
     if saved:
         github_token = saved.get("api_key")
         if github_token:
-            print("Authenticating with saved GitHub Copilot credentials...")
             try:
                 return refresh_copilot_token(github_token)
             except Exception as exc:
