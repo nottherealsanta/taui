@@ -9,7 +9,9 @@ scrolls naturally in the terminal.
 from __future__ import annotations
 
 import asyncio
+import os
 import re
+import sys
 from pathlib import Path
 
 from prompt_toolkit import PromptSession
@@ -46,6 +48,8 @@ class CliApp:
         self._question_future: asyncio.Future | None = None
         self._console = Console()
         self._live: Live | None = None
+        self._input_buffer = ""
+        self._old_termios: list | None = None
         self._commands = self._build_commands()
         self._should_exit = False
         self._wire_callbacks()
@@ -141,6 +145,7 @@ class CliApp:
           ⠿ thinking...
           ─────────────────────
           copilot/model │ 12% ctx │ $0.01
+          > user input▏
         """
         parts: list[RenderableType] = []
         if self._streaming and self._stream_buffer:
@@ -148,6 +153,11 @@ class CliApp:
         parts.append(Spinner("dots", text="thinking...", style="dim bold"))
         parts.append(Rule(style="dim"))
         parts.append(Text(self._status_line(), style="dim"))
+        prompt_line = Text()
+        prompt_line.append("> ", style="bold green")
+        prompt_line.append(self._input_buffer)
+        prompt_line.append("▏", style="dim")
+        parts.append(prompt_line)
         return Group(*parts)
 
     def _start_live(self) -> None:
@@ -170,6 +180,98 @@ class CliApp:
         if self._live:
             self._live.stop()
             self._live = None
+
+    # ── Inline stdin reader (active during agent work) ────────────────
+
+    def _start_stdin_reader(self) -> None:
+        """Enable character-by-character stdin during agent work.
+
+        Sets cbreak mode (no line buffering, no echo) with ISIG disabled
+        so Ctrl-C is handled in ``_on_stdin_readable`` instead of raising
+        SIGINT.
+        """
+        if not sys.stdin.isatty():
+            return
+        try:
+            import termios
+            import tty
+
+            self._old_termios = termios.tcgetattr(sys.stdin)
+            tty.setcbreak(sys.stdin.fileno())
+            # Disable ISIG so Ctrl-C doesn't raise SIGINT
+            attrs = termios.tcgetattr(sys.stdin)
+            attrs[3] &= ~termios.ISIG
+            termios.tcsetattr(sys.stdin, termios.TCSANOW, attrs)
+            asyncio.get_running_loop().add_reader(
+                sys.stdin.fileno(), self._on_stdin_readable,
+            )
+        except Exception:
+            self._old_termios = None
+
+    def _stop_stdin_reader(self) -> None:
+        """Restore normal terminal input mode."""
+        if self._old_termios is None:
+            return
+        try:
+            asyncio.get_running_loop().remove_reader(sys.stdin.fileno())
+        except Exception:
+            pass
+        try:
+            import termios
+
+            termios.tcsetattr(
+                sys.stdin, termios.TCSADRAIN, self._old_termios,
+            )
+        except Exception:
+            pass
+        self._old_termios = None
+        self._input_buffer = ""
+
+    def _on_stdin_readable(self) -> None:
+        """Handle raw keypresses during agent work."""
+        try:
+            data = os.read(sys.stdin.fileno(), 1024).decode(errors="ignore")
+        except Exception:
+            return
+
+        i = 0
+        while i < len(data):
+            ch = data[i]
+            i += 1
+
+            if ch == "\x1b":  # Escape sequence — skip
+                if i < len(data) and data[i] == "[":
+                    i += 1
+                    while i < len(data):
+                        c = data[i]
+                        i += 1
+                        if "@" <= c <= "~":
+                            break
+                continue
+
+            if ch in ("\r", "\n"):
+                text = self._input_buffer.strip()
+                self._input_buffer = ""
+                if text:
+                    self._session._loop.steer(text)
+                    self._print(
+                        f"  ↳ steering: {text}", style="dim italic",
+                    )
+            elif ch in ("\x7f", "\x08"):  # Backspace
+                self._input_buffer = self._input_buffer[:-1]
+            elif ch == "\x03":  # Ctrl-C
+                self._input_buffer = ""
+                if (
+                    self._active_send
+                    and not self._active_send.done()
+                ):
+                    self._active_send.cancel()
+            elif ch == "\x15":  # Ctrl-U — clear line
+                self._input_buffer = ""
+            elif ch >= " ":  # Printable
+                self._input_buffer += ch
+
+        self._update_live()
 
     # ── Wiring ────────────────────────────────────────────────────────
 
@@ -423,6 +525,7 @@ class CliApp:
         self._stream_buffer = ""
         self._agent_working = True
         self._start_live()
+        self._start_stdin_reader()
 
         try:
             result = await self._session.send(message)
@@ -441,6 +544,7 @@ class CliApp:
             self._print(f"Error: {exc}", style="red bold")
             return
         finally:
+            self._stop_stdin_reader()
             self._agent_working = False
 
         did_stream = self._streaming

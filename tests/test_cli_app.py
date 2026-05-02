@@ -504,3 +504,142 @@ class TestStatusLine:
         # After send, should have token count or cost
         assert "copilot/" in status
         await session.close()
+
+
+# ── Tests: inline steering input ──────────────────────────────────────
+
+
+class TestSteeringInput:
+    async def test_live_renderable_shows_input_prompt(self, tmp_path):
+        """Live renderable always shows '> ' input prompt."""
+        session = await _make_session(tmp_path)
+        app = CliApp(session)
+
+        renderable = app._build_live_renderable()
+        buf = StringIO()
+        Console(file=buf, force_terminal=False, width=80).print(renderable)
+        text = buf.getvalue()
+        assert "> " in text
+        await session.close()
+
+    async def test_live_renderable_shows_typed_text(self, tmp_path):
+        """Input buffer appears in the Live renderable."""
+        session = await _make_session(tmp_path)
+        app = CliApp(session)
+        app._input_buffer = "fix the tests"
+
+        renderable = app._build_live_renderable()
+        buf = StringIO()
+        Console(file=buf, force_terminal=False, width=80).print(renderable)
+        text = buf.getvalue()
+        assert "fix the tests" in text
+        await session.close()
+
+    async def test_on_stdin_readable_enter_steers(self, tmp_path):
+        """Enter sends input buffer to steering queue."""
+        session = await _make_session(tmp_path)
+        app = CliApp(session)
+        console, buf = _capture_console()
+        app._console = console
+
+        # Simulate: type "focus on X" then Enter
+        app._input_buffer = "focus on X"
+        app._start_live()
+        import os
+        r, w = os.pipe()
+        old_stdin = __import__("sys").stdin
+        try:
+            __import__("sys").stdin = open(r)
+            os.write(w, b"\r")
+            os.close(w)
+            app._on_stdin_readable()
+        finally:
+            __import__("sys").stdin.close()
+            __import__("sys").stdin = old_stdin
+            app._stop_live()
+            await session.close()
+
+        assert app._input_buffer == ""
+        assert "focus on X" in session._loop._steering_queue
+
+    async def test_on_stdin_readable_backspace(self, tmp_path):
+        """Backspace removes last character from input buffer."""
+        session = await _make_session(tmp_path)
+        app = CliApp(session)
+        app._start_live()
+
+        app._input_buffer = "hello"
+        import os
+        r, w = os.pipe()
+        old_stdin = __import__("sys").stdin
+        try:
+            __import__("sys").stdin = open(r)
+            os.write(w, b"\x7f")
+            os.close(w)
+            app._on_stdin_readable()
+        finally:
+            __import__("sys").stdin.close()
+            __import__("sys").stdin = old_stdin
+            app._stop_live()
+            await session.close()
+
+        assert app._input_buffer == "hell"
+
+    async def test_on_stdin_readable_printable(self, tmp_path):
+        """Printable characters are appended to input buffer."""
+        session = await _make_session(tmp_path)
+        app = CliApp(session)
+        app._start_live()
+
+        import os
+        r, w = os.pipe()
+        old_stdin = __import__("sys").stdin
+        try:
+            __import__("sys").stdin = open(r)
+            os.write(w, b"abc")
+            os.close(w)
+            app._on_stdin_readable()
+        finally:
+            __import__("sys").stdin.close()
+            __import__("sys").stdin = old_stdin
+            app._stop_live()
+            await session.close()
+
+        assert app._input_buffer == "abc"
+
+    async def test_on_stdin_readable_ctrl_u_clears(self, tmp_path):
+        """Ctrl-U clears the input buffer."""
+        session = await _make_session(tmp_path)
+        app = CliApp(session)
+        app._start_live()
+
+        app._input_buffer = "some text"
+        import os
+        r, w = os.pipe()
+        old_stdin = __import__("sys").stdin
+        try:
+            __import__("sys").stdin = open(r)
+            os.write(w, b"\x15")
+            os.close(w)
+            app._on_stdin_readable()
+        finally:
+            __import__("sys").stdin.close()
+            __import__("sys").stdin = old_stdin
+            app._stop_live()
+            await session.close()
+
+        assert app._input_buffer == ""
+
+    async def test_dispatch_steers_during_agent_work(self, tmp_path):
+        """Dispatch routes input to steering when agent is working."""
+        session = await _make_session(tmp_path)
+        app = CliApp(session)
+        console, buf = _capture_console()
+        app._console = console
+
+        app._agent_working = True
+        await app._dispatch("refocus on tests")
+        output = buf.getvalue()
+        assert "steering" in output
+        assert "refocus on tests" in session._loop._steering_queue
+        await session.close()

@@ -26,13 +26,13 @@ A ground-up rethink of `taui/cli.py` — minimal core, pi-level features, Python
 |------|--------|-------|
 | Interactive REPL | ✅ Working | prompt-toolkit + Rich, basic but functional |
 | Slash commands | ✅ 11 commands | /help, /cost, /compact, /clear, /model, /provider, /extensions, /i, /reload, /sessions, /new |
-| Streaming output | ✅ Working | Character-by-character via raw stdout |
+| Streaming output | ✅ Working | Rich Markdown rendering in real-time via Live display |
 | Tool approval | ✅ Working | Inline [y/N] prompt |
 | Agent callbacks | ✅ 5 callbacks | on_tool_call, on_tool_result, on_approval, on_text_delta, on_text |
 | Session management | ⚠️ Basic | New/resume/list |
 | Non-interactive | ⚠️ Partial | Initial message works, but no --print, no stdin pipe, no JSON output |
 | Keyboard shortcuts | ⚠️ Minimal | Enter to submit, Meta+Enter for newline. That's it. |
-| Message queue | ❌ Missing | Can queue while agent works, but no steering vs follow-up distinction |
+| Message queue | ✅ Working | Inline steering input visible during agent work; messages injected between tool calls |
 | Model switching | ⚠️ Basic | /model command exists but no Ctrl+L selector, no model cycling |
 | Thinking levels | ❌ Missing | No thinking level control |
 | Context display | ❌ Missing | No context window usage indicator |
@@ -428,6 +428,25 @@ Stored in `Config` or `Session`, persisted to store metadata.
 4. ✅ Config fields for keybindings and theme (`Config.keybindings`, `Config.theme`)
 5. Deferred: Thinking level indicator (needs thinking level infrastructure)
 6. Deferred: Custom keybindings runtime mapping (config field ready)
+
+### Streaming & Input Architecture
+
+**Markdown streaming** — Rich `Live` + `Markdown` renderable. As the LLM
+streams tokens, `_on_text_delta` accumulates them in `_stream_buffer` and
+refreshes the Live display. The user sees fully-rendered Markdown (headings,
+bold, code blocks, lists) updating in real-time. When the stream ends, the
+Live display is torn down (transient) and the final Markdown is printed
+permanently to the scrollback.
+
+**Inline steering input** — While the agent is working, the terminal is set
+to cbreak mode (no line-buffering, no echo, ISIG disabled). Keystrokes are
+read via `asyncio.add_reader` on stdin and displayed in the bottom of the
+Live renderable as `> typed text▏`. Pressing Enter injects the message into
+the agent's steering queue (delivered between tool calls). Ctrl-C cancels
+the active task. Ctrl-U clears the input line. Escape sequences (arrow keys
+etc.) are silently discarded. When the agent finishes, the stdin reader is
+torn down and prompt-toolkit's `PromptSession` resumes normal input
+handling.
 
 ---
 
