@@ -365,8 +365,6 @@ class TestSendFlow:
         await app._send("what is 2+2?")
         output = buf.getvalue()
 
-        # Should show the user message
-        assert "what is 2+2?" in output
         # Should show the response
         assert "This is the answer." in output
         # Should show turn summary
@@ -476,7 +474,6 @@ class TestDispatch:
 
         await app._dispatch("tell me something")
         output = buf.getvalue()
-        assert "tell me something" in output
         assert "response" in output
         await session.close()
 
@@ -561,6 +558,7 @@ class TestSteeringInput:
 
         assert app._input_buffer == ""
         assert "focus on X" in session._loop._steering_queue
+        assert ("s", "focus on X") in app._pending_indicators
 
     async def test_on_stdin_readable_backspace(self, tmp_path):
         """Backspace removes last character from input buffer."""
@@ -639,7 +637,29 @@ class TestSteeringInput:
 
         app._agent_working = True
         await app._dispatch("refocus on tests")
-        output = buf.getvalue()
-        assert "steering" in output
         assert "refocus on tests" in session._loop._steering_queue
+        assert ("s", "refocus on tests") in app._pending_indicators
+        await session.close()
+
+    async def test_dispatch_queues_during_agent_work(self, tmp_path):
+        """Dispatch routes q-prefixed input to queue when agent is working."""
+        session = await _make_session(tmp_path)
+        app = CliApp(session)
+
+        app._agent_working = True
+        await app._dispatch("q fix the tests next")
+        assert "fix the tests next" in app._queued
+        assert ("q", "fix the tests next") in app._pending_indicators
+        assert not session._loop._steering_queue
+        await session.close()
+
+    async def test_dispatch_steers_with_s_prefix(self, tmp_path):
+        """Dispatch routes s-prefixed input to steering."""
+        session = await _make_session(tmp_path)
+        app = CliApp(session)
+
+        app._agent_working = True
+        await app._dispatch("s focus on error handling")
+        assert "focus on error handling" in session._loop._steering_queue
+        assert ("s", "focus on error handling") in app._pending_indicators
         await session.close()

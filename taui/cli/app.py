@@ -18,10 +18,10 @@ from prompt_toolkit import PromptSession
 from prompt_toolkit.completion import FuzzyCompleter, merge_completers
 from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.history import FileHistory
+from prompt_toolkit.styles import Style
 from rich.console import Console, Group, RenderableType
 from rich.live import Live
 from rich.markdown import Markdown
-from rich.rule import Rule
 from rich.spinner import Spinner
 from rich.text import Text
 
@@ -44,6 +44,7 @@ class CliApp:
         self._agent_working = False
         self._active_send: asyncio.Task | None = None
         self._queued: list[str] = []  # follow-up messages
+        self._pending_indicators: list[tuple[str, str]] = []  # ("s"|"q", text)
         self._approval_future: asyncio.Future | None = None
         self._question_future: asyncio.Future | None = None
         self._console = Console()
@@ -132,7 +133,9 @@ class CliApp:
         return FormattedText([("bold fg:ansigreen", "> ")])
 
     def _get_bottom_toolbar(self) -> str:
-        """Bottom toolbar — shows status info."""
+        """Bottom toolbar — shows status info. Hidden during agent work."""
+        if self._agent_working:
+            return ""
         return self._status_line()
 
     # ── Live display ──────────────────────────────────────────────────
@@ -151,13 +154,17 @@ class CliApp:
         if self._streaming and self._stream_buffer:
             parts.append(Markdown(self._stream_buffer))
         parts.append(Spinner("dots", text="thinking...", style="dim bold"))
-        parts.append(Rule(style="dim"))
-        parts.append(Text(self._status_line(), style="dim"))
+        for kind, msg in self._pending_indicators:
+            indicator = Text()
+            indicator.append(f" {kind} ", style="dim bold")
+            indicator.append(msg, style="dim")
+            parts.append(indicator)
         prompt_line = Text()
         prompt_line.append("> ", style="bold green")
         prompt_line.append(self._input_buffer)
         prompt_line.append("▏", style="dim")
         parts.append(prompt_line)
+        parts.append(Text(self._status_line(), style="dim"))
         return Group(*parts)
 
     def _start_live(self) -> None:
@@ -253,10 +260,19 @@ class CliApp:
                 text = self._input_buffer.strip()
                 self._input_buffer = ""
                 if text:
-                    self._session._loop.steer(text)
-                    self._print(
-                        f"  ↳ steering: {text}", style="dim italic",
-                    )
+                    if text.startswith("q "):
+                        body = text[2:].strip()
+                        if body:
+                            self._queued.append(body)
+                            self._pending_indicators.append(("q", body))
+                    elif text.startswith("s "):
+                        body = text[2:].strip()
+                        if body:
+                            self._session._loop.steer(body)
+                            self._pending_indicators.append(("s", body))
+                    else:
+                        self._session._loop.steer(text)
+                        self._pending_indicators.append(("s", text))
             elif ch in ("\x7f", "\x08"):  # Backspace
                 self._input_buffer = self._input_buffer[:-1]
             elif ch == "\x03":  # Ctrl-C
@@ -316,6 +332,8 @@ class CliApp:
         await self._session.hooks.run(
             "on_tool_call", name, arguments, self._session,
         )
+        if not self._live:
+            self._start_live()
 
     async def _on_tool_result(
         self, call_id: str, name: str, content: str, is_error: bool
@@ -432,6 +450,9 @@ class CliApp:
             complete_while_typing=False,
             multiline=False,
             bottom_toolbar=self._get_bottom_toolbar,
+            style=Style.from_dict({
+                "bottom-toolbar": "noreverse dim",
+            }),
         )
 
         while not self._should_exit:
@@ -486,10 +507,21 @@ class CliApp:
             await self._run_shell_command(text[1:])
             return
 
-        # Steering: Enter while agent works
+        # Steering / Queuing while agent works
         if self._agent_working:
-            self._session._loop.steer(text)
-            self._print(f"  ↳ steering: {text}", style="dim italic")
+            if text.startswith("q "):
+                body = text[2:].strip()
+                if body:
+                    self._queued.append(body)
+                    self._pending_indicators.append(("q", body))
+            elif text.startswith("s "):
+                body = text[2:].strip()
+                if body:
+                    self._session._loop.steer(body)
+                    self._pending_indicators.append(("s", body))
+            else:
+                self._session._loop.steer(text)
+                self._pending_indicators.append(("s", text))
             return
 
         # Normal message
@@ -519,7 +551,6 @@ class CliApp:
     async def _send(self, message: str) -> None:
         """Send a message and display the response."""
         self._print()
-        self._print(f"  ▶ {message}", style="bold")
         self._print()
         self._streaming = False
         self._stream_buffer = ""
@@ -546,6 +577,7 @@ class CliApp:
         finally:
             self._stop_stdin_reader()
             self._agent_working = False
+            self._pending_indicators.clear()
 
         did_stream = self._streaming
         if did_stream:
