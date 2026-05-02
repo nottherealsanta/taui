@@ -2,35 +2,40 @@
 
 ## Project
 
-Taui is a customizable agentic coding interface (v0.2.0, Python 3.13+). Users control the agent, tools, prompts, and storage rather than adapting to a fixed assistant.
+Taui is a customizable agentic coding interface (v0.2.0, Python 3.13+). Users control the agent, tools, prompts, and storage. The interface is a full-screen Textual TUI.
 
-## Interfaces
+## Interface
 
-- **CLI** — Full support. Interactive prompt-toolkit REPL. Default when running `taui`. Entry point: `taui/cli.py → main()`.
-- **TUI** — In development (future). Textual-based terminal UI with panes and scrollable history. Start with `taui --tui`. Requires `uv pip install taui[tui]`.
-- **Web** — In development (future). FastAPI + WebSocket + JSON-RPC 2.0. Start with `taui --web`. Requires `uv pip install taui[web]`.
+**TUI** — Textual-based terminal UI. Default and only interface. Entry point: `taui/main.py -> main()`.
+
+Launch: `taui` (or `taui -p copilot -m claude-sonnet-4-20250514`)
 
 ## Architecture
 
-Everything flows through a SQLite append-only event store (`taui/store/`) — no shared mutable state. Frontends tail event streams via `StreamClient.tail()`.
+Everything flows through a SQLite append-only event store (`taui/store/`) — no shared mutable state.
 
 ```
-CLI / TUI / Web
-      ↓
-   Session  (taui/session.py — assembles provider, tools, executor, loop, store)
-      ↓
-   AgentLoop  (taui/agent/loop.py — think → tool → observe cycle)
-      ↓
-   ToolExecutor  (taui/tools/executor.py — policy-gated dispatch)
-      ↓
-   Store  (taui/store/ — SQLite event log, WAL mode)
+TUI  (taui/tui/)
+  ↓
+Session  (taui/session.py — assembles provider, tools, executor, loop, store)
+  ↓
+AgentLoop  (taui/agent/loop.py — think → tool → observe cycle)
+  ↓
+ToolExecutor  (taui/tools/executor.py — policy-gated dispatch)
+  ↓
+Store  (taui/store/ — SQLite event log, WAL mode)
 ```
 
 ## Source Layout
 
 | Path | Purpose |
 |------|---------|
-| `taui/cli.py` | CLI REPL (prompt-toolkit), command parsing, color output |
+| `taui/main.py` | Entry point — arg parsing, launches TUI |
+| `taui/tui/` | Textual TUI package |
+| `taui/tui/app.py` | Main `TauiApp(App)` — wires session, callbacks, streaming, steering/queue |
+| `taui/tui/messages.py` | Custom Textual messages (ToolStarted, ToolEnded, StreamTextDelta) |
+| `taui/tui/widgets/` | All TUI widgets |
+| `taui/tui/screens/` | Modal screens (context breakdown, diff view) |
 | `taui/session.py` | Session factory — wires provider, registry, executor, loop, store |
 | `taui/config.py` | Config dataclass (provider, model, system_prompt, max_turns, tool policies) |
 | `taui/agent/` | Agent loop (`loop.py`), context compaction (`context.py`) |
@@ -46,8 +51,66 @@ CLI / TUI / Web
 | `taui/hooks.py` | Extensibility callbacks (prompt, banner, status, on_tool_call, etc.) |
 | `taui/prompt_builder.py` | System prompt template rendering with variable substitution |
 | `taui/cost.py` | Per-turn token accounting and pricing |
-| `taui/tui.py` | Textual TUI (in development) |
-| `taui/server/` | FastAPI web server (in development) |
+
+## TUI Architecture
+
+### Widget Hierarchy
+
+```
+TauiApp (App)
+├── Header
+├── Horizontal (#main-layout)
+│   ├── Sidebar (Ctrl+B toggle, DirectoryTree)
+│   └── Vertical (#chat-area)
+│       ├── VerticalScroll (#chat-log)
+│       │   ├── Static (.user-message)
+│       │   ├── AgentResponse (MarkdownStream)
+│       │   ├── Vertical (.tool-section)
+│       │   │   └── ToolStatusWidget (animated braille spinner)
+│       │   ├── ApprovalPrompt / QuestionPrompt
+│       │   └── Static (steer/queue indicators)
+│       └── SpinnerWidget (global thinking indicator)
+├── StatusBar (ModelStatus + ContextStatus)
+├── ChatInput (TextArea with steer/queue/history)
+└── CustomFooter (dynamic key legend)
+```
+
+### Key Bindings
+
+| Key | Idle | Agent Busy |
+|-----|------|------------|
+| Enter | Send message | Steer (inject between tool calls) |
+| Shift+Enter / Ctrl+J | Insert newline | Insert newline |
+| Alt+Enter | Insert newline | Queue (follow-up after turn) |
+| Ctrl+Q | Quit | Quit |
+| Ctrl+N | New session | New session |
+| Ctrl+B | Toggle sidebar | Toggle sidebar |
+| Ctrl+X | Context breakdown | Context breakdown |
+| Ctrl+C | — | Cancel + clear queues |
+
+### Steering & Queue
+
+- **Steer** (Enter while busy): Calls `AgentLoop.steer(text)`, injected between tool calls via `_drain_steering()`
+- **Queue** (Alt+Enter while busy): Appended to `_queued` list, drained sequentially after turn completes
+- Visual indicators: `s> text` (dim) for steer, `q> text` (orange) for queue
+
+### Streaming
+
+Uses Textual's built-in `MarkdownStream` for real-time token rendering. `AgentResponse` widget wraps `Markdown.get_stream()` + `stream.write(fragment)`.
+
+### Tool Status
+
+FIFO queue pattern from archive: `_tool_counter` generates unique keys, `_pending_tool_keys[name]` is a per-tool-name FIFO. On tool end, pop oldest key to match start→end.
+
+### Approval & Questions
+
+- `ApprovalPrompt`: Inline Allow/Deny buttons, returns via `asyncio.Future`
+- `QuestionPrompt`: Inline `OptionList`, returns selected option via `asyncio.Future`
+
+### Screens
+
+- `ContextBreakdownScreen`: Modal showing per-role token breakdown with colored bars
+- `DiffViewScreen`: Modal with unified diff, color-coded adds/deletes/hunks
 
 ## Key Patterns
 
@@ -61,7 +124,7 @@ Tools, commands, extensions, skills, and LLM providers use registries with `regi
 All state changes are events appended to SQLite streams. No separate event bus.
 
 ### Sub-agents
-Child loops with restricted tool sets, own context budgets, own streams. Completion requires explicit return-to-parent with context payload.
+Child loops with restricted tool sets, own context budgets, own streams.
 
 ### Context compaction
 Triggered at 80% token budget. Preserves system prompt, latest user message, unresolved tool calls; drops oldest non-essential messages.
@@ -73,13 +136,13 @@ All I/O is async/await. SQLite uses `aiosqlite`. Streams use `async for` generat
 ## Testing
 
 ```bash
-python -m pytest tests/ -q
+uv run python -m pytest tests/ -q
 ```
 
-- pytest with `asyncio_mode = "auto"` — no `@pytest.mark.asyncio` needed
+- pytest with `asyncio_mode = "auto"`
 - Mock providers (`MockLLMProvider`) instead of real HTTP
 - Test tools (`EchoTool`, `FailTool`) for isolated tool testing
-- Fixtures for Store, StreamClient, ToolRegistry, Session
+- TUI tests: 45 unit tests for widgets, messages, FIFO tracking, history, @file expansion
 
 ## Build & Tooling
 
@@ -104,8 +167,6 @@ python -m pytest tests/ -q
 - **copilot** (default): GitHub Copilot API, Chat Completions format
 - **codex**: OpenAI Codex/GPT, Responses API format
 
-Both support streaming, OAuth/PKCE auth refresh, reasoning formats, and tool schema conversion.
-
 ## Configuration
 
 - Global: `~/.config/taui/config.toml`
@@ -114,3 +175,4 @@ Both support streaming, OAuth/PKCE auth refresh, reasoning formats, and tool sch
 - Skills: `.agents/skills/<name>/SKILL.md` or `.taui/skills/<name>/SKILL.md`
 - Extensions: `.taui/extensions/<name>.py`
 - Store: `.taui/store.db`
+- History: `~/.cache/taui/prompt_history`

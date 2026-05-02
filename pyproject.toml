@@ -14,12 +14,12 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
     "Topic :: Software Development",
 ]
-keywords = ["ai", "agent", "coding", "cli", "llm"]
+keywords = ["ai", "agent", "coding", "tui", "llm", "textual"]
 dependencies = [
     "aiosqlite>=0.20",
     "httpx>=0.28",
-    "prompt-toolkit>=3.0",
     "rich>=13.0",
+    "textual>=3.0",
 ]
 
 [project.urls]
@@ -27,16 +27,12 @@ Homepage = "https://github.com/nottherealsanta/taui"
 Repository = "https://github.com/nottherealsanta/taui"
 Issues = "https://github.com/nottherealsanta/taui/issues"
 
-[project.optional-dependencies]
-web = ["fastapi>=0.115", "uvicorn>=0.34", "websockets>=14.0"]
-tui = ["textual>=3.0"]
-
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project.scripts]
-taui = "taui.cli:main"
+taui = "taui.main:main"
 
 [tool.ruff]
 line-length = 100

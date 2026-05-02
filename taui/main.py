@@ -1,0 +1,109 @@
+"""Entry point for taui — launches the Textual TUI."""
+
+from __future__ import annotations
+
+import argparse
+import logging
+import sys
+from pathlib import Path
+
+
+def _setup_logging() -> None:
+    """Configure logging to write to ~/.taui/.logs."""
+    log_dir = Path.home() / ".taui"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_file = log_dir / ".logs"
+
+    handler = logging.FileHandler(log_file, encoding="utf-8")
+    handler.setFormatter(
+        logging.Formatter(
+            "%(asctime)s %(levelname)-8s %(name)s — %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        )
+    )
+
+    root = logging.getLogger()
+    root.setLevel(logging.DEBUG)
+    root.addHandler(handler)
+
+
+def parse_args(argv: list[str] | None = None) -> dict:
+    """Parse command-line arguments."""
+    parser = argparse.ArgumentParser(
+        prog="taui",
+        description="Agentic coding interface you can reshape.",
+    )
+    parser.add_argument(
+        "-p", "--provider",
+        choices=["copilot", "codex"],
+        default=None,
+        help="LLM provider (default: copilot)",
+    )
+    parser.add_argument(
+        "-m", "--model",
+        default=None,
+        help="Model name",
+    )
+    parser.add_argument(
+        "-d", "--dir",
+        default=None,
+        help="Working directory (default: current directory)",
+    )
+    parser.add_argument(
+        "--login",
+        action="store_true",
+        default=False,
+        help="Add or re-authenticate providers",
+    )
+    parser.add_argument(
+        "--version",
+        action="store_true",
+        default=False,
+        help="Show version and exit",
+    )
+
+    args = parser.parse_args(argv)
+    result: dict = {}
+
+    if args.version:
+        result["version"] = True
+    if args.provider:
+        result["provider"] = args.provider
+    if args.model:
+        result["model"] = args.model
+    if args.dir:
+        result["working_dir"] = Path(args.dir).resolve()
+    if args.login:
+        result["login"] = True
+
+    return result
+
+
+def main(argv: list[str] | None = None) -> None:
+    """Sync entry point for console_scripts."""
+    _setup_logging()
+    parsed = parse_args(argv)
+
+    if parsed.pop("version", False):
+        print("taui 0.2.0")
+        return
+
+    if parsed.pop("login", False):
+        from taui.llm_provider.auth import prompt_provider_selection
+        parsed["provider"] = prompt_provider_selection()
+    elif "provider" not in parsed:
+        from taui.llm_provider.auth import (
+            get_saved_provider,
+            prompt_provider_selection,
+        )
+        saved = get_saved_provider()
+        if saved:
+            parsed["provider"] = saved
+        else:
+            parsed["provider"] = prompt_provider_selection()
+
+    from taui.config import Config
+    config = Config.load(**parsed)
+
+    from taui.tui import run_tui
+    run_tui(config)

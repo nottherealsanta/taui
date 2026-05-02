@@ -98,6 +98,7 @@ class AgentLoop:
         on_approval: Callable[[str, str, dict], Awaitable[bool]] | None = None,
         on_text: Callable[[str], Awaitable[None]] | None = None,
         on_text_delta: Callable[[str], None] | None = None,
+        on_reasoning_delta: Callable[[str], None] | None = None,
     ) -> None:
         self.agent_id = agent_id or uuid4().hex[:12]
         self.stream_id = f"agents/{self.agent_id}"
@@ -114,6 +115,7 @@ class AgentLoop:
         self._on_approval = on_approval
         self._on_text = on_text
         self._on_text_delta = on_text_delta
+        self._on_reasoning_delta = on_reasoning_delta
 
         self.state = AgentState.IDLE
         self._messages: list[Message] = []
@@ -264,10 +266,12 @@ class AgentLoop:
         tools = self._executor.registry.schemas() or None
         # Wire streaming text delta callback to provider
         self._llm.on_text_delta = self._on_text_delta
+        self._llm.on_reasoning_delta = self._on_reasoning_delta
         try:
             return await self._llm.create_turn(messages, self._model, tools=tools)
         finally:
             self._llm.on_text_delta = None
+            self._llm.on_reasoning_delta = None
 
     def _maybe_compact(self) -> None:
         """Compact messages if approaching token budget."""
@@ -352,6 +356,10 @@ class AgentLoop:
                 entry["tool_calls"] = [
                     tc.to_chat_completions_format() for tc in msg.tool_calls
                 ]
+                # OpenAI Chat Completions API requires "content" on
+                # assistant messages that carry tool_calls, even if null.
+                if msg.content is None:
+                    entry["content"] = None
             if msg.tool_call_id:
                 entry["tool_call_id"] = msg.tool_call_id
             if msg.name and msg.role == "tool":

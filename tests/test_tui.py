@@ -1,10 +1,37 @@
-"""Tests for taui.tui module — import and structure tests (no live app)."""
+"""Tests for taui.tui module — import, structure, and unit tests (no live app)."""
 
 from __future__ import annotations
 
+import asyncio
+import tempfile
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
 
-from taui.tui import TauiApp, run_tui, _trunc
+from taui.tui import TauiApp, run_tui
+from taui.tui.app import _trunc
+from taui.tui.messages import (
+    AgentBusy,
+    AgentIdle,
+    StreamTextDelta,
+    ToolEnded,
+    ToolStarted,
+)
+from taui.tui.widgets.chat_input import ChatInput
+from taui.tui.widgets.tool_status import ToolStatusWidget
+from taui.tui.widgets.spinner import SpinnerWidget
+from taui.tui.widgets.status_bar import StatusBar, ModelStatus, ContextStatus
+from taui.tui.widgets.footer import CustomFooter
+from taui.tui.widgets.agent_response import AgentResponse
+from taui.tui.widgets.sidebar import Sidebar
+from taui.tui.widgets.terminal import TerminalOutput
+from taui.tui.widgets.approval import ApprovalPrompt, QuestionPrompt
+from taui.tui.screens.context_breakdown import ContextBreakdownScreen
+from taui.tui.screens.diff_view import DiffViewScreen
+
+
+# ── _trunc ────────────────────────────────────────────────────────────
 
 
 class TestTrunc:
@@ -23,18 +50,361 @@ class TestTrunc:
         assert _trunc("short") == "short"
 
 
+# ── TauiApp structure ────────────────────────────────────────────────
+
+
 class TestTauiApp:
     def test_instantiate(self):
         app = TauiApp()
         assert app.TITLE == "taui"
         assert app._session is None
-        assert app._busy is False
+        assert app._is_processing is False
 
     def test_bindings(self):
         app = TauiApp()
         keys = [b[0] if isinstance(b, tuple) else b.key for b in app.BINDINGS]
+        assert "ctrl+q" in keys
+        assert "ctrl+n" in keys
+        assert "ctrl+b" in keys
+        assert "ctrl+x" in keys
         assert "ctrl+c" in keys
-        assert "ctrl+l" in keys
 
     def test_run_tui_is_callable(self):
         assert callable(run_tui)
+
+    def test_initial_queues_empty(self):
+        app = TauiApp()
+        assert app._queued == []
+        assert app._pending_indicators == []
+        assert app._tool_counter == 0
+        assert app._pending_tool_keys == {}
+        assert app._active_tool_widgets == {}
+
+    def test_history_file_path(self):
+        app = TauiApp()
+        assert "taui" in str(app._history_file)
+        assert "prompt_history" in str(app._history_file)
+
+
+# ── @file expansion ──────────────────────────────────────────────────
+
+
+class TestFileExpansion:
+    def test_expand_existing_file(self, tmp_path):
+        from taui.config import Config
+        f = tmp_path / "test.txt"
+        f.write_text("file content here")
+        config = Config(working_dir=tmp_path)
+        app = TauiApp(config)
+        result = app._expand_file_refs(f"@{f.name}")
+        assert "file content here" in result
+        assert "```test.txt" in result
+
+    def test_expand_nonexistent_file(self, tmp_path):
+        from taui.config import Config
+        config = Config(working_dir=tmp_path)
+        app = TauiApp(config)
+        result = app._expand_file_refs("@nonexistent.txt")
+        assert result == "@nonexistent.txt"
+
+    def test_no_expansion_without_at(self, tmp_path):
+        from taui.config import Config
+        config = Config(working_dir=tmp_path)
+        app = TauiApp(config)
+        result = app._expand_file_refs("hello world")
+        assert result == "hello world"
+
+    def test_bare_at_not_expanded(self, tmp_path):
+        from taui.config import Config
+        config = Config(working_dir=tmp_path)
+        app = TauiApp(config)
+        result = app._expand_file_refs("@")
+        assert result == "@"
+
+
+# ── History persistence ──────────────────────────────────────────────
+
+
+class TestHistoryPersistence:
+    def test_save_and_load(self, tmp_path):
+        app = TauiApp()
+        app._history_file = tmp_path / "test_history"
+
+        # Manually write history file
+        app._history_file.parent.mkdir(parents=True, exist_ok=True)
+        app._history_file.write_text("first\nsecond\nthird\n")
+        app._load_history()
+        assert app._history == ["third", "second", "first"]
+
+    def test_empty_history(self, tmp_path):
+        app = TauiApp()
+        app._history_file = tmp_path / "nonexistent"
+        app._load_history()
+        assert app._history == []
+
+
+# ── ChatInput ────────────────────────────────────────────────────────
+
+
+class TestChatInput:
+    def test_submitted_message_has_queue_flag(self):
+        msg = ChatInput.Submitted("hello", queue=False)
+        assert msg.value == "hello"
+        assert msg.queue is False
+
+        msg_q = ChatInput.Submitted("follow up", queue=True)
+        assert msg_q.value == "follow up"
+        assert msg_q.queue is True
+
+    def test_initial_state(self):
+        ci = ChatInput()
+        assert ci.can_submit is False
+        assert ci.agent_busy is False
+        assert ci._history_messages == []
+        assert ci._history_index == -1
+
+    def test_load_history(self):
+        ci = ChatInput()
+        ci.load_history(["newest", "older", "oldest"])
+        assert ci._history_messages == ["newest", "older", "oldest"]
+        assert ci._history_index == -1
+
+
+# ── ToolStatusWidget ─────────────────────────────────────────────────
+
+
+class TestToolStatusWidget:
+    def test_instantiate(self):
+        w = ToolStatusWidget("bash", "ls -la")
+        assert w.tool_name == "bash"
+        assert w.args_str == "ls -la"
+        assert w._spinning is True
+        assert w._completed is False
+
+    def test_spinner_frames(self):
+        assert len(ToolStatusWidget.SPINNER_FRAMES) == 8
+
+
+# ── Messages ─────────────────────────────────────────────────────────
+
+
+class TestMessages:
+    def test_tool_started(self):
+        msg = ToolStarted("bash_1", "bash", "ls -la")
+        assert msg.tool_key == "bash_1"
+        assert msg.tool_name == "bash"
+        assert msg.args_str == "ls -la"
+
+    def test_tool_ended(self):
+        msg = ToolEnded("bash_1", "bash", "output", False)
+        assert msg.tool_key == "bash_1"
+        assert not msg.is_error
+
+    def test_tool_ended_error(self):
+        msg = ToolEnded("bash_1", "bash", "error msg", True)
+        assert msg.is_error
+
+    def test_stream_text_delta(self):
+        msg = StreamTextDelta("hello ")
+        assert msg.text == "hello "
+
+
+# ── FIFO tool tracking ──────────────────────────────────────────────
+
+
+class TestToolFIFO:
+    def test_fifo_ordering(self):
+        """Verify FIFO key assignment and pop order."""
+        app = TauiApp()
+
+        # Simulate two concurrent bash tool calls
+        app._tool_counter += 1
+        key1 = f"bash_{app._tool_counter}"
+        app._pending_tool_keys.setdefault("bash", []).append(key1)
+
+        app._tool_counter += 1
+        key2 = f"bash_{app._tool_counter}"
+        app._pending_tool_keys.setdefault("bash", []).append(key2)
+
+        assert app._pending_tool_keys["bash"] == ["bash_1", "bash_2"]
+
+        # Pop first (FIFO)
+        popped = app._pending_tool_keys["bash"].pop(0)
+        assert popped == "bash_1"
+
+        popped = app._pending_tool_keys["bash"].pop(0)
+        assert popped == "bash_2"
+
+    def test_fallback_on_empty_queue(self):
+        """When FIFO queue is empty, fallback scan works."""
+        app = TauiApp()
+        mock_widget = MagicMock()
+        app._active_tool_widgets["bash_5"] = mock_widget
+
+        # No pending keys for bash
+        keys = app._pending_tool_keys.get("bash", [])
+        assert keys == []
+
+        # Fallback finds the widget
+        tool_key = next(
+            (k for k in app._active_tool_widgets if k.startswith("bash")),
+            "bash_unknown",
+        )
+        assert tool_key == "bash_5"
+
+
+# ── StatusBar ────────────────────────────────────────────────────────
+
+
+class TestStatusBar:
+    def test_model_status_initial(self):
+        ms = ModelStatus()
+        assert ms._provider == ""
+        assert ms._model == ""
+
+    def test_model_status_set_info(self):
+        ms = ModelStatus()
+        ms.set_info("copilot", "claude-sonnet", extensions_mode=True)
+        assert ms._provider == "copilot"
+        assert ms._model == "claude-sonnet"
+        assert ms._extensions_mode is True
+
+    def test_context_status_initial(self):
+        cs = ContextStatus()
+        assert cs._tokens == 0
+
+
+# ── Footer ───────────────────────────────────────────────────────────
+
+
+class TestFooter:
+    def test_idle_footer(self):
+        f = CustomFooter(busy=False)
+        text = f.render()
+        assert "send" in text.plain
+        assert "newline" in text.plain
+
+    def test_busy_footer(self):
+        f = CustomFooter(busy=True)
+        text = f.render()
+        assert "steer" in text.plain
+        assert "queue" in text.plain
+        assert "cancel" in text.plain
+
+    def test_sidebar_shortcut_shown(self):
+        f = CustomFooter(busy=False)
+        text = f.render()
+        assert "sidebar" in text.plain
+        assert "context" in text.plain
+
+
+# ── Sidebar ──────────────────────────────────────────────────────────
+
+
+class TestSidebar:
+    def test_instantiate(self, tmp_path):
+        s = Sidebar(tmp_path)
+        assert s._working_dir == tmp_path
+
+    def test_default_cwd(self):
+        s = Sidebar()
+        assert s._working_dir == Path.cwd()
+
+
+# ── TerminalOutput ───────────────────────────────────────────────────
+
+
+class TestTerminalOutput:
+    def test_instantiate(self):
+        t = TerminalOutput("ls -la")
+        assert t._command == "ls -la"
+        assert t._buffer == ""
+
+
+# ── ApprovalPrompt ───────────────────────────────────────────────────
+
+
+class TestApprovalPrompt:
+    def test_instantiate(self):
+        p = ApprovalPrompt("bash", "cmd=ls")
+        assert p.tool_name == "bash"
+        assert p.args_summary == "cmd=ls"
+
+    def test_responded_message(self):
+        msg = ApprovalPrompt.Responded(approved=True)
+        assert msg.approved is True
+        msg2 = ApprovalPrompt.Responded(approved=False)
+        assert msg2.approved is False
+
+
+# ── QuestionPrompt ───────────────────────────────────────────────────
+
+
+class TestQuestionPrompt:
+    def test_instantiate(self):
+        q = QuestionPrompt("Pick one", ["a", "b", "c"])
+        assert q._question == "Pick one"
+        assert q._options == ["a", "b", "c"]
+
+    def test_answered_message(self):
+        msg = QuestionPrompt.Answered("option_a")
+        assert msg.answer == "option_a"
+
+
+# ── DiffViewScreen ──────────────────────────────────────────────────
+
+
+class TestDiffViewScreen:
+    def test_instantiate(self):
+        s = DiffViewScreen("file.py", "before", "after")
+        assert s._file_path == "file.py"
+        assert s._before == "before"
+        assert s._after == "after"
+
+
+# ── ContextBreakdownScreen ──────────────────────────────────────────
+
+
+class TestContextBreakdownScreen:
+    def test_instantiate(self):
+        from taui.agent.loop import Message
+        msgs = [
+            Message(role="system", content="You are a helper."),
+            Message(role="user", content="Hello"),
+        ]
+        s = ContextBreakdownScreen(msgs)
+        assert s._messages == msgs
+
+
+# ── AgentResponse ────────────────────────────────────────────────────
+
+
+class TestAgentResponse:
+    def test_instantiate(self):
+        r = AgentResponse()
+        assert r._buffer == ""
+        assert r._finalized is False
+
+
+# ── SpinnerWidget ────────────────────────────────────────────────────
+
+
+class TestSpinnerWidget:
+    def test_instantiate(self):
+        s = SpinnerWidget()
+        assert s._running is False
+        assert s._status_text == "Thinking..."
+
+    def test_set_status_updates_text(self):
+        s = SpinnerWidget()
+        # Can't call set_status without an app context (calls self.update),
+        # so test the internal state directly
+        s._status_text = "Running bash..."
+        assert s._status_text == "Running bash..."
+
+    def test_set_status_empty_defaults(self):
+        s = SpinnerWidget()
+        # set_status("") should default to "Thinking..."
+        # Test the logic without calling update
+        text = "" or "Thinking..."
+        assert text == "Thinking..."

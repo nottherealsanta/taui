@@ -106,6 +106,7 @@ class BaseLLMProvider(ABC):
 
     # Optional streaming callback — set by agent loop for live output
     on_text_delta: Callable[[str], Any] | None = None
+    on_reasoning_delta: Callable[[str], Any] | None = None
 
     # ── Abstract interface ─────────────────────────────────────────
 
@@ -323,6 +324,8 @@ class BaseLLMProvider(ABC):
                 case "reasoning_delta":
                     if event.reasoning_text:
                         reasoning_parts.append(event.reasoning_text)
+                        if self.on_reasoning_delta:
+                            self.on_reasoning_delta(event.reasoning_text)
 
                 case "tool_call_start":
                     if event.tool_call_index is not None and event.tool_call:
