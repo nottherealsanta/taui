@@ -1,4 +1,4 @@
-"""Approval and question inline widgets."""
+"""Approval inline widget."""
 
 from __future__ import annotations
 
@@ -8,8 +8,7 @@ from textual.app import ComposeResult
 from textual.containers import Horizontal
 from textual.message import Message
 from textual.widget import Widget
-from textual.widgets import Button, Label, OptionList, Static
-from textual.widgets.option_list import Option
+from textual.widgets import Button, Label
 
 
 class ApprovalPrompt(Widget):
@@ -69,73 +68,6 @@ class ApprovalPrompt(Widget):
 
     async def wait_for_response(self) -> bool:
         """Wait for user to respond. Returns True if approved."""
-        loop = asyncio.get_event_loop()
-        self._future = loop.create_future()
-        return await self._future
-
-
-class QuestionPrompt(Widget):
-    """Inline question prompt with selectable options."""
-
-    DEFAULT_CSS = """
-    QuestionPrompt {
-        height: auto;
-        padding: 0 1;
-        margin: 0 0 1 0;
-    }
-    QuestionPrompt .question-text {
-        color: yellow;
-        padding: 0 0 0 0;
-    }
-    QuestionPrompt OptionList {
-        height: auto;
-        max-height: 10;
-        margin: 0 0 0 3;
-        background: $surface;
-        border: solid $accent;
-    }
-    """
-
-    class Answered(Message):
-        """Posted when user selects an answer."""
-
-        def __init__(self, answer: str | None) -> None:
-            super().__init__()
-            self.answer = answer
-
-    def __init__(self, question: str, options: list[str] | None = None) -> None:
-        super().__init__()
-        self._question = question
-        self._options = options or []
-        self._future: asyncio.Future[str | None] | None = None
-
-    def compose(self) -> ComposeResult:
-        yield Label(
-            f"[yellow]? {self._question}[/yellow]",
-            classes="question-text",
-            markup=True,
-        )
-        if self._options:
-            opts = [Option(f"{i}. {opt}") for i, opt in enumerate(self._options, 1)]
-            yield OptionList(*opts, id="question-options")
-
-    def on_mount(self) -> None:
-        if self._options:
-            self.query_one("#question-options", OptionList).focus()
-
-    def on_option_list_option_selected(
-        self, event: OptionList.OptionSelected
-    ) -> None:
-        idx = event.option_index
-        answer = self._options[idx] if idx < len(self._options) else None
-        self.post_message(self.Answered(answer))
-        if self._future and not self._future.done():
-            self._future.set_result(answer)
-
-    async def wait_for_answer(self) -> str | None:
-        """Wait for user to answer. Returns selected option text or None."""
-        if not self._options:
-            return None
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         self._future = loop.create_future()
         return await self._future

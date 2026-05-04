@@ -7,9 +7,9 @@ from taui.config import Config, DEFAULT_SYSTEM_PROMPT
 
 class TestConfig:
     def test_defaults(self):
-        cfg = Config()
+        cfg = Config.load()
         assert cfg.provider == "copilot"
-        assert cfg.model == "claude-sonnet-4.6"
+        assert cfg.model == "claude-haiku-4.5"
         assert cfg.max_turns == 50
         assert cfg.system_prompt == DEFAULT_SYSTEM_PROMPT
 

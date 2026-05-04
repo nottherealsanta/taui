@@ -483,7 +483,7 @@ def _create_provider(provider_name: str) -> tuple[Any, str]:
         from .providers.copilot import CopilotProvider
 
         creds = get_copilot_credentials()
-        return CopilotProvider(creds), "claude-sonnet-4.5"
+        return CopilotProvider(creds), "claude-haiku-4.5"
 
     elif provider_name == "codex":
         from .auth.codex import get_codex_credentials

@@ -17,10 +17,10 @@ class CompletionItem(Static):
     CompletionItem {
         height: 1;
         padding: 0 1;
-        color: $text;
+        color: $text-muted;
     }
     CompletionItem.highlighted {
-        background: $accent;
+        background: $surface-lighten-1;
         color: $text;
     }
     """
@@ -33,15 +33,14 @@ class CompletionDropdown(Widget):
     CompletionDropdown {
         layer: overlay;
         dock: bottom;
-        width: 40;
+        width: 60;
         max-height: 10;
         height: auto;
-        background: $surface-darken-2;
-        border: round $accent-muted;
+        background: $surface-darken-1;
+        border: tall $surface-lighten-1;
         padding: 0;
         margin: 0 2;
         display: none;
-        offset-y: -1;
     }
     CompletionDropdown.visible {
         display: block;
@@ -81,12 +80,13 @@ class CompletionDropdown(Widget):
                 item.add_class("highlighted")
             container.mount(item)
 
-    def show(self, items: list[tuple[str, str]]) -> None:
-        """Show dropdown with given items."""
+    def show(self, items: list[tuple[str, str]], offset_y: int = -7) -> None:
+        """Show dropdown with given items positioned above the chat input."""
         if not items:
             self.hide()
             return
         self.set_items(items)
+        self.styles.offset = (0, offset_y)
         self.add_class("visible")
 
     def hide(self) -> None:

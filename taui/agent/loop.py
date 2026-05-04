@@ -117,6 +117,12 @@ class AgentLoop:
         self._on_text_delta = on_text_delta
         self._on_reasoning_delta = on_reasoning_delta
 
+        # Batch-question callback: async (list[(question, options)]) -> list[str|None]
+        self._on_questions_batch: (
+            Callable[[list[tuple[str, list[str] | None]]], Awaitable[list[str | None]]]
+            | None
+        ) = None
+
         self.state = AgentState.IDLE
         self._messages: list[Message] = []
         self._steering_queue: list[str] = []
@@ -236,10 +242,23 @@ class AgentLoop:
             EventType.STATE_CHANGE, {"state": "tool_execution", "turn": turn}
         )
 
-        for tc in llm_result.tool_calls:
+        # Batch question tool calls so the UI can show them together
+        question_tcs = [tc for tc in llm_result.tool_calls if tc.name == "question"]
+        other_tcs = [tc for tc in llm_result.tool_calls if tc.name != "question"]
+
+        # Execute non-question tools first
+        for tc in other_tcs:
             await self._execute_tool(tc)
-            # Drain any steering messages injected while tool ran
             self._drain_steering()
+
+        # Execute question tools — batched if possible
+        if question_tcs and self._on_questions_batch and len(question_tcs) > 0:
+            await self._execute_questions_batch(question_tcs)
+            self._drain_steering()
+        else:
+            for tc in question_tcs:
+                await self._execute_tool(tc)
+                self._drain_steering()
 
         return TurnResult(
             text=llm_result.text,
@@ -282,6 +301,63 @@ class AgentLoop:
             if removed:
                 logger.info(
                     "Compacted %d messages agent_id=%s", removed, self.agent_id
+                )
+
+    async def _execute_questions_batch(
+        self, tcs: list[ProviderToolCall]
+    ) -> None:
+        """Execute multiple question tool calls as a batch via the UI."""
+        # Emit tool_call events for each
+        for tc in tcs:
+            await self._emit(
+                EventType.TOOL_CALL,
+                {"call_id": tc.call_id, "name": tc.name, "arguments": tc.arguments},
+            )
+            if self._on_tool_call:
+                await self._on_tool_call(tc.call_id, tc.name, tc.arguments)
+
+        # Build question specs for the UI
+        specs: list[tuple[str, list[str] | None]] = []
+        for tc in tcs:
+            q = tc.arguments.get("question", "")
+            opts = tc.arguments.get("options")
+            if opts is not None and not isinstance(opts, list):
+                opts = None
+            specs.append((q, opts))
+
+        # Call the batch UI callback
+        answers = await self._on_questions_batch(specs)
+
+        # Record results for each tool call
+        for tc, answer in zip(tcs, answers):
+            if answer is None:
+                content = (
+                    "Question was dismissed. Proceed with your best judgment."
+                )
+            else:
+                content = f"User answered: {answer}"
+
+            self._messages.append(
+                Message(
+                    role="tool",
+                    content=content,
+                    tool_call_id=tc.call_id,
+                    name=tc.name,
+                )
+            )
+            is_error = False
+            await self._emit(
+                EventType.TOOL_RESULT,
+                {
+                    "call_id": tc.call_id,
+                    "name": tc.name,
+                    "content": content,
+                    "error": is_error,
+                },
+            )
+            if self._on_tool_result:
+                await self._on_tool_result(
+                    tc.call_id, tc.name, content, is_error
                 )
 
     async def _execute_tool(self, tc: ProviderToolCall) -> None:

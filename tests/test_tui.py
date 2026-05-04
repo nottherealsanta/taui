@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from textual.css.query import NoMatches
 
 from taui.tui import TauiApp, run_tui
 from taui.tui.app import _trunc
@@ -26,7 +27,8 @@ from taui.tui.widgets.footer import CustomFooter
 from taui.tui.widgets.agent_response import AgentResponse
 from taui.tui.widgets.sidebar import Sidebar
 from taui.tui.widgets.terminal import TerminalOutput
-from taui.tui.widgets.approval import ApprovalPrompt, QuestionPrompt
+from taui.tui.widgets.approval import ApprovalPrompt
+from taui.tui.widgets.questions_panel import QuestionsPanel, QuestionSpec
 from taui.tui.screens.context_breakdown import ContextBreakdownScreen
 from taui.tui.screens.diff_view import DiffViewScreen
 
@@ -84,6 +86,11 @@ class TestTauiApp:
         app = TauiApp()
         assert "taui" in str(app._history_file)
         assert "prompt_history" in str(app._history_file)
+
+    def test_smart_scroll_handles_missing_chat_log(self):
+        app = TauiApp()
+        app.query_one = MagicMock(side_effect=NoMatches("missing"))  # type: ignore[method-assign]
+        app._smart_scroll()  # no raise
 
 
 # ── @file expansion ──────────────────────────────────────────────────
@@ -178,11 +185,10 @@ class TestToolStatusWidget:
         w = ToolStatusWidget("bash", "ls -la")
         assert w.tool_name == "bash"
         assert w.args_str == "ls -la"
-        assert w._spinning is True
-        assert w._completed is False
 
     def test_spinner_frames(self):
-        assert len(ToolStatusWidget.SPINNER_FRAMES) == 8
+        from taui.tui.widgets.info_bar import SPINNER_FRAMES
+        assert len(SPINNER_FRAMES) == 8
 
 
 # ── Messages ─────────────────────────────────────────────────────────
@@ -337,18 +343,66 @@ class TestApprovalPrompt:
         assert msg2.approved is False
 
 
-# ── QuestionPrompt ───────────────────────────────────────────────────
+# ── QuestionsPanel ───────────────────────────────────────────────────
 
 
-class TestQuestionPrompt:
-    def test_instantiate(self):
-        q = QuestionPrompt("Pick one", ["a", "b", "c"])
-        assert q._question == "Pick one"
-        assert q._options == ["a", "b", "c"]
+class TestQuestionsPanel:
+    def test_instantiate_multi(self):
+        specs = [
+            QuestionSpec("What color?", ["red", "blue"]),
+            QuestionSpec("Your name?"),
+        ]
+        panel = QuestionsPanel(specs)
+        assert len(panel._specs) == 2
+        assert panel._current == 0
 
-    def test_answered_message(self):
-        msg = QuestionPrompt.Answered("option_a")
-        assert msg.answer == "option_a"
+    def test_instantiate_single(self):
+        panel = QuestionsPanel([QuestionSpec("Pick one", ["a", "b"])])
+        assert len(panel._specs) == 1
+
+    def test_answers_initialized_to_none(self):
+        specs = [QuestionSpec("Q1"), QuestionSpec("Q2")]
+        panel = QuestionsPanel(specs)
+        assert panel._answers == [None, None]
+
+    def test_confirmed_message(self):
+        msg = QuestionsPanel.Confirmed(["red", "Alice"])
+        assert msg.answers == ["red", "Alice"]
+
+    def test_question_spec_defaults(self):
+        spec = QuestionSpec("What?")
+        assert spec.question == "What?"
+        assert spec.options is None
+
+    def test_question_spec_with_options(self):
+        spec = QuestionSpec("Pick", ["a", "b"])
+        assert spec.options == ["a", "b"]
+
+    def test_custom_answers_initialized_empty(self):
+        specs = [QuestionSpec("Q1"), QuestionSpec("Q2")]
+        panel = QuestionsPanel(specs)
+        assert panel._custom_answers == ["", ""]
+
+    def test_select_custom_answer_uses_typed_value(self):
+        panel = QuestionsPanel([QuestionSpec("Pick", ["a", "b"])])
+        panel._custom_answers[0] = "other"
+
+        class Event:
+            option_index = 2
+
+        panel.on_option_list_option_selected(Event())  # type: ignore[arg-type]
+
+        assert panel._answers == ["other"]
+
+    def test_select_empty_custom_answer_is_none(self):
+        panel = QuestionsPanel([QuestionSpec("Pick", ["a", "b"])])
+
+        class Event:
+            option_index = 2
+
+        panel.on_option_list_option_selected(Event())  # type: ignore[arg-type]
+
+        assert panel._answers == [None]
 
 
 # ── DiffViewScreen ──────────────────────────────────────────────────

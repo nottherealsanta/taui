@@ -22,10 +22,14 @@ class ChatInput(TextArea):
         min-height: 3;
         max-height: 8;
         border: none;
-        padding: 0 1;
+        padding: 1 2;
         margin: 0 2;
         background: $surface;
         color: $text;
+        scrollbar-size: 0 0;
+        & .text-area--cursor-line {
+            background: transparent;
+        }
     }
     ChatInput:focus {
         border: none;
@@ -82,6 +86,7 @@ class ChatInput(TextArea):
     def _show_completion(self) -> None:
         """Show the completion dropdown with matching commands."""
         from taui.tui.widgets.completion_dropdown import CompletionDropdown
+        from taui.tui.widgets.info_bar import InfoBar
 
         text = self.text
         if not text.startswith("/"):
@@ -101,7 +106,12 @@ class ChatInput(TextArea):
 
         try:
             dropdown = self.app.query_one(CompletionDropdown)
-            dropdown.show(matches)
+            try:
+                info_bar = self.app.query_one(InfoBar)
+                offset_y = -(self.outer_size.height + info_bar.outer_size.height)
+            except Exception:
+                offset_y = -7
+            dropdown.show(matches, offset_y=offset_y)
             self._completion_active = True
         except Exception:
             pass
@@ -250,9 +260,10 @@ class ChatInput(TextArea):
 
         await super()._on_key(event)
 
-        # After any character input, update the dropdown if visible or if typing /
-        if len(event.key) == 1 or event.key == "backspace":
-            if self.text.startswith("/") and " " not in self.text[1:]:
-                self._show_completion()
-            elif self._completion_active:
-                self._dismiss_completion()
+    def on_text_area_changed(self, event: TextArea.Changed) -> None:
+        """Show or hide the completion dropdown as the text changes."""
+        text = self.text
+        if text.startswith("/") and " " not in text[1:]:
+            self._show_completion()
+        elif self._completion_active:
+            self._dismiss_completion()

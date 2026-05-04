@@ -1,4 +1,4 @@
-"""Info bar widget — shows provider, model, tokens, turns, cost."""
+"""Info bar widget — shows provider, model, tokens, and cost."""
 
 from __future__ import annotations
 
@@ -22,10 +22,11 @@ class InfoBar(Static):
 
     DEFAULT_CSS = """
     InfoBar {
-        height: 1;
-        padding: 0 2;
+        height: 3;
+        padding: 1 2;
+        margin: 0 2;
         color: $text-muted;
-        background: $surface-darken-1;
+        background: transparent;
     }
     """
 
@@ -35,7 +36,6 @@ class InfoBar(Static):
         self._model = ""
         self._tokens = 0
         self._max_tokens = 0
-        self._turns = 0
         self._cost = 0.0
         self._extensions_mode = False
         self._spinning = False
@@ -49,7 +49,6 @@ class InfoBar(Static):
         model: str = "",
         tokens: int = 0,
         max_tokens: int = 0,
-        turns: int = 0,
         cost: float = 0.0,
         extensions_mode: bool = False,
     ) -> None:
@@ -57,7 +56,6 @@ class InfoBar(Static):
         self._model = model
         self._tokens = tokens
         self._max_tokens = max_tokens
-        self._turns = turns
         self._cost = cost
         self._extensions_mode = extensions_mode
         self.refresh()
@@ -85,15 +83,17 @@ class InfoBar(Static):
         if self._spinning:
             frame = SPINNER_FRAMES[self._spinner_frame % len(SPINNER_FRAMES)]
             t.append(f"{frame} ", style="bold #3fb950")
+        else:
+            t.append("  ")
 
         if self._extensions_mode:
             t.append(" EXT ", style="bold black on yellow")
             t.append(" ", style="dim")
 
         if self._model:
-            t.append(self._model, style="dim")
+            t.append(self._model, style="#e6edf3")
             if self._provider:
-                t.append(f"  {self._provider}", style="dim italic")
+                t.append(f"  {self._provider}", style="#8b949e italic")
         else:
             t.append("initializing…", style="dim italic")
 
@@ -101,18 +101,11 @@ class InfoBar(Static):
             t.append("  ", style="dim")
             t.append(
                 f"{_fmt_tokens(self._tokens)}/{_fmt_tokens(self._max_tokens)}",
-                style="dim italic",
-            )
-
-        if self._turns:
-            t.append("  ", style="dim")
-            t.append(
-                f"{self._turns} turn{'s' if self._turns != 1 else ''}",
-                style="dim italic",
+                style="#c9d1d9 italic",
             )
 
         if self._cost > 0:
             t.append("  ", style="dim")
-            t.append(f"${self._cost:.4f}", style="dim italic")
+            t.append(f"${self._cost:.4f}", style="#c9d1d9 italic")
 
         return t

@@ -20,13 +20,15 @@ class QuestionTool:
     name: str = "question"
     description: str = (
         "Ask the user a question when you need clarification or a decision. "
-        "Provide the question text and optional answer choices."
+        "Provide 2–3 suggested answers as options. "
+        "Suffix an option with ' (Recommended)' if you have a preferred choice."
     )
     category: ToolCategory = ToolCategory.QUESTION
     guidelines: str = (
         "Use `question` when you need user input to proceed. "
         "Don't ask unnecessary questions — only when genuinely uncertain. "
-        "Provide clear options when the answer is one of a few choices."
+        "Always provide 2–3 concise options. Mark your recommended option "
+        "with ' (Recommended)' at the end of the string."
     )
     schema: dict[str, Any] = field(default=None)  # type: ignore[assignment]
 
@@ -45,7 +47,11 @@ class QuestionTool:
                     "options": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Optional list of answer choices.",
+                        "description": (
+                            "2–3 suggested answers. Append ' (Recommended)' "
+                            "to your preferred choice. The user can always "
+                            "type a custom answer instead."
+                        ),
                     },
                 },
                 "required": ["question"],

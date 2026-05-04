@@ -29,7 +29,7 @@ PROVIDER_MAP: dict[str, str] = {
 
 # Default models per provider (fallback when API is unavailable)
 DEFAULT_MODELS: dict[str, str] = {
-    "copilot": "claude-sonnet-4.6",
+    "copilot": "claude-haiku-4.5",
     "codex": "gpt-5.3-codex",
 }
 
@@ -113,7 +113,7 @@ def list_models(provider: str, *, force_refresh: bool = False) -> list[dict]:
 
 # Preferred model patterns per provider (first match wins)
 PREFERRED_MODELS: dict[str, list[str]] = {
-    "copilot": ["claude-sonnet-4.6", "claude-sonnet-4.5", "claude-sonnet-4", "gpt-5.3-codex"],
+    "copilot": ["claude-haiku-4.5", "claude-sonnet-4.6", "claude-sonnet-4.5", "claude-sonnet-4", "gpt-5.3-codex"],
     "codex": ["gpt-5.3-codex", "gpt-5.2-codex", "gpt-5.1-codex"],
 }
 
@@ -122,7 +122,7 @@ def get_default_model(provider: str) -> str:
     """Return the best default model for a provider from the live catalog."""
     models = list_models(provider)
     if not models:
-        return DEFAULT_MODELS.get(provider, "claude-sonnet-4.6")
+        return DEFAULT_MODELS.get(provider, "claude-haiku-4.5")
 
     model_ids = {m["id"] for m in models}
 
@@ -143,7 +143,7 @@ def prompt_model_selection(provider: str) -> str:
     """
     models = list_models(provider)
     if not models:
-        return DEFAULT_MODELS.get(provider, "claude-sonnet-4.6")
+        return DEFAULT_MODELS.get(provider, "claude-haiku-4.5")
 
     try:
         return _prompt_toolkit_select(models, provider)

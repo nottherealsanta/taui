@@ -131,10 +131,21 @@ class ModelCommand:
 
 
 @dataclass(slots=True)
+class SelfEditModeCommand:
+    """Open self-edit mode in the TUI."""
+
+    name: str = "i"
+    description: str = "Open self-edit mode"
+
+    async def execute(self, ctx: CommandContext) -> CommandResult:
+        return CommandResult.ok("Opened self-edit mode.", action="self_edit_open")
+
+
+@dataclass(slots=True)
 class ExtensionsModeCommand:
     """Toggle extensions mode. Creates a new session with the extensions prompt."""
 
-    name: str = "i"
+    name: str = "ext-mode"
     description: str = "Toggle extensions mode (yellow UI)"
     _get_session: Any = None
 
@@ -144,19 +155,12 @@ class ExtensionsModeCommand:
 
         session = self._get_session()
         is_on = await session.toggle_extensions_mode()
-
         if is_on:
-            # If user provided a description, send it as the first message
-            msg = "Extensions mode ON"
-            if ctx.args:
-                desc = " ".join(ctx.args)
-                msg += f" — starting with: {desc}"
-            return CommandResult.ok(msg, action="extensions_on")
-        else:
-            return CommandResult.ok(
-                "Extensions mode OFF — back to normal.",
-                action="extensions_off",
-            )
+            return CommandResult.ok("Extensions mode ON", action="extensions_on")
+        return CommandResult.ok(
+            "Extensions mode OFF — back to normal.",
+            action="extensions_off",
+        )
 
 
 @dataclass(slots=True)
@@ -647,6 +651,20 @@ class VerboseCommand:
         return CommandResult.ok(f"Tool output: {state}")
 
 
+@dataclass(slots=True)
+class DebugCommand:
+    """Run UI debug scenarios."""
+
+    name: str = "debug"
+    description: str = "Run UI debug scenarios"
+
+    async def execute(self, ctx: CommandContext) -> CommandResult:
+        scenario = ctx.args[0].lower() if ctx.args else ""
+        if scenario == "questions":
+            return CommandResult.ok("Debug: questions", action="debug_questions")
+        return CommandResult.fail("Usage: /debug questions")
+
+
 def register_builtins(
     registry: CommandRegistry,
     *,
@@ -662,6 +680,7 @@ def register_builtins(
     model_cmd = ModelCommand()
     cost_cmd = CostCommand()
     provider_cmd = ProviderCommand()
+    self_edit_cmd = SelfEditModeCommand()
     ext_mode_cmd = ExtensionsModeCommand()
     ext_list_cmd = ExtensionsCommand()
     sessions_cmd = SessionsCommand()
@@ -671,6 +690,7 @@ def register_builtins(
     copy_cmd = CopyCommand()
     export_cmd = ExportCommand()
     verbose_cmd = VerboseCommand()
+    debug_cmd = DebugCommand()
 
     if get_session:
         clear_cmd._get_loop = lambda: get_session()._loop
@@ -698,6 +718,7 @@ def register_builtins(
     registry.register(model_cmd)
     registry.register(provider_cmd)
     registry.register(ext_list_cmd)
+    registry.register(self_edit_cmd)
     registry.register(ext_mode_cmd)
     registry.register(sessions_cmd)
     registry.register(new_cmd)
@@ -709,6 +730,7 @@ def register_builtins(
     registry.register(export_cmd)
     registry.register(HotkeysCommand())
     registry.register(verbose_cmd)
+    registry.register(debug_cmd)
 
     registry.alias("h", "help")
     registry.alias("?", "help")

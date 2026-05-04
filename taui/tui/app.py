@@ -10,6 +10,7 @@ from rich.markup import escape
 from textual import on, work
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.css.query import NoMatches
 from textual.widgets import Markdown, Static
 
 from taui.agent.context import DEFAULT_MAX_INPUT_TOKENS, estimate_total_tokens
@@ -20,11 +21,13 @@ from taui.session import Session
 from taui.tui.messages import StreamReasoningDelta, StreamTextDelta, ToolEnded, ToolStarted
 from taui.tui.screens.context_breakdown import ContextBreakdownScreen
 from taui.tui.widgets.agent_response import AgentResponse
-from taui.tui.widgets.approval import ApprovalPrompt, QuestionPrompt
+from taui.tui.widgets.approval import ApprovalPrompt
 from taui.tui.widgets.chat_input import ChatInput
 from taui.tui.widgets.completion_dropdown import CompletionDropdown
 from taui.tui.widgets.info_bar import InfoBar
+from taui.tui.widgets.questions_panel import QuestionSpec, QuestionsPanel
 from taui.tui.widgets.sidebar import Sidebar
+from taui.tui.widgets.self_edit import SelfEditView
 from taui.tui.widgets.tool_status import ToolStatusWidget
 
 logger = logging.getLogger(__name__)
@@ -37,7 +40,7 @@ class TauiApp(App[None]):
 
     CSS = """
     Screen {
-        background: $surface;
+        background: $surface-darken-1;
     }
     #main-layout {
         layout: horizontal;
@@ -53,11 +56,12 @@ class TauiApp(App[None]):
         scrollbar-size: 0 0;
     }
     .user-message {
-        background: $surface-darken-1;
+        background: $surface;
         padding: 1 2;
         margin: 1 0 0 0;
     }
     .tool-section {
+        height: auto;
         padding: 0 2;
         margin: 0;
     }
@@ -96,6 +100,7 @@ class TauiApp(App[None]):
         ("ctrl+c", "cancel_request", "Cancel"),
         ("ctrl+b", "toggle_sidebar", "Sidebar"),
         ("ctrl+x", "show_context", "Context"),
+        ("ctrl+i", "open_self_edit", "Self-Edit"),
     ]
 
     def __init__(self, config: Config | None = None) -> None:
@@ -120,6 +125,8 @@ class TauiApp(App[None]):
         # Queue for follow-up messages
         self._queued: list[str] = []
         self._pending_indicators: list[tuple[str, str]] = []
+        self._active_questions_panel: QuestionsPanel | None = None
+        self._self_edit_mode = False
 
         # History persistence
         self._history_file = Path.home() / ".cache" / "taui" / "prompt_history"
@@ -131,7 +138,8 @@ class TauiApp(App[None]):
         with Horizontal(id="main-layout"):
             yield Sidebar(self._config.working_dir)
             with Vertical(id="chat-area"):
-                yield VerticalScroll(id="chat-log")
+                with VerticalScroll(id="chat-log"):
+                    pass
                 yield CompletionDropdown(id="completion-dropdown")
                 yield ChatInput(
                     id="chat-input",
@@ -236,7 +244,6 @@ class TauiApp(App[None]):
             model=self._session.model_name,
             tokens=tokens,
             max_tokens=DEFAULT_MAX_INPUT_TOKENS,
-            turns=len(tracker.turns),
             cost=tracker.total_cost_usd,
             extensions_mode=self._session.extensions_mode,
         )
@@ -253,11 +260,8 @@ class TauiApp(App[None]):
         loop._on_reasoning_delta = self._on_reasoning_delta_sync
         loop._on_approval = self._on_approval
 
-        # Wire question tool
-        for name in self._session._registry.names:
-            tool = self._session._registry.get(name)
-            if hasattr(tool, "_ask") and tool.name == "question":
-                tool._ask = self._on_question
+        # Wire batch-question callback
+        loop._on_questions_batch = self._on_questions_batch
 
     async def _on_tool_call(
         self, call_id: str, name: str, arguments: dict
@@ -309,16 +313,27 @@ class TauiApp(App[None]):
         if not self._streamed_text:
             self.post_message(StreamTextDelta(text))
 
-    async def _on_question(
-        self, question: str, options: list[str] | None
-    ) -> str | None:
-        chat_log = self.query_one("#chat-log", VerticalScroll)
-        prompt = QuestionPrompt(question, options)
-        await chat_log.mount(prompt)
-        self._smart_scroll()
-        if options:
-            return await prompt.wait_for_answer()
-        return None
+    async def _on_questions_batch(
+        self, specs: list[tuple[str, list[str] | None]]
+    ) -> list[str | None]:
+        """Show a QuestionsPanel above the chat input and wait for answers."""
+        q_specs = [QuestionSpec(q, opts) for q, opts in specs]
+        chat_area = self.query_one("#chat-area", Vertical)
+        chat_input = self.query_one("#chat-input", ChatInput)
+        chat_input.disabled = True
+        panel = QuestionsPanel(q_specs)
+        self._active_questions_panel = panel
+        try:
+            await chat_area.mount(panel, before=chat_input)
+            self._smart_scroll()
+            return await panel.wait_for_answers()
+        finally:
+            if panel.is_mounted:
+                await panel.remove()
+            if self._active_questions_panel is panel:
+                self._active_questions_panel = None
+            chat_input.disabled = False
+            chat_input.focus()
 
     async def _on_approval(
         self, call_id: str, name: str, arguments: dict
@@ -432,10 +447,10 @@ class TauiApp(App[None]):
 
         # Normal send
         chat_log = self.query_one("#chat-log", VerticalScroll)
-        display_text = escape(text).replace("\n", "\n> ")
+        display_text = escape(text)
         await chat_log.mount(
             Static(
-                f"[bold #e6edf3]> {display_text}[/bold #e6edf3]",
+                f"[bold #e6edf3]{display_text}[/bold #e6edf3]",
                 classes="user-message",
                 markup=True,
             )
@@ -486,7 +501,7 @@ class TauiApp(App[None]):
                 )
                 await chat_log.mount(
                     Static(
-                        f"[bold #e6edf3]> {escape(msg).replace(chr(10), chr(10) + '> ')}[/bold #e6edf3]",
+                        f"[bold #e6edf3]{escape(msg)}[/bold #e6edf3]",
                         classes="user-message",
                         markup=True,
                     )
@@ -523,22 +538,22 @@ class TauiApp(App[None]):
 
             # Turn summary
             chat_log = self.query_one("#chat-log", VerticalScroll)
-            turns = result.turns
-            summary = f"[dim]{turns} turn{'s' if turns != 1 else ''}"
+            summary_parts: list[str] = []
             tracker = self._session.cost_tracker
             if tracker.total_cost_usd > 0:
-                summary += f" · ${tracker.total_cost_usd:.4f}"
+                summary_parts.append(f"${tracker.total_cost_usd:.4f}")
             for fn in self._session.hooks._hooks.get("turn_summary", []):
                 try:
                     extra = fn(result, self._session)
                     if extra:
-                        summary += f" · {extra}"
+                        summary_parts.append(str(extra))
                 except Exception:
                     pass
-            summary += "[/dim]"
-            await chat_log.mount(
-                Static(summary, classes="turn-summary", markup=True)
-            )
+            if summary_parts:
+                summary = f"[dim]{' · '.join(summary_parts)}[/dim]"
+                await chat_log.mount(
+                    Static(summary, classes="turn-summary", markup=True)
+                )
 
             self._update_status()
             self._smart_scroll()
@@ -563,12 +578,13 @@ class TauiApp(App[None]):
         if self._current_response:
             await self._current_response.finalize()
             self._current_response = None
-        # Reset tool section so the next turn creates a fresh container
-        # below any new text, rather than mounting into the old one.
-        self._current_tool_section = None
+            # Only reset tool section when an actual response was finalized,
+            # so the next tool section starts below the new text.
+            self._current_tool_section = None
         # Reset reasoning state for the next turn
-        self._current_reasoning = None
-        self._reasoning_buf = ""
+        if self._current_reasoning is not None:
+            self._current_reasoning = None
+            self._reasoning_buf = ""
 
     # ── Busy state management ─────────────────────────────────────────
 
@@ -596,7 +612,10 @@ class TauiApp(App[None]):
 
     def _smart_scroll(self) -> None:
         """Scroll to bottom only if content exceeds the visible area."""
-        chat_log = self.query_one("#chat-log", VerticalScroll)
+        try:
+            chat_log = self.query_one("#chat-log", VerticalScroll)
+        except NoMatches:
+            return
         if chat_log.virtual_size.height > chat_log.size.height:
             chat_log.scroll_end(animate=False)
 
@@ -609,13 +628,16 @@ class TauiApp(App[None]):
 
         if command in ("/quit", "/q", "/exit"):
             if command == "/q" and self._session and self._session.extensions_mode:
-                result = await self._commands.execute("/i")
+                result = await self._commands.execute("/ext-mode")
                 style = "yellow" if self._session.extensions_mode else "dim"
                 await chat_log.mount(
                     Static(f"[{style}]{result.output}[/{style}]", markup=True)
                 )
                 self._wire_callbacks()
                 self._update_status()
+                return
+            if command == "/q" and self._self_edit_mode:
+                await self.action_close_self_edit()
                 return
             await self.action_quit_app()
             return
@@ -633,15 +655,63 @@ class TauiApp(App[None]):
         )
 
         action = result.metadata.get("action") if result.metadata else None
+        if action == "debug_questions":
+            self.run_worker(
+                self._debug_questions(chat_log),
+                name="debug_questions",
+                group="debug",
+                exclusive=True,
+            )
         if action == "extensions_on":
             await chat_log.mount(
                 Static("[dim]/q to quit extensions[/dim]", markup=True)
             )
+        if action == "self_edit_open":
+            await self.action_open_self_edit()
         if action in (
             "extensions_on", "extensions_off", "new_session", "session_resumed"
         ):
             self._wire_callbacks()
             self._update_status()
+
+    async def _debug_questions(self, chat_log: VerticalScroll) -> None:
+        """Exercise the real question panel UI with deterministic sample data."""
+        try:
+            answers = await self._on_questions_batch(
+                [
+                    (
+                        "Choose a deployment target",
+                        [
+                            "Local dev server (Recommended)",
+                            "Staging environment",
+                            "Production with dry-run",
+                        ],
+                    ),
+                    (
+                        "Pick a follow-up action",
+                        [
+                            "Open the diff",
+                            "Run tests (Recommended)",
+                            "Skip verification",
+                        ],
+                    ),
+                ]
+            )
+        except asyncio.CancelledError:
+            await chat_log.mount(
+                Static("[dim]Debug questions cancelled.[/dim]", markup=True)
+            )
+            self._smart_scroll()
+            raise
+        else:
+            rendered = ", ".join(answer or "<custom empty>" for answer in answers)
+            await chat_log.mount(
+                Static(
+                    f"[dim]Debug answers: {escape(rendered)}[/dim]",
+                    markup=True,
+                )
+            )
+            self._smart_scroll()
 
     # ── Actions ───────────────────────────────────────────────────────
 
@@ -651,6 +721,8 @@ class TauiApp(App[None]):
         self.exit()
 
     async def action_new_chat(self) -> None:
+        if self._self_edit_mode:
+            await self.action_close_self_edit()
         if self._session:
             await self._session.new_session()
             self._wire_callbacks()
@@ -662,6 +734,11 @@ class TauiApp(App[None]):
             )
 
     async def action_cancel_request(self) -> None:
+        if self._active_questions_panel is not None:
+            panel = self._active_questions_panel
+            if panel._future and not panel._future.done():
+                panel._future.cancel()
+            return
         if self._is_processing:
             # Clear queues
             self._queued.clear()
@@ -678,6 +755,33 @@ class TauiApp(App[None]):
             return
         messages = self._session._loop._messages
         self.push_screen(ContextBreakdownScreen(messages))
+
+    async def action_open_self_edit(self) -> None:
+        if self._self_edit_mode:
+            return
+        self._self_edit_mode = True
+        if self._session:
+            await self._session.new_session()
+            self._wire_callbacks()
+            self._update_status()
+        chat_log = self.query_one("#chat-log", VerticalScroll)
+        await chat_log.remove_children()
+        await chat_log.mount(
+            SelfEditView(config=self._config, session=self._session, id="self-edit")
+        )
+        self.query_one("#chat-input", ChatInput).disabled = True
+        self.query_one("#completion-dropdown", CompletionDropdown).styles.display = "none"
+
+    async def action_close_self_edit(self) -> None:
+        if not self._self_edit_mode:
+            return
+        self._self_edit_mode = False
+        chat_log = self.query_one("#chat-log", VerticalScroll)
+        await chat_log.remove_children()
+        chat_input = self.query_one("#chat-input", ChatInput)
+        chat_input.disabled = False
+        chat_input.focus()
+        self.query_one("#completion-dropdown", CompletionDropdown).styles.display = "block"
 
     @on(Sidebar.Dismiss)
     def handle_sidebar_dismiss(self, event: Sidebar.Dismiss) -> None:

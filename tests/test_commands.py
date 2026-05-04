@@ -136,6 +136,15 @@ class TestBuiltinCommands:
         assert "100" in result.output
         assert "50" in result.output
 
+    async def test_self_edit_command(self):
+        from taui.commands.builtins import register_builtins
+
+        reg = CommandRegistry()
+        register_builtins(reg)
+        result = await reg.execute("/i")
+        assert not result.error
+        assert result.metadata["action"] == "self_edit_open"
+
     async def test_extensions_toggle_on(self):
         from taui.commands.builtins import register_builtins
 
@@ -148,7 +157,7 @@ class TestBuiltinCommands:
         session = FakeSession()
         reg = CommandRegistry()
         register_builtins(reg, get_session=lambda: session)
-        result = await reg.execute("/i")
+        result = await reg.execute("/ext-mode")
         assert not result.error
         assert "ON" in result.output
 
@@ -164,16 +173,15 @@ class TestBuiltinCommands:
         session = FakeSession()
         reg = CommandRegistry()
         register_builtins(reg, get_session=lambda: session)
-        result = await reg.execute("/i")
+        result = await reg.execute("/ext-mode")
         assert not result.error
         assert "OFF" in result.output
 
     async def test_extensions_no_session(self):
         from taui.commands.builtins import register_builtins
-
         reg = CommandRegistry()
         register_builtins(reg)
-        result = await reg.execute("/i")
+        result = await reg.execute("/ext-mode")
         assert result.error
         assert "No session" in result.output
 
@@ -330,6 +338,24 @@ class TestBuiltinCommands:
         register_builtins(reg)
         result = await reg.execute("/help")
         assert "/reload" in result.output
+
+    async def test_debug_questions(self):
+        from taui.commands.builtins import register_builtins
+
+        reg = CommandRegistry()
+        register_builtins(reg)
+        result = await reg.execute("/debug questions")
+        assert not result.error
+        assert result.metadata["action"] == "debug_questions"
+
+    async def test_debug_usage(self):
+        from taui.commands.builtins import register_builtins
+
+        reg = CommandRegistry()
+        register_builtins(reg)
+        result = await reg.execute("/debug")
+        assert result.error
+        assert "/debug questions" in result.output
 
 
 # ═══ Write guard ══════════════════════════════════════════════════════════════
