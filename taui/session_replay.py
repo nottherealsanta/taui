@@ -6,7 +6,7 @@ import json
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from taui.agent.loop import Message
+from taui.agent.types import Message
 from taui.llm_provider.types import ProviderToolCall
 from taui.store.events import Event, EventType
 
@@ -32,6 +32,14 @@ class ReplayTranscript:
 
     messages: list[Message]
     items: list[ReplayItem]
+
+
+@dataclass(frozen=True, slots=True)
+class ToolPair:
+    """A matched tool call and its result (result is None if not yet returned)."""
+
+    call: ReplayItem
+    result: ReplayItem | None
 
 
 def replay_events(events: list[Event]) -> ReplayTranscript:

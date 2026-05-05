@@ -20,6 +20,7 @@ from typing import Any
 from uuid import uuid4
 
 from taui.agent.context import DEFAULT_MAX_INPUT_TOKENS, compact_messages, estimate_total_tokens
+from taui.agent.types import Message
 from taui.llm_provider.types import ProviderToolCall, ProviderTurnResult
 from taui.store.events import EventType
 from taui.store.stream import StreamClient
@@ -34,17 +35,6 @@ class AgentState(StrEnum):
     TOOL_EXECUTION = "tool_execution"
     DONE = "done"
     ERROR = "error"
-
-
-@dataclass
-class Message:
-    """A single message in the conversation history."""
-
-    role: str  # system | user | assistant | tool
-    content: str | None = None
-    tool_calls: list[ProviderToolCall] | None = None
-    tool_call_id: str | None = None  # For role="tool" responses
-    name: str | None = None  # Tool name for role="tool"
 
 
 @dataclass

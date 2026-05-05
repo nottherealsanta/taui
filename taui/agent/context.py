@@ -13,10 +13,8 @@ Used by AgentLoop._maybe_compact() before each LLM call.
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:
-    from taui.agent.loop import Message
+from taui.agent.types import Message
 
 
 # ── Defaults ───────────────────────────────────────────────────────────────────

@@ -1,8 +1,9 @@
 """
-StreamClient — high-level async API for producing and consuming events.
+StreamClient — async API for producing and consuming events.
 
-Thin wrapper around Store used by agent components to interact with
-streams without coupling directly to the SQL interface.
+Authoritative producers (AgentLoop) call append(EventType, ...) directly.
+Most readers use the semantic projection methods — load_conversation,
+load_turns, load_tool_history — and never touch EventType or offsets.
 """
 
 from __future__ import annotations
@@ -11,6 +12,7 @@ import logging
 from collections.abc import AsyncIterator
 from typing import Any
 
+from taui.session_replay import ReplayItem, ReplayTranscript, ToolPair, replay_events
 from taui.store.events import Event, EventType
 from taui.store.store import Store, StreamNotFoundError
 
@@ -74,6 +76,59 @@ class StreamClient:
     async def read_all(self, stream_id: str) -> list[Event]:
         """Read all events from a stream."""
         return await self._store.read(stream_id, from_offset=0, limit=2**31)
+
+    # ── Stream queries ────────────────────────────────────────────────────
+
+    async def stream_exists(self, stream_id: str) -> bool:
+        """Return True if the stream exists."""
+        return await self._store.stream_exists(stream_id)
+
+    async def get_length(self, stream_id: str) -> int:
+        """Return the number of events in a stream."""
+        return await self._store.get_length(stream_id)
+
+    # ── Semantic read projections ─────────────────────────────────────────
+
+    async def load_conversation(self, stream_id: str) -> ReplayTranscript:
+        """Return the full conversation as agent messages and display items.
+
+        Callers don't need to know about EventType, offsets, or the raw
+        event model — this is the standard way to reconstruct a session.
+        """
+        events = await self.read_all(stream_id)
+        return replay_events(events)
+
+    async def load_turns(self, stream_id: str) -> list[list[ReplayItem]]:
+        """Return conversation items grouped by turn (one list per user message)."""
+        transcript = await self.load_conversation(stream_id)
+        turns: list[list[ReplayItem]] = []
+        current: list[ReplayItem] = []
+        for item in transcript.items:
+            if item.kind == "user" and current:
+                turns.append(current)
+                current = []
+            current.append(item)
+        if current:
+            turns.append(current)
+        return turns
+
+    async def load_tool_history(self, stream_id: str) -> list[ToolPair]:
+        """Return all tool calls paired with their results.
+
+        Result is None for any call that has not yet received a result.
+        Order matches the order calls were emitted.
+        """
+        transcript = await self.load_conversation(stream_id)
+        results: dict[str, ReplayItem] = {
+            item.call_id: item
+            for item in transcript.items
+            if item.kind == "tool_result"
+        }
+        return [
+            ToolPair(call=item, result=results.get(item.call_id))
+            for item in transcript.items
+            if item.kind == "tool_call"
+        ]
 
     async def tail(
         self,

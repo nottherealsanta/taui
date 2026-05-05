@@ -27,7 +27,7 @@ from taui.hooks import HookRegistry
 from taui.llm_provider.auth import get_credentials
 from taui.llm_provider.providers import CodexProvider, CopilotProvider
 from taui.prompt_builder import ProjectContext, SystemPromptBuilder
-from taui.session_replay import ReplayItem, replay_events
+from taui.session_replay import ReplayItem
 from taui.store.store import Store
 from taui.store.stream import StreamClient
 from taui.tools.builtins import register_builtins
@@ -187,7 +187,7 @@ class Session:
 
         # Register session in store
         await store.create_session(session.session_id, stream_id=session._loop.stream_id)
-        session._loaded_offset = await store.get_length(session._loop.stream_id)
+        session._loaded_offset = await stream.get_length(session._loop.stream_id)
 
         return session
 
@@ -200,7 +200,7 @@ class Session:
 
         result = await self._loop.run(message)
         self._message_count += 1
-        self._loaded_offset = await self._store.get_length(self._loop.stream_id)
+        self._loaded_offset = await self._stream.get_length(self._loop.stream_id)
 
         # Pipeline hook: let extensions postprocess the result
         result = await self.hooks.transform("after_result", result, self)
@@ -252,7 +252,7 @@ class Session:
             mode="extensions" if self.extensions_mode else "normal",
             stream_id=self._loop.stream_id,
         )
-        self._loaded_offset = await self._store.get_length(self._loop.stream_id)
+        self._loaded_offset = await self._stream.get_length(self._loop.stream_id)
 
         # Observer hook
         await self.hooks.run("on_session_start", self)
@@ -288,7 +288,7 @@ class Session:
             mode="extensions" if self.extensions_mode else "normal",
             stream_id=self._loop.stream_id,
         )
-        self._loaded_offset = await self._store.get_length(self._loop.stream_id)
+        self._loaded_offset = await self._stream.get_length(self._loop.stream_id)
 
         # Observer hook
         await self.hooks.run(
@@ -311,7 +311,7 @@ class Session:
         if not stream_id:
             self.last_resume_error = f"Session has no replayable stream: {session_id}"
             return False
-        if not await self._store.stream_exists(stream_id):
+        if not await self._stream.stream_exists(stream_id):
             self.last_resume_error = f"Session stream not found: {stream_id}"
             return False
 
@@ -448,21 +448,20 @@ class Session:
         skills_tool._inject_message = inject_skill_message
 
     async def _replay_stream(self) -> None:
-        events = await self._store.read(self._loop.stream_id, limit=5000)
-        transcript = replay_events(events)
+        transcript = await self._stream.load_conversation(self._loop.stream_id)
         prompt = self._extensions_prompt if self.extensions_mode else self._system_prompt
         self._loop._messages = [Message(role="system", content=prompt)]
         self._loop._messages.extend(transcript.messages)
         self._last_replay_items = transcript.items
         self._message_count = sum(1 for msg in transcript.messages if msg.role == "user")
-        self._loaded_offset = await self._store.get_length(self._loop.stream_id)
+        self._loaded_offset = await self._stream.get_length(self._loop.stream_id)
 
     async def _sync_replay_from_store(self) -> None:
         if not self._loop.stream_id:
             return
-        if not await self._store.stream_exists(self._loop.stream_id):
+        if not await self._stream.stream_exists(self._loop.stream_id):
             return
-        current_offset = await self._store.get_length(self._loop.stream_id)
+        current_offset = await self._stream.get_length(self._loop.stream_id)
         if current_offset > self._loaded_offset:
             await self._replay_stream()
 
