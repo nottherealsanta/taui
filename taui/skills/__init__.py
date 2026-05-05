@@ -130,3 +130,28 @@ class SkillRegistry:
 
     def loaded_skills(self) -> list[Skill]:
         return [s for s in self._skills.values() if s.loaded]
+
+    def add_from_path(self, path: Path, *, scope: str = "extension") -> None:
+        """Add a skill from an explicit path.
+
+        Accepts either a plain ``.md`` file or a directory containing
+        ``SKILL.md``.  Used by extensions that bundle prompt assets.
+        """
+        path = path.resolve()
+        if path.is_file() and path.suffix == ".md":
+            name = path.stem
+            try:
+                raw = path.read_text(encoding="utf-8")
+                if len(raw) > MAX_SKILL_CHARS:
+                    raw = raw[:MAX_SKILL_CHARS] + "\n\n[skill content truncated]"
+                content = raw
+            except OSError as e:
+                logger.warning("Failed to read skill %s: %s", name, e)
+                content = f"(Error reading skill: {e})"
+            self._skills[name] = Skill(
+                name=name, path=path.parent, scope=scope, content=content
+            )
+        elif path.is_dir() and (path / "SKILL.md").is_file():
+            self._skills[path.name] = Skill(name=path.name, path=path, scope=scope)
+        else:
+            logger.warning("Cannot load skill from %s: not a .md file or SKILL.md directory", path)

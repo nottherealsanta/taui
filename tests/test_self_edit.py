@@ -10,7 +10,14 @@ from taui.config import Config
 from taui.tools.builtins import register_builtins
 from taui.tools.base import ToolCategory, ToolResult
 from taui.tools.registry import ToolRegistry
-from taui.tui.widgets.self_edit import AgentProfile, SelfEditStore, _find_tool_source
+from taui.tui.widgets.self_edit import (
+    AgentProfile,
+    ExtensionSource,
+    SelfEditStore,
+    _builtin_extension_summary,
+    _extension_option_label,
+    _find_tool_source,
+)
 from taui.tui.widgets.self_edit import SelfEditView
 
 
@@ -123,6 +130,21 @@ def test_find_tool_source_by_declared_name(tmp_path):
     path = tmp_path / "everything.py"
     path.write_text('name: str = "custom"')
     assert _find_tool_source("custom", [path]) == path
+
+
+def test_builtin_extension_label_and_summary():
+    ext = ExtensionSource(
+        name="mcp",
+        path=None,
+        scope="builtin",
+        description="MCP server manager and invocation tool.",
+        loaded=True,
+    )
+
+    assert _extension_option_label(ext) == "mcp [builtin] - loaded"
+    summary = _builtin_extension_summary(ext)
+    assert "MCP server manager" in summary
+    assert "read-only" in summary
 
 
 def test_self_edit_tools_visual_snapshot(tmp_path, snap_compare):

@@ -176,6 +176,23 @@ class TestChatInput:
         assert ci._history_messages == ["newest", "older", "oldest"]
         assert ci._history_index == -1
 
+    def test_set_completions_defaults_to_accepting_args(self):
+        ci = ChatInput()
+        ci.set_completions([("ping", "Test command")])
+
+        assert ci._completions == [("ping", "Test command", True)]
+
+    def test_matching_commands_preserves_accepts_args_metadata(self):
+        ci = ChatInput()
+        ci.set_completions([
+            ("new", "Start a new session", False),
+            ("model", "Set model", True),
+        ])
+
+        assert ci._get_matching_commands("n") == [
+            ("new", "Start a new session", False)
+        ]
+
 
 # ── ToolStatusWidget ─────────────────────────────────────────────────
 

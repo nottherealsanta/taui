@@ -50,6 +50,7 @@ CREATE INDEX IF NOT EXISTS idx_events_stream_offset
 
 CREATE TABLE IF NOT EXISTS sessions (
     session_id   TEXT PRIMARY KEY,
+    stream_id    TEXT NOT NULL DEFAULT '',
     description  TEXT NOT NULL DEFAULT '',
     mode         TEXT NOT NULL DEFAULT 'normal',
     created_at   REAL NOT NULL,
@@ -123,6 +124,7 @@ class Store:
         self._db.row_factory = aiosqlite.Row
         await self._db.execute("PRAGMA journal_mode = WAL")
         await self._db.executescript(_SCHEMA)
+        await self._migrate_schema()
         await self._db.commit()
 
     async def close(self) -> None:
@@ -142,23 +144,28 @@ class Store:
         assert self._db is not None, "Store not connected"
         return self._db
 
+    async def _migrate_schema(self) -> None:
+        """Apply small forward-compatible migrations."""
+        async with self.db.execute("PRAGMA table_info(sessions)") as cur:
+            columns = {row["name"] for row in await cur.fetchall()}
+        if "stream_id" not in columns:
+            await self.db.execute(
+                "ALTER TABLE sessions ADD COLUMN stream_id TEXT NOT NULL DEFAULT ''"
+            )
+
     # ── Stream CRUD ───────────────────────────────────────────────────────
 
     async def create_stream(
         self, stream_id: str, *, parent_id: str | None = None
     ) -> bool:
         """Create a stream. Returns True if created, False if it already exists."""
-        async with self.db.execute(
-            "SELECT 1 FROM streams WHERE stream_id = ?", (stream_id,)
-        ) as cur:
-            if await cur.fetchone() is not None:
-                return False
-        await self.db.execute(
-            "INSERT INTO streams(stream_id, parent_id, created_at) VALUES (?, ?, ?)",
+        cur = await self.db.execute(
+            "INSERT OR IGNORE INTO streams(stream_id, parent_id, created_at) "
+            "VALUES (?, ?, ?)",
             (stream_id, parent_id, time.time()),
         )
         await self.db.commit()
-        return True
+        return cur.rowcount == 1
 
     async def stream_exists(self, stream_id: str) -> bool:
         """Check if a stream exists."""
@@ -234,37 +241,45 @@ class Store:
 
         Returns the offset written.
         """
-        await self._check_writable(stream_id)
-
         now = time.time()
         json_data = json.dumps(data, separators=(",", ":"))
 
-        if offset is None:
-            async with self.db.execute(
-                "SELECT COALESCE(MAX(offset) + 1, 0) FROM events WHERE stream_id = ?",
-                (stream_id,),
-            ) as cur:
-                row = await cur.fetchone()
-                offset = row[0] if row else 0
-        else:
-            async with self.db.execute(
-                "SELECT type, data FROM events WHERE stream_id = ? AND offset = ?",
-                (stream_id, offset),
-            ) as cur:
-                existing = await cur.fetchone()
-                if existing is not None:
-                    if existing[0] == event_type.value and existing[1] == json_data:
-                        return offset  # Idempotent
-                    raise OffsetConflictError(stream_id, offset)
+        try:
+            await self.db.execute("BEGIN IMMEDIATE")
+            await self._check_writable(stream_id)
 
-        await self.db.execute(
-            "INSERT INTO events(stream_id, offset, type, data, created_at) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (stream_id, offset, event_type.value, json_data, now),
-        )
-        await self.db.commit()
+            if offset is None:
+                async with self.db.execute(
+                    "SELECT COALESCE(MAX(offset) + 1, 0) FROM events WHERE stream_id = ?",
+                    (stream_id,),
+                ) as cur:
+                    row = await cur.fetchone()
+                    write_offset = row[0] if row else 0
+            else:
+                write_offset = offset
+                async with self.db.execute(
+                    "SELECT type, data FROM events WHERE stream_id = ? AND offset = ?",
+                    (stream_id, write_offset),
+                ) as cur:
+                    existing = await cur.fetchone()
+                    if existing is not None:
+                        if existing[0] == event_type.value and existing[1] == json_data:
+                            await self.db.commit()
+                            return write_offset  # Idempotent
+                        raise OffsetConflictError(stream_id, write_offset)
+
+            await self.db.execute(
+                "INSERT INTO events(stream_id, offset, type, data, created_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (stream_id, write_offset, event_type.value, json_data, now),
+            )
+            await self.db.commit()
+        except Exception:
+            await self.db.rollback()
+            raise
+
         self._notify(stream_id)
-        return offset
+        return write_offset
 
     # ── Read ──────────────────────────────────────────────────────────────
 
@@ -343,15 +358,22 @@ class Store:
         session_id: str,
         *,
         mode: str = "normal",
+        stream_id: str | None = None,
     ) -> None:
         """Create a session metadata record."""
         now = time.time()
         await self.db.execute(
             "INSERT OR IGNORE INTO sessions"
-            "(session_id, description, mode, created_at, last_active, message_count)"
-            " VALUES (?, '', ?, ?, ?, 0)",
-            (session_id, mode, now, now),
+            "(session_id, stream_id, description, mode, created_at, last_active, "
+            "message_count)"
+            " VALUES (?, ?, '', ?, ?, ?, 0)",
+            (session_id, stream_id or "", mode, now, now),
         )
+        if stream_id:
+            await self.db.execute(
+                "UPDATE sessions SET stream_id = ? WHERE session_id = ? AND stream_id = ''",
+                (stream_id, session_id),
+            )
         await self.db.commit()
 
     async def update_session(
@@ -361,6 +383,7 @@ class Store:
         description: str | None = None,
         message_count: int | None = None,
         mode: str | None = None,
+        stream_id: str | None = None,
     ) -> None:
         """Update session metadata fields."""
         sets: list[str] = ["last_active = ?"]
@@ -374,6 +397,9 @@ class Store:
         if mode is not None:
             sets.append("mode = ?")
             params.append(mode)
+        if stream_id is not None:
+            sets.append("stream_id = ?")
+            params.append(stream_id)
         params.append(session_id)
         await self.db.execute(
             f"UPDATE sessions SET {', '.join(sets)} WHERE session_id = ?",

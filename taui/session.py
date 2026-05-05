@@ -18,12 +18,16 @@ from taui.agent.loop import AgentLoop, Message, RunResult
 from taui.config import Config
 from taui.cost import CostTracker
 from taui.extensions import ExtensionRegistry
+from taui.extensions.builtins import (
+    close_builtin_extensions,
+    configure_builtin_extensions,
+    new_hook_registry,
+)
 from taui.hooks import HookRegistry
 from taui.llm_provider.auth import get_credentials
 from taui.llm_provider.providers import CodexProvider, CopilotProvider
-from taui.mcp import McpManager
 from taui.prompt_builder import ProjectContext, SystemPromptBuilder
-from taui.skills import SkillRegistry
+from taui.session_replay import ReplayItem, replay_events
 from taui.store.store import Store
 from taui.store.stream import StreamClient
 from taui.tools.builtins import register_builtins
@@ -87,6 +91,9 @@ class Session:
         self._system_prompt: str = ""
         self._extensions_prompt: str = ""
         self._message_count = 0
+        self._loaded_offset = 0
+        self._last_replay_items: list[ReplayItem] = []
+        self.last_resume_error: str = ""
 
     @classmethod
     async def create(cls, config: Config | None = None) -> Session:
@@ -127,40 +134,22 @@ class Session:
         await store.connect()
         stream = StreamClient(store)
 
-        # Wire sub-agent tool with shared dependencies
-        sub_agent = registry.get("sub_agent")
-        sub_agent._llm = provider
-        sub_agent._stream = stream
-        sub_agent._parent_executor = executor
-        sub_agent._model = config.model
-        sub_agent._system_prompt = ""  # uses default from SubAgentTool
-
-        # Wire skills tool
-        skill_registry = SkillRegistry(config.working_dir)
-        skill_registry.discover()
-        skills_tool = registry.get("skills")
-        skills_tool._skill_registry = skill_registry
-
-        # Wire MCP tool
-        mcp_manager = McpManager(config.working_dir)
-        mcp_manager.load_configs()
-        mcp_tool = registry.get("mcp")
-        mcp_tool._manager = mcp_manager
-
-        # Load extensions
+        # Built-in extensions are preloaded; user extensions are file-backed.
         builtin_tool_names = set(registry.names)
-        ext_registry = ExtensionRegistry(config.working_dir)
+        ext_registry = ExtensionRegistry(config.working_dir, include_builtins=True)
         ext_registry.discover()
-        hooks = HookRegistry()
+        hooks = new_hook_registry()
         ext_registry.load_all(tools=registry, commands=None, hooks=hooks)
 
         # Let extensions transform the system prompt
         if hooks.has("system_prompt"):
-            import asyncio
             system_prompt = await hooks.transform("system_prompt", system_prompt, None)
+
+        session_id = uuid4().hex[:12]
 
         # Agent
         loop = AgentLoop(
+            agent_id=session_id,
             llm=provider,
             executor=executor,
             stream=stream,
@@ -168,14 +157,6 @@ class Session:
             model=config.model,
             max_turns=config.max_turns,
         )
-
-        # Wire skills injection into the agent loop's message list
-        from taui.agent.loop import Message
-
-        async def inject_skill_message(content: str) -> None:
-            loop._messages.append(Message(role="system", content=content))
-
-        skills_tool._inject_message = inject_skill_message
 
         session = cls(
             config=config,
@@ -187,23 +168,39 @@ class Session:
             loop=loop,
             ext_registry=ext_registry,
             hooks=hooks,
+            session_id=session_id,
         )
         session._system_prompt = system_prompt
         session._extensions_prompt = _EXTENSIONS_SYSTEM_PROMPT
         session._builtin_tool_names = builtin_tool_names
+        configure_builtin_extensions(session)
+        session._refresh_loop_integrations()
+
+        # Wire skill paths bundled by extensions into the skill registry.
+        skill_reg = getattr(session, "_skill_registry", None)
+        if skill_reg is not None:
+            for name in ext_registry.names:
+                ext = ext_registry.get(name)
+                if ext and ext.skill_paths:
+                    for p in ext.skill_paths:
+                        skill_reg.add_from_path(p, scope=ext.scope)
 
         # Register session in store
-        await store.create_session(session.session_id)
+        await store.create_session(session.session_id, stream_id=session._loop.stream_id)
+        session._loaded_offset = await store.get_length(session._loop.stream_id)
 
         return session
 
     async def send(self, message: str) -> RunResult:
         """Send a user message and get the agent's response."""
+        await self._sync_replay_from_store()
+
         # Pipeline hook: let extensions preprocess the message
         message = await self.hooks.transform("before_send", message, self)
 
         result = await self._loop.run(message)
         self._message_count += 1
+        self._loaded_offset = await self._store.get_length(self._loop.stream_id)
 
         # Pipeline hook: let extensions postprocess the result
         result = await self.hooks.transform("after_result", result, self)
@@ -233,13 +230,14 @@ class Session:
 
     async def new_session(self) -> None:
         """Start a fresh session — new loop, new agent, same store."""
-        old_id = self.session_id
         self.session_id = uuid4().hex[:12]
         self._message_count = 0
+        self._last_replay_items = []
 
         prompt = self._extensions_prompt if self.extensions_mode else self._system_prompt
 
-        self._loop = AgentLoop(
+        loop = AgentLoop(
+            agent_id=self.session_id,
             llm=self._provider,
             executor=self._executor,
             stream=self._stream,
@@ -247,11 +245,14 @@ class Session:
             model=self.config.model,
             max_turns=self.config.max_turns,
         )
+        self._replace_loop(loop)
 
         await self._store.create_session(
             self.session_id,
             mode="extensions" if self.extensions_mode else "normal",
+            stream_id=self._loop.stream_id,
         )
+        self._loaded_offset = await self._store.get_length(self._loop.stream_id)
 
         # Observer hook
         await self.hooks.run("on_session_start", self)
@@ -266,7 +267,12 @@ class Session:
         prompt = self._extensions_prompt if self.extensions_mode else self._system_prompt
 
         # Create a new loop with the appropriate prompt
-        self._loop = AgentLoop(
+        self.session_id = uuid4().hex[:12]
+        self._message_count = 0
+        self._last_replay_items = []
+
+        loop = AgentLoop(
+            agent_id=self.session_id,
             llm=self._provider,
             executor=self._executor,
             stream=self._stream,
@@ -274,34 +280,40 @@ class Session:
             model=self.config.model,
             max_turns=self.config.max_turns,
         )
+        self._replace_loop(loop)
 
         # New session for the new mode
-        self.session_id = uuid4().hex[:12]
-        self._message_count = 0
         await self._store.create_session(
             self.session_id,
             mode="extensions" if self.extensions_mode else "normal",
+            stream_id=self._loop.stream_id,
         )
+        self._loaded_offset = await self._store.get_length(self._loop.stream_id)
 
         # Observer hook
-        await self.hooks.run("on_mode_change", "extensions" if self.extensions_mode else "normal", self)
+        await self.hooks.run(
+            "on_mode_change",
+            "extensions" if self.extensions_mode else "normal",
+            self,
+        )
 
         return self.extensions_mode
 
     async def resume_session(self, session_id: str) -> bool:
         """Resume a previous session by replaying its messages."""
-        from taui.store.events import EventType
-
+        self.last_resume_error = ""
         meta = await self._store.get_session(session_id)
         if meta is None:
+            self.last_resume_error = f"Session not found: {session_id}"
             return False
 
-        # Find the stream for this session
-        stream_id = f"agents/{session_id}"
+        stream_id = str(meta.get("stream_id") or "")
+        if not stream_id:
+            self.last_resume_error = f"Session has no replayable stream: {session_id}"
+            return False
         if not await self._store.stream_exists(stream_id):
-            # Try to find events under any stream — session may have used
-            # the loop's auto-generated agent_id. For now, just reset.
-            pass
+            self.last_resume_error = f"Session stream not found: {stream_id}"
+            return False
 
         self.session_id = session_id
         self.extensions_mode = meta.get("mode") == "extensions"
@@ -309,7 +321,8 @@ class Session:
 
         prompt = self._extensions_prompt if self.extensions_mode else self._system_prompt
 
-        self._loop = AgentLoop(
+        loop = AgentLoop(
+            agent_id=_agent_id_from_stream(stream_id, session_id),
             llm=self._provider,
             executor=self._executor,
             stream=self._stream,
@@ -317,21 +330,10 @@ class Session:
             model=self.config.model,
             max_turns=self.config.max_turns,
         )
+        loop.stream_id = stream_id
+        self._replace_loop(loop)
 
-        # Try to replay messages from the store
-        try:
-            events = await self._store.read(stream_id, limit=5000)
-            for event in events:
-                if event.type == EventType.USER_MESSAGE:
-                    self._loop._messages.append(
-                        Message(role="user", content=event.data.get("text", ""))
-                    )
-                elif event.type == EventType.ASSISTANT_MESSAGE:
-                    self._loop._messages.append(
-                        Message(role="assistant", content=event.data.get("text", ""))
-                    )
-        except Exception:
-            logger.debug("Could not replay session %s", session_id, exc_info=True)
+        await self._replay_stream()
 
         await self._store.update_session(session_id)
         return True
@@ -358,9 +360,14 @@ class Session:
         if self._ext_registry:
             self._ext_registry.unload_all()
             self._ext_registry.discover()
-            loaded = self._ext_registry.load_all(
+            loaded_all = self._ext_registry.load_all(
                 tools=self._registry, commands=None, hooks=self.hooks,
             )
+            loaded = []
+            for name in loaded_all:
+                ext = self._ext_registry.get(name)
+                if ext and ext.scope != "builtin":
+                    loaded.append(name)
         else:
             loaded = []
 
@@ -379,13 +386,7 @@ class Session:
 
     async def close(self) -> None:
         """Clean up resources."""
-        # Disconnect MCP servers
-        try:
-            mcp_tool = self._registry.get("mcp")
-            if hasattr(mcp_tool, "_manager") and mcp_tool._manager:
-                await mcp_tool._manager.disconnect_all()
-        except Exception:
-            logger.debug("Error disconnecting MCP servers", exc_info=True)
+        await close_builtin_extensions(self)
         try:
             await self._store.close()
         except Exception:
@@ -426,6 +427,52 @@ class Session:
             )
         return None
 
+    @property
+    def replay_items(self) -> list[ReplayItem]:
+        """Transcript items from the most recent successful resume."""
+        return list(self._last_replay_items)
+
+    def _replace_loop(self, loop: AgentLoop) -> None:
+        self._loop = loop
+        self._refresh_loop_integrations()
+
+    def _refresh_loop_integrations(self) -> None:
+        try:
+            skills_tool = self._registry.get("skills")
+        except ValueError:
+            return
+
+        async def inject_skill_message(content: str) -> None:
+            self._loop._messages.append(Message(role="system", content=content))
+
+        skills_tool._inject_message = inject_skill_message
+
+    async def _replay_stream(self) -> None:
+        events = await self._store.read(self._loop.stream_id, limit=5000)
+        transcript = replay_events(events)
+        prompt = self._extensions_prompt if self.extensions_mode else self._system_prompt
+        self._loop._messages = [Message(role="system", content=prompt)]
+        self._loop._messages.extend(transcript.messages)
+        self._last_replay_items = transcript.items
+        self._message_count = sum(1 for msg in transcript.messages if msg.role == "user")
+        self._loaded_offset = await self._store.get_length(self._loop.stream_id)
+
+    async def _sync_replay_from_store(self) -> None:
+        if not self._loop.stream_id:
+            return
+        if not await self._store.stream_exists(self._loop.stream_id):
+            return
+        current_offset = await self._store.get_length(self._loop.stream_id)
+        if current_offset > self._loaded_offset:
+            await self._replay_stream()
+
+
+def _agent_id_from_stream(stream_id: str, fallback: str) -> str:
+    prefix = "agents/"
+    if stream_id.startswith(prefix) and len(stream_id) > len(prefix):
+        return stream_id[len(prefix):]
+    return fallback
+
 
 # ── Extensions system prompt ───────────────────────────────────────────────────
 
@@ -438,8 +485,8 @@ code. All customization must be done through extensions.
 
 ## Extension Convention
 
-Every extension is a single .py file with a `register(tools, commands, hooks)` \
-function.
+Every extension is a single .py file with a `register(ctx)` entry point.
+`ctx` gives access to all registration targets: tools, commands, hooks, and skills.
 
 ### Tool Extension
 
@@ -468,8 +515,8 @@ class MyTool:
     async def execute(self, arguments: dict[str, Any]) -> ToolResult:
         return ToolResult.ok("result")
 
-def register(tools, commands, hooks):
-    tools.register(MyTool())
+def register(ctx):
+    ctx.tools.register(MyTool())
 ```
 
 ### Command Extension
@@ -483,12 +530,12 @@ class MyCommand:
     name: str = "mycommand"
     description: str = "What this command does"
 
-    async def execute(self, ctx: CommandContext) -> CommandResult:
+    async def execute(self, cmd_ctx: CommandContext) -> CommandResult:
         return CommandResult.ok("output")
 
-def register(tools, commands, hooks):
-    if commands:
-        commands.register(MyCommand())
+def register(ctx):
+    if ctx.commands:
+        ctx.commands.register(MyCommand())
 ```
 
 ### Hook Extension
@@ -496,30 +543,39 @@ def register(tools, commands, hooks):
 Hooks let you customize UI and behavior without modifying source code.
 
 ```python
-def register(tools, commands, hooks):
+def register(ctx):
     # UI hooks (sync, return str | None):
-    hooks.prompt(lambda session: "\\033[35m❯ \\033[0m")  # custom prompt
-    hooks.banner(lambda session: "Custom banner line")
-    hooks.status(lambda session: f"msgs: {session._message_count}")
-    hooks.turn_summary(lambda result, session: f"turns: {result.turns}")
+    ctx.hooks.prompt(lambda session: "\\033[35m❯ \\033[0m")
+    ctx.hooks.banner(lambda session: "Custom banner line")
+    ctx.hooks.status(lambda session: f"msgs: {session._message_count}")
+    ctx.hooks.turn_summary(lambda result, session: f"turns: {result.turns}")
 
     # Pipeline hooks (sync or async, transform data):
-    hooks.before_send(lambda msg, session: msg)  # preprocess user input
-    hooks.after_result(lambda result, session: result)  # postprocess output
-    hooks.system_prompt(lambda prompt, session: prompt + "\\nExtra instructions.")
+    ctx.hooks.before_send(lambda msg, session: msg)
+    ctx.hooks.after_result(lambda result, session: result)
+    ctx.hooks.system_prompt(lambda prompt, session: prompt + "\\nExtra instructions.")
 
     # Observer hooks (sync or async, side-effects):
-    hooks.on_tool_call(lambda name, args, session: None)
-    hooks.on_tool_result(lambda name, content, is_error, session: None)
-    hooks.on_session_start(lambda session: None)
-    hooks.on_mode_change(lambda mode, session: None)
+    ctx.hooks.on_tool_call(lambda name, args, session: None)
+    ctx.hooks.on_tool_result(lambda name, content, is_error, session: None)
+    ctx.hooks.on_session_start(lambda session: None)
+    ctx.hooks.on_mode_change(lambda mode, session: None)
 
     # Override hooks (sync or async, first non-None wins):
-    hooks.on_approval(lambda name, args, session: True)  # auto-approve
-
-    # Custom hooks:
-    hooks.add("my_custom_hook", my_fn)
+    ctx.hooks.on_approval(lambda name, args, session: True)  # auto-approve
 ```
+
+### Skill / Prompt Asset Extension
+
+Bundle a Markdown prompt file alongside your extension:
+
+```python
+def register(ctx):
+    ctx.skills.add_path("skills/code-review.md")   # relative to this .py file
+```
+
+Place the file at `.taui/extensions/skills/code-review.md`. Users load it
+with the skills tool.
 
 #### Hook Categories
 
@@ -538,24 +594,8 @@ def register(tools, commands, hooks):
 | `on_mode_change` | Observer | `(mode, session)` | Mode toggled |
 | `on_approval` | Override | `(name, args, session) -> bool` | Auto-approve/deny tools |
 
-#### Example: Context Length Display
-
-```python
-from taui.agent.context import estimate_total_tokens, DEFAULT_MAX_INPUT_TOKENS
-
-def _ctx_summary(result, session):
-    tokens = estimate_total_tokens(session._loop._messages)
-    pct = int(tokens / DEFAULT_MAX_INPUT_TOKENS * 100)
-    filled = pct // 10
-    bar = "█" * filled + "░" * (10 - filled)
-    return f"ctx: {bar} {pct}%"
-
-def register(tools, commands, hooks):
-    hooks.turn_summary(_ctx_summary)
-```
-
 ## Rules
-- Write files ONLY to .taui/extensions/<name>.py
+- Write files ONLY to .taui/extensions/<name>.py (and .taui/extensions/skills/)
 - Read existing extension files before modifying them
 - One extension per file
 - Never modify core taui source files — you literally cannot

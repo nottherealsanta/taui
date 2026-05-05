@@ -6,6 +6,8 @@ from textual.events import Key
 from textual.message import Message
 from textual.widgets import TextArea
 
+Completion = tuple[str, str, bool]
+
 
 class ChatInput(TextArea):
     """Chat input with Enter to submit, Shift+Enter/Ctrl+J for newline.
@@ -52,12 +54,25 @@ class ChatInput(TextArea):
         self._history_index: int = -1
         self._saved_input: str = ""
         # Completion state
-        self._completions: list[tuple[str, str]] = []  # (name, description)
+        self._completions: list[Completion] = []  # (name, description, accepts_args)
         self._completion_active: bool = False
+        self._updating_completion_text: bool = False
 
-    def set_completions(self, completions: list[tuple[str, str]]) -> None:
-        """Set available completions: list of (command_name, description)."""
-        self._completions = completions
+    def set_completions(self, completions: list[tuple[str, str] | Completion]) -> None:
+        """Set available completions.
+
+        Each completion is (command_name, description, accepts_args). Older
+        two-item tuples default to accepting arguments for extension commands.
+        """
+        normalized: list[Completion] = []
+        for completion in completions:
+            if len(completion) == 2:
+                name, description = completion
+                normalized.append((name, description, True))
+            else:
+                name, description, accepts_args = completion
+                normalized.append((name, description, accepts_args))
+        self._completions = normalized
 
     def load_history(self, messages: list[str]) -> None:
         """Load message history (newest first) for Up/Down navigation."""
@@ -77,11 +92,15 @@ class ChatInput(TextArea):
             self._dismiss_completion()
             self.post_message(self.Submitted(user_input, queue=queue))
 
-    def _get_matching_commands(self, prefix: str) -> list[tuple[str, str]]:
+    def _get_matching_commands(self, prefix: str) -> list[Completion]:
         """Return commands matching the given prefix (without /)."""
         if not prefix:
             return self._completions
-        return [(n, d) for n, d in self._completions if n.startswith(prefix)]
+        return [
+            (name, description, accepts_args)
+            for name, description, accepts_args in self._completions
+            if name.startswith(prefix)
+        ]
 
     def _show_completion(self) -> None:
         """Show the completion dropdown with matching commands."""
@@ -127,19 +146,72 @@ class ChatInput(TextArea):
         except Exception:
             pass
 
-    def _accept_completion(self) -> None:
-        """Accept the currently selected completion."""
+    def _replace_text_from_completion(
+        self,
+        value: str,
+        *,
+        trailing_space: bool,
+        keep_completion: bool = False,
+    ) -> None:
+        """Replace input with a slash command without refreshing the menu."""
+        self._updating_completion_text = True
+        try:
+            self.clear()
+            suffix = " " if trailing_space else ""
+            self.insert(f"/{value}{suffix}")
+        finally:
+            self._updating_completion_text = False
+        if not keep_completion:
+            self._dismiss_completion()
+
+    def _fill_selected_completion(self) -> None:
+        """Mirror the selected completion into the text box."""
         from taui.tui.widgets.completion_dropdown import CompletionDropdown
 
         try:
             dropdown = self.app.query_one(CompletionDropdown)
             value = dropdown.current_value
             if value:
-                self.clear()
-                self.insert(f"/{value} ")
-                self._dismiss_completion()
+                self._replace_text_from_completion(
+                    value,
+                    trailing_space=False,
+                    keep_completion=True,
+                )
         except Exception:
             self._dismiss_completion()
+
+    def _accept_completion(self) -> tuple[str, bool] | None:
+        """Accept the currently selected completion.
+
+        Returns (command_name, accepts_args) when a completion was accepted.
+        """
+        from taui.tui.widgets.completion_dropdown import CompletionDropdown
+
+        try:
+            dropdown = self.app.query_one(CompletionDropdown)
+            value = dropdown.current_value
+            if value:
+                accepts_args = dropdown.current_accepts_args
+                self._replace_text_from_completion(value, trailing_space=True)
+                return value, accepts_args
+        except Exception:
+            self._dismiss_completion()
+        return None
+
+    def _submit_selected_completion_if_no_args(self) -> bool:
+        """Submit selected no-argument command; return whether handled."""
+        from taui.tui.widgets.completion_dropdown import CompletionDropdown
+
+        try:
+            dropdown = self.app.query_one(CompletionDropdown)
+            value = dropdown.current_value
+            if value and not dropdown.current_accepts_args:
+                self._replace_text_from_completion(value, trailing_space=False)
+                self._do_submit()
+                return True
+        except Exception:
+            self._dismiss_completion()
+        return False
 
     async def _on_key(self, event: Key) -> None:
         # --- Tab ---
@@ -157,9 +229,10 @@ class ChatInput(TextArea):
                 prefix = text[1:].split()[0] if text[1:].strip() else text[1:]
                 matches = self._get_matching_commands(prefix)
                 if len(matches) == 1:
-                    self.clear()
-                    self.insert(f"/{matches[0][0]} ")
-                    self._dismiss_completion()
+                    self._replace_text_from_completion(
+                        matches[0][0],
+                        trailing_space=True,
+                    )
             return
 
         # --- Escape ---
@@ -182,6 +255,7 @@ class ChatInput(TextArea):
                     dropdown.move_up()
                 else:
                     dropdown.move_down()
+                self._fill_selected_completion()
             except Exception:
                 pass
             return
@@ -190,7 +264,8 @@ class ChatInput(TextArea):
         if self._completion_active and event.key == "enter":
             event.prevent_default()
             event.stop()
-            self._accept_completion()
+            if not self._submit_selected_completion_if_no_args():
+                self._accept_completion()
             return
 
         # --- Shift+Enter / Ctrl+J ---
@@ -262,6 +337,8 @@ class ChatInput(TextArea):
 
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
         """Show or hide the completion dropdown as the text changes."""
+        if self._updating_completion_text:
+            return
         text = self.text
         if text.startswith("/") and " " not in text[1:]:
             self._show_completion()

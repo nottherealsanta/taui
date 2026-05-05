@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 
 from taui.extensions import Extension, ExtensionRegistry
+from taui.extensions.builtins import BUILTIN_EXTENSION_NAMES
 from taui.tools.registry import ToolRegistry
 from taui.commands.registry import CommandRegistry
 
@@ -42,6 +43,28 @@ class TestExtensionDiscovery:
         reg = ExtensionRegistry(tmp_path)
         reg.discover()
         assert reg.names == []
+
+    def test_discover_includes_builtins_when_requested(self, tmp_path: Path):
+        reg = ExtensionRegistry(tmp_path, include_builtins=True)
+        reg.discover()
+
+        assert reg.names == sorted(BUILTIN_EXTENSION_NAMES)
+        for name in BUILTIN_EXTENSION_NAMES:
+            ext = reg.get(name)
+            assert ext is not None
+            assert ext.scope == "builtin"
+            assert ext.loaded
+            assert ext.path is None
+
+    def test_discover_keeps_builtin_names_reserved(self, tmp_path: Path):
+        _make_extension(tmp_path, "mcp", "def register(tools, commands): pass")
+        reg = ExtensionRegistry(tmp_path, include_builtins=True)
+        reg.discover()
+
+        ext = reg.get("mcp")
+        assert ext is not None
+        assert ext.scope == "builtin"
+        assert ext.path is None
 
     def test_discover_project_extension(self, tmp_path: Path):
         _make_extension(tmp_path, "my_ext", "def register(tools, commands): pass")
@@ -254,6 +277,84 @@ def register(tools, commands, hooks):
         loaded = reg.load_all(hooks=hooks)
         assert loaded == ["legacy"]
         assert reg.get("legacy").loaded
+
+    def test_load_new_style_ctx_extension(self, tmp_path: Path):
+        """New-style register(ctx) extension loads and receives context."""
+        from taui.hooks import HookRegistry
+
+        code = '''
+def register(ctx):
+    ctx.hooks.banner(lambda session: "ctx-banner")
+'''
+        _make_extension(tmp_path, "ctx_ext", code)
+        reg = ExtensionRegistry(tmp_path)
+        reg.discover()
+
+        hooks = HookRegistry()
+        tools = ToolRegistry()
+        loaded = reg.load_all(tools=tools, hooks=hooks)
+        assert loaded == ["ctx_ext"]
+        assert reg.get("ctx_ext").loaded
+        assert hooks.has("banner")
+
+    def test_load_new_style_ctx_registers_tool(self, tmp_path: Path):
+        """New-style register(ctx) can register tools via ctx.tools."""
+        code = '''
+from dataclasses import dataclass, field
+from typing import Any
+from taui.tools.base import ToolCategory, ToolResult
+
+@dataclass
+class CtxTool:
+    name: str = "ctx_tool"
+    description: str = "tool via ctx"
+    category: ToolCategory = ToolCategory.SEARCH
+    guidelines: str = ""
+    schema: dict[str, Any] = field(default_factory=lambda: {"type": "object", "properties": {}})
+
+    async def execute(self, arguments: dict[str, Any]) -> ToolResult:
+        return ToolResult.ok("ok")
+
+def register(ctx):
+    ctx.tools.register(CtxTool())
+'''
+        _make_extension(tmp_path, "ctx_tool_ext", code)
+        reg = ExtensionRegistry(tmp_path)
+        reg.discover()
+
+        tools = ToolRegistry()
+        loaded = reg.load_all(tools=tools)
+        assert loaded == ["ctx_tool_ext"]
+        assert "ctx_tool" in tools
+
+    def test_load_new_style_ctx_skill_path(self, tmp_path: Path):
+        """New-style register(ctx) can contribute skill paths."""
+        skill_dir = tmp_path / ".taui" / "extensions" / "skills"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "my-skill.md").write_text("# My Skill\nDo things.", encoding="utf-8")
+
+        code = 'def register(ctx):\n    ctx.skills.add_path("skills/my-skill.md")\n'
+        _make_extension(tmp_path, "skill_ext", code)
+        reg = ExtensionRegistry(tmp_path)
+        reg.discover()
+        reg.load_all()
+
+        ext = reg.get("skill_ext")
+        assert ext.loaded
+        assert len(ext.skill_paths) == 1
+        assert ext.skill_paths[0].name == "my-skill.md"
+
+    def test_load_new_style_ctx_skill_path_missing_file(self, tmp_path: Path):
+        """Nonexistent skill path is collected but loading is deferred to SkillRegistry."""
+        code = 'def register(ctx):\n    ctx.skills.add_path("skills/ghost.md")\n'
+        _make_extension(tmp_path, "ghost_ext", code)
+        reg = ExtensionRegistry(tmp_path)
+        reg.discover()
+        reg.load_all()
+
+        ext = reg.get("ghost_ext")
+        assert ext.loaded
+        assert len(ext.skill_paths) == 1  # path is recorded; SkillRegistry warns if missing
 
 
 # ═══ ExtensionsCommand ════════════════════════════════════════════════════════

@@ -214,10 +214,17 @@ class AgentLoop:
         )
         self._messages.append(assistant_msg)
 
-        if llm_result.text:
+        if llm_result.text or llm_result.tool_calls:
             await self._emit(
-                EventType.ASSISTANT_MESSAGE, {"text": llm_result.text}
+                EventType.ASSISTANT_MESSAGE,
+                {
+                    "text": llm_result.text,
+                    "tool_calls": [
+                        _serialize_tool_call(tc) for tc in llm_result.tool_calls
+                    ],
+                },
             )
+        if llm_result.text:
             if self._on_text:
                 await self._on_text(llm_result.text)
 
@@ -454,3 +461,11 @@ class AgentLoop:
                     self.agent_id,
                     event_type.value,
                 )
+
+
+def _serialize_tool_call(tc: ProviderToolCall) -> dict[str, Any]:
+    return {
+        "call_id": tc.call_id,
+        "name": tc.name,
+        "arguments": tc.arguments,
+    }

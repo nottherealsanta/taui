@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -146,6 +147,25 @@ class TestAppend:
         await store.close_stream("s1")
         with pytest.raises(StreamClosedError):
             await store.append("s1", EventType.TOKEN, {"text": "x"})
+
+    async def test_concurrent_append_unique_offsets(self, tmp_path: Path):
+        s1 = Store(tmp_path)
+        s2 = Store(tmp_path)
+        await s1.connect()
+        await s2.connect()
+        try:
+            await s1.create_stream("s1")
+
+            async def write(store: Store, value: int) -> int:
+                return await store.append("s1", EventType.TOKEN, {"i": value})
+
+            offsets = await asyncio.gather(write(s1, 1), write(s2, 2))
+            assert sorted(offsets) == [0, 1]
+            events = await s1.read("s1")
+            assert [event.offset for event in events] == [0, 1]
+        finally:
+            await s1.close()
+            await s2.close()
 
 
 # ═══ Read ═════════════════════════════════════════════════════════════════════
@@ -304,6 +324,35 @@ class TestStreamClient:
 
 
 class TestSessionMetadata:
+    async def test_connect_migrates_session_stream_id(self, tmp_path: Path):
+        db_path = tmp_path / ".taui" / "store.db"
+        db_path.parent.mkdir(parents=True)
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "CREATE TABLE sessions ("
+            "session_id TEXT PRIMARY KEY, "
+            "description TEXT NOT NULL DEFAULT '', "
+            "mode TEXT NOT NULL DEFAULT 'normal', "
+            "created_at REAL NOT NULL, "
+            "last_active REAL NOT NULL, "
+            "message_count INTEGER NOT NULL DEFAULT 0)"
+        )
+        conn.execute(
+            "INSERT INTO sessions(session_id, created_at, last_active) "
+            "VALUES ('old', 1, 1)"
+        )
+        conn.commit()
+        conn.close()
+
+        store = Store(tmp_path)
+        await store.connect()
+        try:
+            meta = await store.get_session("old")
+            assert meta is not None
+            assert meta["stream_id"] == ""
+        finally:
+            await store.close()
+
     async def test_create_session(self, store: Store):
         await store.create_session("ses-1")
         meta = await store.get_session("ses-1")
@@ -312,6 +361,13 @@ class TestSessionMetadata:
         assert meta["mode"] == "normal"
         assert meta["description"] == ""
         assert meta["message_count"] == 0
+
+    async def test_create_session_with_stream_id(self, store: Store):
+        await store.create_session("ses-1", stream_id="agents/ses-1")
+        meta = await store.get_session("ses-1")
+        assert meta["stream_id"] == "agents/ses-1"
+        sessions = await store.list_sessions()
+        assert sessions[0]["stream_id"] == "agents/ses-1"
 
     async def test_create_session_extensions(self, store: Store):
         await store.create_session("ses-2", mode="extensions")

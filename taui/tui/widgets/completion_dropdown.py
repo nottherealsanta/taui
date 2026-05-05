@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+from typing import TypeAlias
+
 from textual.app import ComposeResult
 from textual.containers import Vertical
 from textual.message import Message
 from textual.reactive import reactive
 from textual.widget import Widget
 from textual.widgets import Static
+
+
+Completion: TypeAlias = tuple[str, str, bool]
 
 
 class CompletionItem(Static):
@@ -58,13 +63,13 @@ class CompletionDropdown(Widget):
 
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
-        self._items: list[tuple[str, str]] = []  # (name, description)
+        self._items: list[Completion] = []  # (name, description, accepts_args)
 
     def compose(self) -> ComposeResult:
         yield Vertical(id="completion-items")
 
-    def set_items(self, items: list[tuple[str, str]]) -> None:
-        """Update dropdown items: list of (name, description)."""
+    def set_items(self, items: list[Completion]) -> None:
+        """Update dropdown items: list of (name, description, accepts_args)."""
         self._items = items
         self.selected_index = 0
         self._rebuild()
@@ -73,14 +78,14 @@ class CompletionDropdown(Widget):
         """Rebuild the item widgets."""
         container = self.query_one("#completion-items", Vertical)
         container.remove_children()
-        for i, (name, desc) in enumerate(self._items):
+        for i, (name, desc, _accepts_args) in enumerate(self._items):
             label = f"/{name:<14s} {desc}"
             item = CompletionItem(label)
             if i == self.selected_index:
                 item.add_class("highlighted")
             container.mount(item)
 
-    def show(self, items: list[tuple[str, str]], offset_y: int = -7) -> None:
+    def show(self, items: list[Completion], offset_y: int = -7) -> None:
         """Show dropdown with given items positioned above the chat input."""
         if not items:
             self.hide()
@@ -103,6 +108,12 @@ class CompletionDropdown(Widget):
         if self._items and 0 <= self.selected_index < len(self._items):
             return self._items[self.selected_index][0]
         return None
+
+    @property
+    def current_accepts_args(self) -> bool:
+        if self._items and 0 <= self.selected_index < len(self._items):
+            return self._items[self.selected_index][2]
+        return True
 
     def move_up(self) -> None:
         if self._items:

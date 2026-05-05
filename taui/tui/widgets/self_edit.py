@@ -10,7 +10,7 @@ from typing import Any
 
 from textual import events, on
 from textual.app import ComposeResult
-from textual.containers import Container, Grid, Horizontal, Vertical
+from textual.containers import Container, Grid, Horizontal, Vertical, VerticalScroll
 from textual.events import Key
 from textual.screen import ModalScreen
 from textual.widgets import (
@@ -19,7 +19,8 @@ from textual.widgets import (
     Collapsible,
     Input,
     Label,
-    Rule,
+    ListItem,
+    ListView,
     Select,
     Static,
     TabbedContent,
@@ -36,6 +37,7 @@ from taui.tools.registry import ToolRegistry
 
 
 _AGENT_ID_RE = re.compile(r"^[A-Z]{3}$")
+_AGENT_MODEL_SEP = "\x1f"
 
 
 @dataclass(slots=True)
@@ -64,6 +66,16 @@ class NewExtensionRequest:
 class ToolSource:
     name: str
     path: Path | None
+
+
+@dataclass(slots=True)
+class ExtensionSource:
+    name: str
+    path: Path | None
+    scope: str
+    description: str = ""
+    loaded: bool = False
+    error: str | None = None
 
 
 _DEFAULT_AGENTS = [
@@ -210,7 +222,7 @@ class NewAgentScreen(ModalScreen[AgentProfile | None]):
     }
     #new-agent-dialog {
         width: 88;
-        height: 34;
+        height: 32;
         background: #17140a;
         border: heavy #f0c808;
         padding: 1 2;
@@ -241,13 +253,14 @@ class NewAgentScreen(ModalScreen[AgentProfile | None]):
     }
     .tools-grid {
         height: auto;
-        grid-size: 3;
-        grid-columns: 1fr 1fr 1fr;
-        grid-gutter: 0 1;
+        grid-size: 2;
+        grid-columns: 1fr 1fr;
+        grid-gutter: 1 1;
         margin: 0 0 1 0;
     }
     .tools-grid Checkbox {
-        height: 1;
+        height: 3;
+        padding: 0 1;
     }
     #new-agent-prompt {
         height: 7;
@@ -285,21 +298,16 @@ class NewAgentScreen(ModalScreen[AgentProfile | None]):
                 yield Label("ID", classes="modal-label")
                 yield Input(placeholder="ABC", id="new-agent-id", max_length=3)
             with Horizontal(classes="modal-row"):
-                yield Label("Name", classes="modal-label")
-                yield Input(id="new-agent-name")
-            with Horizontal(classes="modal-row"):
-                yield Label("Provider", classes="modal-label")
+                yield Label("Provider / model", classes="modal-label")
                 yield Select(
-                    options=_provider_options(),
-                    value=self._default_provider,
-                    id="new-agent-provider",
-                )
-            with Horizontal(classes="modal-row"):
-                yield Label("Model", classes="modal-label")
-                yield Select(
-                    options=_model_options(self._default_provider, self._default_model),
-                    value=self._default_model,
-                    id="new-agent-model",
+                    options=_agent_model_options(
+                        self._default_provider,
+                        self._default_model,
+                        default_provider=self._default_provider,
+                        default_model=self._default_model,
+                    ),
+                    value=_agent_model_value("", ""),
+                    id="new-agent-model-profile",
                     classes="model-select",
                 )
             yield Label("Allowed tools", classes="modal-label")
@@ -324,21 +332,19 @@ class NewAgentScreen(ModalScreen[AgentProfile | None]):
         if agent_id in self._existing_ids:
             self.query_one("#new-agent-status", Label).update("ID already exists")
             return
+        provider, model = _split_agent_model(
+            str(self.query_one("#new-agent-model-profile", Select).value or "")
+        )
         self.dismiss(
             AgentProfile(
                 id=agent_id,
-                name=self.query_one("#new-agent-name", Input).value.strip() or agent_id,
+                name=agent_id,
                 prompt=self.query_one("#new-agent-prompt", TextArea).text,
-                provider=str(self.query_one("#new-agent-provider", Select).value),
-                model=str(self.query_one("#new-agent-model", Select).value),
+                provider=provider,
+                model=model,
                 allowed_tools=_selected_tools(self),
             )
         )
-
-    @on(Select.Changed, "#new-agent-provider")
-    def _provider_changed(self, event: Select.Changed) -> None:
-        model = self.query_one("#new-agent-model", Select)
-        _set_model_options(model, str(event.value), str(model.value))
 
     def on_key(self, event: Key) -> None:
         if event.key == "escape":
@@ -442,7 +448,8 @@ class SelfEditView(Vertical):
 
     DEFAULT_CSS = """
     SelfEditView {
-        height: 1fr;
+        width: 100%;
+        height: 100%;
         padding: 0;
         background: #0f0d06;
         color: #f6e7a6;
@@ -454,17 +461,10 @@ class SelfEditView(Vertical):
         border-bottom: heavy #463815;
     }
     .self-title-text {
-        width: 18;
+        width: 1fr;
         height: 1fr;
         content-align: left middle;
         color: #f0c808;
-        text-style: bold;
-    }
-    .self-hazard-title {
-        width: 1fr;
-        height: 1fr;
-        content-align: center middle;
-        color: #8a7427;
         text-style: bold;
     }
     .self-header Select {
@@ -496,14 +496,6 @@ class SelfEditView(Vertical):
     .self-section-rule {
         color: #3a3218;
         margin: 0;
-    }
-    .self-hazard-rule {
-        height: 1;
-        margin: 0 0 1 0;
-        color: #5b4a19;
-        background: #151105;
-        content-align: center middle;
-        text-style: bold;
     }
     .self-row {
         height: auto;
@@ -566,6 +558,91 @@ class SelfEditView(Vertical):
         border-left: solid #3a3218;
         padding: 0 1;
     }
+    .agents-layout {
+        height: 1fr;
+        padding: 1 2 1 2;
+        background: #0f0d06;
+    }
+    .agents-sidebar {
+        width: 24;
+        height: 1fr;
+        margin: 0 2 0 0;
+        padding: 0 1 0 0;
+        border-right: solid #3a3218;
+    }
+    .agents-list-title {
+        height: 1;
+        color: #f0c808;
+        text-style: bold;
+        margin-bottom: 1;
+    }
+    .agents-sidebar Button,
+    .self-list-sidebar Button {
+        width: 100%;
+        min-width: 0;
+        margin: 0 0 1 0;
+        content-align: left middle;
+    }
+    .agent-editor {
+        width: 1fr;
+        height: 1fr;
+    }
+    .self-list-layout {
+        height: 1fr;
+        padding: 1 2 1 2;
+        background: #0f0d06;
+    }
+    .self-list-sidebar {
+        width: 30;
+        height: 1fr;
+        margin: 0 2 0 0;
+        padding: 0 1 0 0;
+        border-right: solid #3a3218;
+    }
+    .self-list-scroll {
+        height: 1fr;
+        scrollbar-size-vertical: 1;
+        margin: 0 0 1 0;
+    }
+    .self-sidebar-list {
+        height: auto;
+        min-height: 100%;
+        background: #0f0d06;
+    }
+    .self-sidebar-list ListItem {
+        height: 3;
+        padding: 0 1;
+        background: #141107;
+        color: #f6e7a6;
+    }
+    .self-sidebar-list ListItem.--highlight,
+    .self-sidebar-list ListItem.self-list-item-active {
+        background: #2b250f;
+        color: #ffe45c;
+        text-style: bold;
+    }
+    .self-sidebar-list ListItem.self-list-item-muted {
+        color: #7a7040;
+    }
+    .self-sidebar-list Label {
+        width: 100%;
+        height: 1fr;
+        content-align: left middle;
+    }
+    .self-list-new-button {
+        background: #17140a;
+        border: tall #242424;
+        color: #f6e7a6;
+        width: 100%;
+        min-width: 0;
+        margin: 0;
+        content-align: center middle;
+    }
+    .tools-editor-pane,
+    .ext-editor-pane {
+        width: 1fr;
+        height: 1fr;
+    }
     .tools-source-bar {
         height: 1;
     }
@@ -582,7 +659,7 @@ class SelfEditView(Vertical):
         color: #7a7040;
     }
     .tools-layout {
-        height: auto;
+        height: 1fr;
         margin-top: 0;
     }
     .tools-details {
@@ -591,11 +668,11 @@ class SelfEditView(Vertical):
     }
     .tools-editor {
         width: 1fr;
-        height: 7;
+        height: 1fr;
         margin-top: 0;
     }
     #tools-source {
-        height: 6;
+        height: 1fr;
     }
     #tools-schema {
         margin: 0;
@@ -603,6 +680,9 @@ class SelfEditView(Vertical):
     }
     #tools-schema-text {
         height: 5;
+    }
+    #ext-text {
+        height: 1fr;
     }
     SelfEditView Button {
         background: #222222;
@@ -651,18 +731,21 @@ class SelfEditView(Vertical):
     }
     .tools-grid {
         height: auto;
-        grid-size: 3;
-        grid-columns: 1fr 1fr 1fr;
-        grid-gutter: 0 1;
+        grid-size: 2;
+        grid-columns: 1fr 1fr;
+        grid-gutter: 1 1;
         margin: 0 0 1 0;
     }
     .tools-grid Checkbox {
-        height: 1;
+        height: 3;
+        padding: 0 1;
     }
     SelfEditView TabbedContent {
+        height: 1fr;
         background: #0f0d06;
     }
     SelfEditView TabbedContent TabPane {
+        height: 1fr;
         padding: 0;
     }
     """
@@ -674,13 +757,15 @@ class SelfEditView(Vertical):
         self._store = SelfEditStore(config.working_dir)
         self._scope = self._store.load_default_scope()
         self._agents: dict[str, AgentProfile] = {}
-        self._extensions: dict[str, Path] = {}
+        self._selected_agent_id: str | None = None
+        self._extensions: dict[str, ExtensionSource] = {}
         self._tool_sources: dict[str, ToolSource] = {}
+        self._selected_tool_name: str | None = None
+        self._selected_extension_name: str | None = None
 
     def compose(self) -> ComposeResult:
         with Horizontal(classes="self-header"):
-            yield Label("SELF-EDIT", classes="self-title-text")
-            yield Label("//////////  ONGOING WORKS  //////////", classes="self-hazard-title")
+            yield Label("SELF-EDIT ////", classes="self-title-text")
             yield Select(
                 options=[("Project", "project"), ("Global", "global")],
                 value=self._scope,
@@ -690,71 +775,88 @@ class SelfEditView(Vertical):
 
         with TabbedContent(initial="agents"):
             with TabPane("Agents", id="agents"):
-                yield Container(id="agents-container")
+                with Horizontal(id="agents-container", classes="agents-layout"):
+                    with Vertical(id="agents-sidebar", classes="agents-sidebar"):
+                        yield Label("Agents", classes="agents-list-title")
+                        with VerticalScroll(classes="self-list-scroll"):
+                            yield ListView(id="agents-list", classes="self-sidebar-list")
+                        yield Button(
+                            "+ New Agent",
+                            id="agent-new",
+                            classes="self-list-new-button",
+                        )
+                    yield Container(id="agent-editor", classes="agent-editor")
             with TabPane("Tools", id="tools"):
-                with Vertical(classes="self-pane"):
-                    yield Label("Tools", classes="self-section-label")
-                    yield Rule(classes="self-section-rule")
-                    yield Static(
-                        "//////////  TOOLING UNDER CONSTRUCTION  //////////",
-                        classes="self-hazard-rule",
-                    )
-                    with Vertical(classes="tools-layout"):
-                        with Vertical(classes="tools-details"):
-                            yield Label("Tool", classes="tool-field-label")
-                            yield Select([], id="tools-select", prompt="Select a tool...")
-                            with Horizontal(classes="tool-badges"):
-                                yield Static("-", id="tools-kind", classes="tool-badge")
-                                yield Static("-", id="tools-category", classes="tool-badge")
-                            yield Label("Description", classes="tool-field-label")
-                            yield Static(
-                                "-",
-                                id="tools-description",
-                                classes="tool-description",
-                                markup=False,
-                            )
-                            yield Label("Inputs", classes="tool-field-label")
-                            yield Static("-", id="tools-required", classes="tool-inline-meta")
-                            yield Collapsible(
-                                TextArea(id="tools-schema-text", read_only=True),
-                                title="Schema",
-                                collapsed=True,
-                                id="tools-schema",
-                            )
-                        with Vertical(classes="tools-editor"):
-                            with Horizontal(classes="tools-source-bar"):
-                                yield Label("Source", classes="tools-source-title")
-                                yield Static("-", id="tools-source-path", classes="tool-path")
-                            yield TextArea(id="tools-source")
-                    with Horizontal(classes="self-actions"):
-                        yield Button("New", id="tools-new")
-                        yield Button("Save", id="tools-save")
-                        yield Button("Reload", id="tools-reload")
-                        yield Button("Refresh", id="tools-refresh")
-                    yield Label("", id="tools-status", classes="self-status")
+                with Horizontal(id="tools-container", classes="self-list-layout"):
+                    with Vertical(id="tools-sidebar", classes="self-list-sidebar"):
+                        yield Label("Tools", classes="agents-list-title")
+                        with VerticalScroll(classes="self-list-scroll"):
+                            yield ListView(id="tools-list", classes="self-sidebar-list")
+                        yield Button(
+                            "+ New Tool",
+                            id="tools-new",
+                            classes="self-list-new-button",
+                        )
+                    with Container(id="tools-editor-pane", classes="tools-editor-pane"):
+                        with Vertical(classes="self-pane"):
+                            with Vertical(classes="tools-layout"):
+                                with Vertical(classes="tools-details"):
+                                    with Horizontal(classes="tool-badges"):
+                                        yield Static("-", id="tools-kind", classes="tool-badge")
+                                        yield Static("-", id="tools-category", classes="tool-badge")
+                                    yield Label("Description", classes="tool-field-label")
+                                    yield Static(
+                                        "-",
+                                        id="tools-description",
+                                        classes="tool-description",
+                                        markup=False,
+                                    )
+                                    yield Label("Inputs", classes="tool-field-label")
+                                    yield Static(
+                                        "-",
+                                        id="tools-required",
+                                        classes="tool-inline-meta",
+                                    )
+                                    yield Collapsible(
+                                        TextArea(id="tools-schema-text", read_only=True),
+                                        title="Schema",
+                                        collapsed=True,
+                                        id="tools-schema",
+                                    )
+                                with Vertical(classes="tools-editor"):
+                                    with Horizontal(classes="tools-source-bar"):
+                                        yield Label("Source", classes="tools-source-title")
+                                        yield Static(
+                                            "-",
+                                            id="tools-source-path",
+                                            classes="tool-path",
+                                        )
+                                    yield TextArea(id="tools-source")
+                            with Horizontal(classes="self-actions"):
+                                yield Button("Save", id="tools-save")
+                                yield Button("Reload", id="tools-reload")
+                                yield Button("Refresh", id="tools-refresh")
+                            yield Label("", id="tools-status", classes="self-status")
             with TabPane("Extensions", id="extensions"):
-                with Vertical(classes="self-pane"):
-                    yield Label("Extensions", classes="self-section-label")
-                    yield Rule(classes="self-section-rule")
-                    yield Static(
-                        "//////////  EXTENSION WORKSITE  //////////",
-                        classes="self-hazard-rule",
-                    )
-                    yield Select([], id="ext-select", prompt="Select an extension…")
-                    yield TextArea(id="ext-text")
-                    with Horizontal(classes="self-actions"):
-                        yield Button("New", id="ext-new")
-                        yield Button("Save", id="ext-save")
-                        yield Button("Reload", id="ext-reload")
-                    yield Label("", id="ext-status", classes="self-status")
+                with Horizontal(id="extensions-container", classes="self-list-layout"):
+                    with Vertical(id="extensions-sidebar", classes="self-list-sidebar"):
+                        yield Label("Extensions", classes="agents-list-title")
+                        with VerticalScroll(classes="self-list-scroll"):
+                            yield ListView(id="extensions-list", classes="self-sidebar-list")
+                        yield Button(
+                            "+ New Extension",
+                            id="ext-new",
+                            classes="self-list-new-button",
+                        )
+                    with Container(id="ext-editor-pane", classes="ext-editor-pane"):
+                        with Vertical(classes="self-pane"):
+                            yield TextArea(id="ext-text")
+                            with Horizontal(classes="self-actions"):
+                                yield Button("Save", id="ext-save")
+                                yield Button("Reload", id="ext-reload")
+                            yield Label("", id="ext-status", classes="self-status")
             with TabPane("Config", id="config"):
                 with Vertical(classes="self-pane"):
-                    yield Label("Config", classes="self-section-label")
-                    yield Rule(classes="self-section-rule")
-                    yield Static(
-                        "//////////  CONFIG WORKSITE  //////////",
-                        classes="self-hazard-rule",
-                    )
                     with Horizontal(classes="self-row"):
                         yield Label("Provider", classes="self-label")
                         yield Select(
@@ -784,8 +886,8 @@ class SelfEditView(Vertical):
 
     async def on_mount(self) -> None:
         await self._refresh_agents()
-        self._refresh_tools()
-        self._refresh_extensions()
+        await self._refresh_tools()
+        await self._refresh_extensions()
 
     def _status(self, widget_id: str, text: str) -> None:
         self.query_one(f"#{widget_id}", Label).update(text)
@@ -822,20 +924,29 @@ class SelfEditView(Vertical):
 
     async def _refresh_agents(self) -> None:
         self._agents = self._store.load_agents()
-        container = self.query_one("#agents-container", Container)
-        await container.remove_children()
-        tabs = TabbedContent(id="agent-tabs")
-        await container.mount(tabs)
-        for agent_id, agent in sorted(self._agents.items()):
-            await tabs.add_pane(self._agent_pane(agent_id, agent))
-        await tabs.add_pane(TabPane("+ New Agent", Static(""), id="agent-new-tab"))
+        if self._selected_agent_id not in self._agents:
+            self._selected_agent_id = next(iter(sorted(self._agents)), None)
 
-    def _agent_pane(self, agent_id: str, agent: AgentProfile) -> TabPane:
-        return TabPane(
-            f"{agent_id} {agent.name}",
-            self._agent_editor(agent),
-            id=f"agent-{agent_id}",
-        )
+        list_view = self.query_one("#agents-list", ListView)
+        await list_view.clear()
+        for agent_id in sorted(self._agents):
+            item = _sidebar_item(
+                agent_id,
+                name=agent_id,
+                active=agent_id == self._selected_agent_id,
+            )
+            await list_view.append(item)
+        _select_list_item(list_view, self._selected_agent_id)
+        await self._show_agent_editor(self._selected_agent_id)
+
+    async def _show_agent_editor(self, agent_id: str | None) -> None:
+        editor = self.query_one("#agent-editor", Container)
+        await editor.remove_children()
+        if agent_id is None:
+            await editor.mount(Static("No agents configured.", classes="self-pane"))
+            return
+        await editor.mount(self._agent_editor(self._agents[agent_id]))
+        _select_list_item(self.query_one("#agents-list", ListView), agent_id)
 
     def _agent_editor(self, agent: AgentProfile) -> Vertical:
         actions = Horizontal(
@@ -845,29 +956,20 @@ class SelfEditView(Vertical):
         )
         tool_names = self._session._registry.names if self._session else []
         return Vertical(
-            Label(f"Agent  [{agent.id}]", classes="self-section-label"),
-            Rule(classes="self-section-rule"),
-            Static("//////////  AGENT WORKSITE  //////////", classes="self-hazard-rule"),
             _row("ID", Input(agent.id, id=f"agent-id-{agent.id}", max_length=3)),
-            _row("Name", Input(agent.name, id=f"agent-name-{agent.id}")),
             _row(
-                "Provider",
+                "Provider / model",
                 Select(
-                    options=_provider_options(),
-                    value=agent.provider,
-                    id=f"agent-provider-{agent.id}",
-                ),
-            ),
-            _row(
-                "Model",
-                Select(
-                    options=_model_options(
-                        agent.provider or self._config.provider,
+                    options=_agent_model_options(
+                        agent.provider,
                         agent.model,
-                        inherit_model=self._config.model,
+                        default_provider=self._config.provider,
+                        default_model=self._config.model,
                     ),
-                    value=agent.model,
-                    id=f"agent-model-{agent.id}",
+                    value=_agent_model_value(agent.provider, agent.model)
+                    if agent.provider and agent.model
+                    else _agent_model_value("", ""),
+                    id=f"agent-model-profile-{agent.id}",
                     classes="model-select",
                 ),
             ),
@@ -879,11 +981,6 @@ class SelfEditView(Vertical):
             Label("", id=f"agent-status-{agent.id}", classes="self-status"),
             classes="self-pane",
         )
-
-    @on(TabbedContent.TabActivated, "#agent-tabs")
-    async def _agent_tab_activated(self, event: TabbedContent.TabActivated) -> None:
-        if event.tab.id == "agent-new-tab":
-            await self._open_new_agent()
 
     async def _open_new_agent(self) -> None:
         profile = await self.app.push_screen_wait(
@@ -897,15 +994,36 @@ class SelfEditView(Vertical):
         if profile is None:
             return
         self._store.save_agent(profile, self._scope)
+        self._selected_agent_id = profile.id
         await self._refresh_agents()
 
     @on(Button.Pressed)
     async def _button_pressed(self, event: Button.Pressed) -> None:
         button_id = event.button.id or ""
-        if button_id.startswith("agent-save-"):
+        if button_id == "agent-new":
+            await self._open_new_agent()
+        elif button_id.startswith("agent-save-"):
             self._save_agent(button_id.removeprefix("agent-save-"))
         elif button_id.startswith("agent-activate-"):
             await self._activate_agent(button_id.removeprefix("agent-activate-"))
+
+    @on(ListView.Selected)
+    async def _list_selected(self, event: ListView.Selected) -> None:
+        item_name = event.item.name or ""
+        list_id = event.list_view.id or ""
+        if list_id == "agents-list" and item_name in self._agents:
+            self._selected_agent_id = item_name
+            await self._show_agent_editor(item_name)
+        elif (
+            list_id == "tools-list"
+            and self._session
+            and item_name in self._session._registry.names
+        ):
+            self._selected_tool_name = item_name
+            self._load_tool(item_name)
+        elif list_id == "extensions-list" and item_name in self._extensions:
+            self._selected_extension_name = item_name
+            self._load_extension(item_name)
 
     @on(Select.Changed)
     def _select_changed(self, event: Select.Changed) -> None:
@@ -913,15 +1031,6 @@ class SelfEditView(Vertical):
         if select_id == "cfg-provider":
             model = self.query_one("#cfg-model", Select)
             _set_model_options(model, str(event.value), str(model.value))
-        elif select_id.startswith("agent-provider-"):
-            agent_id = select_id.removeprefix("agent-provider-")
-            model = self.query_one(f"#agent-model-{agent_id}", Select)
-            _set_model_options(
-                model,
-                str(event.value) or self._config.provider,
-                str(model.value),
-                inherit_model=self._config.model,
-            )
 
     def _read_agent_editor(self, original_id: str) -> AgentProfile | None:
         agent_id = self.query_one(f"#agent-id-{original_id}", Input).value.strip().upper()
@@ -934,12 +1043,15 @@ class SelfEditView(Vertical):
         if agent_id != original_id and agent_id in self._agents:
             self._status(f"agent-status-{original_id}", "Agent ID already exists")
             return None
+        provider, model = _split_agent_model(
+            str(self.query_one(f"#agent-model-profile-{original_id}", Select).value or "")
+        )
         return AgentProfile(
             id=agent_id,
-            name=self.query_one(f"#agent-name-{original_id}", Input).value.strip() or agent_id,
+            name=agent_id,
             prompt=self.query_one(f"#agent-prompt-{original_id}", TextArea).text,
-            provider=str(self.query_one(f"#agent-provider-{original_id}", Select).value),
-            model=str(self.query_one(f"#agent-model-{original_id}", Select).value),
+            provider=provider,
+            model=model,
             allowed_tools=_selected_tools(self, f"agent-tool-{original_id}"),
         )
 
@@ -981,11 +1093,11 @@ class SelfEditView(Vertical):
         self._rewire_app_callbacks()
         self._status(f"agent-status-{original_id}", f"Activated {profile.id}")
 
-    def _refresh_tools(self) -> None:
+    async def _refresh_tools(self) -> None:
         registry = self._session._registry if self._session else None
-        select = self.query_one("#tools-select", Select)
+        list_view = self.query_one("#tools-list", ListView)
+        await list_view.clear()
         if registry is None:
-            select.set_options([])
             self._set_tool_meta(category="-", description="No tools", required="-")
             self.query_one("#tools-kind", Static).update("-")
             self.query_one("#tools-source-path", Static).update("-")
@@ -994,13 +1106,23 @@ class SelfEditView(Vertical):
             return
 
         self._tool_sources = self._discover_tool_sources(registry)
-        options = []
+        if self._selected_tool_name not in registry.names:
+            self._selected_tool_name = next(iter(registry.names), None)
+
         for name in registry.names:
-            options.append((name, name))
-        select.set_options(options)
-        if options:
-            select.value = options[0][1]
-            self._load_tool(str(options[0][1]))
+            source = self._tool_sources.get(name)
+            label = f"{name} *" if source and source.path else name
+            item = _sidebar_item(
+                label,
+                name=name,
+                active=name == self._selected_tool_name,
+                muted=source is None or source.path is None,
+            )
+            await list_view.append(item)
+        _select_list_item(list_view, self._selected_tool_name)
+
+        if self._selected_tool_name:
+            self._load_tool(self._selected_tool_name)
 
     def _discover_tool_sources(self, registry: ToolRegistry) -> dict[str, ToolSource]:
         builtin = getattr(self._session, "_builtin_tool_names", set()) if self._session else set()
@@ -1023,13 +1145,10 @@ class SelfEditView(Vertical):
                 paths.extend(sorted(base.glob("*.py")))
         return paths
 
-    @on(Select.Changed, "#tools-select")
-    def _tool_selected(self, event: Select.Changed) -> None:
-        self._load_tool(str(event.value))
-
     def _load_tool(self, name: str) -> None:
         if not self._session:
             return
+        self._selected_tool_name = name
         tool = self._session._registry.get(name)
         required = ""
         if isinstance(tool.schema, dict):
@@ -1058,6 +1177,7 @@ class SelfEditView(Vertical):
             editor.read_only = True
             editor.text = "Built-in tools are edited in source code, not self-edit."
             self._status("tools-status", "Select an extension-backed tool to edit source.")
+        _select_list_item(self.query_one("#tools-list", ListView), name)
 
     def _set_tool_meta(
         self,
@@ -1071,12 +1191,12 @@ class SelfEditView(Vertical):
         self.query_one("#tools-required", Static).update(required)
 
     @on(Button.Pressed, "#tools-refresh")
-    def _tools_refresh(self) -> None:
-        self._refresh_tools()
+    async def _tools_refresh(self) -> None:
+        await self._refresh_tools()
 
     @on(Button.Pressed, "#tools-save")
     def _save_tool_source(self) -> None:
-        name = str(self.query_one("#tools-select", Select).value or "")
+        name = self._selected_tool_name or ""
         source = self._tool_sources.get(name)
         if source is None or source.path is None:
             self._status("tools-status", "No editable tool source selected")
@@ -1085,12 +1205,12 @@ class SelfEditView(Vertical):
         self._status("tools-status", f"Saved {source.path.name}")
 
     @on(Button.Pressed, "#tools-reload")
-    def _reload_tools(self) -> None:
+    async def _reload_tools(self) -> None:
         if self._session:
             loaded = self._session.reload_extensions()
             self._rewire_app_callbacks()
-            self._refresh_tools()
-            self._refresh_extensions()
+            await self._refresh_tools()
+            await self._refresh_extensions()
             self._status("tools-status", f"Reloaded {len(loaded)} extension(s)")
 
     @on(Button.Pressed, "#tools-new")
@@ -1105,31 +1225,80 @@ class SelfEditView(Vertical):
         if self._session:
             self._session.reload_extensions()
             self._rewire_app_callbacks()
-        self._refresh_tools()
-        self._refresh_extensions()
+        self._selected_tool_name = request.name
+        await self._refresh_tools()
+        await self._refresh_extensions()
         self._status("tools-status", f"Created {path.name}")
 
-    def _refresh_extensions(self) -> None:
-        reg = ExtensionRegistry(self._config.working_dir)
+    async def _refresh_extensions(self) -> None:
+        reg = ExtensionRegistry(self._config.working_dir, include_builtins=True)
         reg.discover()
-        self._extensions = {ext.name: ext.path for ext in reg.list_all()}
-        select = self.query_one("#ext-select", Select)
-        options = [(f"{name} ({path})", name) for name, path in sorted(self._extensions.items())]
-        select.set_options(options)
-        if options:
-            select.value = options[0][1]
-            self._load_extension(str(options[0][1]))
-        else:
-            self.query_one("#ext-text", TextArea).text = ""
+        self._merge_loaded_extension_state(reg)
+        self._extensions = {
+            ext.name: ExtensionSource(
+                name=ext.name,
+                path=ext.path,
+                scope=ext.scope,
+                description=ext.description,
+                loaded=ext.loaded,
+                error=ext.error,
+            )
+            for ext in reg.list_all()
+        }
+        list_view = self.query_one("#extensions-list", ListView)
+        await list_view.clear()
+        if self._selected_extension_name not in self._extensions:
+            self._selected_extension_name = next(iter(sorted(self._extensions)), None)
 
-    @on(Select.Changed, "#ext-select")
-    def _ext_selected(self, event: Select.Changed) -> None:
-        self._load_extension(str(event.value))
+        for name, ext in sorted(self._extensions.items()):
+            item = _sidebar_item(
+                _extension_sidebar_label(ext),
+                name=name,
+                active=name == self._selected_extension_name,
+                muted=ext.path is None,
+            )
+            await list_view.append(item)
+        _select_list_item(list_view, self._selected_extension_name)
+
+        if self._selected_extension_name:
+            self._load_extension(self._selected_extension_name)
+        else:
+            editor = self.query_one("#ext-text", TextArea)
+            editor.read_only = True
+            editor.text = ""
+
+    def _merge_loaded_extension_state(self, reg: ExtensionRegistry) -> None:
+        session_reg = getattr(self._session, "_ext_registry", None)
+        if session_reg is None:
+            return
+        for session_ext in session_reg.list_all():
+            ext = reg.get(session_ext.name)
+            if ext is None:
+                continue
+            ext.loaded = session_ext.loaded
+            ext.error = session_ext.error
 
     def _load_extension(self, name: str) -> None:
-        path = self._extensions.get(name)
-        if path and path.exists():
-            self.query_one("#ext-text", TextArea).text = path.read_text(encoding="utf-8")
+        ext = self._extensions.get(name)
+        if ext is None:
+            return
+
+        self._selected_extension_name = name
+        editor = self.query_one("#ext-text", TextArea)
+        if ext.path and ext.path.exists():
+            editor.read_only = False
+            editor.text = ext.path.read_text(encoding="utf-8")
+            self._status("ext-status", f"Source: {ext.path.name}")
+            self._mark_extension_button_active(name)
+            return
+
+        editor.read_only = True
+        editor.text = _builtin_extension_summary(ext)
+        self._status("ext-status", f"{ext.name} is a built-in extension")
+        self._mark_extension_button_active(name)
+
+    def _mark_extension_button_active(self, name: str) -> None:
+        _select_list_item(self.query_one("#extensions-list", ListView), name)
 
     @on(Button.Pressed, "#ext-new")
     async def _new_ext(self) -> None:
@@ -1140,25 +1309,30 @@ class SelfEditView(Vertical):
         path = _unique_path(base, request.name, ".py")
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(_extension_template(), encoding="utf-8")
-        self._refresh_extensions()
+        self._selected_extension_name = request.name
+        await self._refresh_extensions()
         self._status("ext-status", f"Created {path.name}")
 
     @on(Button.Pressed, "#ext-save")
     def _save_ext(self) -> None:
-        name = str(self.query_one("#ext-select", Select).value or "")
-        path = self._extensions.get(name)
-        if path is None:
+        name = self._selected_extension_name or ""
+        ext = self._extensions.get(name)
+        if ext is None:
             self._status("ext-status", "No extension selected")
             return
-        path.write_text(self.query_one("#ext-text", TextArea).text, encoding="utf-8")
+        if ext.path is None:
+            self._status("ext-status", "Built-in extensions are read-only")
+            return
+        ext.path.write_text(self.query_one("#ext-text", TextArea).text, encoding="utf-8")
         self._status("ext-status", f"Saved {name}")
 
     @on(Button.Pressed, "#ext-reload")
-    def _reload_ext(self) -> None:
+    async def _reload_ext(self) -> None:
         if self._session:
             loaded = self._session.reload_extensions()
             self._rewire_app_callbacks()
-            self._refresh_tools()
+            await self._refresh_tools()
+            await self._refresh_extensions()
             self._status("ext-status", f"Reloaded {len(loaded)} extension(s)")
 
     @on(Button.Pressed, "#cfg-save")
@@ -1184,6 +1358,51 @@ class SelfEditView(Vertical):
 
 def _provider_options() -> list[tuple[str, str]]:
     return [("", ""), ("copilot", "copilot"), ("codex", "codex")]
+
+
+def _agent_model_value(provider: str, model: str) -> str:
+    return f"{provider}{_AGENT_MODEL_SEP}{model}"
+
+
+def _split_agent_model(value: str) -> tuple[str, str]:
+    if not value:
+        return "", ""
+    if _AGENT_MODEL_SEP not in value:
+        return "", value
+    provider, model = value.split(_AGENT_MODEL_SEP, 1)
+    return provider, model
+
+
+def _agent_model_options(
+    selected_provider: str,
+    selected_model: str,
+    *,
+    default_provider: str,
+    default_model: str,
+) -> list[tuple[str, str]]:
+    options: list[tuple[str, str]] = []
+    inherit_label = "Inherit"
+    if default_provider or default_model:
+        inherit_label = f"Inherit ({default_provider or '-'} / {default_model or '-'})"
+    options.append((inherit_label, _agent_model_value("", "")))
+
+    pairs: list[tuple[str, str]] = []
+    if selected_provider and selected_model:
+        pairs.append((selected_provider, selected_model))
+    for provider in ("copilot", "codex"):
+        default = DEFAULT_MODELS.get(provider, "")
+        if default:
+            pairs.append((provider, default))
+        pairs.extend((provider, model) for model in PREFERRED_MODELS.get(provider, []))
+
+    seen: set[tuple[str, str]] = set()
+    for provider, model in pairs:
+        pair = (provider, model)
+        if not provider or not model or pair in seen:
+            continue
+        seen.add(pair)
+        options.append((f"{provider} / {model}", _agent_model_value(provider, model)))
+    return options
 
 
 def _model_options(
@@ -1233,7 +1452,7 @@ def _tools_grid(tool_names: list[str], selected: set[str], prefix: str) -> Grid:
                 name=name,
                 id=f"{prefix}-{index}",
                 classes="tools-checkbox",
-                compact=True,
+                compact=False,
             )
             for index, name in enumerate(tool_names)
         ],
@@ -1256,6 +1475,34 @@ def _row(label: str, widget) -> Horizontal:
     return Horizontal(Label(label, classes="self-label"), widget, classes="self-row")
 
 
+def _sidebar_item(
+    label: str,
+    *,
+    name: str,
+    active: bool = False,
+    muted: bool = False,
+) -> ListItem:
+    classes = []
+    if active:
+        classes.append("self-list-item-active")
+    if muted:
+        classes.append("self-list-item-muted")
+    return ListItem(Label(label, markup=False), name=name, classes=" ".join(classes) or None)
+
+
+def _select_list_item(list_view: ListView, selected_name: str | None) -> None:
+    selected_index: int | None = None
+    for index, item in enumerate(list_view.children):
+        if not isinstance(item, ListItem):
+            continue
+        if item.name == selected_name:
+            selected_index = index
+            item.add_class("self-list-item-active")
+        else:
+            item.remove_class("self-list-item-active")
+    list_view.index = selected_index
+
+
 def _find_tool_source(tool_name: str, extension_paths: list[Path]) -> Path | None:
     patterns = (
         f'name: str = "{tool_name}"',
@@ -1275,6 +1522,36 @@ def _find_tool_source(tool_name: str, extension_paths: list[Path]) -> Path | Non
         if any(pattern in content for pattern in patterns):
             return path
     return None
+
+
+def _extension_option_label(ext: ExtensionSource) -> str:
+    status = "error" if ext.error else ("loaded" if ext.loaded else "not loaded")
+    if ext.path is None:
+        return f"{ext.name} [builtin] - {status}"
+    return f"{ext.name} [{ext.scope}] - {status} - {ext.path.name}"
+
+
+def _extension_sidebar_label(ext: ExtensionSource) -> str:
+    marker = "!" if ext.error else ("*" if ext.loaded else "-")
+    scope = "builtin" if ext.path is None else ext.scope
+    return f"{marker} {ext.name} [{scope}]"
+
+
+def _builtin_extension_summary(ext: ExtensionSource) -> str:
+    lines = [
+        f"{ext.name}",
+        "",
+        ext.description or "Taui built-in extension.",
+        "",
+        "Scope: builtin",
+        f"Status: {'error' if ext.error else ('loaded' if ext.loaded else 'not loaded')}",
+        "",
+        "Built-in extensions are part of Taui and are read-only in self-edit.",
+        "Create a project or global extension to customize behavior.",
+    ]
+    if ext.error:
+        lines.extend(["", f"Error: {ext.error}"])
+    return "\n".join(lines)
 
 
 def _tool_extension_template(request: NewToolRequest) -> str:

@@ -82,6 +82,11 @@ class TauiApp(App[None]):
         padding: 0 2;
         margin: 0 0 1 0;
     }
+    .replay-tool {
+        color: $text-muted;
+        padding: 0 2;
+        margin: 0;
+    }
     Markdown {
         padding: 0 2;
         margin: 1 0;
@@ -92,6 +97,12 @@ class TauiApp(App[None]):
     Markdown H4 { color: $text; }
     Markdown H5 { color: $text; }
     Markdown H6 { color: $text-muted; }
+    #self-edit {
+        layer: overlay;
+        dock: top;
+        width: 100%;
+        height: 100%;
+    }
     """
 
     BINDINGS = [
@@ -159,11 +170,17 @@ class TauiApp(App[None]):
         chat_input = self.query_one("#chat-input", ChatInput)
         chat_input.load_history(self._history)
         # Set up command completions
-        completions = [
-            (name, self._commands.get(name).description)
-            for name in self._commands.names
-            if self._commands.get(name) is not None
-        ]
+        completions = []
+        for name in self._commands.names:
+            command = self._commands.get(name)
+            if command is not None:
+                completions.append(
+                    (
+                        name,
+                        command.description,
+                        getattr(command, "accepts_args", True),
+                    )
+                )
         chat_input.set_completions(completions)
         chat_input.can_submit = True
         chat_input.focus()
@@ -673,6 +690,8 @@ class TauiApp(App[None]):
         ):
             self._wire_callbacks()
             self._update_status()
+        if action == "session_resumed":
+            await self._render_replay()
 
     async def _debug_questions(self, chat_log: VerticalScroll) -> None:
         """Exercise the real question panel UI with deterministic sample data."""
@@ -712,6 +731,55 @@ class TauiApp(App[None]):
                 )
             )
             self._smart_scroll()
+
+    async def _render_replay(self) -> None:
+        """Clear the chat log and render the resumed session transcript."""
+        if self._session is None:
+            return
+        chat_log = self.query_one("#chat-log", VerticalScroll)
+        await chat_log.remove_children()
+        for item in self._session.replay_items:
+            if item.kind == "user":
+                await chat_log.mount(
+                    Static(
+                        f"[bold #e6edf3]{escape(item.text)}[/bold #e6edf3]",
+                        classes="user-message",
+                        markup=True,
+                    )
+                )
+            elif item.kind == "assistant":
+                await chat_log.mount(Markdown(item.text))
+            elif item.kind == "tool_call":
+                args = ", ".join(
+                    f"{key}={_trunc(str(value))}"
+                    for key, value in (item.arguments or {}).items()
+                )
+                suffix = f" [dim]{escape(args)}[/dim]" if args else ""
+                await chat_log.mount(
+                    Static(
+                        f"[#6BB6FF]{escape(item.name)}[/#6BB6FF]{suffix}",
+                        classes="replay-tool",
+                        markup=True,
+                    )
+                )
+            elif item.kind == "tool_result":
+                style = "#f97583" if item.is_error else "dim"
+                preview = _trunc(" ".join(item.text.strip().split()), 180)
+                await chat_log.mount(
+                    Static(
+                        f"[{style}]  {escape(preview)}[/{style}]",
+                        classes="replay-tool",
+                        markup=True,
+                    )
+                )
+            elif item.kind == "error":
+                await chat_log.mount(
+                    Static(
+                        f"[red]Error: {escape(item.text)}[/red]",
+                        markup=True,
+                    )
+                )
+        self._smart_scroll()
 
     # ── Actions ───────────────────────────────────────────────────────
 
@@ -764,9 +832,8 @@ class TauiApp(App[None]):
             await self._session.new_session()
             self._wire_callbacks()
             self._update_status()
-        chat_log = self.query_one("#chat-log", VerticalScroll)
-        await chat_log.remove_children()
-        await chat_log.mount(
+        await self.query_one("#chat-log", VerticalScroll).remove_children()
+        await self.mount(
             SelfEditView(config=self._config, session=self._session, id="self-edit")
         )
         self.query_one("#chat-input", ChatInput).disabled = True
@@ -776,8 +843,10 @@ class TauiApp(App[None]):
         if not self._self_edit_mode:
             return
         self._self_edit_mode = False
-        chat_log = self.query_one("#chat-log", VerticalScroll)
-        await chat_log.remove_children()
+        try:
+            await self.query_one("#self-edit", SelfEditView).remove()
+        except NoMatches:
+            pass
         chat_input = self.query_one("#chat-input", ChatInput)
         chat_input.disabled = False
         chat_input.focus()

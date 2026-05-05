@@ -14,6 +14,7 @@ from taui.commands.registry import CommandContext, CommandRegistry, CommandResul
 class HelpCommand:
     name: str = "help"
     description: str = "Show available commands"
+    accepts_args: bool = False
     _registry: Any = None
 
     def set_registry(self, registry: CommandRegistry) -> None:
@@ -29,6 +30,7 @@ class HelpCommand:
 class CostCommand:
     name: str = "cost"
     description: str = "Show token usage and estimated cost"
+    accepts_args: bool = False
     _get_tracker: Any = None
 
     async def execute(self, ctx: CommandContext) -> CommandResult:
@@ -42,6 +44,7 @@ class CostCommand:
 class CompactCommand:
     name: str = "compact"
     description: str = "Compact conversation history"
+    accepts_args: bool = False
 
     async def execute(self, ctx: CommandContext) -> CommandResult:
         return CommandResult.ok(
@@ -54,6 +57,7 @@ class CompactCommand:
 class ClearCommand:
     name: str = "clear"
     description: str = "Clear conversation history"
+    accepts_args: bool = False
     _get_loop: Any = None
 
     async def execute(self, ctx: CommandContext) -> CommandResult:
@@ -68,6 +72,7 @@ class ClearCommand:
 class ModelCommand:
     name: str = "model"
     description: str = "Show, set, list, or select model interactively"
+    accepts_args: bool = True
     _get_session: Any = None
 
     async def execute(self, ctx: CommandContext) -> CommandResult:
@@ -136,6 +141,7 @@ class SelfEditModeCommand:
 
     name: str = "i"
     description: str = "Open self-edit mode"
+    accepts_args: bool = False
 
     async def execute(self, ctx: CommandContext) -> CommandResult:
         return CommandResult.ok("Opened self-edit mode.", action="self_edit_open")
@@ -147,6 +153,7 @@ class ExtensionsModeCommand:
 
     name: str = "ext-mode"
     description: str = "Toggle extensions mode (yellow UI)"
+    accepts_args: bool = False
     _get_session: Any = None
 
     async def execute(self, ctx: CommandContext) -> CommandResult:
@@ -169,6 +176,7 @@ class SessionsCommand:
 
     name: str = "sessions"
     description: str = "List sessions — interactive picker or /sessions <id>"
+    accepts_args: bool = True
     _get_session: Any = None
 
     async def execute(self, ctx: CommandContext) -> CommandResult:
@@ -189,7 +197,11 @@ class SessionsCommand:
                     session_id=target,
                     extensions_mode=session.extensions_mode,
                 )
-            return CommandResult.fail(f"Session not found: {target}")
+            error = (
+                getattr(session, "last_resume_error", "")
+                or f"Session not found: {target}"
+            )
+            return CommandResult.fail(error)
 
         # List sessions — if any, show interactive picker
         sessions = await session.list_sessions()
@@ -210,7 +222,11 @@ class SessionsCommand:
                 session_id=selected,
                 extensions_mode=session.extensions_mode,
             )
-        return CommandResult.fail(f"Failed to resume session: {selected}")
+        error = (
+            getattr(session, "last_resume_error", "")
+            or f"Failed to resume session: {selected}"
+        )
+        return CommandResult.fail(error)
 
     @staticmethod
     def _format_session_list(sessions: list[dict]) -> CommandResult:
@@ -236,6 +252,7 @@ class NewSessionCommand:
 
     name: str = "new"
     description: str = "Start a new session"
+    accepts_args: bool = False
     _get_session: Any = None
 
     async def execute(self, ctx: CommandContext) -> CommandResult:
@@ -256,6 +273,7 @@ class NewSessionCommand:
 class ExtensionsCommand:
     name: str = "extensions"
     description: str = "List loaded extensions"
+    accepts_args: bool = False
     _get_extensions: Any = None
 
     async def execute(self, ctx: CommandContext) -> CommandResult:
@@ -283,6 +301,7 @@ class ReloadCommand:
 
     name: str = "reload"
     description: str = "Reload extensions"
+    accepts_args: bool = False
     _get_session: Any = None
 
     async def execute(self, ctx: CommandContext) -> CommandResult:
@@ -420,6 +439,7 @@ class ProviderCommand:
 
     name: str = "provider"
     description: str = "Show or switch provider (/provider [copilot|codex])"
+    accepts_args: bool = True
     _get_session: Any = None
 
     async def execute(self, ctx: CommandContext) -> CommandResult:
@@ -460,6 +480,7 @@ class LoginCommand:
 
     name: str = "login"
     description: str = "Add or re-authenticate a provider"
+    accepts_args: bool = False
 
     async def execute(self, ctx: CommandContext) -> CommandResult:
         from taui.llm_provider.auth import prompt_provider_selection
@@ -477,6 +498,7 @@ class LogoutCommand:
 
     name: str = "logout"
     description: str = "Show how to remove saved credentials"
+    accepts_args: bool = False
 
     async def execute(self, ctx: CommandContext) -> CommandResult:
         lines = [
@@ -495,6 +517,7 @@ class SessionInfoCommand:
 
     name: str = "session"
     description: str = "Show current session info"
+    accepts_args: bool = False
     _get_session: Any = None
 
     async def execute(self, ctx: CommandContext) -> CommandResult:
@@ -521,6 +544,7 @@ class CopyCommand:
 
     name: str = "copy"
     description: str = "Copy last assistant message to clipboard"
+    accepts_args: bool = False
     _get_session: Any = None
 
     async def execute(self, ctx: CommandContext) -> CommandResult:
@@ -566,6 +590,7 @@ class ExportCommand:
 
     name: str = "export"
     description: str = "Export session to markdown (/export [file])"
+    accepts_args: bool = True
     _get_session: Any = None
 
     async def execute(self, ctx: CommandContext) -> CommandResult:
@@ -612,6 +637,7 @@ class HotkeysCommand:
 
     name: str = "hotkeys"
     description: str = "Show keyboard shortcuts"
+    accepts_args: bool = False
 
     async def execute(self, ctx: CommandContext) -> CommandResult:
         lines = [
@@ -639,6 +665,7 @@ class VerboseCommand:
 
     name: str = "verbose"
     description: str = "Toggle verbose/quiet tool output"
+    accepts_args: bool = False
     _get_session: Any = None
 
     async def execute(self, ctx: CommandContext) -> CommandResult:
@@ -657,6 +684,7 @@ class DebugCommand:
 
     name: str = "debug"
     description: str = "Run UI debug scenarios"
+    accepts_args: bool = True
 
     async def execute(self, ctx: CommandContext) -> CommandResult:
         scenario = ctx.args[0].lower() if ctx.args else ""

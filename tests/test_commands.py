@@ -145,6 +145,16 @@ class TestBuiltinCommands:
         assert not result.error
         assert result.metadata["action"] == "self_edit_open"
 
+    def test_no_argument_commands_are_marked_for_completion_submit(self):
+        from taui.commands.builtins import register_builtins
+
+        reg = CommandRegistry()
+        register_builtins(reg)
+
+        assert getattr(reg.get("i"), "accepts_args") is False
+        assert getattr(reg.get("new"), "accepts_args") is False
+        assert getattr(reg.get("model"), "accepts_args") is True
+
     async def test_extensions_toggle_on(self):
         from taui.commands.builtins import register_builtins
 
