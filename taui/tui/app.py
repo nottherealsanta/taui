@@ -17,18 +17,18 @@ from taui.agent.context import DEFAULT_MAX_INPUT_TOKENS, estimate_total_tokens
 from taui.commands.builtins import register_builtins as register_builtin_commands
 from taui.commands.registry import CommandRegistry
 from taui.config import Config
+from taui.self_edit import SelfEditController, SelfEditSession, SelfEditStore
+from taui.self_edit.status_bar import SelfEditStatusBar
 from taui.session import Session
+from taui.tui.approval_controller import ApprovalController
 from taui.tui.messages import StreamReasoningDelta, StreamTextDelta, ToolEnded, ToolStarted
 from taui.tui.screens.context_breakdown import ContextBreakdownScreen
+from taui.tui.tool_controller import ToolController
 from taui.tui.widgets.agent_response import AgentResponse
-from taui.tui.widgets.approval import ApprovalPrompt
 from taui.tui.widgets.chat_input import ChatInput
 from taui.tui.widgets.completion_dropdown import CompletionDropdown
 from taui.tui.widgets.info_bar import InfoBar
-from taui.tui.widgets.questions_panel import QuestionSpec, QuestionsPanel
 from taui.tui.widgets.sidebar import Sidebar
-from taui.tui.widgets.self_edit import SelfEditView
-from taui.tui.widgets.tool_status import ToolStatusWidget
 
 logger = logging.getLogger(__name__)
 
@@ -97,12 +97,6 @@ class TauiApp(App[None]):
     Markdown H4 { color: $text; }
     Markdown H5 { color: $text; }
     Markdown H6 { color: $text-muted; }
-    #self-edit {
-        layer: overlay;
-        dock: top;
-        width: 100%;
-        height: 100%;
-    }
     """
 
     BINDINGS = [
@@ -111,7 +105,7 @@ class TauiApp(App[None]):
         ("ctrl+c", "cancel_request", "Cancel"),
         ("ctrl+b", "toggle_sidebar", "Sidebar"),
         ("ctrl+x", "show_context", "Context"),
-        ("ctrl+i", "open_self_edit", "Self-Edit"),
+        ("escape", "escape", ""),
     ]
 
     def __init__(self, config: Config | None = None) -> None:
@@ -120,13 +114,10 @@ class TauiApp(App[None]):
         self._session: Session | None = None
         self._is_processing = False
 
-        # Tool FIFO tracking (from archive pattern)
-        self._tool_counter = 0
-        self._pending_tool_keys: dict[str, list[str]] = {}
-        self._active_tool_widgets: dict[str, ToolStatusWidget] = {}
-        self._current_tool_section: Vertical | None = None
+        self._tool_ctrl = ToolController(self)
+        self._approval_ctrl = ApprovalController(self)
 
-        # Streaming state
+        # Streaming / chat-turn state
         self._current_response: AgentResponse | None = None
         self._current_reasoning: Static | None = None
         self._reasoning_buf: str = ""
@@ -136,12 +127,28 @@ class TauiApp(App[None]):
         # Queue for follow-up messages
         self._queued: list[str] = []
         self._pending_indicators: list[tuple[str, str]] = []
-        self._active_questions_panel: QuestionsPanel | None = None
-        self._self_edit_mode = False
+        self._self_edit: SelfEditSession | None = None
+        self._self_edit_controller: SelfEditController | None = None
 
         # History persistence
         self._history_file = Path.home() / ".cache" / "taui" / "prompt_history"
         self._history: list[str] = []
+
+    @property
+    def _tool_counter(self) -> int:
+        return self._tool_ctrl._tool_counter
+
+    @_tool_counter.setter
+    def _tool_counter(self, value: int) -> None:
+        self._tool_ctrl._tool_counter = value
+
+    @property
+    def _pending_tool_keys(self) -> dict[str, list[str]]:
+        return self._tool_ctrl._pending_tool_keys
+
+    @property
+    def _active_tool_widgets(self) -> dict[str, object]:
+        return self._tool_ctrl._active_tool_widgets
 
     LAYERS = ("default", "overlay")
 
@@ -270,51 +277,13 @@ class TauiApp(App[None]):
     def _wire_callbacks(self) -> None:
         assert self._session is not None
         loop = self._session._loop
-        loop._on_tool_call = self._on_tool_call
-        loop._on_tool_result = self._on_tool_result
+        loop._on_tool_call = self._tool_ctrl.on_tool_call
+        loop._on_tool_result = self._tool_ctrl.on_tool_result
         loop._on_text = self._on_text
         loop._on_text_delta = self._on_text_delta_sync
         loop._on_reasoning_delta = self._on_reasoning_delta_sync
-        loop._on_approval = self._on_approval
-
-        # Wire batch-question callback
-        loop._on_questions_batch = self._on_questions_batch
-
-    async def _on_tool_call(
-        self, call_id: str, name: str, arguments: dict
-    ) -> None:
-        self._tool_counter += 1
-        tool_key = f"{name}_{self._tool_counter}"
-        self._pending_tool_keys.setdefault(name, []).append(tool_key)
-        args_short = ", ".join(
-            f"{k}={_trunc(str(v))}" for k, v in arguments.items()
-        )
-        self.post_message(ToolStarted(tool_key, name, args_short))
-
-        if self._session:
-            await self._session.hooks.run(
-                "on_tool_call", name, arguments, self._session
-            )
-
-    async def _on_tool_result(
-        self, call_id: str, name: str, content: str, is_error: bool
-    ) -> None:
-        # FIFO: pop oldest key for this tool name
-        keys = self._pending_tool_keys.get(name, [])
-        if keys:
-            tool_key = keys.pop(0)
-        else:
-            # Fallback: find any active widget with this name prefix
-            tool_key = next(
-                (k for k in self._active_tool_widgets if k.startswith(name)),
-                f"{name}_unknown",
-            )
-        self.post_message(ToolEnded(tool_key, name, content, is_error))
-
-        if self._session:
-            await self._session.hooks.run(
-                "on_tool_result", name, content, is_error, self._session
-            )
+        loop._on_approval = self._approval_ctrl.on_approval
+        loop._on_questions_batch = self._approval_ctrl.on_questions_batch
 
     def _on_text_delta_sync(self, fragment: str) -> None:
         """Handle real-time streaming token from the LLM provider."""
@@ -330,73 +299,17 @@ class TauiApp(App[None]):
         if not self._streamed_text:
             self.post_message(StreamTextDelta(text))
 
-    async def _on_questions_batch(
-        self, specs: list[tuple[str, list[str] | None]]
-    ) -> list[str | None]:
-        """Show a QuestionsPanel above the chat input and wait for answers."""
-        q_specs = [QuestionSpec(q, opts) for q, opts in specs]
-        chat_area = self.query_one("#chat-area", Vertical)
-        chat_input = self.query_one("#chat-input", ChatInput)
-        chat_input.disabled = True
-        panel = QuestionsPanel(q_specs)
-        self._active_questions_panel = panel
-        try:
-            await chat_area.mount(panel, before=chat_input)
-            self._smart_scroll()
-            return await panel.wait_for_answers()
-        finally:
-            if panel.is_mounted:
-                await panel.remove()
-            if self._active_questions_panel is panel:
-                self._active_questions_panel = None
-            chat_input.disabled = False
-            chat_input.focus()
-
-    async def _on_approval(
-        self, call_id: str, name: str, arguments: dict
-    ) -> bool:
-        """Show approval prompt and wait for user response."""
-        chat_log = self.query_one("#chat-log", VerticalScroll)
-        args_short = ", ".join(
-            f"{k}={_trunc(str(v))}" for k, v in arguments.items()
-        )
-        prompt = ApprovalPrompt(name, args_short)
-        await chat_log.mount(prompt)
-        self._smart_scroll()
-        return await prompt.wait_for_response()
-
-    # ── Message handlers for tool events ──────────────────────────────
+    # ── Tool event handlers ───────────────────────────────────────────
 
     @on(ToolStarted)
     async def handle_tool_started(self, event: ToolStarted) -> None:
-        # Finalize any current response before tool section
-        await self._finalize_response()
-
-        chat_log = self.query_one("#chat-log", VerticalScroll)
-        if self._current_tool_section is None:
-            self._current_tool_section = Vertical(classes="tool-section")
-            await chat_log.mount(self._current_tool_section)
-
-        widget = ToolStatusWidget(event.tool_name, event.args_str)
-        await self._current_tool_section.mount(widget)
-        self._active_tool_widgets[event.tool_key] = widget
-
-        # Update spinner to show tool name
-        self.query_one(InfoBar).set_status(f"Running {event.tool_name}...")
+        await self._tool_ctrl.handle_tool_started(event)
 
     @on(ToolEnded)
     async def handle_tool_ended(self, event: ToolEnded) -> None:
-        widget = self._active_tool_widgets.pop(event.tool_key, None)
-        if widget:
-            if event.is_error:
-                await widget.fail(event.result)
-            else:
-                await widget.complete(event.result)
+        await self._tool_ctrl.handle_tool_ended(event)
 
-        # Reset spinner text
-        self.query_one(InfoBar).set_status("Thinking...")
-
-    # ── Streaming text handler ────────────────────────────────────────
+    # ── Streaming text handlers ───────────────────────────────────────
 
     @on(StreamTextDelta)
     async def handle_stream_text(self, event: StreamTextDelta) -> None:
@@ -437,6 +350,16 @@ class TauiApp(App[None]):
     @on(ChatInput.Submitted)
     async def handle_input(self, event: ChatInput.Submitted) -> None:
         text = event.value
+
+        if self._self_edit is not None:
+            if text in ("/quit", "/exit"):
+                await self.action_quit_app()
+                return
+            if text.startswith("/") and text != "/q":
+                await self._handle_command(text)
+                return
+            await self._handle_self_edit_input(text)
+            return
 
         if text.startswith("/"):
             await self._handle_command(text)
@@ -496,6 +419,19 @@ class TauiApp(App[None]):
             )
         self._smart_scroll()
 
+    async def _handle_self_edit_input(self, text: str) -> None:
+        if self._self_edit_controller is None:
+            return
+        self._save_to_history(text)
+        chat_log = self.query_one("#chat-log", VerticalScroll)
+        await chat_log.mount(
+            Static(f"[#f0c808]i> {escape(text)}[/#f0c808]", markup=True)
+        )
+        output = await self._self_edit_controller.handle(text)
+        if output:
+            await chat_log.mount(Static(output, markup=False))
+        self._smart_scroll()
+
     # ── Send message and drain queue ──────────────────────────────────
 
     @work(exclusive=True)
@@ -535,7 +471,7 @@ class TauiApp(App[None]):
         spinner = self.query_one(InfoBar)
         self._spinner_task = asyncio.create_task(spinner.start())
 
-        self._current_tool_section = None
+        self._tool_ctrl.reset_section()
         self._current_response = None
         self._current_reasoning = None
         self._reasoning_buf = ""
@@ -588,16 +524,15 @@ class TauiApp(App[None]):
             spinner.stop()
             if self._spinner_task and not self._spinner_task.done():
                 self._spinner_task.cancel()
-            self._current_tool_section = None
+            self._tool_ctrl.reset_section()
 
     async def _finalize_response(self) -> None:
         """Finalize the current streaming response if any."""
         if self._current_response:
             await self._current_response.finalize()
             self._current_response = None
-            # Only reset tool section when an actual response was finalized,
-            # so the next tool section starts below the new text.
-            self._current_tool_section = None
+            # Reset tool section so the next tool group starts below the new text.
+            self._tool_ctrl.reset_section()
         # Reset reasoning state for the next turn
         if self._current_reasoning is not None:
             self._current_reasoning = None
@@ -644,6 +579,9 @@ class TauiApp(App[None]):
         command = parts[0].lower()
 
         if command in ("/quit", "/q", "/exit"):
+            if command == "/q" and self._self_edit is not None:
+                await self.action_exit_self_edit()
+                return
             if command == "/q" and self._session and self._session.extensions_mode:
                 result = await self._commands.execute("/ext-mode")
                 style = "yellow" if self._session.extensions_mode else "dim"
@@ -653,10 +591,11 @@ class TauiApp(App[None]):
                 self._wire_callbacks()
                 self._update_status()
                 return
-            if command == "/q" and self._self_edit_mode:
-                await self.action_close_self_edit()
-                return
             await self.action_quit_app()
+            return
+
+        if command == "/i":
+            await self.action_enter_self_edit()
             return
 
         if command == "/clear":
@@ -674,7 +613,7 @@ class TauiApp(App[None]):
         action = result.metadata.get("action") if result.metadata else None
         if action == "debug_questions":
             self.run_worker(
-                self._debug_questions(chat_log),
+                self._approval_ctrl.debug_questions(chat_log),
                 name="debug_questions",
                 group="debug",
                 exclusive=True,
@@ -684,7 +623,7 @@ class TauiApp(App[None]):
                 Static("[dim]/q to quit extensions[/dim]", markup=True)
             )
         if action == "self_edit_open":
-            await self.action_open_self_edit()
+            await self.action_enter_self_edit()
         if action in (
             "extensions_on", "extensions_off", "new_session", "session_resumed"
         ):
@@ -692,45 +631,6 @@ class TauiApp(App[None]):
             self._update_status()
         if action == "session_resumed":
             await self._render_replay()
-
-    async def _debug_questions(self, chat_log: VerticalScroll) -> None:
-        """Exercise the real question panel UI with deterministic sample data."""
-        try:
-            answers = await self._on_questions_batch(
-                [
-                    (
-                        "Choose a deployment target",
-                        [
-                            "Local dev server (Recommended)",
-                            "Staging environment",
-                            "Production with dry-run",
-                        ],
-                    ),
-                    (
-                        "Pick a follow-up action",
-                        [
-                            "Open the diff",
-                            "Run tests (Recommended)",
-                            "Skip verification",
-                        ],
-                    ),
-                ]
-            )
-        except asyncio.CancelledError:
-            await chat_log.mount(
-                Static("[dim]Debug questions cancelled.[/dim]", markup=True)
-            )
-            self._smart_scroll()
-            raise
-        else:
-            rendered = ", ".join(answer or "<custom empty>" for answer in answers)
-            await chat_log.mount(
-                Static(
-                    f"[dim]Debug answers: {escape(rendered)}[/dim]",
-                    markup=True,
-                )
-            )
-            self._smart_scroll()
 
     async def _render_replay(self) -> None:
         """Clear the chat log and render the resumed session transcript."""
@@ -789,8 +689,8 @@ class TauiApp(App[None]):
         self.exit()
 
     async def action_new_chat(self) -> None:
-        if self._self_edit_mode:
-            await self.action_close_self_edit()
+        if self._self_edit is not None:
+            await self.action_exit_self_edit()
         if self._session:
             await self._session.new_session()
             self._wire_callbacks()
@@ -802,10 +702,11 @@ class TauiApp(App[None]):
             )
 
     async def action_cancel_request(self) -> None:
-        if self._active_questions_panel is not None:
-            panel = self._active_questions_panel
-            if panel._future and not panel._future.done():
-                panel._future.cancel()
+        if self._self_edit is not None:
+            await self.action_quit_app()
+            return
+        if self._approval_ctrl.has_active_panel():
+            self._approval_ctrl.cancel_active_panel()
             return
         if self._is_processing:
             # Clear queues
@@ -824,33 +725,64 @@ class TauiApp(App[None]):
         messages = self._session._loop._messages
         self.push_screen(ContextBreakdownScreen(messages))
 
-    async def action_open_self_edit(self) -> None:
-        if self._self_edit_mode:
+    async def action_enter_self_edit(self) -> None:
+        if self._self_edit is not None:
             return
-        self._self_edit_mode = True
-        if self._session:
-            await self._session.new_session()
-            self._wire_callbacks()
-            self._update_status()
-        await self.query_one("#chat-log", VerticalScroll).remove_children()
-        await self.mount(
-            SelfEditView(config=self._config, session=self._session, id="self-edit")
+        if self._session is None:
+            return
+        store = SelfEditStore(self._config.working_dir)
+        state = SelfEditSession(scope=store.load_default_scope())
+        self._self_edit = state
+        self._self_edit_controller = SelfEditController(
+            app=self,
+            session=self._session,
+            config=self._config,
+            state=state,
+            store=store,
         )
-        self.query_one("#chat-input", ChatInput).disabled = True
-        self.query_one("#completion-dropdown", CompletionDropdown).styles.display = "none"
+        chat_area = self.query_one("#chat-area", Vertical)
+        chat_input = self.query_one("#chat-input", ChatInput)
+        await chat_area.mount(SelfEditStatusBar(), before=chat_input)
+        dropdown = self.query_one("#completion-dropdown", CompletionDropdown)
+        dropdown.styles.display = "none"
+        chat_log = self.query_one("#chat-log", VerticalScroll)
+        summary = self._self_edit_controller.summary()
+        await chat_log.mount(Markdown(summary))
+        self._smart_scroll()
 
-    async def action_close_self_edit(self) -> None:
-        if not self._self_edit_mode:
+    async def action_exit_self_edit(self) -> None:
+        if self._self_edit is None:
             return
-        self._self_edit_mode = False
+        controller = self._self_edit_controller
+        self._self_edit = None
+        self._self_edit_controller = None
+        output = ""
+        if controller is not None:
+            output = controller.reload()
         try:
-            await self.query_one("#self-edit", SelfEditView).remove()
+            await self.query_one("#self-edit-status", SelfEditStatusBar).remove()
         except NoMatches:
             pass
         chat_input = self.query_one("#chat-input", ChatInput)
-        chat_input.disabled = False
         chat_input.focus()
-        self.query_one("#completion-dropdown", CompletionDropdown).styles.display = "block"
+        dropdown = self.query_one("#completion-dropdown", CompletionDropdown)
+        dropdown.styles.display = "block"
+        chat_log = self.query_one("#chat-log", VerticalScroll)
+        message = "left self-edit mode"
+        if output:
+            message = f"{message}; {output}"
+        await chat_log.mount(Static(f"[dim]{escape(message)}[/dim]", markup=True))
+        self._smart_scroll()
+
+    async def action_open_self_edit(self) -> None:
+        await self.action_enter_self_edit()
+
+    async def action_close_self_edit(self) -> None:
+        await self.action_exit_self_edit()
+
+    async def action_escape(self) -> None:
+        if self._self_edit is not None:
+            await self.action_exit_self_edit()
 
     @on(Sidebar.Dismiss)
     def handle_sidebar_dismiss(self, event: Sidebar.Dismiss) -> None:

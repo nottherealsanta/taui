@@ -518,6 +518,8 @@ def register(ctx):
     ctx.tools.register(MyTool())
 ```
 
+Legacy extensions can also use `register(tools, commands, hooks)`.
+
 ### Command Extension
 
 ```python
