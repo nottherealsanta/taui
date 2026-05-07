@@ -23,7 +23,7 @@ class DiffViewScreen(ModalScreen[None]):
         width: 90%;
         height: 80%;
         background: $surface;
-        border: thick $accent;
+        border: thick #586069;
         padding: 1 2;
     }
     #diff-dialog .dialog-title {

@@ -18,11 +18,7 @@ uv pip install taui
 
 Taui is a highly customizable agentic coding interface. Instead of adapting your workflow to a fixed assistant, you control the interface itself: UI, agent, tools, prompts, and storage.
 
-Taui can run with or without a frontend. Out of the box it ships with three interfaces:
-
-- **CLI** (default) — interactive REPL. This is what starts when you run `taui`.
-- **TUI** (opt-in) — Textual terminal UI with panes, scrollable history, visual tool output. Install with `uv pip install taui[tui]`.
-- **Web** (opt-in) — FastAPI backend with WebSocket protocol. Install with `uv pip install taui[web]`.
+Taui is a full-screen Textual TUI. Running `taui` launches the terminal interface with a sidebar, scrollable chat history, live streaming, visual tool status, approvals, questions, steering, and queueing.
 
 ## Requirements
 

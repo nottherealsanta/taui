@@ -68,7 +68,7 @@ class EventType(str, Enum):
     TOOL_RESULT = "tool_result"         # {content, error, call_id}
 
     # Streaming
-    TOKEN = "token"                     # Individual token (for streaming frontends)
+    TOKEN = "token"                     # Individual token (for streaming UI)
 
     # Interaction
     QUESTION = "question"               # Agent asks user

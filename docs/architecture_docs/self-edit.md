@@ -34,7 +34,7 @@ Project-scoped extensions override global extensions when they conflict, followi
 | **Tool** | Python module exposing a tool function with schema | A `jira_lookup` tool that queries an API |
 | **Command** | Python module registering a slash command | `/deploy` that runs a project-specific deploy script |
 | **Prompt override** | Python module or text file that replaces or augments a system prompt segment | Changing the agent's tone or adding domain-specific instructions |
-| **UI component** | Python module or Svelte component for the Web frontend | A custom pane that renders test coverage |
+| **TUI behavior** | Python extension registering tools, commands, hooks, or prompt assets | A custom status hook or project-specific command |
 
 All extension types follow the same lifecycle: the agent generates the file, writes it to the appropriate extensions directory, logs the event to the Store, and loads it into the running session.
 
@@ -85,7 +85,7 @@ The core is protected. `/i` cannot modify:
 
 - The agent loop (think → tool → observe cycle)
 - The Store schema or append-only invariant
-- The transport layer (WebSocket, JSON-RPC protocol)
+- The TUI/runtime transport and callback wiring
 - The extension loader itself
 
 These boundaries are enforced by the fact that extensions are loaded code, not patches to core modules. An extension can add a tool or override a prompt, but it cannot monkey-patch the Loop class or alter the Store's write path.

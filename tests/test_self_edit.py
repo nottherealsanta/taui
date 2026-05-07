@@ -9,15 +9,15 @@ from textual.containers import Vertical, VerticalScroll
 
 from taui.config import Config
 from taui.self_edit import SelfEditController, SelfEditSession, SelfEditStore
+from taui.self_edit.controller import Selection
+from taui.self_edit.panel import SelfEditPanel
 from taui.self_edit.scaffolding import (
     NewExtensionRequest,
     NewToolRequest,
-    infer_tool_category,
-    slug_from_prompt,
-)
-from taui.self_edit.scaffolding import (
     extension_template,
     find_tool_source,
+    infer_tool_category,
+    slug_from_prompt,
     tool_extension_template,
 )
 from taui.self_edit.status_bar import SelfEditStatusBar
@@ -43,6 +43,21 @@ class AnalyzeWorkspaceTool:
         return ToolResult.ok("ok")
 
 
+class _FakeLoop:
+    def __init__(self) -> None:
+        self._messages: list = []
+        self._system_prompt = ""
+        self.run_calls: list[str] = []
+
+    async def run(self, text: str):
+        self.run_calls.append(text)
+
+        @dataclass
+        class _R:
+            text: str
+        return _R(text=f"specialist saw: {text}")
+
+
 class _FakeSession:
     def __init__(self, working_dir) -> None:
         self.config = Config(working_dir=working_dir)
@@ -53,10 +68,17 @@ class _FakeSession:
         self._executor = ToolExecutor(registry=self._registry, policy=ToolPolicy())
         self._ext_registry = None
         self.reload_count = 0
+        self._loop = _FakeLoop()
+        self._provider = None
+        self._stream = None
+        self.session_id = "fake"
 
     def reload_extensions(self):
         self.reload_count += 1
         return []
+
+    def _replace_loop(self, loop) -> None:
+        self._loop = loop
 
     async def send(self, message: str):
         raise AssertionError("self-edit inventory must not call the LLM")
@@ -85,6 +107,23 @@ class _ControllerApp(App[None]):
 
     async def action_exit_self_edit(self) -> None:
         self.exited = True
+
+
+def _make_controller(tmp_path):
+    app = _ControllerApp()
+    session = _FakeSession(tmp_path)
+    state = SelfEditSession()
+    controller = SelfEditController(
+        app=app,
+        session=session,
+        config=session.config,
+        state=state,
+        store=SelfEditStore(tmp_path),
+    )
+    return app, session, state, controller
+
+
+# ── Store / scaffolding tests (unchanged) ──────────────────────────────
 
 
 def test_self_edit_scope_roundtrip(tmp_path):
@@ -210,107 +249,145 @@ def test_extension_source_model():
     assert ext.loaded is True
 
 
-async def test_controller_lists_agents(tmp_path):
-    app = _ControllerApp()
-    session = _FakeSession(tmp_path)
-    state = SelfEditSession()
-    controller = SelfEditController(
-        app=app,
-        session=session,
-        config=session.config,
-        state=state,
-        store=SelfEditStore(tmp_path),
-    )
-
-    output = await controller.handle("agents")
-
-    assert "BLD" in output
-    assert "PLN" in output
+# ── v2 controller tests ────────────────────────────────────────────────
 
 
-async def test_controller_summary_lists_local_inventory(tmp_path):
-    app = _ControllerApp()
-    session = _FakeSession(tmp_path)
-    store = SelfEditStore(tmp_path)
-    store.save_agent(
-        AgentProfile(
-            id="REV",
-            name="Review",
-            prompt="Review code.",
-            provider="",
-            model="",
-            allowed_tools=[],
-        ),
-        "project",
-    )
-    skill_dir = tmp_path / ".taui" / "skills" / "debug"
-    skill_dir.mkdir(parents=True)
-    (skill_dir / "SKILL.md").write_text("# Debug\n", encoding="utf-8")
+async def test_controller_help_lists_verbs(tmp_path):
+    _, _, _, controller = _make_controller(tmp_path)
+    output = await controller.handle("help")
+    assert "self-edit verbs" in output
+    assert "applicable" in output
+
+
+async def test_controller_show_with_typed_form(tmp_path):
+    _, _, _, controller = _make_controller(tmp_path)
+    output = await controller.handle("show agent BLD")
+    assert "agent BLD" in output
+
+
+async def test_controller_show_requires_selection_or_typed(tmp_path):
+    _, _, _, controller = _make_controller(tmp_path)
+    output = await controller.handle("show")
+    assert "select a row first" in output
+
+
+async def test_controller_show_uses_panel_selection(tmp_path):
+    _, _, state, controller = _make_controller(tmp_path)
+    state.selection = Selection(kind="agent", name="BLD")
+    output = await controller.handle("show")
+    assert "agent BLD" in output
+
+
+async def test_controller_scope_persists(tmp_path):
+    _, _, state, controller = _make_controller(tmp_path)
+    out = await controller.handle("scope global")
+    assert "global" in out
+    assert state.scope == "global"
+    assert SelfEditStore(tmp_path).load_default_scope() == "global"
+
+
+async def test_controller_rm_requires_yes_confirm(tmp_path):
+    _, session, state, controller = _make_controller(tmp_path)
+    # Create a custom tool extension to delete.
     ext_dir = tmp_path / ".taui" / "extensions"
     ext_dir.mkdir(parents=True)
-    (ext_dir / "sample.py").write_text("def register(tools, commands, hooks): pass")
-    state = SelfEditSession()
-    controller = SelfEditController(
-        app=app,
-        session=session,
-        config=session.config,
-        state=state,
-        store=store,
+    target = ext_dir / "tool_demo.py"
+    target.write_text(
+        'name: str = "demo"\ndef register(tools, commands, hooks): pass\n',
+        encoding="utf-8",
     )
+    # Pretend it's not built-in.
+    session._builtin_tool_names.discard("demo")
+    # Register a fake tool entry so the controller's lookup finds the path.
 
-    output = controller.summary()
+    @dataclass(slots=True)
+    class DemoTool:
+        name: str = "demo"
+        description: str = "demo"
+        category: ToolCategory = ToolCategory.AGENT
+        schema: dict[str, Any] = field(default_factory=lambda: {"type": "object"})
 
-    assert "### Agents (" in output
-    assert "| `REV` | Review |" in output
-    assert "### Tools (" in output
-    assert "analyze_workspace" in output
-    assert "### Skills (" in output
-    assert "| `debug` | project |" in output
-    assert "### Extensions (" in output
-    assert "| `sample` | project |" in output
+        async def execute(self, arguments):  # pragma: no cover
+            return ToolResult.ok("")
 
+    session._registry.register(DemoTool())
 
-async def test_controller_new_agent_flow_creates_file_and_json(tmp_path):
-    app = _ControllerApp()
-    session = _FakeSession(tmp_path)
-    state = SelfEditSession()
-    store = SelfEditStore(tmp_path)
-    controller = SelfEditController(
-        app=app,
-        session=session,
-        config=session.config,
-        state=state,
-        store=store,
-    )
+    state.selection = Selection(kind="tool", name="demo")
+    prompt = await controller.handle("rm")
+    assert "type 'yes'" in prompt
+    # Anything other than 'yes' cancels.
+    cancelled = await controller.handle("nope")
+    assert cancelled == "cancelled"
+    assert target.exists()
 
-    assert "enter prompt" in await controller.handle("new agent")
-    output = await controller.handle("Review diffs and suggest focused fixes.")
-
-    assert "created agent" in output
-    agents = store.load_agents()
-    created = [agent for agent in agents.values() if agent.name.startswith("Review")]
-    assert created
-    assert created[0].prompt_path is not None
-    assert created[0].prompt_path.exists()
+    # Now confirm.
+    await controller.handle("rm")
+    deleted = await controller.handle("yes")
+    assert "deleted" in deleted
+    assert not target.exists()
 
 
-async def test_controller_reload_rewires_app(tmp_path):
-    app = _ControllerApp()
-    session = _FakeSession(tmp_path)
-    controller = SelfEditController(
-        app=app,
-        session=session,
-        config=session.config,
-        state=SelfEditSession(),
-        store=SelfEditStore(tmp_path),
-    )
+async def test_controller_rm_refuses_builtin(tmp_path):
+    _, _, state, controller = _make_controller(tmp_path)
+    # Pick any built-in tool name.
+    builtin = next(iter(controller._session._builtin_tool_names))
+    state.selection = Selection(kind="tool", name=builtin)
+    output = await controller.handle("rm")
+    assert "built-in" in output or "can't delete" in output
 
+
+async def test_controller_add_swaps_playbook(tmp_path):
+    _, _, state, controller = _make_controller(tmp_path)
+    state.selection = Selection(kind="tool", name="")
+    output = await controller.handle("add tool")
+    assert "playbook" in output
+    assert state.active_playbook == "add_tool"
+
+
+async def test_controller_edit_builtin_tool_redirects(tmp_path):
+    _, session, state, controller = _make_controller(tmp_path)
+    builtin = next(iter(session._builtin_tool_names))
+    state.selection = Selection(kind="tool", name=builtin)
+    output = await controller.handle("edit")
+    assert "built-in" in output
+    assert state.active_playbook is None
+
+
+async def test_controller_cancel_clears_playbook(tmp_path):
+    _, _, state, controller = _make_controller(tmp_path)
+    state.active_playbook = "add_tool"
+    output = await controller.handle("cancel")
+    assert "cleared" in output
+    assert state.active_playbook is None
+
+
+async def test_controller_unknown_verb_returns_help(tmp_path):
+    _, _, _, controller = _make_controller(tmp_path)
+    output = await controller.handle("frobnicate")
+    assert "unknown verb" in output
+    assert "self-edit verbs" in output
+
+
+async def test_controller_compose_system_prompt_includes_base(tmp_path):
+    _, _, state, controller = _make_controller(tmp_path)
+    prompt = controller.specialist_system_prompt()
+    assert "self-edit assistant" in prompt
+    state.active_playbook = "add_tool"
+    prompt2 = controller.specialist_system_prompt()
+    assert "self-edit assistant" in prompt2
+    assert "Active playbook: add tool" in prompt2
+
+
+async def test_controller_reload_refreshes_panel(tmp_path):
+    app, session, state, controller = _make_controller(tmp_path)
     output = await controller.handle("reload")
-
     assert output == "reloaded extensions"
     assert session.reload_count == 1
     assert app.wired == 1
     assert app.status == 1
+
+
+# ── App-level tests ────────────────────────────────────────────────────
 
 
 class _ModeApp(TauiApp):
@@ -321,26 +398,39 @@ class _ModeApp(TauiApp):
         return None
 
 
-async def test_app_enters_self_edit_and_status_bar_is_mounted(tmp_path):
+async def test_app_enters_self_edit_mounts_panel_and_status(tmp_path):
     app = _ModeApp(Config(working_dir=tmp_path))
     async with app.run_test():
         app._session = _FakeSession(tmp_path)
         await app.action_enter_self_edit()
         assert app._self_edit is not None
         assert app.query_one(SelfEditStatusBar).is_mounted
-        assert app._self_edit_controller is not None
-        text = app._self_edit_controller.summary()
-        assert "### Agents (" in text
-        assert "### Tools (" in text
-        assert "### Skills (" in text
-        assert "### Extensions (" in text
+        assert app.query_one(SelfEditPanel).is_mounted
+        # Specialist loop was installed.
+        assert app._self_edit.specialist_loop is app._session._loop
+        assert app._self_edit.previous_loop is not app._session._loop
 
 
-async def test_app_exits_self_edit_and_reloads(tmp_path):
+async def test_app_exits_self_edit_restores_loop_and_reloads(tmp_path):
+    app = _ModeApp(Config(working_dir=tmp_path))
+    async with app.run_test():
+        session = _FakeSession(tmp_path)
+        app._session = session
+        prior = session._loop
+        await app.action_enter_self_edit()
+        assert session._loop is not prior  # specialist installed
+        await app.action_exit_self_edit()
+        assert app._self_edit is None
+        assert session._loop is prior  # restored
+        assert session.reload_count == 1
+
+
+async def test_app_new_in_self_edit_clears_specialist_history(tmp_path):
     app = _ModeApp(Config(working_dir=tmp_path))
     async with app.run_test():
         app._session = _FakeSession(tmp_path)
         await app.action_enter_self_edit()
-        await app.action_exit_self_edit()
-        assert app._self_edit is None
-        assert app._session.reload_count == 1
+        # Pretend the specialist accumulated some messages.
+        app._self_edit.specialist_loop._messages = ["a", "b"]
+        app._self_edit_controller.reset_specialist_history()
+        assert app._self_edit.specialist_loop._messages == []

@@ -1,13 +1,13 @@
 # TUI (Terminal User Interface)
 
-Rich terminal UI built with [Textual](https://textual.textualize.io/). Opt-in via `taui --tui`. Provides a split-pane interface with message history, live tool output, and an input bar.
+Taui's default and only interface is a full-screen terminal UI built with [Textual](https://textual.textualize.io/). Running `taui` launches the TUI.
 
 ---
 
 ## Architecture
 
 ```
-taui --tui
+taui
   │
   └── TauiApp (textual.App)
         │
@@ -56,7 +56,7 @@ taui --tui
 
 ## Agent Callbacks
 
-The TUI wires into the same callback hooks as the CLI REPL:
+The TUI wires agent callbacks to Textual widgets:
 
 | Callback | Display |
 |----------|---------|
@@ -103,12 +103,12 @@ Textual is imported at call time — the rest of taui works without it.
 
 ---
 
-## CLI Integration
+## Launch
 
 ```bash
-taui --tui                          # launch terminal UI
-taui --tui -p codex -m o3-mini      # with provider/model overrides
-taui --tui -d /path/to/project      # explicit working directory
+taui                                # launch terminal UI
+taui -p codex -m gpt-5.3-codex      # with provider/model overrides
+taui -d /path/to/project            # explicit working directory
 ```
 
 ---
@@ -116,7 +116,7 @@ taui --tui -d /path/to/project      # explicit working directory
 ## Module Layout
 
 ```
-taui/tui.py     # TauiApp, MessageLog, ToolLog, StatusBar, run_tui()
+taui/tui/app.py      # TauiApp
+taui/tui/widgets/    # Chat input, status, sidebar, tool status, responses
+taui/tui/screens/    # Modal screens
 ```
-
-Single file — the TUI is a presentation layer over the existing `Session` and `AgentLoop`.

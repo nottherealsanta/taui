@@ -14,10 +14,10 @@ ExtensionRegistry.discover()
   └── Filter: .py files only, skip _-prefixed files
           │
           ▼
-ExtensionRegistry.load_all(tools, commands)
+ExtensionRegistry.load_all(tools, commands, hooks)
   │
   ├── Import each extension module via importlib
-  ├── Call register(tools=ToolRegistry, commands=CommandRegistry)
+  ├── Call register(ctx) or a legacy register(...) signature
   ├── Catch exceptions per-extension (isolation)
   └── Log results (loaded / failed / missing register())
 ```
@@ -36,15 +36,11 @@ ExtensionRegistry.load_all(tools, commands)
 Each file must define:
 
 ```python
-def register(tools, commands):
-    """Called by the extension loader at startup.
-
-    Args:
-        tools: ToolRegistry — register custom tools
-        commands: CommandRegistry — register custom commands
-    """
-    tools.register(MyCustomTool())
-    commands.register(MyCommand())
+def register(ctx):
+    """Called by the extension loader at startup."""
+    ctx.tools.register(MyCustomTool())
+    if ctx.commands:
+        ctx.commands.register(MyCommand())
 ```
 
 ---
@@ -91,14 +87,14 @@ Extension modules are loaded as `taui_ext_{name}` in `sys.modules` to avoid coll
 ## Wiring (Session.create)
 
 ```python
-ext_registry = ExtensionRegistry(config.working_dir)
+ext_registry = ExtensionRegistry(config.working_dir, include_builtins=True)
 ext_registry.discover()
-ext_registry.load_all(tools=registry, commands=None)
+ext_registry.load_all(tools=registry, commands=None, hooks=hooks)
 ```
 
 Extensions are loaded after all builtin tools are registered and wired, so they can use `tools.register_or_replace()` to override builtins if needed.
 
-The command registry is wired later in the CLI layer, so `commands` is passed as `None` during session creation. The `/extensions` command provides runtime visibility.
+The TUI command registry is not currently passed through `Session.create()`, so `commands` is `None` during session creation. The `/extensions` command provides runtime visibility for discovered and loaded extensions.
 
 ---
 
@@ -129,7 +125,7 @@ When in `/i` mode, the agent:
 
 ## Recovery
 
-- `--no-extensions` CLI flag skips all extension loading
+- A recovery launch flag should skip all extension loading
 - Broken extensions are logged and skipped — core always starts
 - `/extensions` shows which extensions failed and why
 

@@ -2,15 +2,13 @@
 
 ```mermaid
 graph TB
-    subgraph Frontends["Frontends (multi-client, same session)"]
-        CLI["<b>CLI</b><br/>prompt-toolkit"]
-        TUI["<b>TUI</b><br/>Textual"]
-        WebServer["<b>Web Server</b><br/>FastAPI · WebSocket · JSON-RPC 2.0"]
+    subgraph Interface["Interface"]
+        TUI["<b>TUI</b><br/>Textual full-screen app"]
     end
 
     Store["<b>Store</b><br/>SQLite · append-only event log<br/>Agent state · tool calls · tokens · questions · approvals<br/>All processes read/write the same DB"]
 
-    Frontends <--> Store
+    TUI <--> Store
 
     subgraph "Agent Instance"
         direction TB
@@ -33,7 +31,7 @@ graph TB
         FileOps["<b>File Ops</b><br/>read · write · list · search"]
         Bash["<b>Bash</b><br/>execute commands<br/>sandboxed"]
         Git["<b>Git</b><br/>branch · commit · diff · PR"]
-        Questions["<b>Questions</b><br/>Clarification · approval<br/>written to Store · frontend reads"]
+        Questions["<b>Questions</b><br/>Clarification · approval<br/>written to Store · TUI renders"]
         ReturnToParent["<b>Return to Parent</b><br/>Sub-agent completion<br/>requires context payload"]
         Memory["<b>Memory</b><br/>Cross-session knowledge<br/>Distilled context an agent carries forward"]
         SkillTools["<b>Skills</b><br/>Discover · load · invoke<br/>Inject into prompt + tool surface"]
@@ -68,9 +66,7 @@ graph TB
     ToolExec -.-> Config
     Context -.-> Config
 
-    style CLI fill:#4a9eff,color:#fff
     style TUI fill:#4a9eff,color:#fff
-    style WebServer fill:#4a9eff,color:#fff
     style Store fill:#38d9a9,color:#000
     style Loop fill:#ff6b6b,color:#fff
     style Context fill:#ffa94d,color:#fff
@@ -93,32 +89,23 @@ graph TB
 
 ---
 
-## Frontends
+## Interface
 
-Taui ships three interfaces. The CLI is the default — it starts with no flags. The TUI and Web frontends are opt-in (`--tui`, `--web`).
+Taui ships one interface in v0.2.0: a full-screen Textual TUI. It starts with no flags when you run `taui`.
 
-All three speak the same protocol (JSON-RPC 2.0 over the Store), so features built for one are available to any.
-
-### CLI (default)
-Minimal prompt-toolkit REPL for direct agent interaction from the terminal. No UI chrome — just a prompt, streamed responses, and inline tool confirmations. This is what you get when you run `taui`.
-
-### TUI (opt-in)
-Rich terminal interface built on Textual with panes, scrollable history, and visual tool output. Runs in any terminal emulator without a browser.
-
-### Web Server (opt-in)
-FastAPI application serving a Svelte frontend over WebSocket using JSON-RPC 2.0. Supports the richest UI: Monaco editor, diff views, layout customization.
+The TUI is responsible for chat rendering, streaming deltas, tool status, approvals, questions, steering, queued follow-up messages, context views, and diff views. The Store remains the durable log behind the interface, but there is no separate CLI REPL or web server in the current product surface.
 
 ---
 
 ## Store
 
-SQLite append-only event log. Every event in the system — agent state changes, tool calls, token streams, messages, questions, approvals — gets appended as a row. Frontends, agents, and services all read and write the same database.
+SQLite append-only event log. Every event in the system — agent state changes, tool calls, token streams, messages, questions, approvals — gets appended as a row. The TUI, agents, and services all read and write the same database.
 
-Frontends poll or tail the log to stay current. A tool like Questions writes a question row and blocks; the frontend reads it, collects the user's answer, and writes the response row back. Multiple clients can watch the same session because they're all reading the same table at their own cursor.
+The TUI tails the log to stay current. A tool like Questions writes a question row and blocks; the TUI reads it, collects the user's answer, and writes the response row back.
 
 This replaces the need for a separate event bus, message queue, or stream infrastructure. SQLite handles the durability, and offset-based reads handle the replay. Session history, event streaming, and inter-process communication are all the same thing: rows in a table.
 
-Current baseline: one Python process hosts both the agent runtime and WebSocket handlers. This keeps stream delivery simple because `StreamClient.tail()` can rely on in-process wakeups.
+Current baseline: one Python process hosts both the TUI and agent runtime. This keeps stream delivery simple because `StreamClient.tail()` can rely on in-process wakeups.
 
 Each component (Store, Loop, Context Manager, Tool Executor, etc.) is designed as a module with explicit interfaces. The single-process runtime is the current deployment model, not an architectural constraint. Components communicate through the Store and defined Python interfaces, not shared mutable state, so they can be separated into distinct processes later without redesigning the boundaries.
 
@@ -128,9 +115,9 @@ Each agent run gets its own stream — an ordered sequence of event chunks in th
 
 **Writing.** The agent loop appends events to its stream via a direct Python method call (`StreamClient.append_auto()`). Each append inserts a row and wakes any in-process waiters. SQLite WAL mode ensures readers are never blocked by a write.
 
-**Reading (live).** The WebSocket handler calls `StreamClient.tail()` — an async generator that reads existing chunks, then blocks on an `asyncio.Event` until the next append arrives. Each new chunk is pushed over the existing WebSocket connection as a JSON-RPC notification. No polling, no second connection.
+**Reading (live).** The TUI calls `StreamClient.tail()` — an async generator that reads existing chunks, then blocks on an `asyncio.Event` until the next append arrives.
 
-**Reading (reconnect).** When a frontend reconnects, it sends its last-seen offset. The handler calls `StreamClient.read(from_offset=last_seen)` to catch up on missed events in one batch, then switches to `tail()` for live updates. Nothing is lost between disconnects because the stream rows are durable in SQLite.
+**Reading (reconnect).** Session replay uses `StreamClient.read(from_offset=last_seen)` to catch up on missed events in one batch, then switches to `tail()` for live updates. Nothing is lost between restarts because the stream rows are durable in SQLite.
 
 
 **Per-agent isolation.** Each agent writes to its own stream (`agents/{agent_id}`). Streams never share offsets, so parallel writes to different streams don't contend. Sub-agents get their own streams linked by `parent_agent_id`. The Store remains a single SQLite file — one database, many logical streams.
@@ -144,7 +131,7 @@ Agent Loop                          Frontend
 │  Store    │  ◄── StreamClient.tail() ──┤
 │ (SQLite)  │      StreamClient.read()   │
 │ WAL mode  │                            ▼
-└──────────┘                      WebSocket / TUI / CLI
+└──────────┘                      TUI
 ```
 
 ---
@@ -212,10 +199,10 @@ Read, write, list, and search files in the workspace. The most heavily-used tool
 Execute shell commands in a sandboxed environment. Policy-controlled: the agent may have unrestricted bash, be limited to read-only commands, or be denied entirely.
 
 ### Git
-Branch, commit, diff, and open PRs. Events are written to the Store so connected frontends can render them appropriately (inline diff in Web, patch output in CLI).
+Branch, commit, diff, and open PRs. Events are written to the Store so the TUI can render them appropriately.
 
 ### Questions
-Clarification and approval requests from agent to user. The tool writes a question event to the Store and blocks until a frontend writes the user's answer back. In CLI this is an inline prompt; in TUI a modal; in Web a dialog. The tool doesn't know the difference.
+Clarification and approval requests from agent to user. The tool writes a question event to the Store and blocks until the TUI writes the user's answer back.
 
 ### Return to Parent
 Sub-agent-only completion tool. Calling it ends the child run and returns required context to the parent agent.
@@ -256,9 +243,7 @@ Per-provider credential management. Handles OAuth flows, PKCE, API key storage, 
 
 | Component        | Scope    | Role                                              |
 |------------------|----------|---------------------------------------------------|
-| **CLI**          | global   | prompt-toolkit REPL — direct agent access          |
 | **TUI**          | global   | Textual terminal UI — rich interactive interface   |
-| **Web Server**   | global   | FastAPI + WebSocket — browser UI transport          |
 | **Store**        | global   | SQLite append-only log — events, history, IPC      |
 | **Loop**         | agent    | think→tool→observe cycle — owns turn history, spawns sub-agents |
 | **Context Manager**| agent  | What the agent sees — budget, priority, compaction |

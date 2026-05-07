@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from textual.events import Key
 from textual.message import Message
 from textual.widgets import TextArea
@@ -23,7 +25,7 @@ class ChatInput(TextArea):
         height: auto;
         min-height: 3;
         max-height: 8;
-        border: none;
+        border: tall $surface-lighten-1;
         padding: 1 2;
         margin: 0 2;
         background: $surface;
@@ -34,7 +36,7 @@ class ChatInput(TextArea):
         }
     }
     ChatInput:focus {
-        border: none;
+        border: tall #586069;
     }
     """
 
@@ -53,10 +55,13 @@ class ChatInput(TextArea):
         self._history_messages: list[str] = []
         self._history_index: int = -1
         self._saved_input: str = ""
-        # Completion state
+        # Completion state (slash commands)
         self._completions: list[Completion] = []  # (name, description, accepts_args)
         self._completion_active: bool = False
         self._updating_completion_text: bool = False
+        # Self-edit bare-word completion
+        self.self_edit_mode: bool = False
+        self._self_edit_completer: Callable[[str], list[Completion]] | None = None
 
     def set_completions(self, completions: list[tuple[str, str] | Completion]) -> None:
         """Set available completions.
@@ -73,6 +78,13 @@ class ChatInput(TextArea):
                 name, description, accepts_args = completion
                 normalized.append((name, description, accepts_args))
         self._completions = normalized
+
+    def set_self_edit_completer(
+        self, completer: Callable[[str], list[Completion]] | None
+    ) -> None:
+        """Install a bare-word completer for self-edit mode (None to disable)."""
+        self._self_edit_completer = completer
+        self.self_edit_mode = completer is not None
 
     def load_history(self, messages: list[str]) -> None:
         """Load message history (newest first) for Up/Down navigation."""
@@ -164,6 +176,109 @@ class ChatInput(TextArea):
         if not keep_completion:
             self._dismiss_completion()
 
+    # ── Self-edit bare-word completion ────────────────────────────────
+
+    def _show_self_edit_completion(self) -> None:
+        """Show completion dropdown for /verb self-edit commands."""
+        from taui.tui.widgets.completion_dropdown import CompletionDropdown
+        from taui.tui.widgets.info_bar import InfoBar
+
+        if self._self_edit_completer is None:
+            return
+        text = self.text
+        # Only complete when the user has typed /
+        if not text.startswith("/"):
+            self._dismiss_completion()
+            return
+        # Pass text without the leading / to the completer.
+        matches = self._self_edit_completer(text[1:])
+        if not matches:
+            self._dismiss_completion()
+            return
+        try:
+            dropdown = self.app.query_one(CompletionDropdown)
+            try:
+                info_bar = self.app.query_one(InfoBar)
+                offset_y = -(self.outer_size.height + info_bar.outer_size.height)
+            except Exception:
+                offset_y = -7
+            dropdown.show(matches, offset_y=offset_y, prefix="/")
+            self._completion_active = True
+        except Exception:
+            pass
+
+    def _replace_self_edit_completion(
+        self, value: str, *, trailing_space: bool
+    ) -> None:
+        """Replace the current (last) token with value, keeping prior tokens."""
+        text = self.text
+        # Strip the leading "/" so we can work on the inner tokens, then restore it.
+        if text.startswith("/"):
+            inner = text[1:]
+            slash = "/"
+        else:
+            inner = text
+            slash = ""
+        if inner.endswith(" "):
+            inner_prefix = inner
+        else:
+            parts = inner.rsplit(" ", 1)
+            inner_prefix = (parts[0] + " ") if len(parts) > 1 else ""
+        suffix = " " if trailing_space else ""
+        new_text = f"{slash}{inner_prefix}{value}{suffix}"
+        self._updating_completion_text = True
+        try:
+            self.clear()
+            self.insert(new_text)
+        finally:
+            self._updating_completion_text = False
+        # After inserting, show next tier (e.g. kind after verb).
+        self._completion_active = False
+        self._show_self_edit_completion()
+
+    def _accept_self_edit_completion(self) -> None:
+        """Accept the currently selected self-edit completion."""
+        from taui.tui.widgets.completion_dropdown import CompletionDropdown
+
+        try:
+            dropdown = self.app.query_one(CompletionDropdown)
+            value = dropdown.current_value
+            if value:
+                self._replace_self_edit_completion(value, trailing_space=True)
+        except Exception:
+            self._dismiss_completion()
+
+    def _fill_selected_self_edit_completion(self) -> None:
+        """Mirror selected self-edit completion into the text box (no dismiss)."""
+        from taui.tui.widgets.completion_dropdown import CompletionDropdown
+
+        try:
+            dropdown = self.app.query_one(CompletionDropdown)
+            value = dropdown.current_value
+            if value:
+                text = self.text
+                if text.startswith("/"):
+                    inner = text[1:]
+                    slash = "/"
+                else:
+                    inner = text
+                    slash = ""
+                if inner.endswith(" "):
+                    inner_prefix = inner
+                else:
+                    parts = inner.rsplit(" ", 1)
+                    inner_prefix = (parts[0] + " ") if len(parts) > 1 else ""
+                self._updating_completion_text = True
+                try:
+                    self.clear()
+                    self.insert(f"{slash}{inner_prefix}{value}")
+                finally:
+                    self._updating_completion_text = False
+        except Exception:
+            self._dismiss_completion()
+
+    # ── /end self-edit completion ─────────────────────────────────────
+
     def _fill_selected_completion(self) -> None:
         """Mirror the selected completion into the text box."""
         from taui.tui.widgets.completion_dropdown import CompletionDropdown
@@ -218,13 +333,21 @@ class ChatInput(TextArea):
         if event.key == "tab":
             event.prevent_default()
             event.stop()
-            if self._completion_active:
-                # Accept current selection
+            if self.self_edit_mode:
+                if self._completion_active:
+                    self._accept_self_edit_completion()
+                elif self.text.startswith("/"):
+                    self._show_self_edit_completion()
+                    if self._self_edit_completer:
+                        matches = self._self_edit_completer(self.text[1:])
+                        if len(matches) == 1:
+                            self._replace_self_edit_completion(
+                                matches[0][0], trailing_space=True
+                            )
+            elif self._completion_active:
                 self._accept_completion()
             elif self.text.startswith("/"):
-                # Show completions
                 self._show_completion()
-                # If exactly one match, accept it immediately
                 text = self.text
                 prefix = text[1:].split()[0] if text[1:].strip() else text[1:]
                 matches = self._get_matching_commands(prefix)
@@ -255,7 +378,10 @@ class ChatInput(TextArea):
                     dropdown.move_up()
                 else:
                     dropdown.move_down()
-                self._fill_selected_completion()
+                if self.self_edit_mode:
+                    self._fill_selected_self_edit_completion()
+                else:
+                    self._fill_selected_completion()
             except Exception:
                 pass
             return
@@ -264,7 +390,9 @@ class ChatInput(TextArea):
         if self._completion_active and event.key == "enter":
             event.prevent_default()
             event.stop()
-            if not self._submit_selected_completion_if_no_args():
+            if self.self_edit_mode:
+                self._accept_self_edit_completion()
+            elif not self._submit_selected_completion_if_no_args():
                 self._accept_completion()
             return
 
@@ -340,7 +468,9 @@ class ChatInput(TextArea):
         if self._updating_completion_text:
             return
         text = self.text
-        if text.startswith("/") and " " not in text[1:]:
+        if self.self_edit_mode and text.startswith("/"):
+            self._show_self_edit_completion()
+        elif not self.self_edit_mode and text.startswith("/") and " " not in text[1:]:
             self._show_completion()
         elif self._completion_active:
             self._dismiss_completion()

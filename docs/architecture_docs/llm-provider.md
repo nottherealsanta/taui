@@ -379,7 +379,7 @@ copilot → "claude-sonnet-4.5"
 codex   → "gpt-5.3-codex"
 ```
 
-### CLI
+### Command Line
 
 ```
 python -m taui.llm_provider.provider_probe <provider> [--model MODEL] [--test TEST] [-v]

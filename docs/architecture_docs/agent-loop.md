@@ -87,7 +87,7 @@ class RunResult:
 
 ## Callbacks
 
-Four optional async callbacks for frontend integration:
+Four optional async callbacks for UI integration:
 
 ```python
 on_tool_call(call_id, name, arguments)     # Tool invocation started
@@ -96,7 +96,7 @@ on_approval(call_id, name, arguments) -> bool      # User approves?
 on_text(text)                               # Assistant text chunk
 ```
 
-The CLI wires these to terminal output. A web frontend would wire them to WebSocket messages.
+The TUI wires these to Textual widgets for live tool status, approvals, and streamed text.
 
 ---
 
@@ -169,7 +169,7 @@ The loop writes events to the Store via StreamClient for every significant actio
 | `STREAM_END` | Loop completes (reason: complete | max_turns) |
 | `ERROR` | Unrecoverable error |
 
-These events enable: live-tail frontends, conversation replay, debugging, and analytics.
+These events enable live-tail UI rendering, conversation replay, debugging, and analytics.
 
 ---
 

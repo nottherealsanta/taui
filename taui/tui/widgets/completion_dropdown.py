@@ -64,6 +64,7 @@ class CompletionDropdown(Widget):
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
         self._items: list[Completion] = []  # (name, description, accepts_args)
+        self._prefix: str = "/"
 
     def compose(self) -> ComposeResult:
         yield Vertical(id="completion-items")
@@ -79,17 +80,18 @@ class CompletionDropdown(Widget):
         container = self.query_one("#completion-items", Vertical)
         container.remove_children()
         for i, (name, desc, _accepts_args) in enumerate(self._items):
-            label = f"/{name:<14s} {desc}"
+            label = f"{self._prefix}{name:<14s} {desc}"
             item = CompletionItem(label)
             if i == self.selected_index:
                 item.add_class("highlighted")
             container.mount(item)
 
-    def show(self, items: list[Completion], offset_y: int = -7) -> None:
+    def show(self, items: list[Completion], offset_y: int = -7, prefix: str = "/") -> None:
         """Show dropdown with given items positioned above the chat input."""
         if not items:
             self.hide()
             return
+        self._prefix = prefix
         self.set_items(items)
         self.styles.offset = (0, offset_y)
         self.add_class("visible")

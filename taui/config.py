@@ -41,6 +41,7 @@ class Config:
     # Agent
     system_prompt: str = DEFAULT_SYSTEM_PROMPT
     max_turns: int = 50
+    session_id: str | None = None
 
     # Paths
     working_dir: Path = field(default_factory=Path.cwd)

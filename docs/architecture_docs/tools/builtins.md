@@ -169,8 +169,8 @@ category: QUESTION
 parameters: question (required, str), options (optional, list[str])
 ```
 
-- Uses `_ask` callback (async function set by the frontend)
-- CLI wires `_ask` to interactive prompt with numbered options
+- Uses `_ask` callback (async function set by the UI layer)
+- TUI wires `_ask` to an inline question prompt
 - If no callback → returns "Proceed with your best judgment"
 - If user dismisses → same fallback response
 
@@ -203,7 +203,7 @@ for name in registry.names:
     if hasattr(tool, "working_dir"):
         tool.working_dir = config.working_dir
 
-# Wire question callback (in CLI)
+# Wire question callback (in the UI layer)
 question_tool = registry.get("question")
 question_tool._ask = my_ask_function
 

@@ -18,7 +18,7 @@ class Sidebar(Vertical):
         width: 35;
         height: 100%;
         display: none;
-        border-right: solid $accent;
+        border-right: solid $surface-lighten-1;
         padding: 0;
     }
     Sidebar.visible {
@@ -31,7 +31,7 @@ class Sidebar(Vertical):
     Sidebar .sidebar-header {
         height: 1;
         padding: 0 1;
-        color: cyan;
+        color: $text;
         text-style: bold;
     }
     """

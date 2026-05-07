@@ -172,7 +172,7 @@ class ExtensionsModeCommand:
 
 @dataclass(slots=True)
 class SessionsCommand:
-    """List recent sessions and allow resuming one interactively."""
+    """List recent sessions and request a frontend picker."""
 
     name: str = "sessions"
     description: str = "List sessions — interactive picker or /sessions <id>"
@@ -203,30 +203,17 @@ class SessionsCommand:
             )
             return CommandResult.fail(error)
 
-        # List sessions — if any, show interactive picker
+        # List sessions — frontends can open a native picker from metadata.
         sessions = await session.list_sessions()
         if not sessions:
             return CommandResult.ok("No previous sessions.")
 
-        selected = _interactive_session_select(sessions)
-        if selected is None:
-            # User cancelled or non-interactive — show text listing
-            return self._format_session_list(sessions)
-
-        ok = await session.resume_session(selected)
-        if ok:
-            mode = " [extensions]" if session.extensions_mode else ""
-            return CommandResult.ok(
-                f"Resumed session {selected}{mode}",
-                action="session_resumed",
-                session_id=selected,
-                extensions_mode=session.extensions_mode,
-            )
-        error = (
-            getattr(session, "last_resume_error", "")
-            or f"Failed to resume session: {selected}"
+        result = self._format_session_list(sessions)
+        result.metadata.update(
+            action="session_picker",
+            sessions=sessions[:20],
         )
-        return CommandResult.fail(error)
+        return result
 
     @staticmethod
     def _format_session_list(sessions: list[dict]) -> CommandResult:
@@ -330,107 +317,6 @@ def _time_ago(ts: float) -> str:
     if delta < 86400:
         return f"{int(delta / 3600)}h ago"
     return f"{int(delta / 86400)}d ago"
-
-
-def _interactive_session_select(sessions: list[dict]) -> str | None:
-    """Interactive session picker using prompt_toolkit.
-
-    Returns the selected session_id, or None if the user cancels.
-    Falls back to text listing if running inside an event loop.
-    """
-    if not sessions:
-        return None
-
-    # Check if we're inside an async event loop — prompt_toolkit's app.run()
-    # uses asyncio.run() which can't nest. Fall back to simple text picker.
-    import asyncio
-    try:
-        asyncio.get_running_loop()
-        return _simple_session_select(sessions)
-    except RuntimeError:
-        pass
-
-    from prompt_toolkit import Application
-    from prompt_toolkit.key_binding import KeyBindings
-    from prompt_toolkit.layout import Layout
-    from prompt_toolkit.layout.containers import HSplit, Window
-    from prompt_toolkit.layout.controls import FormattedTextControl
-
-    selected = [0]
-    display = sessions[:20]
-
-    kb = KeyBindings()
-
-    @kb.add("up")
-    @kb.add("k")
-    def _up(event):
-        selected[0] = (selected[0] - 1) % len(display)
-
-    @kb.add("down")
-    @kb.add("j")
-    def _down(event):
-        selected[0] = (selected[0] + 1) % len(display)
-
-    @kb.add("enter")
-    def _enter(event):
-        event.app.exit(result=display[selected[0]]["session_id"])
-
-    @kb.add("c-c")
-    @kb.add("c-d")
-    @kb.add("escape")
-    def _quit(event):
-        event.app.exit(result=None)
-
-    def _get_text():
-        lines = [("bold", "Select a session to resume:\n\n")]
-        for i, s in enumerate(display):
-            sid = s["session_id"]
-            desc = s.get("description", "") or "(no description)"
-            mode = s.get("mode", "normal")
-            msgs = s.get("message_count", 0)
-            ago = _time_ago(s.get("last_active", 0))
-            mode_tag = " [ext]" if mode == "extensions" else ""
-            label = f"{sid}  {desc[:40]:<40s}  {msgs:>3} msgs  {ago}{mode_tag}"
-            if i == selected[0]:
-                lines.append(("bold fg:cyan", f"  ❯ {label}\n"))
-            else:
-                lines.append(("class:dim", f"    {label}\n"))
-        lines.append(("", "\n"))
-        lines.append(("class:dim", "↑/↓ to move, Enter to resume, Esc to cancel"))
-        return lines
-
-    app: Application[str | None] = Application(
-        layout=Layout(HSplit([Window(FormattedTextControl(_get_text))])),
-        key_bindings=kb,
-        full_screen=False,
-    )
-
-    return app.run()
-
-
-def _simple_session_select(sessions: list[dict]) -> str | None:
-    """Fallback text-based session selection."""
-    display = sessions[:20]
-    print("\nSessions:")
-    for i, s in enumerate(display, 1):
-        sid = s["session_id"]
-        desc = s.get("description", "") or "(no description)"
-        mode = s.get("mode", "normal")
-        msgs = s.get("message_count", 0)
-        ago = _time_ago(s.get("last_active", 0))
-        mode_tag = " [ext]" if mode == "extensions" else ""
-        print(f"  {i:2}. {sid}  {desc[:40]:<40s}  {msgs:>3} msgs  {ago}{mode_tag}")
-    print()
-    try:
-        choice = input(f"Resume [1-{len(display)}] or Enter to cancel: ").strip()
-        if not choice:
-            return None
-        idx = int(choice) - 1
-        if 0 <= idx < len(display):
-            return display[idx]["session_id"]
-    except (ValueError, EOFError, KeyboardInterrupt, OSError):
-        pass
-    return None
 
 
 @dataclass(slots=True)

@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from textual.css.query import NoMatches
+from textual.widgets import Static
 
 from taui.tui import TauiApp, run_tui
 from taui.tui.app import _trunc
@@ -31,6 +32,7 @@ from taui.tui.widgets.approval import ApprovalPrompt
 from taui.tui.widgets.questions_panel import QuestionsPanel, QuestionSpec
 from taui.tui.screens.context_breakdown import ContextBreakdownScreen
 from taui.tui.screens.diff_view import DiffViewScreen
+from taui.tui.screens.session_picker import SessionPickerScreen
 
 
 # ── _trunc ────────────────────────────────────────────────────────────
@@ -74,6 +76,21 @@ class TestTauiApp:
     def test_run_tui_is_callable(self):
         assert callable(run_tui)
 
+    def test_run_tui_returns_final_session_id(self):
+        import taui.tui as tui_module
+
+        class FakeApp:
+            session_id = "abc123"
+
+            def __init__(self, config):
+                self.config = config
+
+            def run(self):
+                return None
+
+        with patch.object(tui_module, "TauiApp", FakeApp):
+            assert run_tui(object()) == "abc123"
+
     def test_initial_queues_empty(self):
         app = TauiApp()
         assert app._queued == []
@@ -91,6 +108,107 @@ class TestTauiApp:
         app = TauiApp()
         app.query_one = MagicMock(side_effect=NoMatches("missing"))  # type: ignore[method-assign]
         app._smart_scroll()  # no raise
+
+    async def test_mount_resumes_configured_session(self, tmp_path):
+        from taui.config import Config
+        from taui.tui import app as app_module
+
+        class FakeLoop:
+            _messages = []
+
+        class FakeTracker:
+            total_cost_usd = 0.0
+
+        class FakeSession:
+            session_id = "new"
+            provider_name = "copilot"
+            model_name = "claude-haiku-4.5"
+            extensions_mode = False
+            cost_tracker = FakeTracker()
+            replay_items = []
+            _loop = FakeLoop()
+            _ext_registry = None
+
+            def __init__(self):
+                self.resumed: list[str] = []
+
+            async def resume_session(self, session_id: str) -> bool:
+                self.resumed.append(session_id)
+                self.session_id = session_id
+                return True
+
+        fake = FakeSession()
+        monkey = patch.object(app_module.Session, "create", AsyncMock(return_value=fake))
+        with monkey:
+            app = TauiApp(Config(working_dir=tmp_path, session_id="abc123"))
+            async with app.run_test():
+                assert fake.resumed == ["abc123"]
+                assert app.session_id == "abc123"
+
+    async def test_failed_resume_displays_error(self, tmp_path):
+        from taui.config import Config
+
+        class FakeSession:
+            session_id = "new"
+            last_resume_error = "Session not found: abc123"
+
+            async def resume_session(self, session_id: str) -> bool:
+                return False
+
+        app = TauiApp(Config(working_dir=tmp_path))
+        async with app.run_test():
+            app._session = FakeSession()
+            assert await app._resume_session("abc123") is False
+            assert any(
+                "Session not found: abc123" in str(widget.content)
+                for widget in app.query(Static)
+            )
+
+    async def test_open_session_picker_resumes_selection(self, tmp_path):
+        from taui.config import Config
+
+        class FakeSession:
+            session_id = "current"
+            last_resume_error = ""
+            replay_items = []
+
+            def __init__(self):
+                self.resumed: list[str] = []
+
+            async def resume_session(self, session_id: str) -> bool:
+                self.resumed.append(session_id)
+                self.session_id = session_id
+                return True
+
+        app = TauiApp(Config(working_dir=tmp_path))
+        fake = FakeSession()
+        async with app.run_test():
+            app._session = fake
+            app._wire_callbacks = MagicMock()  # type: ignore[method-assign]
+            app._update_status = MagicMock()  # type: ignore[method-assign]
+            app.push_screen_wait = AsyncMock(return_value="abc123")  # type: ignore[method-assign]
+            await app._open_session_picker([{"session_id": "abc123"}])
+            assert fake.resumed == ["abc123"]
+
+    async def test_open_session_picker_escape_cancel_keeps_session(self, tmp_path):
+        from taui.config import Config
+
+        class FakeSession:
+            session_id = "current"
+
+            async def resume_session(self, session_id: str) -> bool:
+                raise AssertionError("resume should not be called")
+
+        app = TauiApp(Config(working_dir=tmp_path))
+        async with app.run_test():
+            app._session = FakeSession()
+            app.push_screen_wait = AsyncMock(return_value=None)  # type: ignore[method-assign]
+            await app._open_session_picker([{"session_id": "abc123"}])
+            assert app.session_id == "current"
+
+    def test_session_picker_instantiates(self):
+        screen = SessionPickerScreen([{"session_id": "abc123"}])
+        assert screen is not None
 
 
 # ── @file expansion ──────────────────────────────────────────────────

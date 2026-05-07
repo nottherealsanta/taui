@@ -24,7 +24,7 @@ class ContextBreakdownScreen(ModalScreen[None]):
         height: auto;
         max-height: 90%;
         background: $surface;
-        border: thick $accent;
+        border: thick #586069;
         padding: 1 2;
     }
     #context-dialog .dialog-title {

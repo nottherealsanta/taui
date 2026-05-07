@@ -50,6 +50,11 @@ def parse_args(argv: list[str] | None = None) -> dict:
         help="Working directory (default: current directory)",
     )
     parser.add_argument(
+        "--session",
+        default=None,
+        help="Resume a previous session by id",
+    )
+    parser.add_argument(
         "--login",
         action="store_true",
         default=False,
@@ -73,6 +78,8 @@ def parse_args(argv: list[str] | None = None) -> dict:
         result["model"] = args.model
     if args.dir:
         result["working_dir"] = Path(args.dir).resolve()
+    if args.session:
+        result["session_id"] = args.session
     if args.login:
         result["login"] = True
 
@@ -106,4 +113,8 @@ def main(argv: list[str] | None = None) -> None:
     config = Config.load(**parsed)
 
     from taui.tui import run_tui
-    run_tui(config)
+    session_id = run_tui(config)
+    if session_id:
+        from rich.console import Console
+
+        Console().print(f"[dim]to continue session run:[/dim] taui --session {session_id}")

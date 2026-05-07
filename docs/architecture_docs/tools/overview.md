@@ -55,7 +55,7 @@ class ToolResult:
     @classmethod fail(content, **metadata)  # Convenience: error=True
 ```
 
-The LLM only sees `content`. `metadata` is for frontends and diagnostics. `error` affects how the CLI displays results (red vs dim).
+The LLM only sees `content`. `metadata` is for UI rendering and diagnostics. `error` affects how the TUI displays results.
 
 ### Tool Protocol
 
@@ -125,7 +125,7 @@ class ToolPolicy:
     set(tool_name, decision)              # Override for specific tool
 ```
 
-Default: all tools are `AUTO`. The CLI can set tools like `bash` or `write` to `CONFIRM` for safety.
+Default: all tools are `AUTO`. The TUI can set tools like `bash` or `write` to `CONFIRM` for safety.
 
 ### Execution Outcomes
 

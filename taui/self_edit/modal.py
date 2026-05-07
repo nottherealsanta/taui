@@ -24,12 +24,12 @@ class FileEditModal(ModalScreen[bool]):
         width: 92%;
         height: 88%;
         background: $surface;
-        border: solid #f0c808;
+        border: solid #586069;
         padding: 1 2;
     }
     #file-edit-title {
         height: 1;
-        color: #f0c808;
+        color: $text;
     }
     #file-edit-text {
         height: 1fr;
@@ -113,7 +113,7 @@ class ConfigEditModal(ModalScreen[Config | None]):
         width: 86%;
         height: 76%;
         background: $surface;
-        border: solid #f0c808;
+        border: solid #586069;
         padding: 1 2;
     }
     .cfg-row {

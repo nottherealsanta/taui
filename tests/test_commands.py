@@ -254,6 +254,8 @@ class TestBuiltinCommands:
         assert not result.error
         assert "abc123" in result.output
         assert "Test session" in result.output
+        assert result.metadata["action"] == "session_picker"
+        assert result.metadata["sessions"][0]["session_id"] == "abc123"
 
     async def test_sessions_resume(self):
         from taui.commands.builtins import register_builtins
