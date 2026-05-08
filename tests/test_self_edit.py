@@ -6,6 +6,7 @@ from typing import Any
 
 from textual.app import App, ComposeResult
 from textual.containers import Vertical, VerticalScroll
+from textual.widgets import Collapsible, Select, Static
 
 from taui.config import Config
 from taui.self_edit import SelfEditController, SelfEditSession, SelfEditStore
@@ -47,6 +48,7 @@ class _FakeLoop:
     def __init__(self) -> None:
         self._messages: list = []
         self._system_prompt = ""
+        self.stream_id = "agents/fake"
         self.run_calls: list[str] = []
 
     async def run(self, text: str):
@@ -72,6 +74,10 @@ class _FakeSession:
         self._provider = None
         self._stream = None
         self.session_id = "fake"
+        self.replay_items = []
+        self.last_resume_error = ""
+        self.new_session_count = 0
+        self.resumed: list[str] = []
 
     def reload_extensions(self):
         self.reload_count += 1
@@ -79,6 +85,18 @@ class _FakeSession:
 
     def _replace_loop(self, loop) -> None:
         self._loop = loop
+
+    async def new_session(self) -> None:
+        self.new_session_count += 1
+        self.session_id = f"fake-new-{self.new_session_count}"
+        self._loop = _FakeLoop()
+        self._loop.stream_id = f"agents/{self.session_id}"
+
+    async def resume_session(self, session_id: str) -> bool:
+        self.resumed.append(session_id)
+        self.session_id = session_id
+        self._loop = _FakeLoop()
+        return True
 
     async def send(self, message: str):
         raise AssertionError("self-edit inventory must not call the LLM")
@@ -405,10 +423,13 @@ async def test_app_enters_self_edit_mounts_panel_and_status(tmp_path):
         await app.action_enter_self_edit()
         assert app._self_edit is not None
         assert app.query_one(SelfEditStatusBar).is_mounted
+        assert str(app.query_one(SelfEditStatusBar).render()) == "selection: -"
         assert app.query_one(SelfEditPanel).is_mounted
         # Specialist loop was installed.
         assert app._self_edit.specialist_loop is app._session._loop
-        assert app._self_edit.previous_loop is not app._session._loop
+        assert app._self_edit.previous_session_id == "fake"
+        assert app._session.session_id == "fake-new-1"
+        assert app._session._loop.stream_id == "agents/fake-new-1"
 
 
 async def test_app_exits_self_edit_restores_loop_and_reloads(tmp_path):
@@ -416,12 +437,11 @@ async def test_app_exits_self_edit_restores_loop_and_reloads(tmp_path):
     async with app.run_test():
         session = _FakeSession(tmp_path)
         app._session = session
-        prior = session._loop
         await app.action_enter_self_edit()
-        assert session._loop is not prior  # specialist installed
+        assert session.session_id == "fake-new-1"
         await app.action_exit_self_edit()
         assert app._self_edit is None
-        assert session._loop is prior  # restored
+        assert session.resumed == ["fake"]
         assert session.reload_count == 1
 
 
@@ -434,3 +454,52 @@ async def test_app_new_in_self_edit_clears_specialist_history(tmp_path):
         app._self_edit.specialist_loop._messages = ["a", "b"]
         app._self_edit_controller.reset_specialist_history()
         assert app._self_edit.specialist_loop._messages == []
+
+
+async def test_self_edit_panel_sections_are_accordion(tmp_path):
+    app = _ModeApp(Config(working_dir=tmp_path))
+    async with app.run_test() as pilot:
+        app._session = _FakeSession(tmp_path)
+        await app.action_enter_self_edit()
+        panel = app.query_one(SelfEditPanel)
+        agent = panel.query_one("#se-section-agent", Collapsible)
+        tool = panel.query_one("#se-section-tool", Collapsible)
+
+        assert agent.collapsed is False
+        tool.collapsed = False
+        await pilot.pause()
+
+        assert tool.collapsed is False
+        assert agent.collapsed is True
+
+
+async def test_self_edit_selection_is_shown_in_panel_footer(tmp_path):
+    app = _ModeApp(Config(working_dir=tmp_path))
+    async with app.run_test() as pilot:
+        app._session = _FakeSession(tmp_path)
+        await app.action_enter_self_edit()
+        panel = app.query_one(SelfEditPanel)
+
+        panel.post_message(SelfEditPanel.RowSelected("tool", "bash"))
+        await pilot.pause()
+
+        assert panel.selected_kind == "tool"
+        assert panel.selected_name == "bash"
+        assert str(app.query_one(SelfEditStatusBar).render()) == "selection: tool bash"
+        assert "playbook" not in str(panel.query_one("#self-edit-panel-footer", Static).render())
+
+
+async def test_self_edit_scope_dropdown_persists(tmp_path):
+    app = _ModeApp(Config(working_dir=tmp_path))
+    async with app.run_test() as pilot:
+        app._session = _FakeSession(tmp_path)
+        await app.action_enter_self_edit()
+        panel = app.query_one(SelfEditPanel)
+        scope_select = panel.query_one("#self-edit-scope-select", Select)
+
+        scope_select.value = "global"
+        await pilot.pause()
+
+        assert app._self_edit.scope == "global"
+        assert panel.scope == "global"
+        assert SelfEditStore(tmp_path).load_default_scope() == "global"

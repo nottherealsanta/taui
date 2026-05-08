@@ -7,7 +7,6 @@ from typing import TYPE_CHECKING
 from textual.containers import Vertical, VerticalScroll
 
 from taui.tui.messages import ToolEnded, ToolStarted
-from taui.tui.widgets.info_bar import InfoBar
 from taui.tui.widgets.tool_status import ToolStatusWidget
 
 if TYPE_CHECKING:
@@ -75,8 +74,6 @@ class ToolController:
         await self._current_tool_section.mount(widget)
         self._active_tool_widgets[event.tool_key] = widget
 
-        self._app.query_one(InfoBar).set_status(f"Running {event.tool_name}...")
-
     async def handle_tool_ended(self, event: ToolEnded) -> None:
         widget = self._active_tool_widgets.pop(event.tool_key, None)
         if widget:
@@ -84,5 +81,3 @@ class ToolController:
                 await widget.fail(event.result)
             else:
                 await widget.complete(event.result)
-
-        self._app.query_one(InfoBar).set_status("Thinking...")

@@ -188,7 +188,7 @@ def _prompt_toolkit_select(models: list[dict], provider: str) -> str:
         lines = [("bold", f"Select model for {provider}:\n\n")]
         for i, m in enumerate(display_models):
             ctx = f"{m['context'] // 1000}k" if m["context"] else "?"
-            tag = " 🧠" if m["reasoning"] else ""
+            tag = " reasoning" if m["reasoning"] else ""
             label = f"{m['name']}  ({ctx} ctx){tag}"
             if i == selected[0]:
                 lines.append(("bold fg:cyan", f"  ❯ {label}\n"))

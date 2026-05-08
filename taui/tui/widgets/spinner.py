@@ -1,56 +1,76 @@
-"""Spinner widget shown during LLM processing."""
+"""Indeterminate progress widget shown during LLM processing."""
 
 from __future__ import annotations
 
-import asyncio
-
 from rich.text import Text
+from textual.timer import Timer
 from textual.widgets import Static
 
 
-class SpinnerWidget(Static):
-    """Global thinking spinner, hidden by default."""
+class ActivityProgress(Static):
+    """Activity progress row above the info bar."""
 
     DEFAULT_CSS = """
-    SpinnerWidget {
+    ActivityProgress {
         height: 1;
-        padding: 0 2;
-        display: none;
-    }
-    SpinnerWidget.visible {
-        display: block;
+        padding: 0;
+        margin: 0 1;
     }
     """
 
-    SPINNER_FRAMES = ["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"]
-
-    def __init__(self) -> None:
-        super().__init__()
-        self._frame = 0
-        self._status_text = "Thinking..."
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._offset = 0
+        self._direction = 1
         self._running = False
+        self._active_style = "#3fb950"
+        self._refresh_timer: Timer | None = None
 
-    def set_status(self, text: str) -> None:
-        self._status_text = text or "Thinking..."
-        self._refresh_display()
+    def _advance(self) -> None:
+        self._offset += 1 * self._direction
+        self.refresh()
 
-    def _refresh_display(self) -> None:
-        frame = self.SPINNER_FRAMES[self._frame % len(self.SPINNER_FRAMES)]
-        self.update(
-            Text.from_markup(
-                f" [bold #3fb950]{frame}[/bold #3fb950]"
-                f" [#8b949e]{self._status_text}[/#8b949e]"
-            )
-        )
+    def set_active_style(self, style: str) -> None:
+        self._active_style = style or "#3fb950"
+        self.refresh()
 
-    async def start(self) -> None:
+    def start(self) -> None:
         self._running = True
-        self.add_class("visible")
-        while self._running:
-            self._frame += 1
-            self._refresh_display()
-            await asyncio.sleep(0.1)
+        if self._refresh_timer is None:
+            self._refresh_timer = self.set_interval(0.02, self._advance)
+        else:
+            self._refresh_timer.resume()
+        self.refresh()
 
     def stop(self) -> None:
         self._running = False
-        self.remove_class("visible")
+        if self._refresh_timer is not None:
+            self._refresh_timer.pause()
+        self._offset = 0
+        self._direction = 1
+        self.refresh()
+
+    def render(self) -> Text:
+        width = max(12, self.size.width or 40)
+        if not self._running:
+            return Text("━" * width, style="#30363d")
+
+        segment = max(4, width // 5)
+        travel = max(1, width - segment)
+        position = self._offset
+        if position >= travel:
+            position = travel
+            self._direction = -1
+            self._offset = travel
+        elif position <= 0:
+            position = 0
+            self._direction = 1
+            self._offset = 0
+
+        bar = Text()
+        for index in range(width):
+            if position <= index < position + segment:
+                bar.append("━", style=self._active_style)
+            else:
+                bar.append("━", style="#30363d")
+        return bar

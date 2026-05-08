@@ -1,5 +1,8 @@
 """Tests for taui.commands."""
 
+import json
+import subprocess
+
 import pytest
 
 from taui.commands.registry import CommandContext, CommandRegistry, CommandResult
@@ -154,6 +157,187 @@ class TestBuiltinCommands:
         assert getattr(reg.get("i"), "accepts_args") is False
         assert getattr(reg.get("new"), "accepts_args") is False
         assert getattr(reg.get("model"), "accepts_args") is True
+
+    async def test_model_list_has_no_reasoning_icon(self, monkeypatch):
+        from taui.commands.builtins import register_builtins
+
+        class FakeConfig:
+            provider = "copilot"
+            model = "claude-haiku-4.5"
+
+        class FakeLoop:
+            _model = "claude-haiku-4.5"
+
+        class FakeSession:
+            config = FakeConfig()
+            _loop = FakeLoop()
+
+        monkeypatch.setattr(
+            "taui.llm_provider.models.list_models",
+            lambda provider, force_refresh=False: [
+                {
+                    "id": "claude-haiku-4.5",
+                    "context": 200000,
+                    "reasoning": True,
+                }
+            ],
+        )
+
+        reg = CommandRegistry()
+        register_builtins(reg, get_session=lambda: FakeSession())
+        result = await reg.execute("/model list")
+
+        assert not result.error
+        assert "🧠" not in result.output
+        assert "reasoning" in result.output
+
+    async def test_model_accepts_current_provider_model_value(self):
+        from taui.commands.builtins import register_builtins
+
+        class FakeConfig:
+            provider = "copilot"
+            model = "old"
+
+        class FakeLoop:
+            _model = "old"
+
+        class FakeSession:
+            session_id = "session-2"
+            config = FakeConfig()
+            _loop = FakeLoop()
+            new_session_called = False
+
+            async def new_session(self):
+                self.new_session_called = True
+
+        session = FakeSession()
+        reg = CommandRegistry()
+        register_builtins(reg, get_session=lambda: session)
+        result = await reg.execute("/model copilot/claude-haiku-4.5")
+
+        assert not result.error
+        assert session.config.provider == "copilot"
+        assert session.config.model == "claude-haiku-4.5"
+        assert session._loop._model == "claude-haiku-4.5"
+        assert session.new_session_called is False
+        assert result.metadata["action"] == "model_changed"
+        assert result.metadata["model"] == "claude-haiku-4.5"
+
+    async def test_model_rejects_other_provider_model_value(self):
+        from taui.commands.builtins import register_builtins
+
+        class FakeConfig:
+            provider = "copilot"
+            model = "old"
+
+        class FakeLoop:
+            _model = "old"
+
+        class FakeSession:
+            config = FakeConfig()
+            _loop = FakeLoop()
+
+        reg = CommandRegistry()
+        register_builtins(reg, get_session=lambda: FakeSession())
+        result = await reg.execute("/model codex/gpt-5.3-codex")
+
+        assert result.error
+        assert "Use /provider codex" in result.output
+
+    async def test_agents_list_marks_active_profile(self, tmp_path):
+        from taui.commands.builtins import register_builtins
+        from taui.self_edit import AgentProfile
+
+        class FakeLoop:
+            agent_id = "PLN"
+
+        class FakeSession:
+            _loop = FakeLoop()
+
+        class FakeStore:
+            def load_agents(self):
+                return {
+                    "BLD": AgentProfile("BLD", "Build", "build", "", "", [], tmp_path / "BLD.md"),
+                    "PLN": AgentProfile("PLN", "Plan", "plan", "copilot", "m1", [], None),
+                }
+
+        reg = CommandRegistry()
+        register_builtins(
+            reg,
+            get_session=lambda: FakeSession(),
+            get_store=lambda: FakeStore(),
+        )
+        result = await reg.execute("/agents")
+
+        assert not result.error
+        assert "BLD  Build" in result.output
+        assert "PLN  Plan" in result.output
+        assert "copilot/m1" in result.output
+        assert "PLN" in result.output
+        assert "◀" in result.output
+        assert "Activate: /agents <ID>" in result.output
+
+    async def test_agents_activate_profile(self, tmp_path):
+        from taui.commands.builtins import register_builtins
+        from taui.self_edit import AgentProfile
+
+        class FakeLoop:
+            agent_id = "BLD"
+
+        class FakeSession:
+            _loop = FakeLoop()
+
+        profile = AgentProfile("PLN", "Plan", "plan", "", "", [], tmp_path / "PLN.md")
+        applied = []
+
+        class FakeStore:
+            def load_agents(self):
+                return {"PLN": profile}
+
+        reg = CommandRegistry()
+        register_builtins(
+            reg,
+            get_session=lambda: FakeSession(),
+            get_store=lambda: FakeStore(),
+            get_apply_profile=applied.append,
+        )
+        result = await reg.execute("/agents pln")
+
+        assert not result.error
+        assert result.output == "Activated PLN"
+        assert result.metadata["action"] == "agent_activated"
+        assert result.metadata["agent_id"] == "PLN"
+        assert applied == [profile]
+
+    async def test_agents_unknown_id_lists_available_ids(self):
+        from taui.commands.builtins import register_builtins
+        from taui.self_edit import AgentProfile
+
+        class FakeLoop:
+            agent_id = "BLD"
+
+        class FakeSession:
+            _loop = FakeLoop()
+
+        class FakeStore:
+            def load_agents(self):
+                return {
+                    "BLD": AgentProfile("BLD", "Build", "build", "", "", [], None),
+                    "PLN": AgentProfile("PLN", "Plan", "plan", "", "", [], None),
+                }
+
+        reg = CommandRegistry()
+        register_builtins(
+            reg,
+            get_session=lambda: FakeSession(),
+            get_store=lambda: FakeStore(),
+            get_apply_profile=lambda profile: None,
+        )
+        result = await reg.execute("/agents tst")
+
+        assert result.error
+        assert "Unknown agent: TST" in result.output
+        assert "Available: BLD, PLN" in result.output
 
     async def test_extensions_toggle_on(self):
         from taui.commands.builtins import register_builtins
@@ -368,6 +552,61 @@ class TestBuiltinCommands:
         result = await reg.execute("/debug")
         assert result.error
         assert "/debug questions" in result.output
+
+    async def test_copy_copies_context_json(self, monkeypatch):
+        from taui.commands.builtins import register_builtins
+
+        copied: dict[str, bytes | list[str]] = {}
+
+        def fake_run(cmd, *, input, check, timeout):
+            copied["cmd"] = cmd
+            copied["input"] = input
+            assert check is True
+            assert timeout == 5
+
+        class FakeLoop:
+            _messages = [
+                {"role": "system", "content": "system prompt"},
+                {"role": "user", "content": "hello"},
+            ]
+
+            def _build_llm_messages(self):
+                return self._messages
+
+        class FakeSession:
+            session_id = "session-1"
+            provider_name = "copilot"
+            model_name = "mock-model"
+            _loop = FakeLoop()
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        reg = CommandRegistry()
+        register_builtins(reg, get_session=lambda: FakeSession())
+        result = await reg.execute("/copy")
+
+        assert not result.error
+        assert copied["cmd"] == ["pbcopy"]
+        payload = json.loads(copied["input"].decode())
+        assert payload == {
+            "session_id": "session-1",
+            "provider": "copilot",
+            "model": "mock-model",
+            "messages": [
+                {"role": "system", "content": "system prompt"},
+                {"role": "user", "content": "hello"},
+            ],
+        }
+        assert "2 messages" in result.output
+
+    async def test_copy_no_session(self):
+        from taui.commands.builtins import register_builtins
+
+        reg = CommandRegistry()
+        register_builtins(reg)
+        result = await reg.execute("/copy")
+        assert result.error
+        assert "No session" in result.output
 
 
 # ═══ Write guard ══════════════════════════════════════════════════════════════

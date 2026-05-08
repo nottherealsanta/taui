@@ -25,7 +25,7 @@ class ChatInput(TextArea):
         height: auto;
         min-height: 3;
         max-height: 8;
-        border: tall $surface-lighten-1;
+        border: tall $surface-darken-1;
         padding: 1 2;
         margin: 0 2;
         background: $surface;
@@ -36,7 +36,7 @@ class ChatInput(TextArea):
         }
     }
     ChatInput:focus {
-        border: tall #586069;
+        border: tall $surface-lighten-1;
     }
     """
 
@@ -47,6 +47,9 @@ class ChatInput(TextArea):
             super().__init__()
             self.value = value
             self.queue = queue
+
+    class AgentCycleRequested(Message):
+        """Posted when the user cycles the active agent from the input."""
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
@@ -59,6 +62,7 @@ class ChatInput(TextArea):
         self._completions: list[Completion] = []  # (name, description, accepts_args)
         self._completion_active: bool = False
         self._updating_completion_text: bool = False
+        self._arg_completers: dict[str, Callable[[str], list[Completion]]] = {}
         # Self-edit bare-word completion
         self.self_edit_mode: bool = False
         self._self_edit_completer: Callable[[str], list[Completion]] | None = None
@@ -78,6 +82,24 @@ class ChatInput(TextArea):
                 name, description, accepts_args = completion
                 normalized.append((name, description, accepts_args))
         self._completions = normalized
+
+    def set_model_completer(
+        self, completer: Callable[[str], list[Completion]] | None
+    ) -> None:
+        """Install completion for /model provider/model arguments."""
+        self.set_arg_completer("model", completer)
+
+    def set_arg_completer(
+        self,
+        command_name: str,
+        completer: Callable[[str], list[Completion]] | None,
+    ) -> None:
+        """Install completion for a slash command's first argument."""
+        name = command_name.removeprefix("/").lower()
+        if completer is None:
+            self._arg_completers.pop(name, None)
+            return
+        self._arg_completers[name] = completer
 
     def set_self_edit_completer(
         self, completer: Callable[[str], list[Completion]] | None
@@ -114,6 +136,38 @@ class ChatInput(TextArea):
             if name.startswith(prefix)
         ]
 
+    def _model_arg_prefix(self) -> str | None:
+        """Return the /model argument prefix when model completion applies."""
+        arg_prefix = self._command_arg_prefix()
+        if arg_prefix is None or arg_prefix[0] != "model":
+            return None
+        return arg_prefix[1]
+
+    def _command_arg_prefix(self) -> tuple[str, str] | None:
+        """Return (command, arg prefix) when command arg completion applies."""
+        if not self.text.startswith("/") or " " not in self.text:
+            return None
+        command, arg = self.text[1:].split(" ", 1)
+        command = command.lower()
+        if command not in self._arg_completers:
+            return None
+        if " " in arg:
+            return None
+        return command, arg
+
+    def _get_matching_model_args(self, prefix: str) -> list[Completion]:
+        return self._get_matching_command_args("model", prefix)
+
+    def _get_matching_command_args(
+        self,
+        command_name: str,
+        prefix: str,
+    ) -> list[Completion]:
+        completer = self._arg_completers.get(command_name)
+        if completer is None:
+            return []
+        return completer(prefix)
+
     def _show_completion(self) -> None:
         """Show the completion dropdown with matching commands."""
         from taui.tui.widgets.completion_dropdown import CompletionDropdown
@@ -124,13 +178,19 @@ class ChatInput(TextArea):
             self._dismiss_completion()
             return
 
+        arg_prefix = self._command_arg_prefix()
         prefix = text[1:].split()[0] if text[1:].strip() else text[1:]
-        # Only complete if we're still typing the command name (no space yet)
-        if " " in text[1:]:
+        dropdown_prefix = "/"
+        if arg_prefix is not None:
+            command_name, prefix = arg_prefix
+            matches = self._get_matching_command_args(command_name, prefix)
+            dropdown_prefix = ""
+        elif " " in text[1:]:
             self._dismiss_completion()
             return
+        else:
+            matches = self._get_matching_commands(prefix)
 
-        matches = self._get_matching_commands(prefix)
         if not matches:
             self._dismiss_completion()
             return
@@ -142,7 +202,7 @@ class ChatInput(TextArea):
                 offset_y = -(self.outer_size.height + info_bar.outer_size.height)
             except Exception:
                 offset_y = -7
-            dropdown.show(matches, offset_y=offset_y)
+            dropdown.show(matches, offset_y=offset_y, prefix=dropdown_prefix)
             self._completion_active = True
         except Exception:
             pass
@@ -175,6 +235,40 @@ class ChatInput(TextArea):
             self._updating_completion_text = False
         if not keep_completion:
             self._dismiss_completion()
+
+    def _replace_command_arg_from_completion(
+        self,
+        command_name: str,
+        value: str,
+        *,
+        trailing_space: bool,
+        keep_completion: bool = False,
+    ) -> None:
+        """Replace a slash command's first argument with a completion."""
+        self._updating_completion_text = True
+        try:
+            self.clear()
+            suffix = " " if trailing_space else ""
+            self.insert(f"/{command_name} {value}{suffix}")
+        finally:
+            self._updating_completion_text = False
+        if not keep_completion:
+            self._dismiss_completion()
+
+    def _replace_model_arg_from_completion(
+        self,
+        value: str,
+        *,
+        trailing_space: bool,
+        keep_completion: bool = False,
+    ) -> None:
+        """Replace the /model argument with a provider/model completion."""
+        self._replace_command_arg_from_completion(
+            "model",
+            value,
+            trailing_space=trailing_space,
+            keep_completion=keep_completion,
+        )
 
     # ── Self-edit bare-word completion ────────────────────────────────
 
@@ -287,6 +381,17 @@ class ChatInput(TextArea):
             dropdown = self.app.query_one(CompletionDropdown)
             value = dropdown.current_value
             if value:
+                arg_prefix = self._command_arg_prefix()
+                if arg_prefix is not None:
+                    if not dropdown.current_accepts_args:
+                        return
+                    self._replace_command_arg_from_completion(
+                        arg_prefix[0],
+                        value,
+                        trailing_space=False,
+                        keep_completion=True,
+                    )
+                    return
                 self._replace_text_from_completion(
                     value,
                     trailing_space=False,
@@ -307,6 +412,14 @@ class ChatInput(TextArea):
             value = dropdown.current_value
             if value:
                 accepts_args = dropdown.current_accepts_args
+                arg_prefix = self._command_arg_prefix()
+                if arg_prefix is not None:
+                    self._replace_command_arg_from_completion(
+                        arg_prefix[0],
+                        value,
+                        trailing_space=True,
+                    )
+                    return value, accepts_args
                 self._replace_text_from_completion(value, trailing_space=True)
                 return value, accepts_args
         except Exception:
@@ -321,41 +434,44 @@ class ChatInput(TextArea):
             dropdown = self.app.query_one(CompletionDropdown)
             value = dropdown.current_value
             if value and not dropdown.current_accepts_args:
-                self._replace_text_from_completion(value, trailing_space=False)
+                arg_prefix = self._command_arg_prefix()
+                if arg_prefix is not None:
+                    self._replace_command_arg_from_completion(
+                        arg_prefix[0],
+                        value,
+                        trailing_space=False,
+                    )
+                else:
+                    self._replace_text_from_completion(value, trailing_space=False)
                 self._do_submit()
                 return True
         except Exception:
             self._dismiss_completion()
         return False
 
+    def _cycle_selected_command_arg_completion(self) -> bool:
+        """Cycle no-argument command-arg completions without rewriting input."""
+        from taui.tui.widgets.completion_dropdown import CompletionDropdown
+
+        if self._command_arg_prefix() is None:
+            return False
+        try:
+            dropdown = self.app.query_one(CompletionDropdown)
+            if dropdown.current_accepts_args:
+                return False
+            dropdown.move_down()
+            return True
+        except Exception:
+            self._dismiss_completion()
+            return False
+
     async def _on_key(self, event: Key) -> None:
         # --- Tab ---
         if event.key == "tab":
             event.prevent_default()
             event.stop()
-            if self.self_edit_mode:
-                if self._completion_active:
-                    self._accept_self_edit_completion()
-                elif self.text.startswith("/"):
-                    self._show_self_edit_completion()
-                    if self._self_edit_completer:
-                        matches = self._self_edit_completer(self.text[1:])
-                        if len(matches) == 1:
-                            self._replace_self_edit_completion(
-                                matches[0][0], trailing_space=True
-                            )
-            elif self._completion_active:
-                self._accept_completion()
-            elif self.text.startswith("/"):
-                self._show_completion()
-                text = self.text
-                prefix = text[1:].split()[0] if text[1:].strip() else text[1:]
-                matches = self._get_matching_commands(prefix)
-                if len(matches) == 1:
-                    self._replace_text_from_completion(
-                        matches[0][0],
-                        trailing_space=True,
-                    )
+            self._dismiss_completion()
+            self.post_message(self.AgentCycleRequested())
             return
 
         # --- Escape ---
@@ -470,7 +586,11 @@ class ChatInput(TextArea):
         text = self.text
         if self.self_edit_mode and text.startswith("/"):
             self._show_self_edit_completion()
-        elif not self.self_edit_mode and text.startswith("/") and " " not in text[1:]:
+        elif (
+            not self.self_edit_mode
+            and text.startswith("/")
+            and (" " not in text[1:] or self._command_arg_prefix() is not None)
+        ):
             self._show_completion()
         elif self._completion_active:
             self._dismiss_completion()

@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 import time
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, is_dataclass
 from typing import Any
 
 from taui.commands.registry import CommandContext, CommandRegistry, CommandResult
@@ -91,10 +92,28 @@ class ModelCommand:
             return self._interactive_select(session)
 
         # Set model
+        provider = session.config.provider
         model = sub
+        if "/" in sub:
+            provider, model = sub.split("/", 1)
+            if provider not in ("copilot", "codex") or not model:
+                return CommandResult.fail(
+                    "Usage: /model <id> or /model <provider>/<id>"
+                )
+
+        if provider != session.config.provider:
+            return CommandResult.fail(
+                f"Current provider is {session.config.provider}. "
+                f"Use /provider {provider} before selecting {provider}/{model}."
+            )
+
         session.config.model = model
         session._loop._model = model
-        return CommandResult.ok(f"Model set to {model}")
+        return CommandResult.ok(
+            f"Model set to {model}",
+            action="model_changed",
+            model=model,
+        )
 
     @staticmethod
     def _list_models(session, *, force: bool = False) -> CommandResult:
@@ -110,8 +129,8 @@ class ModelCommand:
         lines = [f"Models for {provider} (tool_call=true):"]
         for m in models[:20]:
             ctx_k = f"{m['context'] // 1000}k" if m["context"] else "?"
-            tag = " 🧠" if m["reasoning"] else ""
             current = " ◀" if m["id"] == session.config.model else ""
+            tag = " reasoning" if m["reasoning"] else ""
             lines.append(f"  {m['id']:40s} {ctx_k:>6s}{tag}{current}")
         lines.append("")
         lines.append("Set: /model <id>  or  /model select")
@@ -132,7 +151,83 @@ class ModelCommand:
         selected = prompt_model_selection(provider)
         session.config.model = selected
         session._loop._model = selected
-        return CommandResult.ok(f"Model set to {selected}")
+        return CommandResult.ok(
+            f"Model set to {selected}",
+            action="model_changed",
+            model=selected,
+        )
+
+
+@dataclass(slots=True)
+class AgentsCommand:
+    """List or activate agent profiles."""
+
+    name: str = "agents"
+    description: str = "List or activate agents (/agents [ID])"
+    accepts_args: bool = True
+    _get_session: Any = None
+    _get_store: Any = None
+    _get_apply_profile: Any = None
+
+    async def execute(self, ctx: CommandContext) -> CommandResult:
+        if self._get_session is None:
+            return CommandResult.fail("No session.")
+        if self._get_store is None:
+            return CommandResult.fail("Agent store not available.")
+
+        session = self._get_session()
+        store = self._get_store()
+        agents = store.load_agents()
+        if not ctx.args or ctx.args[0].lower() in ("list", "ls"):
+            return self._list_agents(session, agents)
+
+        agent_id = ctx.args[0].upper()
+        profile = agents.get(agent_id)
+        if profile is None:
+            available = ", ".join(sorted(agents)) or "(none)"
+            return CommandResult.fail(
+                f"Unknown agent: {agent_id}. Available: {available}"
+            )
+        if self._get_apply_profile is None:
+            return CommandResult.fail("Agent activation not available.")
+
+        self._get_apply_profile(profile)
+        return CommandResult.ok(
+            f"Activated {profile.id}",
+            action="agent_activated",
+            agent_id=profile.id,
+        )
+
+    @staticmethod
+    def _list_agents(session: Any, agents: dict[str, Any]) -> CommandResult:
+        if not agents:
+            return CommandResult.ok("No agents found.")
+
+        active_id = str(getattr(session._loop, "agent_id", "") or "").upper()
+        lines = ["Agents:"]
+        for profile in sorted(agents.values(), key=lambda item: item.id):
+            marker = " ◀" if profile.id == active_id else ""
+            provider_model = _profile_provider_model(profile)
+            prompt_path = str(profile.prompt_path) if profile.prompt_path else "-"
+            lines.append(
+                f"  {profile.id:3s}  {profile.name:18s}  "
+                f"{provider_model:28s}  {prompt_path}{marker}"
+            )
+        lines.append("")
+        lines.append("Activate: /agents <ID>")
+        return CommandResult.ok("\n".join(lines))
+
+
+def _profile_provider_model(profile: Any) -> str:
+    provider = str(getattr(profile, "provider", "") or "")
+    model = str(getattr(profile, "model", "") or "")
+    if provider and model:
+        return f"{provider}/{model}"
+    if provider:
+        return provider
+    if model:
+        return model
+    return "-"
 
 
 @dataclass(slots=True)
@@ -426,10 +521,10 @@ class SessionInfoCommand:
 
 @dataclass(slots=True)
 class CopyCommand:
-    """Copy last assistant message to clipboard."""
+    """Copy the current agent context to clipboard as JSON."""
 
     name: str = "copy"
-    description: str = "Copy last assistant message to clipboard"
+    description: str = "Copy current context to clipboard as JSON"
     accepts_args: bool = False
     _get_session: Any = None
 
@@ -437,20 +532,11 @@ class CopyCommand:
         if not self._get_session:
             return CommandResult.fail("No session.")
         session = self._get_session()
-        # Find last assistant message
-        messages = session._loop._messages
-        last_text = None
-        for msg in reversed(messages):
-            if msg.get("role") == "assistant":
-                content = msg.get("content", "")
-                if isinstance(content, str) and content.strip():
-                    last_text = content
-                    break
-        if not last_text:
-            return CommandResult.ok("No assistant message to copy.")
+
+        context_json = _context_json(session)
         try:
             subprocess.run(
-                ["pbcopy"], input=last_text.encode(),
+                ["pbcopy"], input=context_json.encode(),
                 check=True, timeout=5,
             )
         except FileNotFoundError:
@@ -458,7 +544,7 @@ class CopyCommand:
             try:
                 subprocess.run(
                     ["xclip", "-selection", "clipboard"],
-                    input=last_text.encode(), check=True, timeout=5,
+                    input=context_json.encode(), check=True, timeout=5,
                 )
             except (FileNotFoundError, subprocess.SubprocessError):
                 return CommandResult.fail(
@@ -466,8 +552,37 @@ class CopyCommand:
                 )
         except subprocess.SubprocessError as exc:
             return CommandResult.fail(f"Clipboard error: {exc}")
-        preview = last_text[:80] + ("..." if len(last_text) > 80 else "")
-        return CommandResult.ok(f"Copied to clipboard: {preview}")
+
+        message_count = len(session._loop._messages)
+        return CommandResult.ok(
+            f"Copied context JSON to clipboard ({message_count} messages)."
+        )
+
+
+def _context_json(session: Any) -> str:
+    loop = session._loop
+    if hasattr(loop, "_build_llm_messages"):
+        messages = loop._build_llm_messages()
+    else:
+        messages = [_message_to_dict(msg) for msg in loop._messages]
+
+    payload = {
+        "session_id": getattr(session, "session_id", None),
+        "provider": getattr(session, "provider_name", None),
+        "model": getattr(session, "model_name", None),
+        "messages": messages,
+    }
+    return json.dumps(payload, indent=2, ensure_ascii=False, default=str)
+
+
+def _message_to_dict(message: Any) -> dict[str, Any]:
+    if isinstance(message, dict):
+        return message
+    if is_dataclass(message):
+        return asdict(message)
+    role = getattr(message, "role", "unknown")
+    content = getattr(message, "content", None)
+    return {"role": role, "content": content}
 
 
 @dataclass(slots=True)
@@ -585,6 +700,8 @@ def register_builtins(
     get_session=None,
     get_tracker=None,
     get_extensions=None,
+    get_store=None,
+    get_apply_profile=None,
 ) -> None:
     """Register all built-in commands."""
     help_cmd = HelpCommand()
@@ -592,6 +709,7 @@ def register_builtins(
 
     clear_cmd = ClearCommand()
     model_cmd = ModelCommand()
+    agents_cmd = AgentsCommand()
     cost_cmd = CostCommand()
     provider_cmd = ProviderCommand()
     self_edit_cmd = SelfEditModeCommand()
@@ -609,6 +727,7 @@ def register_builtins(
     if get_session:
         clear_cmd._get_loop = lambda: get_session()._loop
         model_cmd._get_session = get_session
+        agents_cmd._get_session = get_session
         provider_cmd._get_session = get_session
         ext_mode_cmd._get_session = get_session
         sessions_cmd._get_session = get_session
@@ -618,6 +737,11 @@ def register_builtins(
         copy_cmd._get_session = get_session
         export_cmd._get_session = get_session
         verbose_cmd._get_session = get_session
+
+    if get_store:
+        agents_cmd._get_store = get_store
+    if get_apply_profile:
+        agents_cmd._get_apply_profile = get_apply_profile
 
     if get_tracker:
         cost_cmd._get_tracker = get_tracker
@@ -630,6 +754,7 @@ def register_builtins(
     registry.register(CompactCommand())
     registry.register(clear_cmd)
     registry.register(model_cmd)
+    registry.register(agents_cmd)
     registry.register(provider_cmd)
     registry.register(ext_list_cmd)
     registry.register(self_edit_cmd)
@@ -650,3 +775,4 @@ def register_builtins(
     registry.alias("?", "help")
     registry.alias("keys", "hotkeys")
     registry.alias("quiet", "verbose")
+    registry.alias("self-edit", "i")

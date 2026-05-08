@@ -17,20 +17,28 @@ from taui.agent.context import DEFAULT_MAX_INPUT_TOKENS, estimate_total_tokens
 from taui.commands.builtins import register_builtins as register_builtin_commands
 from taui.commands.registry import CommandRegistry
 from taui.config import Config
-from taui.self_edit import SelfEditController, SelfEditSession, SelfEditStore
+from taui.self_edit import (
+    AgentProfile,
+    SelfEditController,
+    SelfEditSession,
+    SelfEditStore,
+)
 from taui.self_edit.panel import SelfEditPanel
 from taui.self_edit.status_bar import SelfEditStatusBar
 from taui.session import Session
 from taui.tui.approval_controller import ApprovalController
 from taui.tui.messages import StreamReasoningDelta, StreamTextDelta, ToolEnded, ToolStarted
+from taui.tui.screens.agent_picker import AgentPickerScreen
 from taui.tui.screens.context_breakdown import ContextBreakdownScreen
+from taui.tui.screens.model_picker import ModelPickerScreen
 from taui.tui.screens.session_picker import SessionPickerScreen
 from taui.tui.tool_controller import ToolController
 from taui.tui.widgets.agent_response import AgentResponse
 from taui.tui.widgets.chat_input import ChatInput
 from taui.tui.widgets.completion_dropdown import CompletionDropdown
-from taui.tui.widgets.info_bar import InfoBar
+from taui.tui.widgets.info_bar import InfoBar, _agent_color
 from taui.tui.widgets.sidebar import Sidebar
+from taui.tui.widgets.spinner import ActivityProgress
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +73,7 @@ class TauiApp(App[None]):
     .user-message {
         background: $surface;
         padding: 1 2;
-        margin: 1 0 0 0;
+        margin: 1 0 1 0;
     }
     .tool-section {
         height: auto;
@@ -96,7 +104,13 @@ class TauiApp(App[None]):
     }
     Markdown {
         padding: 0 2;
-        margin: 1 0;
+        margin: 0 0 1 0;
+    }
+    AgentResponse {
+        margin: 0;
+    }
+    AgentResponse > MarkdownParagraph:last-child {
+        margin-bottom: 0;
     }
     Markdown H1 { color: $text; text-style: bold; }
     Markdown H2 { color: $text; text-style: bold; }
@@ -119,6 +133,7 @@ class TauiApp(App[None]):
         super().__init__()
         self._config = config or Config.load()
         self._session: Session | None = None
+        self._session_initializing = False
         self._is_processing = False
 
         self._tool_ctrl = ToolController(self)
@@ -128,7 +143,6 @@ class TauiApp(App[None]):
         self._current_response: AgentResponse | None = None
         self._current_reasoning: Static | None = None
         self._reasoning_buf: str = ""
-        self._spinner_task: asyncio.Task | None = None
         self._streamed_text: bool = False
 
         # Queue for follow-up messages
@@ -177,20 +191,52 @@ class TauiApp(App[None]):
                     show_line_numbers=False,
                 )
                 yield InfoBar()
+                yield ActivityProgress(id="activity-progress")
 
     async def on_mount(self) -> None:
-        self._session = await Session.create(self._config)
-        self._wire_callbacks()
         self._commands = self._build_commands()
+        self._configure_chat_input()
+        self._session_initializing = True
+        self.query_one(InfoBar).update_info(
+            provider=self._config.provider,
+            model=self._config.model,
+            agent_id="" if self._config.session_id else "BLD",
+        )
+        self.query_one(ActivityProgress).stop()
+        self.run_worker(
+            self._initialize_session(),
+            name="session_init",
+            group="startup",
+            exclusive=True,
+            exit_on_error=False,
+        )
+
+    async def _initialize_session(self) -> None:
+        try:
+            self._session = await Session.create(self._config)
+        except Exception as exc:
+            logger.exception("Failed to create session")
+            self._session_initializing = False
+            await self._show_startup_error(exc)
+            return
+
+        if not self._config.session_id:
+            self._apply_default_agent_profile()
+        self._wire_callbacks()
         self._update_status()
+        self._session_initializing = False
 
         if self._config.session_id:
             await self._resume_session(self._config.session_id)
 
+    def _configure_chat_input(self) -> None:
+        """Load input history and command completions."""
         # Load history
         self._load_history()
         chat_input = self.query_one("#chat-input", ChatInput)
         chat_input.load_history(self._history)
+        chat_input.set_model_completer(self._complete_model_arg)
+        chat_input.set_arg_completer("agents", self._complete_agents_arg)
         # Set up command completions
         completions = []
         for name in self._commands.names:
@@ -206,6 +252,24 @@ class TauiApp(App[None]):
         chat_input.set_completions(completions)
         chat_input.can_submit = True
         chat_input.focus()
+
+    async def _show_startup_error(self, exc: Exception) -> None:
+        """Render a startup failure without letting Textual print a traceback."""
+        chat_log = self.query_one("#chat-log", VerticalScroll)
+        provider = self._config.provider
+        message = str(exc) or exc.__class__.__name__
+        await chat_log.mount(
+            Static(
+                "[red]Could not start session.[/red]\n"
+                f"[dim]Provider:[/dim] {escape(provider)}\n"
+                f"[dim]Reason:[/dim] {escape(message)}\n\n"
+                "[dim]Run `taui --login` after fixing auth/network access, "
+                "or start with another provider via `taui -p <provider>`.[/dim]",
+                markup=True,
+            )
+        )
+        info_bar = self.query_one(InfoBar)
+        info_bar.update_info(provider=provider, model=self._config.model)
 
     # ── History persistence ───────────────────────────────────────────
 
@@ -267,8 +331,71 @@ class TauiApp(App[None]):
             get_extensions=lambda: (
                 self._session._ext_registry if self._session else None
             ),
+            get_store=lambda: SelfEditStore(self._config.working_dir),
+            get_apply_profile=self._apply_self_edit_profile,
         )
         return registry
+
+    def _complete_model_arg(self, prefix: str) -> list[tuple[str, str, bool]]:
+        """Complete /model arguments as provider/model_id."""
+        from taui.llm_provider.models import list_models
+
+        if self._session is None:
+            return []
+        provider = self._session.config.provider
+        completions: list[tuple[str, str, bool]] = []
+        for model in list_models(provider):
+            value = f"{provider}/{model['id']}"
+            if prefix and not _model_completion_matches(prefix, provider, model["id"]):
+                continue
+            ctx = f"{model['context'] // 1000}k" if model["context"] else "?"
+            tag = " reasoning" if model["reasoning"] else ""
+            completions.append((value, f"{ctx} ctx{tag}", True))
+            if len(completions) >= 30:
+                break
+        return completions[:30]
+
+    def _complete_agents_arg(self, prefix: str) -> list[tuple[str, str, bool]]:
+        """Complete /agents arguments as profile IDs."""
+        store = SelfEditStore(self._config.working_dir)
+        agents = store.load_agents()
+        matches: list[tuple[str, str, bool]] = []
+        for agent in sorted(agents.values(), key=lambda item: item.id):
+            if prefix and not agent.id.lower().startswith(prefix.lower()):
+                continue
+            matches.append((agent.id, agent.name, False))
+        return matches
+
+    def _apply_default_agent_profile(self) -> None:
+        """Apply BLD as the normal-mode default when starting a fresh session."""
+        if self._session is None or not all(
+            hasattr(self._session, name)
+            for name in ("_registry", "_executor", "_provider", "_stream")
+        ):
+            return
+        try:
+            profile = SelfEditStore(self._config.working_dir).load_agents().get("BLD")
+        except Exception:
+            profile = None
+        if profile is not None:
+            self._apply_self_edit_profile(profile)
+
+    def _cycle_agent_profile(self) -> None:
+        """Activate the next available agent profile by ID."""
+        if self._session is None:
+            return
+        agents = SelfEditStore(self._config.working_dir).load_agents()
+        profiles = sorted(agents.values(), key=lambda item: item.id)
+        if not profiles:
+            return
+        active_id = str(getattr(self._session._loop, "agent_id", "") or "").upper()
+        active_index = next(
+            (index for index, profile in enumerate(profiles) if profile.id == active_id),
+            -1,
+        )
+        next_profile = profiles[(active_index + 1) % len(profiles)]
+        self._apply_self_edit_profile(next_profile)
+        self._update_status()
 
     # ── Info bar ──────────────────────────────────────────────────────
 
@@ -285,6 +412,7 @@ class TauiApp(App[None]):
             max_tokens=DEFAULT_MAX_INPUT_TOKENS,
             cost=tracker.total_cost_usd,
             extensions_mode=self._session.extensions_mode,
+            agent_id=str(getattr(self._session._loop, "agent_id", "") or ""),
         )
 
     # ── Agent callbacks ───────────────────────────────────────────────
@@ -323,6 +451,57 @@ class TauiApp(App[None]):
     @on(ToolEnded)
     async def handle_tool_ended(self, event: ToolEnded) -> None:
         await self._tool_ctrl.handle_tool_ended(event)
+
+    @on(InfoBar.AgentBadgeClicked)
+    def handle_agent_badge_clicked(self, event: InfoBar.AgentBadgeClicked) -> None:
+        if self._session is None:
+            return
+        agents = sorted(
+            SelfEditStore(self._config.working_dir).load_agents().values(),
+            key=lambda item: item.id,
+        )
+        if not agents:
+            return
+        active_id = str(getattr(self._session._loop, "agent_id", "") or "")
+        self.push_screen(
+            AgentPickerScreen(agents, current=active_id),
+            callback=self._apply_selected_agent,
+        )
+
+    @on(InfoBar.ModelBadgeClicked)
+    def handle_model_badge_clicked(self, event: InfoBar.ModelBadgeClicked) -> None:
+        self._open_model_picker()
+
+    def _open_model_picker(self) -> None:
+        if self._session is None:
+            return
+        from taui.llm_provider.models import list_models
+
+        provider = self._session.config.provider
+        models = list_models(provider)
+        self.push_screen(
+            ModelPickerScreen(provider, models, current=self._session.model_name),
+            callback=self._apply_selected_model,
+        )
+
+    def _apply_selected_agent(self, selected: str | None) -> None:
+        if selected is None:
+            return
+        profile = SelfEditStore(self._config.working_dir).load_agents().get(
+            selected.upper()
+        )
+        if profile is None:
+            return
+        self._apply_self_edit_profile(profile)
+        self._update_status()
+
+    def _apply_selected_model(self, selected: str | None) -> None:
+        if selected:
+            if self._session is None:
+                return
+            self._session.config.model = selected
+            self._session._loop._model = selected
+            self._update_status()
 
     # ── Streaming text handlers ───────────────────────────────────────
 
@@ -395,6 +574,22 @@ class TauiApp(App[None]):
             await self._handle_command(text)
             return
 
+        if self._session is None:
+            chat_log = self.query_one("#chat-log", VerticalScroll)
+            message = (
+                "Session is still starting."
+                if self._session_initializing
+                else "No session is active. Fix auth/network access and restart, or run /login."
+            )
+            await chat_log.mount(
+                Static(
+                    f"[yellow]{escape(message)}[/yellow]",
+                    markup=True,
+                )
+            )
+            self._smart_scroll()
+            return
+
         # Save to history
         self._save_to_history(text)
 
@@ -428,6 +623,13 @@ class TauiApp(App[None]):
         self._smart_scroll()
         self._send_and_drain(text)
 
+    @on(ChatInput.AgentCycleRequested)
+    async def handle_agent_cycle_requested(
+        self,
+        event: ChatInput.AgentCycleRequested,
+    ) -> None:
+        self._cycle_agent_profile()
+
     async def _show_indicator(self, mode: str, text: str) -> None:
         """Show a steer/queue indicator in the chat log."""
         chat_log = self.query_one("#chat-log", VerticalScroll)
@@ -457,9 +659,10 @@ class TauiApp(App[None]):
         verb_text = text[1:] if text.startswith("/") else text
         chat_log = self.query_one("#chat-log", VerticalScroll)
         await chat_log.mount(
-            Static(f"[#f0c808]i> {escape(text)}[/#f0c808]", markup=True)
+            Static(f"[dim]i> {escape(text)}[/dim]", markup=True)
         )
         output = await self._self_edit_controller.handle(verb_text)
+        self._update_self_edit_selection_status()
         if output:
             await chat_log.mount(Static(output, markup=False))
         self._smart_scroll()
@@ -499,9 +702,10 @@ class TauiApp(App[None]):
         """Send a single message and display the result."""
         assert self._session is not None
 
-        # Start spinner
-        spinner = self.query_one(InfoBar)
-        self._spinner_task = asyncio.create_task(spinner.start())
+        progress = self.query_one(ActivityProgress)
+        agent_id = str(getattr(self._session._loop, "agent_id", "") or "")
+        progress.set_active_style(_agent_color(agent_id) if agent_id else "#3fb950")
+        progress.start()
 
         self._tool_ctrl.reset_section()
         self._current_response = None
@@ -553,9 +757,7 @@ class TauiApp(App[None]):
                 Static(f"[red]Error: {exc}[/red]", markup=True)
             )
         finally:
-            spinner.stop()
-            if self._spinner_task and not self._spinner_task.done():
-                self._spinner_task.cancel()
+            progress.stop()
             self._tool_ctrl.reset_section()
 
     async def _finalize_response(self) -> None:
@@ -626,7 +828,7 @@ class TauiApp(App[None]):
             await self.action_quit_app()
             return
 
-        if command == "/i":
+        if command in ("/i", "/self-edit"):
             await self.action_enter_self_edit()
             return
 
@@ -642,12 +844,13 @@ class TauiApp(App[None]):
                 await self._open_session_picker(sessions)
             return
 
-        style = "yellow" if (result.error or (
-            self._session and self._session.extensions_mode
-        )) else "dim"
-        await chat_log.mount(
-            Static(f"[{style}]{result.output}[/{style}]", markup=True)
-        )
+        if action not in ("self_edit_open", "model_changed"):
+            style = "yellow" if (result.error or (
+                self._session and self._session.extensions_mode
+            )) else "dim"
+            await chat_log.mount(
+                Static(f"[{style}]{result.output}[/{style}]", markup=True)
+            )
 
         if action == "debug_questions":
             self.run_worker(
@@ -663,7 +866,12 @@ class TauiApp(App[None]):
         if action == "self_edit_open":
             await self.action_enter_self_edit()
         if action in (
-            "extensions_on", "extensions_off", "new_session", "session_resumed"
+            "extensions_on",
+            "extensions_off",
+            "agent_activated",
+            "model_changed",
+            "new_session",
+            "session_resumed",
         ):
             self._wire_callbacks()
             self._update_status()
@@ -799,7 +1007,7 @@ class TauiApp(App[None]):
             chat_log = self.query_one("#chat-log", VerticalScroll)
             await chat_log.mount(
                 Static(
-                    "[#f5a524]finish or cancel the current turn first.[/#f5a524]",
+                    "[dim]finish or cancel the current turn first.[/dim]",
                     markup=True,
                 )
             )
@@ -808,7 +1016,11 @@ class TauiApp(App[None]):
         from taui.agent.loop import AgentLoop
 
         store = SelfEditStore(self._config.working_dir)
-        state = SelfEditSession(scope=store.load_default_scope())
+        state = SelfEditSession(
+            scope=store.load_default_scope(),
+            previous_session_id=self._session.session_id,
+        )
+        await self._session.new_session()
         self._self_edit = state
         self._self_edit_controller = SelfEditController(
             app=self,
@@ -817,8 +1029,7 @@ class TauiApp(App[None]):
             state=state,
             store=store,
         )
-        # Freeze the prior loop and spawn a specialist loop with base.md.
-        state.previous_loop = self._session._loop
+        # Spawn a specialist loop with base.md in an isolated session.
         specialist_prompt = self._self_edit_controller.specialist_system_prompt()
         specialist = AgentLoop(
             agent_id=f"self-edit-{self._session.session_id}",
@@ -829,12 +1040,14 @@ class TauiApp(App[None]):
             model=self._config.model,
             max_turns=self._config.max_turns,
         )
+        specialist.stream_id = self._session._loop.stream_id
         state.specialist_loop = specialist
         self._session._replace_loop(specialist)
         self._wire_callbacks()
 
         chat_area = self.query_one("#chat-area", Vertical)
         chat_log = self.query_one("#chat-log", VerticalScroll)
+        await chat_log.remove_children()
         chat_input = self.query_one("#chat-input", ChatInput)
         panel = SelfEditPanel(
             working_dir=self._config.working_dir,
@@ -846,18 +1059,49 @@ class TauiApp(App[None]):
         await chat_area.mount(panel, before=chat_log)
         await chat_area.mount(SelfEditStatusBar(), before=chat_input)
         self._self_edit_controller.attach_panel(panel)
-        # Keep dropdown visible for self-edit completions (it still floats via layer).
         # Install bare-word tab completion for self-edit verbs.
         chat_input.set_self_edit_completer(
             self._self_edit_controller.build_completer()
         )
         await chat_log.mount(
             Static(
-                "[#f0c808]entered self-edit — type `/help` for verbs, bare text goes to specialist.[/#f0c808]",
+                "[dim]/? for help or just ask[/dim]",
                 markup=True,
             )
         )
         self._smart_scroll()
+
+    def _apply_self_edit_profile(self, profile: AgentProfile) -> None:
+        if self._session is None:
+            return
+        from taui.agent.loop import AgentLoop
+        from taui.tools.executor import ToolExecutor
+
+        registry = self._session._registry
+        if profile.allowed_tools:
+            registry = registry.subset(profile.allowed_tools)
+        executor = ToolExecutor(registry=registry, policy=self._session._executor._policy)
+        if profile.provider:
+            self._config.provider = profile.provider
+        if profile.model:
+            self._config.model = profile.model
+        self._config.system_prompt = profile.prompt
+        self._session.config = self._config
+        self._session._system_prompt = profile.prompt
+
+        stream_id = self._session._loop.stream_id
+        loop = AgentLoop(
+            agent_id=profile.id,
+            llm=self._session._provider,
+            executor=executor,
+            stream=self._session._stream,
+            system_prompt=profile.prompt,
+            model=self._config.model,
+            max_turns=self._config.max_turns,
+        )
+        loop.stream_id = stream_id
+        self._session._replace_loop(loop)
+        self._wire_callbacks()
 
     async def action_exit_self_edit(self) -> None:
         if self._self_edit is None:
@@ -866,8 +1110,8 @@ class TauiApp(App[None]):
             chat_log = self.query_one("#chat-log", VerticalScroll)
             await chat_log.mount(
                 Static(
-                    "[#f5a524]specialist is busy — wait for the turn to finish "
-                    "or press Ctrl+C to cancel.[/#f5a524]",
+                    "[dim]specialist is busy — wait for the turn to finish "
+                    "or press Ctrl+C to cancel.[/dim]",
                     markup=True,
                 )
             )
@@ -878,14 +1122,6 @@ class TauiApp(App[None]):
         self._self_edit = None
         self._self_edit_controller = None
 
-        # Restore the previous loop before reloading.
-        if state.previous_loop is not None and self._session is not None:
-            self._session._replace_loop(state.previous_loop)
-
-        output = ""
-        if controller is not None:
-            output = controller.reload()
-
         try:
             await self.query_one("#self-edit-panel", SelfEditPanel).remove()
         except NoMatches:
@@ -894,11 +1130,20 @@ class TauiApp(App[None]):
             await self.query_one("#self-edit-status", SelfEditStatusBar).remove()
         except NoMatches:
             pass
+
+        output = ""
+        if controller is not None:
+            output = controller.reload()
+
         chat_input = self.query_one("#chat-input", ChatInput)
         chat_input.set_self_edit_completer(None)
         chat_input.focus()
         dropdown = self.query_one("#completion-dropdown", CompletionDropdown)
-        dropdown.styles.display = "block"
+        dropdown.hide()
+        if state.previous_session_id is not None:
+            await self._resume_session(state.previous_session_id)
+        if state.activated_profile is not None:
+            self._apply_self_edit_profile(state.activated_profile)
         chat_log = self.query_one("#chat-log", VerticalScroll)
         message = "left self-edit mode"
         if output:
@@ -924,7 +1169,52 @@ class TauiApp(App[None]):
     def handle_self_edit_row_selected(self, event: SelfEditPanel.RowSelected) -> None:
         if self._self_edit_controller is not None:
             self._self_edit_controller.on_panel_select(event.kind, event.name)
+        self._update_self_edit_selection_status(event.kind, event.name)
+
+    @on(SelfEditPanel.ScopeChanged)
+    def handle_self_edit_scope_changed(self, event: SelfEditPanel.ScopeChanged) -> None:
+        if self._self_edit_controller is not None:
+            self._self_edit_controller.set_scope(event.scope)
+
+    def _update_self_edit_selection_status(
+        self,
+        kind: str | None = None,
+        name: str | None = None,
+    ) -> None:
+        if kind is None and name is None and self._self_edit is not None:
+            selection = self._self_edit.selection
+            if selection is not None:
+                kind = selection.kind
+                name = selection.name
+        try:
+            status = self.query_one("#self-edit-status", SelfEditStatusBar)
+        except NoMatches:
+            return
+        status.set_selection(kind, name)
 
 
 def _trunc(s: str, n: int = 40) -> str:
     return s[: n - 3] + "..." if len(s) > n else s
+
+
+def _model_completion_matches(prefix: str, provider: str, model_id: str) -> bool:
+    needle = prefix.casefold().strip()
+    if not needle:
+        return True
+    provider = provider.casefold()
+    model_id = model_id.casefold()
+    value = f"{provider}/{model_id}"
+    if value.startswith(needle) or model_id.startswith(needle):
+        return True
+    tokens = model_id.replace("_", "-").replace(".", "-").split("-")
+    if any(token.startswith(needle) for token in tokens):
+        return True
+    return _is_ordered_subsequence(needle, model_id)
+
+
+def _is_ordered_subsequence(needle: str, haystack: str) -> bool:
+    index = 0
+    for char in haystack:
+        if index < len(needle) and needle[index] == char:
+            index += 1
+    return index == len(needle)

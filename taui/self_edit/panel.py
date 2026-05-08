@@ -9,12 +9,12 @@ from rich.markup import escape
 from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Vertical
+from textual.containers import Horizontal, Vertical
 from textual.events import Click
 from textual.message import Message
 from textual.reactive import reactive
 from textual.widget import Widget
-from textual.widgets import Collapsible, Static
+from textual.widgets import Collapsible, Select, Static
 
 from taui.extensions import ExtensionRegistry
 from taui.self_edit.scaffolding import find_tool_source
@@ -35,8 +35,10 @@ class SelectableRow(Static, can_focus=True):
     DEFAULT_CSS = """
     SelectableRow {
         height: 1;
+        width: 100%;
         padding: 0 1;
         color: $text;
+        overflow-x: hidden;
     }
     SelectableRow:hover {
         background: $surface-lighten-1;
@@ -83,43 +85,70 @@ class SelfEditPanel(Widget):
 
     DEFAULT_CSS = """
     SelfEditPanel {
+        width: 100%;
         height: auto;
         max-height: 60%;
         background: $surface;
-        border: solid #586069;
-        margin: 0 2;
+        border: tall #7a6410;
+        margin: 1 2 1 2;
         padding: 0 1;
         overflow-y: auto;
         overflow-x: hidden;
         scrollbar-size: 1 1;
     }
-    SelfEditPanel #self-edit-panel-header {
-        height: 1;
-        color: $text;
-        text-style: bold;
-    }
     SelfEditPanel Collapsible {
+        width: 100%;
         height: auto;
         background: transparent;
         border: none;
-        margin: 0;
+        margin: 0 0 1 0;
         padding: 0;
     }
     SelfEditPanel CollapsibleTitle {
         height: 1;
         background: transparent;
         color: $text-muted;
-    }
-    SelfEditPanel Contents {
-        height: auto;
         padding: 0 1;
     }
-    SelfEditPanel .se-rows {
+    SelfEditPanel Contents {
+        width: 100%;
         height: auto;
+        padding: 0 1 0 1;
+        overflow-x: hidden;
+    }
+    SelfEditPanel .se-rows {
+        width: 100%;
+        height: auto;
+        overflow-x: hidden;
+    }
+    SelfEditPanel #self-edit-panel-heading {
+        height: 1;
+        color: #f0c808;
+        text-style: bold;
+        padding: 0 1;
+        margin: 0 0 1 0;
+    }
+    SelfEditPanel #self-edit-scope-select {
+        width: 24;
+        height: 3;
+        margin: 0 0 1 0;
+    }
+    SelfEditPanel #self-edit-scope-row {
+        width: auto;
+        height: 3;
+        margin: 0 1 0 1;
+        align-horizontal: left;
+    }
+    SelfEditPanel #self-edit-scope-label {
+        width: auto;
+        height: 1;
+        margin: 1 1 0 0;
+        color: $text-muted;
     }
     SelfEditPanel #self-edit-panel-footer {
         height: 1;
         color: $text-muted;
+        padding: 0 1;
     }
     """
 
@@ -128,6 +157,11 @@ class SelfEditPanel(Widget):
             super().__init__()
             self.kind = kind
             self.name = name
+
+    class ScopeChanged(Message):
+        def __init__(self, scope: str) -> None:
+            super().__init__()
+            self.scope = scope
 
     selected_kind: reactive[str | None] = reactive(None)
     selected_name: reactive[str | None] = reactive(None)
@@ -158,7 +192,17 @@ class SelfEditPanel(Widget):
         }
 
     def compose(self) -> ComposeResult:
-        yield Static("self-edit", id="self-edit-panel-header", markup=False)
+        yield Static("self-edit ////////////", id="self-edit-panel-heading", markup=False)
+        with Horizontal(id="self-edit-scope-row"):
+            yield Static("scope:", id="self-edit-scope-label", markup=False)
+            yield Select[str](
+                (("global", "global"), ("project", "project")),
+                prompt="scope",
+                allow_blank=False,
+                value=self.scope,
+                id="self-edit-scope-select",
+                compact=True,
+            )
         with Collapsible(title="Agents (0)", id="se-section-agent", collapsed=False):
             yield Vertical(id="se-rows-agent", classes="se-rows")
         with Collapsible(title="Tools (0)", id="se-section-tool"):
@@ -219,6 +263,13 @@ class SelfEditPanel(Widget):
 
     def set_scope(self, scope: str) -> None:
         self.scope = scope
+        try:
+            scope_select = self.query_one("#self-edit-scope-select", Select)
+        except Exception:
+            pass
+        else:
+            if scope_select.value != scope:
+                scope_select.value = scope
         self._update_footer()
 
     def set_playbook(self, playbook: str | None) -> None:
@@ -229,6 +280,22 @@ class SelfEditPanel(Widget):
     def _handle_row_selected(self, event: RowSelected) -> None:
         # Update local selection state and re-style; bubble up to the app.
         self.set_selection(event.kind, event.name)
+
+    @on(Select.Changed, "#self-edit-scope-select")
+    def _handle_scope_changed(self, event: Select.Changed) -> None:
+        if event.value not in ("global", "project"):
+            return
+        if self.scope != event.value:
+            self.scope = event.value
+            self._update_footer()
+            self.post_message(SelfEditPanel.ScopeChanged(event.value))
+
+    @on(Collapsible.Expanded)
+    def _handle_section_expanded(self, event: Collapsible.Expanded) -> None:
+        """Keep self-edit sections in accordion mode."""
+        for section in self.query(Collapsible):
+            if section is not event.collapsible:
+                section.collapsed = True
 
     # ── Discovery ─────────────────────────────────────────────────────
 
@@ -373,12 +440,8 @@ class SelfEditPanel(Widget):
             footer = self.query_one("#self-edit-panel-footer", Static)
         except Exception:
             return
-        scope = f"scope: {self.scope}"
-        playbook = f"playbook: {self.playbook}" if self.playbook else "playbook: -"
         if self.selected_kind and self.selected_name:
             sel = f"selection: {self.selected_kind} {self.selected_name}"
         else:
             sel = "selection: -"
-        footer.update(
-            f"[dim]{escape(scope)}  ·  {escape(playbook)}  ·  {escape(sel)}[/dim]"
-        )
+        footer.update(f"[dim]{escape(sel)}[/dim]")

@@ -47,7 +47,8 @@ class SelfEditSession:
     selection: Selection | None = None
     pending_confirm: PendingConfirm | None = None
     active_playbook: str | None = None
-    previous_loop: "AgentLoop | None" = None
+    previous_session_id: str | None = None
+    activated_profile: AgentProfile | None = None
     specialist_loop: "AgentLoop | None" = None
     dirty_files: set[Path] = field(default_factory=set)
 
@@ -94,6 +95,10 @@ class SelfEditController:
         self._state.selection = Selection(kind=kind, name=name)
         if self._panel is not None:
             self._panel.set_selection(kind, name)
+
+    def set_scope(self, scope: str) -> str:
+        """Update creation scope from a UI control."""
+        return self._scope([scope])
 
     async def handle(self, text: str) -> str:
         text = text.strip()
@@ -514,9 +519,6 @@ class SelfEditController:
     # ── activate ─────────────────────────────────────────────────────
 
     async def _activate(self, agent_id: str) -> str:
-        from taui.agent.loop import AgentLoop
-        from taui.tools.executor import ToolExecutor
-
         profile = self._store.load_agents().get(agent_id.upper())
         if profile is None:
             return f"unknown agent: {agent_id}"
@@ -525,26 +527,13 @@ class SelfEditController:
             missing = sorted(set(profile.allowed_tools) - set(registry.names))
             if missing:
                 return f"unknown tools for {profile.id}: {', '.join(missing)}"
-            registry = registry.subset(profile.allowed_tools)
-        executor = ToolExecutor(registry=registry, policy=self._session._executor._policy)
         if profile.provider:
             self._config.provider = profile.provider
         if profile.model:
             self._config.model = profile.model
         self._config.system_prompt = profile.prompt
         self._session.config = self._config
-        # Activation replaces the *previous* loop, not the specialist loop —
-        # the specialist is the active loop while we're in self-edit mode.
-        new_loop = AgentLoop(
-            agent_id=profile.id,
-            llm=self._session._provider,
-            executor=executor,
-            stream=self._session._stream,
-            system_prompt=profile.prompt,
-            model=self._config.model,
-            max_turns=self._config.max_turns,
-        )
-        self._state.previous_loop = new_loop
+        self._state.activated_profile = profile
         return f"activated agent {profile.id} (resumes on /q)"
 
     # ── add / edit playbook swap ─────────────────────────────────────

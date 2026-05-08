@@ -10,6 +10,7 @@ A Session is the unit of interactive use. It owns:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from pathlib import Path
 from uuid import uuid4
@@ -37,9 +38,9 @@ from taui.tools.registry import ToolRegistry
 logger = logging.getLogger(__name__)
 
 
-def _create_provider(config: Config):
+async def _create_provider(config: Config):
     """Create and authenticate an LLM provider from config."""
-    creds = get_credentials(config.provider)
+    creds = await asyncio.to_thread(get_credentials, config.provider)
 
     match config.provider:
         case "copilot":
@@ -102,7 +103,7 @@ class Session:
             config = Config.load()
 
         # Provider
-        provider = _create_provider(config)
+        provider = await _create_provider(config)
 
         # Tools
         registry = ToolRegistry()

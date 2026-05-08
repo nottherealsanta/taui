@@ -50,11 +50,14 @@ def prompt_provider_selection() -> str:
     Allows multi-select with Space, runs auth for each selected provider,
     then returns the first successfully authenticated provider key.
     """
-    from prompt_toolkit import Application
-    from prompt_toolkit.key_binding import KeyBindings
-    from prompt_toolkit.layout import Layout
-    from prompt_toolkit.layout.containers import HSplit, Window
-    from prompt_toolkit.layout.controls import FormattedTextControl
+    try:
+        from prompt_toolkit import Application
+        from prompt_toolkit.key_binding import KeyBindings
+        from prompt_toolkit.layout import Layout
+        from prompt_toolkit.layout.containers import HSplit, Window
+        from prompt_toolkit.layout.controls import FormattedTextControl
+    except ImportError:
+        return _simple_provider_selection()
 
     providers = list(PROVIDER_NAMES.items())
     cursor = [0]
@@ -134,6 +137,23 @@ def prompt_provider_selection() -> str:
 
     # Return the first authenticated provider
     return authenticated[0]
+
+
+def _simple_provider_selection() -> str:
+    """Fallback provider selector when prompt_toolkit is unavailable."""
+    providers = list(PROVIDER_NAMES.items())
+    print("Select provider to authenticate:")
+    for index, (_key, label) in enumerate(providers, start=1):
+        print(f"  {index}. {label}")
+    choice = input("Provider [1]: ").strip() or "1"
+    try:
+        provider = providers[int(choice) - 1][0]
+    except (ValueError, IndexError):
+        raise SystemExit(f"Invalid provider selection: {choice}") from None
+
+    print(f"\n── Authenticating {PROVIDER_NAMES[provider]} ──")
+    get_credentials(provider)
+    return provider
 
 
 __all__ = [

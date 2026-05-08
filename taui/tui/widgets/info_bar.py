@@ -2,12 +2,26 @@
 
 from __future__ import annotations
 
-import asyncio
-
 from rich.text import Text
+from textual.app import ComposeResult
+from textual.containers import Horizontal
+from textual.message import Message
 from textual.widgets import Static
 
-SPINNER_FRAMES = ["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"]
+AGENT_COLORS = {
+    "BLD": "#58a6ff",
+    "PLN": "#f2cc60",
+}
+_AGENT_FALLBACK_COLORS = [
+    "#58a6ff",
+    "#f2cc60",
+    "#7ee787",
+    "#ff7b72",
+    "#d2a8ff",
+    "#79c0ff",
+    "#ffa657",
+    "#56d4dd",
+]
 
 
 def _fmt_tokens(n: int) -> str:
@@ -17,16 +31,97 @@ def _fmt_tokens(n: int) -> str:
     return f"{round(n / 1000)}k"
 
 
-class InfoBar(Static):
+def _agent_color(agent_id: str) -> str:
+    normalized = agent_id.upper()
+    if normalized in AGENT_COLORS:
+        return AGENT_COLORS[normalized]
+    index = sum(ord(char) for char in normalized) % len(_AGENT_FALLBACK_COLORS)
+    return _AGENT_FALLBACK_COLORS[index]
+
+
+class AgentBadge(Static):
+    """Clickable active agent id."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__("", *args, **kwargs)
+        self.agent_id = ""
+
+    def set_agent(self, agent_id: str) -> None:
+        self.agent_id = agent_id
+        if agent_id:
+            self.update(Text(agent_id, style=f"bold {_agent_color(agent_id)}"))
+            self.display = True
+        else:
+            self.update("")
+            self.display = False
+
+    def on_click(self) -> None:
+        if self.agent_id:
+            self.post_message(InfoBar.AgentBadgeClicked(self.agent_id))
+
+
+class ModelBadge(Static):
+    """Clickable model id."""
+
+    def on_click(self) -> None:
+        self.post_message(InfoBar.ModelBadgeClicked())
+
+
+class ProviderBadge(Static):
+    """Clickable provider id."""
+
+    def on_click(self) -> None:
+        self.post_message(InfoBar.ModelBadgeClicked())
+
+
+class InfoBar(Horizontal):
     """Single-line bar below input showing session info."""
+
+    class AgentBadgeClicked(Message):
+        """Posted when the active agent badge is clicked."""
+
+        def __init__(self, agent_id: str) -> None:
+            super().__init__()
+            self.agent_id = agent_id
+
+    class ModelBadgeClicked(Message):
+        """Posted when the model/provider area is clicked."""
 
     DEFAULT_CSS = """
     InfoBar {
-        height: 3;
-        padding: 1 2;
-        margin: 0 2;
+        height: 2;
+        padding: 1 2 0 2;
+        margin: 0 1;
         color: $text-muted;
         background: transparent;
+    }
+    InfoBar Static {
+        width: auto;
+        height: 1;
+        margin: 0;
+        padding: 0;
+        background: transparent;
+    }
+    InfoBar #info-agent {
+        margin-right: 2;
+    }
+    InfoBar #info-model {
+        color: #e6edf3;
+    }
+    InfoBar #info-provider {
+        color: #8b949e;
+        text-style: italic;
+        margin-left: 2;
+    }
+    InfoBar #info-tokens {
+        color: #c9d1d9;
+        text-style: italic;
+        margin-left: 2;
+    }
+    InfoBar #info-cost {
+        color: #c9d1d9;
+        text-style: italic;
+        margin-left: 2;
     }
     """
 
@@ -38,9 +133,15 @@ class InfoBar(Static):
         self._max_tokens = 0
         self._cost = 0.0
         self._extensions_mode = False
-        self._spinning = False
-        self._spinner_frame = 0
-        self._status_text = "Thinking..."
+        self._agent_id = ""
+
+    def compose(self) -> ComposeResult:
+        yield Static("", id="info-extension")
+        yield AgentBadge(id="info-agent")
+        yield ModelBadge("", id="info-model")
+        yield ProviderBadge("", id="info-provider")
+        yield Static("", id="info-tokens")
+        yield Static("", id="info-cost")
 
     def update_info(
         self,
@@ -51,6 +152,7 @@ class InfoBar(Static):
         max_tokens: int = 0,
         cost: float = 0.0,
         extensions_mode: bool = False,
+        agent_id: str = "",
     ) -> None:
         self._provider = provider
         self._model = model
@@ -58,37 +160,55 @@ class InfoBar(Static):
         self._max_tokens = max_tokens
         self._cost = cost
         self._extensions_mode = extensions_mode
-        self.refresh()
+        self._agent_id = agent_id
+        self._sync_children()
 
-    def set_status(self, text: str) -> None:
-        self._status_text = text or "Thinking..."
-        if self._spinning:
-            self.refresh()
+    def _sync_children(self) -> None:
+        if not self.is_mounted:
+            return
 
-    async def start(self) -> None:
-        self._spinning = True
-        self._status_text = "Thinking..."
-        while self._spinning:
-            self._spinner_frame += 1
-            self.refresh()
-            await asyncio.sleep(0.1)
+        extension = self.query_one("#info-extension", Static)
+        if self._extensions_mode:
+            extension.update(Text(" EXT ", style="bold black on yellow"))
+            extension.display = True
+        else:
+            extension.update("")
+            extension.display = False
 
-    def stop(self) -> None:
-        self._spinning = False
-        self.refresh()
+        self.query_one("#info-agent", AgentBadge).set_agent(self._agent_id)
+        self.query_one("#info-model", Static).update(
+            self._model or Text("initializing…", style="dim italic")
+        )
+
+        provider = self.query_one("#info-provider", Static)
+        provider.update(self._provider)
+        provider.display = bool(self._provider)
+
+        tokens = self.query_one("#info-tokens", Static)
+        tokens.update(
+            f"{_fmt_tokens(self._tokens)}/{_fmt_tokens(self._max_tokens)}"
+            if self._max_tokens
+            else ""
+        )
+        tokens.display = bool(self._max_tokens)
+
+        cost = self.query_one("#info-cost", Static)
+        cost.update(f"${self._cost:.4f}" if self._cost > 0 else "")
+        cost.display = self._cost > 0
+
+    def on_mount(self) -> None:
+        self._sync_children()
 
     def render(self) -> Text:
         t = Text()
 
-        if self._spinning:
-            frame = SPINNER_FRAMES[self._spinner_frame % len(SPINNER_FRAMES)]
-            t.append(f"{frame} ", style="bold #3fb950")
-        else:
-            t.append("  ")
-
         if self._extensions_mode:
             t.append(" EXT ", style="bold black on yellow")
             t.append(" ", style="dim")
+
+        if self._agent_id:
+            t.append(self._agent_id, style=f"bold {_agent_color(self._agent_id)}")
+            t.append("  ")
 
         if self._model:
             t.append(self._model, style="#e6edf3")

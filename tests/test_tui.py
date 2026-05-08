@@ -12,7 +12,7 @@ from textual.css.query import NoMatches
 from textual.widgets import Static
 
 from taui.tui import TauiApp, run_tui
-from taui.tui.app import _trunc
+from taui.tui.app import _model_completion_matches, _trunc
 from taui.tui.messages import (
     AgentBusy,
     AgentIdle,
@@ -22,7 +22,7 @@ from taui.tui.messages import (
 )
 from taui.tui.widgets.chat_input import ChatInput
 from taui.tui.widgets.tool_status import ToolStatusWidget
-from taui.tui.widgets.spinner import SpinnerWidget
+from taui.tui.widgets.spinner import ActivityProgress
 from taui.tui.widgets.status_bar import StatusBar, ModelStatus, ContextStatus
 from taui.tui.widgets.footer import CustomFooter
 from taui.tui.widgets.agent_response import AgentResponse
@@ -32,7 +32,10 @@ from taui.tui.widgets.approval import ApprovalPrompt
 from taui.tui.widgets.questions_panel import QuestionsPanel, QuestionSpec
 from taui.tui.screens.context_breakdown import ContextBreakdownScreen
 from taui.tui.screens.diff_view import DiffViewScreen
+from taui.tui.screens.agent_picker import AgentPickerScreen
+from taui.tui.screens.model_picker import ModelPickerScreen
 from taui.tui.screens.session_picker import SessionPickerScreen
+from taui.tui.widgets.info_bar import InfoBar
 
 
 # ── _trunc ────────────────────────────────────────────────────────────
@@ -147,30 +150,81 @@ class TestTauiApp:
 
     async def test_failed_resume_displays_error(self, tmp_path):
         from taui.config import Config
+        from taui.tui import app as app_module
 
         class FakeSession:
             session_id = "new"
             last_resume_error = "Session not found: abc123"
+            provider_name = "copilot"
+            model_name = "claude-haiku-4.5"
+            extensions_mode = False
+            cost_tracker = MagicMock(total_cost_usd=0.0)
+            _loop = MagicMock(_messages=[], agent_id="")
 
             async def resume_session(self, session_id: str) -> bool:
                 return False
 
         app = TauiApp(Config(working_dir=tmp_path))
-        async with app.run_test():
-            app._session = FakeSession()
-            assert await app._resume_session("abc123") is False
-            assert any(
-                "Session not found: abc123" in str(widget.content)
-                for widget in app.query(Static)
-            )
+        with patch.object(app_module.Session, "create", AsyncMock(return_value=FakeSession())):
+            async with app.run_test():
+                assert await app._resume_session("abc123") is False
+                assert any(
+                    "Session not found: abc123" in str(widget.content)
+                    for widget in app.query(Static)
+                )
+
+    async def test_session_create_failure_displays_startup_error(self, tmp_path):
+        from taui.config import Config
+        from taui.tui import app as app_module
+
+        with patch.object(
+            app_module.Session,
+            "create",
+            AsyncMock(side_effect=RuntimeError("network unavailable")),
+        ):
+            app = TauiApp(Config(working_dir=tmp_path))
+            async with app.run_test():
+                assert app._session is None
+                assert app.query_one("#chat-input", ChatInput).can_submit is True
+                assert any(
+                    "Could not start session" in str(widget.content)
+                    for widget in app.query(Static)
+                )
+
+    async def test_mount_does_not_wait_for_session_create(self, tmp_path):
+        from taui.config import Config
+        from taui.tui import app as app_module
+
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def slow_create(config):
+            started.set()
+            await release.wait()
+            raise RuntimeError("stopped")
+
+        with patch.object(app_module.Session, "create", AsyncMock(side_effect=slow_create)):
+            app = TauiApp(Config(working_dir=tmp_path))
+            async with app.run_test():
+                await asyncio.wait_for(started.wait(), timeout=1)
+                assert app._session is None
+                assert app._session_initializing is True
+                assert app.query_one("#chat-input", ChatInput).can_submit is True
+                release.set()
 
     async def test_open_session_picker_resumes_selection(self, tmp_path):
         from taui.config import Config
+        from taui.tui import app as app_module
 
         class FakeSession:
             session_id = "current"
             last_resume_error = ""
             replay_items = []
+            provider_name = "copilot"
+            model_name = "claude-haiku-4.5"
+            extensions_mode = False
+            cost_tracker = MagicMock(total_cost_usd=0.0)
+            _loop = MagicMock(_messages=[], agent_id="")
 
             def __init__(self):
                 self.resumed: list[str] = []
@@ -182,32 +236,232 @@ class TestTauiApp:
 
         app = TauiApp(Config(working_dir=tmp_path))
         fake = FakeSession()
-        async with app.run_test():
-            app._session = fake
-            app._wire_callbacks = MagicMock()  # type: ignore[method-assign]
-            app._update_status = MagicMock()  # type: ignore[method-assign]
-            app.push_screen_wait = AsyncMock(return_value="abc123")  # type: ignore[method-assign]
-            await app._open_session_picker([{"session_id": "abc123"}])
-            assert fake.resumed == ["abc123"]
+        with patch.object(app_module.Session, "create", AsyncMock(return_value=fake)):
+            async with app.run_test():
+                app._wire_callbacks = MagicMock()  # type: ignore[method-assign]
+                app._update_status = MagicMock()  # type: ignore[method-assign]
+                app.push_screen_wait = AsyncMock(  # type: ignore[method-assign]
+                    return_value="abc123"
+                )
+                await app._open_session_picker([{"session_id": "abc123"}])
+                assert fake.resumed == ["abc123"]
 
-    async def test_open_session_picker_escape_cancel_keeps_session(self, tmp_path):
+    async def test_model_command_refreshes_status(self, tmp_path):
         from taui.config import Config
+        from taui.tui import app as app_module
+
+        class FakeConfig:
+            provider = "copilot"
+            model = "claude-haiku-4.5"
+
+        class FakeLoop:
+            _model = "claude-haiku-4.5"
+            _messages = []
+
+        class FakeTracker:
+            total_cost_usd = 0.0
 
         class FakeSession:
             session_id = "current"
+            config = FakeConfig()
+            _loop = FakeLoop()
+            provider_name = "copilot"
+            extensions_mode = False
+            cost_tracker = FakeTracker()
+
+            @property
+            def model_name(self):
+                return self.config.model
+
+        fake = FakeSession()
+        with patch.object(app_module.Session, "create", AsyncMock(return_value=fake)):
+            app = TauiApp(Config(working_dir=tmp_path))
+            async with app.run_test():
+                app._update_status = MagicMock()  # type: ignore[method-assign]
+                await app._handle_command("/model gpt-5.5")
+
+                assert fake.config.model == "gpt-5.5"
+                assert fake._loop._model == "gpt-5.5"
+                app._update_status.assert_called_once()
+                assert not any(
+                    "Model set to" in str(widget.content)
+                    for widget in app.query(Static)
+                )
+
+    def test_apply_selected_model_updates_session(self, tmp_path):
+        from taui.config import Config
+
+        class FakeConfig:
+            provider = "copilot"
+            model = "claude-haiku-4.5"
+
+        class FakeLoop:
+            _model = "claude-haiku-4.5"
+
+        class FakeSession:
+            config = FakeConfig()
+            _loop = FakeLoop()
+
+        app = TauiApp(Config(working_dir=tmp_path))
+        app._session = FakeSession()
+        app._update_status = MagicMock()  # type: ignore[method-assign]
+
+        app._apply_selected_model("gpt-5.5")
+
+        assert app._session.config.model == "gpt-5.5"
+        assert app._session._loop._model == "gpt-5.5"
+        app._update_status.assert_called_once()
+
+    def test_apply_selected_agent_applies_profile(self, tmp_path):
+        from taui.config import Config
+        from taui.self_edit import AgentProfile
+        from taui.tui import app as app_module
+
+        profile = AgentProfile("PLN", "Plan", "plan", "", "", [], None)
+
+        class FakeStore:
+            def __init__(self, working_dir):
+                pass
+
+            def load_agents(self):
+                return {"PLN": profile}
+
+        app = TauiApp(Config(working_dir=tmp_path))
+        app._apply_self_edit_profile = MagicMock()  # type: ignore[method-assign]
+        app._update_status = MagicMock()  # type: ignore[method-assign]
+
+        with patch.object(app_module, "SelfEditStore", FakeStore):
+            app._apply_selected_agent("pln")
+
+        app._apply_self_edit_profile.assert_called_once_with(profile)
+        app._update_status.assert_called_once()
+
+    async def test_mount_applies_default_bld_agent(self, tmp_path):
+        from taui.config import Config
+        from taui.cost import CostTracker
+        from taui.tui import app as app_module
+        from taui.tools.executor import ToolExecutor, ToolPolicy
+        from taui.tools.registry import ToolRegistry
+
+        class FakeConfig:
+            provider = "copilot"
+            model = "claude-haiku-4.5"
+
+        class FakeLoop:
+            agent_id = "session"
+            stream_id = "stream-1"
+            _messages = []
+
+        class FakeSession:
+            session_id = "current"
+            config = FakeConfig()
+            _provider = object()
+            _registry = ToolRegistry()
+            _executor = ToolExecutor(registry=_registry, policy=ToolPolicy())
+            _stream = object()
+            _loop = FakeLoop()
+            _ext_registry = None
+            provider_name = "copilot"
+            extensions_mode = False
+            cost_tracker = CostTracker()
+
+            @property
+            def model_name(self):
+                return self.config.model
+
+            def _replace_loop(self, loop):
+                self._loop = loop
+
+        fake = FakeSession()
+        with patch.object(app_module.Session, "create", AsyncMock(return_value=fake)):
+            app = TauiApp(Config(working_dir=tmp_path))
+            async with app.run_test():
+                assert fake._loop.agent_id == "BLD"
+                info_bar = app.query_one(InfoBar)
+                assert info_bar.render().plain.startswith("BLD  ")
+
+    def test_cycle_agent_profile_applies_next_agent(self, tmp_path):
+        from taui.config import Config
+        from taui.cost import CostTracker
+        from taui.tools.executor import ToolExecutor, ToolPolicy
+        from taui.tools.registry import ToolRegistry
+
+        class FakeConfig:
+            provider = "copilot"
+            model = "claude-haiku-4.5"
+            system_prompt = ""
+            max_turns = 50
+
+        class FakeLoop:
+            agent_id = "BLD"
+            stream_id = "stream-1"
+            _messages = []
+
+        class FakeSession:
+            config = FakeConfig()
+            _provider = object()
+            _registry = ToolRegistry()
+            _executor = ToolExecutor(registry=_registry, policy=ToolPolicy())
+            _stream = object()
+            _loop = FakeLoop()
+            _system_prompt = ""
+            provider_name = "copilot"
+            extensions_mode = False
+            cost_tracker = CostTracker()
+
+            def _replace_loop(self, loop):
+                self._loop = loop
+
+        app = TauiApp(Config(working_dir=tmp_path))
+        app._session = FakeSession()
+        app._update_status = MagicMock()  # type: ignore[method-assign]
+
+        app._cycle_agent_profile()
+
+        assert app._session._loop.agent_id == "PLN"
+        app._update_status.assert_called_once()
+
+    async def test_open_session_picker_escape_cancel_keeps_session(self, tmp_path):
+        from taui.config import Config
+        from taui.tui import app as app_module
+
+        class FakeSession:
+            session_id = "current"
+            provider_name = "copilot"
+            model_name = "claude-haiku-4.5"
+            extensions_mode = False
+            cost_tracker = MagicMock(total_cost_usd=0.0)
+            _loop = MagicMock(_messages=[], agent_id="")
 
             async def resume_session(self, session_id: str) -> bool:
                 raise AssertionError("resume should not be called")
 
         app = TauiApp(Config(working_dir=tmp_path))
-        async with app.run_test():
-            app._session = FakeSession()
-            app.push_screen_wait = AsyncMock(return_value=None)  # type: ignore[method-assign]
-            await app._open_session_picker([{"session_id": "abc123"}])
-            assert app.session_id == "current"
+        with patch.object(app_module.Session, "create", AsyncMock(return_value=FakeSession())):
+            async with app.run_test():
+                app.push_screen_wait = AsyncMock(return_value=None)  # type: ignore[method-assign]
+                await app._open_session_picker([{"session_id": "abc123"}])
+                assert app.session_id == "current"
 
     def test_session_picker_instantiates(self):
         screen = SessionPickerScreen([{"session_id": "abc123"}])
+        assert screen is not None
+
+    def test_model_picker_instantiates(self):
+        screen = ModelPickerScreen(
+            "copilot",
+            [{"id": "claude-haiku-4.5", "context": 200000, "reasoning": True}],
+            current="claude-haiku-4.5",
+        )
+        assert screen is not None
+
+    def test_agent_picker_instantiates(self):
+        from taui.self_edit import AgentProfile
+
+        screen = AgentPickerScreen(
+            [AgentProfile("BLD", "Build", "build", "", "", [], None)],
+            current="BLD",
+        )
         assert screen is not None
 
 
@@ -311,6 +565,88 @@ class TestChatInput:
             ("new", "Start a new session", False)
         ]
 
+    def test_model_arg_completion_uses_provider_model_prefix(self):
+        ci = ChatInput()
+        ci.set_model_completer(
+            lambda prefix: [
+                ("copilot/claude-haiku-4.5", "200k ctx", True),
+                ("codex/gpt-5.3-codex", "400k ctx reasoning", True),
+            ]
+            if prefix == "co"
+            else []
+        )
+        ci.text = "/model co"
+
+        assert ci._model_arg_prefix() == "co"
+        assert ci._get_matching_model_args("co") == [
+            ("copilot/claude-haiku-4.5", "200k ctx", True),
+            ("codex/gpt-5.3-codex", "400k ctx reasoning", True),
+        ]
+
+    def test_text_change_refreshes_model_arg_completion(self):
+        ci = ChatInput()
+        called: list[str] = []
+        ci.set_model_completer(lambda prefix: called.append(prefix) or [])
+        ci.text = "/model co"
+
+        ci.on_text_area_changed(object())
+
+        assert called == ["co"]
+
+    def test_agents_arg_completion_uses_generic_command_arg_path(self):
+        ci = ChatInput()
+        ci.set_arg_completer(
+            "agents",
+            lambda prefix: [("BLD", "Build", False)] if prefix == "B" else [],
+        )
+        ci.text = "/agents B"
+
+        assert ci._command_arg_prefix() == ("agents", "B")
+        assert ci._get_matching_command_args("agents", "B") == [
+            ("BLD", "Build", False)
+        ]
+
+    def test_no_arg_command_arg_completion_does_not_fill_on_arrow(self, monkeypatch):
+        ci = ChatInput()
+        ci.set_arg_completer("agents", lambda prefix: [])
+        ci.text = "/agents "
+
+        class FakeDropdown:
+            current_value = "PLN"
+            current_accepts_args = False
+
+        class FakeApp:
+            def query_one(self, widget_type):
+                return FakeDropdown()
+
+        monkeypatch.setattr(ChatInput, "app", property(lambda self: FakeApp()))
+        ci._fill_selected_completion()
+
+        assert ci.text == "/agents "
+
+    async def test_tab_requests_agent_cycle(self):
+        ci = ChatInput()
+        posted = []
+
+        class FakeEvent:
+            key = "tab"
+
+            def prevent_default(self):
+                pass
+
+            def stop(self):
+                pass
+
+        ci.post_message = posted.append  # type: ignore[method-assign]
+        await ci._on_key(FakeEvent())
+
+        assert isinstance(posted[0], ChatInput.AgentCycleRequested)
+
+    def test_model_completion_matches_model_id_without_provider_prefix(self):
+        assert _model_completion_matches("cl", "copilot", "claude-haiku-4.5")
+        assert _model_completion_matches("hku", "copilot", "claude-haiku-4.5")
+        assert not _model_completion_matches("zz", "copilot", "claude-haiku-4.5")
+
 
 # ── ToolStatusWidget ─────────────────────────────────────────────────
 
@@ -321,9 +657,25 @@ class TestToolStatusWidget:
         assert w.tool_name == "bash"
         assert w.args_str == "ls -la"
 
-    def test_spinner_frames(self):
-        from taui.tui.widgets.info_bar import SPINNER_FRAMES
-        assert len(SPINNER_FRAMES) == 8
+    def test_activity_progress_instantiates(self):
+        progress = ActivityProgress()
+        assert progress._running is False
+        assert progress._offset == 0
+
+
+class TestInfoBar:
+    def test_agent_id_renders_without_spinner_slot(self):
+        bar = InfoBar()
+        bar.update_info(
+            provider="copilot",
+            model="claude-haiku-4.5",
+            agent_id="BLD",
+        )
+
+        text = bar.render()
+
+        assert text.plain.startswith("BLD  claude-haiku-4.5")
+        assert "on " not in str(text.spans[0].style)
 
 
 # ── Messages ─────────────────────────────────────────────────────────
@@ -575,25 +927,45 @@ class TestAgentResponse:
         assert r._finalized is False
 
 
-# ── SpinnerWidget ────────────────────────────────────────────────────
+# ── ActivityProgress ─────────────────────────────────────────────────
 
 
-class TestSpinnerWidget:
+class TestActivityProgress:
     def test_instantiate(self):
-        s = SpinnerWidget()
-        assert s._running is False
-        assert s._status_text == "Thinking..."
+        progress = ActivityProgress()
+        assert progress._running is False
+        assert progress._offset == 0
+        assert progress._direction == 1
+        assert progress._active_style == "#3fb950"
+        assert progress.render().plain == "━" * 40
 
-    def test_set_status_updates_text(self):
-        s = SpinnerWidget()
-        # Can't call set_status without an app context (calls self.update),
-        # so test the internal state directly
-        s._status_text = "Running bash..."
-        assert s._status_text == "Running bash..."
+    def test_advance_changes_rendered_bar(self):
+        progress = ActivityProgress()
+        progress._running = True
+        before = progress.render()
+        progress._advance()
+        after = progress.render()
 
-    def test_set_status_empty_defaults(self):
-        s = SpinnerWidget()
-        # set_status("") should default to "Thinking..."
-        # Test the logic without calling update
-        text = "" or "Thinking..."
-        assert text == "Thinking..."
+        assert before.plain == after.plain
+        assert before.spans != after.spans
+        assert progress._offset == 1
+
+    def test_render_reverses_at_bar_edges(self):
+        progress = ActivityProgress()
+        progress._running = True
+        progress._offset = 1000
+        progress.render()
+        assert progress._direction == -1
+
+        progress._offset = -4
+        progress.render()
+        assert progress._direction == 1
+
+    def test_active_style_updates_rendered_segment(self):
+        progress = ActivityProgress()
+        progress.set_active_style("#58a6ff")
+        progress._running = True
+        rendered = progress.render()
+
+        assert progress._active_style == "#58a6ff"
+        assert any(str(span.style) == "#58a6ff" for span in rendered.spans)

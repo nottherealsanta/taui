@@ -1,4 +1,4 @@
-"""Question panel widget — one-at-a-time with < > navigation."""
+"""Question panel widget — one-at-a-time with Tab navigation."""
 
 from __future__ import annotations
 
@@ -11,8 +11,11 @@ from textual.containers import Horizontal, Vertical
 from textual.events import Key
 from textual.message import Message
 from textual.widget import Widget
-from textual.widgets import Button, Label, OptionList
+from textual.widgets import Label, OptionList
 from textual.widgets.option_list import Option
+
+
+HIGHLIGHT_MARKER_STYLE = "bold #0178d4"
 
 
 @dataclass(slots=True)
@@ -91,10 +94,10 @@ class QuestionOptionList(OptionList):
 
 
 class QuestionsPanel(Widget):
-    """One question at a time, paginated with < > arrows.
+    """One question at a time, paginated with Tab.
 
     Layout per the wireframe:
-        ┌──────────────────────────────────── 1/n  < > ─┐
+        ┌────────────────────────────────────────── 1/n ─┐
         │  <question>                                    │
         │  ┌──────────────────────────────────────────┐  │
         │  │ 1. option A                              │  │
@@ -105,40 +108,33 @@ class QuestionsPanel(Widget):
         └────────────────────────────────────────────────┘
 
     Single-question: auto-resolves on selection (no nav).
-    Multi-question: nav with < >, auto-advance on answer.
+    Multi-question: nav with Tab, auto-advance on answer.
     """
 
     DEFAULT_CSS = """
     QuestionsPanel {
         layout: vertical;
         height: auto;
-        max-height: 22;
         background: $surface;
-        padding: 1 1 0 1;
+        padding: 0;
         margin: 0 2 1 2;
     }
-    QuestionsPanel .qp-header {
+    QuestionsPanel .qp-question-row {
         height: 1;
-        align-horizontal: right;
         padding: 0 0;
     }
     QuestionsPanel .qp-indicator {
         width: auto;
         color: $text-muted;
-        padding: 0 0 0 0;
-    }
-    QuestionsPanel .qp-nav-btn {
-        min-width: 3;
-        max-width: 3;
-        height: 1;
-        border: none;
-        padding: 0;
-        margin: 0;
-        color: $text;
+        padding: 0 1 0 0;
     }
     QuestionsPanel .qp-question {
+        width: 1fr;
         padding: 0 1;
         color: $text;
+    }
+    QuestionsPanel .qp-pane {
+        height: auto;
     }
     QuestionsPanel .qp-options-box {
         height: auto;
@@ -147,7 +143,6 @@ class QuestionsPanel(Widget):
     }
     QuestionsPanel OptionList {
         height: auto;
-        max-height: 18;
         margin: 0;
         padding: 0;
         background: $surface;
@@ -162,7 +157,14 @@ class QuestionsPanel(Widget):
         padding: 0 1;
     }
     QuestionsPanel OptionList > .option-list--option-highlighted {
-        background: $accent 30%;
+        color: $text;
+        background: transparent;
+        text-style: bold;
+    }
+    QuestionsPanel OptionList:focus > .option-list--option-highlighted {
+        color: $text;
+        background: transparent;
+        text-style: bold;
     }
     QuestionsPanel .qp-hidden {
         display: none;
@@ -186,38 +188,31 @@ class QuestionsPanel(Widget):
     # ── compose ──────────────────────────────────────────────
 
     def compose(self) -> ComposeResult:
-        multi = len(self._specs) > 1
-        with Horizontal(classes="qp-header"):
-            yield Label(
-                self._indicator_text(),
-                id="qp-ind",
-                classes="qp-indicator",
-            )
-            if multi:
-                yield Button(
-                    "<", id="qp-prev", variant="default",
-                    classes="qp-nav-btn", disabled=True,
-                )
-                yield Button(
-                    ">", id="qp-next", variant="default",
-                    classes="qp-nav-btn",
-                    disabled=len(self._specs) <= 1,
-                )
         for i, spec in enumerate(self._specs):
-            cls = "" if i == 0 else "qp-hidden"
+            cls = "qp-pane" if i == 0 else "qp-pane qp-hidden"
             with Vertical(id=f"qp-pane-{i}", classes=cls):
-                yield Label(
-                    f"{spec.question}",
-                    classes="qp-question",
-                    markup=True,
-                )
+                with Horizontal(classes="qp-question-row"):
+                    yield Label(
+                        f"{spec.question}",
+                        classes="qp-question",
+                        markup=True,
+                    )
+                    yield Label(
+                        self._indicator_text(i),
+                        id=f"qp-ind-{i}",
+                        classes="qp-indicator",
+                    )
                 opts = spec.options or []
                 entries = [
-                    Option(self._option_prompt(j, o)) for j, o in enumerate(opts, 1)
+                    Option(
+                        self._option_prompt(j, o, highlighted=j == 1),
+                        id=f"qp-opt-{i}-{j - 1}",
+                    )
+                    for j, o in enumerate(opts, 1)
                 ]
                 entries.append(
                     Option(
-                        self._custom_prompt(i, len(opts)),
+                        self._custom_prompt(i, len(opts), highlighted=not opts),
                         id=f"qp-custom-{i}",
                     )
                 )
@@ -232,24 +227,16 @@ class QuestionsPanel(Widget):
 
     # ── navigation ───────────────────────────────────────────
 
-    def _indicator_text(self) -> str:
-        return f"{self._current + 1}/{len(self._specs)}"
+    def _indicator_text(self, index: int | None = None) -> str:
+        idx = self._current if index is None else index
+        return f"{idx + 1}/{len(self._specs)}"
 
     def _sync_nav(self) -> None:
-        try:
-            self.query_one("#qp-ind", Label).update(self._indicator_text())
-        except Exception:
-            pass
-        try:
-            self.query_one("#qp-prev", Button).disabled = self._current == 0
-        except Exception:
-            pass
-        try:
-            self.query_one("#qp-next", Button).disabled = (
-                self._current >= len(self._specs) - 1
-            )
-        except Exception:
-            pass
+        for i in range(len(self._specs)):
+            try:
+                self.query_one(f"#qp-ind-{i}", Label).update(self._indicator_text(i))
+            except Exception:
+                pass
 
     def _goto(self, idx: int) -> None:
         if idx < 0 or idx >= len(self._specs):
@@ -280,11 +267,17 @@ class QuestionsPanel(Widget):
         except Exception:
             pass
 
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "qp-prev":
+    def on_key(self, event: Key) -> None:
+        if len(self._specs) <= 1:
+            return
+        if event.key == "tab":
+            event.stop()
+            event.prevent_default()
+            self._goto(min(self._current + 1, len(self._specs) - 1))
+        elif event.key == "shift+tab":
+            event.stop()
+            event.prevent_default()
             self._goto(self._current - 1)
-        elif event.button.id == "qp-next":
-            self._goto(self._current + 1)
 
     # ── answer handling ──────────────────────────────────────
 
@@ -293,20 +286,70 @@ class QuestionsPanel(Widget):
         if self._future and not self._future.done():
             self._future.set_result(list(self._answers))
 
-    def _option_prompt(self, option_number: int, label: str) -> Text:
-        return Text(f"\n{option_number}. {label}\n")
+    def _option_prompt(
+        self,
+        option_number: int,
+        label: str,
+        highlighted: bool = False,
+    ) -> Text:
+        prefix = Text("┃ ", style=HIGHLIGHT_MARKER_STYLE) if highlighted else Text("  ")
+        body = Text(f"{option_number}. {label}")
+        return prefix + body
 
-    def _custom_prompt(self, question_index: int, option_count: int, active: bool = False) -> Text:
+    def _custom_prompt(
+        self,
+        question_index: int,
+        option_count: int,
+        active: bool = False,
+        highlighted: bool = False,
+    ) -> Text:
         value = self._custom_answers[question_index]
-        prompt = Text(f"\n{option_count + 1}. ")
+        prefix = Text("┃ ", style=HIGHLIGHT_MARKER_STYLE) if highlighted else Text("  ")
+        prompt = prefix + Text(f"{option_count + 1}. ")
         if value:
             prompt.append(value)
         if active:
             prompt.append("▌")
         elif not value:
             prompt.append("custom", style="dim")
-        prompt.append("\n")
         return prompt
+
+    def _question_index_for_option_list(self, option_list: OptionList) -> int | None:
+        if not option_list.id or not option_list.id.startswith("qp-opts-"):
+            return None
+        try:
+            return int(option_list.id.removeprefix("qp-opts-"))
+        except ValueError:
+            return None
+
+    def on_option_list_option_highlighted(
+        self, event: OptionList.OptionHighlighted
+    ) -> None:
+        ol = event.option_list
+        i = self._question_index_for_option_list(ol)
+        if i is None:
+            return
+        spec = self._specs[i]
+        opts = spec.options or []
+        for j, label in enumerate(opts, 1):
+            ol.replace_option_prompt(
+                f"qp-opt-{i}-{j - 1}",
+                self._option_prompt(
+                    j,
+                    label,
+                    highlighted=event.option_index == j - 1,
+                ),
+            )
+        custom_idx = len(opts)
+        ol.replace_option_prompt(
+            f"qp-custom-{i}",
+            self._custom_prompt(
+                i,
+                len(opts),
+                active=isinstance(ol, QuestionOptionList) and ol.is_custom_active,
+                highlighted=event.option_index == custom_idx,
+            ),
+        )
 
     def on_question_option_list_custom_edited(
         self, event: QuestionOptionList.CustomEdited
@@ -324,6 +367,9 @@ class QuestionsPanel(Widget):
                 i,
                 len(spec.options or []),
                 active=event.option_list.is_custom_active,
+                highlighted=(
+                    event.option_list.highlighted == event.option_list.custom_index
+                ),
             ),
         )
 

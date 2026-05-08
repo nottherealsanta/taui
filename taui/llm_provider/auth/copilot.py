@@ -258,6 +258,11 @@ def get_copilot_credentials() -> CopilotCredentials:
         if github_token:
             try:
                 return refresh_copilot_token(github_token)
+            except httpx.RequestError as exc:
+                raise RuntimeError(
+                    "Could not reach GitHub to refresh the saved Copilot token. "
+                    "Check your network or run `taui --login` when GitHub is reachable."
+                ) from exc
             except Exception as exc:
                 print(f"Saved token invalid ({exc}). Re-authenticating...\n")
 
