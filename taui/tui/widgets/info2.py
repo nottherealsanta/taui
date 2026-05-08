@@ -55,7 +55,7 @@ class Info2(ScrollableContainer):
         display: none;
         scrollbar-size: 1 1;
         padding: 0 0 0 1;
-        margin: 0 2;
+        margin: 0 1;
         background: $surface;
         border: tall $surface-darken-1;
         border-top: none;
