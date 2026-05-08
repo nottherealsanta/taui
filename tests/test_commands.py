@@ -156,7 +156,7 @@ class TestBuiltinCommands:
 
         assert getattr(reg.get("i"), "accepts_args") is False
         assert getattr(reg.get("new"), "accepts_args") is False
-        assert getattr(reg.get("model"), "accepts_args") is True
+        assert getattr(reg.get("model"), "accepts_args") is False
 
     async def test_model_list_has_no_reasoning_icon(self, monkeypatch):
         from taui.commands.builtins import register_builtins
@@ -269,6 +269,11 @@ class TestBuiltinCommands:
         )
         result = await reg.execute("/agents")
 
+        assert not result.error
+        assert result.metadata.get("action") == "open_agent_picker"
+
+        # /agents list still works
+        result = await reg.execute("/agents list")
         assert not result.error
         assert "BLD  Build" in result.output
         assert "PLN  Plan" in result.output

@@ -46,6 +46,7 @@ class CompletionDropdown(Widget):
         padding: 0;
         margin: 0 2;
         display: none;
+        overflow-y: hidden;
     }
     CompletionDropdown.visible {
         display: block;
@@ -86,14 +87,19 @@ class CompletionDropdown(Widget):
                 item.add_class("highlighted")
             container.mount(item)
 
-    def show(self, items: list[Completion], offset_y: int = -7, prefix: str = "/") -> None:
+    def show(self, items: list[Completion], offset_y: int = -5, prefix: str = "/") -> None:
         """Show dropdown with given items positioned above the chat input."""
         if not items:
             self.hide()
             return
         self._prefix = prefix
         self.set_items(items)
-        self.styles.offset = (0, offset_y)
+        # Set explicit height based on item count (1 line per item + 2 for border)
+        visible_count = min(len(items), 10)
+        height = visible_count + 2
+        self.styles.height = height
+        # Offset up so it appears above the chat container
+        self.styles.offset = (0, offset_y - height)
         self.add_class("visible")
 
     def hide(self) -> None:

@@ -73,7 +73,7 @@ class ClearCommand:
 class ModelCommand:
     name: str = "model"
     description: str = "Show, set, list, or select model interactively"
-    accepts_args: bool = True
+    accepts_args: bool = False
     _get_session: Any = None
 
     async def execute(self, ctx: CommandContext) -> CommandResult:
@@ -81,7 +81,9 @@ class ModelCommand:
             return CommandResult.fail("No session.")
         session = self._get_session()
         if not ctx.args:
-            return CommandResult.ok(f"Current model: {session.model_name}")
+            return CommandResult.ok(
+                "", action="open_model_picker"
+            )
 
         sub = ctx.args[0]
         if sub in ("list", "ls"):
@@ -164,7 +166,7 @@ class AgentsCommand:
 
     name: str = "agents"
     description: str = "List or activate agents (/agents [ID])"
-    accepts_args: bool = True
+    accepts_args: bool = False
     _get_session: Any = None
     _get_store: Any = None
     _get_apply_profile: Any = None
@@ -178,7 +180,11 @@ class AgentsCommand:
         session = self._get_session()
         store = self._get_store()
         agents = store.load_agents()
-        if not ctx.args or ctx.args[0].lower() in ("list", "ls"):
+        if not ctx.args:
+            return CommandResult.ok(
+                "", action="open_agent_picker"
+            )
+        if ctx.args[0].lower() in ("list", "ls"):
             return self._list_agents(session, agents)
 
         agent_id = ctx.args[0].upper()

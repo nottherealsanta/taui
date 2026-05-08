@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from pathlib import Path
 
 from rich.markup import escape
 from textual import on, work
+from textual.events import Key
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.css.query import NoMatches
@@ -28,14 +30,12 @@ from taui.self_edit.status_bar import SelfEditStatusBar
 from taui.session import Session
 from taui.tui.approval_controller import ApprovalController
 from taui.tui.messages import StreamReasoningDelta, StreamTextDelta, ToolEnded, ToolStarted
-from taui.tui.screens.agent_picker import AgentPickerScreen
-from taui.tui.screens.context_breakdown import ContextBreakdownScreen
-from taui.tui.screens.model_picker import ModelPickerScreen
+from taui.tui.screens.session_picker import SessionPickerScreen
 from taui.tui.screens.session_picker import SessionPickerScreen
 from taui.tui.tool_controller import ToolController
 from taui.tui.widgets.agent_response import AgentResponse
 from taui.tui.widgets.chat_input import ChatInput
-from taui.tui.widgets.completion_dropdown import CompletionDropdown
+from taui.tui.widgets.info2 import Info2
 from taui.tui.widgets.info_bar import InfoBar, _agent_color
 from taui.tui.widgets.sidebar import Sidebar
 from taui.tui.widgets.spinner import ActivityProgress
@@ -64,6 +64,13 @@ class TauiApp(App[None]):
     #chat-area {
         width: 1fr;
         height: 1fr;
+    }
+    #chat-container {
+        height: auto;
+        border: tall $surface-darken-1;
+        background: $surface;
+        margin: 0 1;
+        padding: 0;
     }
     #chat-log {
         height: 1fr;
@@ -124,6 +131,7 @@ class TauiApp(App[None]):
         ("ctrl+q", "quit_app", "Quit"),
         ("ctrl+n", "new_chat", "New session"),
         ("ctrl+c", "cancel_request", "Cancel"),
+        ("ctrl+d", "ctrl_d", ""),
         ("ctrl+b", "toggle_sidebar", "Sidebar"),
         ("ctrl+x", "show_context", "Context"),
         ("escape", "escape", ""),
@@ -138,6 +146,10 @@ class TauiApp(App[None]):
 
         self._tool_ctrl = ToolController(self)
         self._approval_ctrl = ApprovalController(self)
+
+        # Double-press quit tracking
+        self._last_ctrl_c_time: float = 0.0
+        self._last_ctrl_d_time: float = 0.0
 
         # Streaming / chat-turn state
         self._current_response: AgentResponse | None = None
@@ -184,13 +196,14 @@ class TauiApp(App[None]):
             with Vertical(id="chat-area"):
                 with VerticalScroll(id="chat-log"):
                     pass
-                yield CompletionDropdown(id="completion-dropdown")
-                yield ChatInput(
-                    id="chat-input",
-                    language=None,
-                    show_line_numbers=False,
-                )
-                yield InfoBar()
+                yield Info2(id="info2")
+                with Vertical(id="chat-container"):
+                    yield ChatInput(
+                        id="chat-input",
+                        language=None,
+                        show_line_numbers=False,
+                    )
+                    yield InfoBar()
                 yield ActivityProgress(id="activity-progress")
 
     async def on_mount(self) -> None:
@@ -453,7 +466,9 @@ class TauiApp(App[None]):
         await self._tool_ctrl.handle_tool_ended(event)
 
     @on(InfoBar.AgentBadgeClicked)
-    def handle_agent_badge_clicked(self, event: InfoBar.AgentBadgeClicked) -> None:
+    def handle_agent_badge_clicked(
+        self, event: InfoBar.AgentBadgeClicked | None = None
+    ) -> None:
         if self._session is None:
             return
         agents = sorted(
@@ -463,10 +478,8 @@ class TauiApp(App[None]):
         if not agents:
             return
         active_id = str(getattr(self._session._loop, "agent_id", "") or "")
-        self.push_screen(
-            AgentPickerScreen(agents, current=active_id),
-            callback=self._apply_selected_agent,
-        )
+        info2 = self.query_one("#info2", Info2)
+        info2.show_agents(agents, current=active_id)
 
     @on(InfoBar.ModelBadgeClicked)
     def handle_model_badge_clicked(self, event: InfoBar.ModelBadgeClicked) -> None:
@@ -479,10 +492,8 @@ class TauiApp(App[None]):
 
         provider = self._session.config.provider
         models = list_models(provider)
-        self.push_screen(
-            ModelPickerScreen(provider, models, current=self._session.model_name),
-            callback=self._apply_selected_model,
-        )
+        info2 = self.query_one("#info2", Info2)
+        info2.show_models(models, current=self._session.model_name)
 
     def _apply_selected_agent(self, selected: str | None) -> None:
         if selected is None:
@@ -502,6 +513,14 @@ class TauiApp(App[None]):
             self._session.config.model = selected
             self._session._loop._model = selected
             self._update_status()
+
+    @on(Info2.ModelSelected)
+    def handle_info2_model_selected(self, event: Info2.ModelSelected) -> None:
+        self._apply_selected_model(event.model_id)
+
+    @on(Info2.AgentSelected)
+    def handle_info2_agent_selected(self, event: Info2.AgentSelected) -> None:
+        self._apply_selected_agent(event.agent_id)
 
     # ── Streaming text handlers ───────────────────────────────────────
 
@@ -844,6 +863,13 @@ class TauiApp(App[None]):
                 await self._open_session_picker(sessions)
             return
 
+        if action == "open_model_picker":
+            self._open_model_picker()
+            return
+        if action == "open_agent_picker":
+            self.handle_agent_badge_clicked(None)
+            return
+
         if action not in ("self_edit_open", "model_changed"):
             style = "yellow" if (result.error or (
                 self._session and self._session.extensions_mode
@@ -980,7 +1006,6 @@ class TauiApp(App[None]):
             return
         if self._approval_ctrl.has_active_panel():
             self._approval_ctrl.cancel_active_panel()
-            return
         if self._is_processing:
             # Clear queues
             self._queued.clear()
@@ -988,6 +1013,19 @@ class TauiApp(App[None]):
                 self._session._loop._steering_queue.clear()
             # Cancel the worker
             self.workers.cancel_all()
+        # Double-press quit check
+        now = time.monotonic()
+        if now - self._last_ctrl_c_time < 0.5:
+            await self.action_quit_app()
+            return
+        self._last_ctrl_c_time = now
+
+    async def action_ctrl_d(self) -> None:
+        now = time.monotonic()
+        if now - self._last_ctrl_d_time < 0.5:
+            await self.action_quit_app()
+            return
+        self._last_ctrl_d_time = now
 
     def action_toggle_sidebar(self) -> None:
         self.query_one(Sidebar).toggle()
@@ -1138,8 +1176,7 @@ class TauiApp(App[None]):
         chat_input = self.query_one("#chat-input", ChatInput)
         chat_input.set_self_edit_completer(None)
         chat_input.focus()
-        dropdown = self.query_one("#completion-dropdown", CompletionDropdown)
-        dropdown.hide()
+        self.query_one("#info2", Info2).hide()
         if state.previous_session_id is not None:
             await self._resume_session(state.previous_session_id)
         if state.activated_profile is not None:
@@ -1157,7 +1194,38 @@ class TauiApp(App[None]):
     async def action_close_self_edit(self) -> None:
         await self.action_exit_self_edit()
 
+    def on_key(self, event: Key) -> None:
+        """Intercept keys when Info2 is in model/agent mode."""
+        from taui.tui.widgets.info2 import Info2Mode
+
+        info2 = self.query_one("#info2", Info2)
+        if not info2.is_active:
+            return
+        if info2.mode == Info2Mode.COMPLETIONS:
+            return  # ChatInput handles completion keys
+
+        if event.key == "up":
+            event.prevent_default()
+            event.stop()
+            info2.move_up()
+        elif event.key == "down":
+            event.prevent_default()
+            event.stop()
+            info2.move_down()
+        elif event.key == "enter":
+            event.prevent_default()
+            event.stop()
+            info2.accept()
+        elif event.key == "escape":
+            event.prevent_default()
+            event.stop()
+            info2.hide()
+
     async def action_escape(self) -> None:
+        info2 = self.query_one("#info2", Info2)
+        if info2.is_active:
+            info2.hide()
+            return
         if self._self_edit is not None:
             await self.action_exit_self_edit()
 

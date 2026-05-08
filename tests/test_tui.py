@@ -378,7 +378,7 @@ class TestTauiApp:
             async with app.run_test():
                 assert fake._loop.agent_id == "BLD"
                 info_bar = app.query_one(InfoBar)
-                assert info_bar.render().plain.startswith("BLD  ")
+                assert info_bar._agent_id == "BLD"
 
     def test_cycle_agent_profile_applies_next_agent(self, tmp_path):
         from taui.config import Config

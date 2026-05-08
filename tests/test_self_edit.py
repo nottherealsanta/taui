@@ -29,7 +29,7 @@ from taui.tools.executor import ToolExecutor, ToolPolicy
 from taui.tools.registry import ToolRegistry
 from taui.tui.app import TauiApp
 from taui.tui.widgets.chat_input import ChatInput
-from taui.tui.widgets.completion_dropdown import CompletionDropdown
+from taui.tui.widgets.info2 import Info2
 from taui.tui.widgets.info_bar import InfoBar
 
 
@@ -113,7 +113,7 @@ class _ControllerApp(App[None]):
         with Vertical(id="chat-area"):
             with VerticalScroll(id="chat-log"):
                 pass
-            yield CompletionDropdown(id="completion-dropdown")
+            yield Info2(id="info2")
             yield ChatInput(id="chat-input")
             yield InfoBar()
 

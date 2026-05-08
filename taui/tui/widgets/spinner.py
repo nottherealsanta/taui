@@ -14,7 +14,7 @@ class ActivityProgress(Static):
     ActivityProgress {
         height: 1;
         padding: 0;
-        margin: 0 1;
+        margin: 0 2;
     }
     """
 

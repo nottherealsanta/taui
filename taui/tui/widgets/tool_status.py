@@ -17,7 +17,7 @@ class ToolStatusWidget(Widget):
         width: 100%;
         height: auto;
         layout: horizontal;
-        padding: 0 1;
+        padding: 0 0;
     }
     ToolStatusWidget .tool-icon {
         width: auto;

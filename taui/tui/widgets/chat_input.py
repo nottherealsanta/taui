@@ -23,12 +23,12 @@ class ChatInput(TextArea):
     DEFAULT_CSS = """
     ChatInput {
         height: auto;
-        min-height: 3;
+        min-height: 1;
         max-height: 8;
-        border: tall $surface-darken-1;
-        padding: 1 2;
-        margin: 0 2;
-        background: $surface;
+        border: none;
+        padding: 0 2 1 2;
+        margin: 0;
+        background: transparent;
         color: $text;
         scrollbar-size: 0 0;
         & .text-area--cursor-line {
@@ -36,7 +36,7 @@ class ChatInput(TextArea):
         }
     }
     ChatInput:focus {
-        border: tall $surface-lighten-1;
+        border: none;
     }
     """
 
@@ -170,8 +170,7 @@ class ChatInput(TextArea):
 
     def _show_completion(self) -> None:
         """Show the completion dropdown with matching commands."""
-        from taui.tui.widgets.completion_dropdown import CompletionDropdown
-        from taui.tui.widgets.info_bar import InfoBar
+        from taui.tui.widgets.info2 import Info2
 
         text = self.text
         if not text.startswith("/"):
@@ -196,25 +195,20 @@ class ChatInput(TextArea):
             return
 
         try:
-            dropdown = self.app.query_one(CompletionDropdown)
-            try:
-                info_bar = self.app.query_one(InfoBar)
-                offset_y = -(self.outer_size.height + info_bar.outer_size.height)
-            except Exception:
-                offset_y = -7
-            dropdown.show(matches, offset_y=offset_y, prefix=dropdown_prefix)
+            info2 = self.app.query_one(Info2)
+            info2.show_completions(matches, prefix=dropdown_prefix)
             self._completion_active = True
         except Exception:
             pass
 
     def _dismiss_completion(self) -> None:
         """Hide the completion dropdown."""
-        from taui.tui.widgets.completion_dropdown import CompletionDropdown
+        from taui.tui.widgets.info2 import Info2
 
         self._completion_active = False
         try:
-            dropdown = self.app.query_one(CompletionDropdown)
-            dropdown.hide()
+            info2 = self.app.query_one(Info2)
+            info2.hide()
         except Exception:
             pass
 
@@ -274,29 +268,21 @@ class ChatInput(TextArea):
 
     def _show_self_edit_completion(self) -> None:
         """Show completion dropdown for /verb self-edit commands."""
-        from taui.tui.widgets.completion_dropdown import CompletionDropdown
-        from taui.tui.widgets.info_bar import InfoBar
+        from taui.tui.widgets.info2 import Info2
 
         if self._self_edit_completer is None:
             return
         text = self.text
-        # Only complete when the user has typed /
         if not text.startswith("/"):
             self._dismiss_completion()
             return
-        # Pass text without the leading / to the completer.
         matches = self._self_edit_completer(text[1:])
         if not matches:
             self._dismiss_completion()
             return
         try:
-            dropdown = self.app.query_one(CompletionDropdown)
-            try:
-                info_bar = self.app.query_one(InfoBar)
-                offset_y = -(self.outer_size.height + info_bar.outer_size.height)
-            except Exception:
-                offset_y = -7
-            dropdown.show(matches, offset_y=offset_y, prefix="/")
+            info2 = self.app.query_one(Info2)
+            info2.show_completions(matches, prefix="/")
             self._completion_active = True
         except Exception:
             pass
@@ -332,11 +318,11 @@ class ChatInput(TextArea):
 
     def _accept_self_edit_completion(self) -> None:
         """Accept the currently selected self-edit completion."""
-        from taui.tui.widgets.completion_dropdown import CompletionDropdown
+        from taui.tui.widgets.info2 import Info2
 
         try:
-            dropdown = self.app.query_one(CompletionDropdown)
-            value = dropdown.current_value
+            info2 = self.app.query_one(Info2)
+            value = info2.current_value
             if value:
                 self._replace_self_edit_completion(value, trailing_space=True)
         except Exception:
@@ -344,11 +330,11 @@ class ChatInput(TextArea):
 
     def _fill_selected_self_edit_completion(self) -> None:
         """Mirror selected self-edit completion into the text box (no dismiss)."""
-        from taui.tui.widgets.completion_dropdown import CompletionDropdown
+        from taui.tui.widgets.info2 import Info2
 
         try:
-            dropdown = self.app.query_one(CompletionDropdown)
-            value = dropdown.current_value
+            info2 = self.app.query_one(Info2)
+            value = info2.current_value
             if value:
                 text = self.text
                 if text.startswith("/"):
@@ -375,15 +361,15 @@ class ChatInput(TextArea):
 
     def _fill_selected_completion(self) -> None:
         """Mirror the selected completion into the text box."""
-        from taui.tui.widgets.completion_dropdown import CompletionDropdown
+        from taui.tui.widgets.info2 import Info2
 
         try:
-            dropdown = self.app.query_one(CompletionDropdown)
-            value = dropdown.current_value
+            info2 = self.app.query_one(Info2)
+            value = info2.current_value
             if value:
                 arg_prefix = self._command_arg_prefix()
                 if arg_prefix is not None:
-                    if not dropdown.current_accepts_args:
+                    if not info2.current_accepts_args:
                         return
                     self._replace_command_arg_from_completion(
                         arg_prefix[0],
@@ -405,13 +391,13 @@ class ChatInput(TextArea):
 
         Returns (command_name, accepts_args) when a completion was accepted.
         """
-        from taui.tui.widgets.completion_dropdown import CompletionDropdown
+        from taui.tui.widgets.info2 import Info2
 
         try:
-            dropdown = self.app.query_one(CompletionDropdown)
-            value = dropdown.current_value
+            info2 = self.app.query_one(Info2)
+            value = info2.current_value
             if value:
-                accepts_args = dropdown.current_accepts_args
+                accepts_args = info2.current_accepts_args
                 arg_prefix = self._command_arg_prefix()
                 if arg_prefix is not None:
                     self._replace_command_arg_from_completion(
@@ -428,12 +414,12 @@ class ChatInput(TextArea):
 
     def _submit_selected_completion_if_no_args(self) -> bool:
         """Submit selected no-argument command; return whether handled."""
-        from taui.tui.widgets.completion_dropdown import CompletionDropdown
+        from taui.tui.widgets.info2 import Info2
 
         try:
-            dropdown = self.app.query_one(CompletionDropdown)
-            value = dropdown.current_value
-            if value and not dropdown.current_accepts_args:
+            info2 = self.app.query_one(Info2)
+            value = info2.current_value
+            if value and not info2.current_accepts_args:
                 arg_prefix = self._command_arg_prefix()
                 if arg_prefix is not None:
                     self._replace_command_arg_from_completion(
@@ -451,15 +437,15 @@ class ChatInput(TextArea):
 
     def _cycle_selected_command_arg_completion(self) -> bool:
         """Cycle no-argument command-arg completions without rewriting input."""
-        from taui.tui.widgets.completion_dropdown import CompletionDropdown
+        from taui.tui.widgets.info2 import Info2
 
         if self._command_arg_prefix() is None:
             return False
         try:
-            dropdown = self.app.query_one(CompletionDropdown)
-            if dropdown.current_accepts_args:
+            info2 = self.app.query_one(Info2)
+            if info2.current_accepts_args:
                 return False
-            dropdown.move_down()
+            info2.move_down()
             return True
         except Exception:
             self._dismiss_completion()
@@ -468,6 +454,23 @@ class ChatInput(TextArea):
     async def _on_key(self, event: Key) -> None:
         # --- Tab ---
         if event.key == "tab":
+            from taui.tui.widgets.info2 import Info2, Info2Mode
+
+            try:
+                info2 = self.app.query_one(Info2)
+                if info2.is_active:
+                    event.prevent_default()
+                    event.stop()
+                    if info2.mode == Info2Mode.COMPLETIONS:
+                        if self.self_edit_mode:
+                            self._accept_self_edit_completion()
+                        elif not self._submit_selected_completion_if_no_args():
+                            self._accept_completion()
+                    else:
+                        info2.accept()
+                    return
+            except Exception:
+                pass
             event.prevent_default()
             event.stop()
             self._dismiss_completion()
@@ -484,20 +487,16 @@ class ChatInput(TextArea):
 
         # --- Arrow keys while completion is active ---
         if self._completion_active and event.key in ("up", "down"):
-            from taui.tui.widgets.completion_dropdown import CompletionDropdown
+            from taui.tui.widgets.info2 import Info2
 
             event.prevent_default()
             event.stop()
             try:
-                dropdown = self.app.query_one(CompletionDropdown)
+                info2 = self.app.query_one(Info2)
                 if event.key == "up":
-                    dropdown.move_up()
+                    info2.move_up()
                 else:
-                    dropdown.move_down()
-                if self.self_edit_mode:
-                    self._fill_selected_self_edit_completion()
-                else:
-                    self._fill_selected_completion()
+                    info2.move_down()
             except Exception:
                 pass
             return
@@ -535,6 +534,17 @@ class ChatInput(TextArea):
             else:
                 self.insert("\n")
             return
+
+        # --- Let Info2 handle arrow keys when it is active ---
+        if event.key in ("up", "down"):
+            from taui.tui.widgets.info2 import Info2
+
+            try:
+                info2 = self.app.query_one(Info2)
+                if info2.is_active:
+                    return  # bubble to app.on_key
+            except Exception:
+                pass
 
         if event.key == "up":
             cursor_row = self.cursor_location[0]

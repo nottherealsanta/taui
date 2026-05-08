@@ -2,6 +2,8 @@
 
 Agentic coding interface you can reshape.
 
+> **Alpha**: This project is still in early development. APIs, commands, and behavior may change without notice.
+
 ## Install
 
 ```bash

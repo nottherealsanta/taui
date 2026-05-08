@@ -89,9 +89,9 @@ class InfoBar(Horizontal):
 
     DEFAULT_CSS = """
     InfoBar {
-        height: 2;
-        padding: 1 2 0 2;
-        margin: 0 1;
+        height: 1;
+        padding: 0 2;
+        margin: 0;
         color: $text-muted;
         background: transparent;
     }
@@ -199,33 +199,4 @@ class InfoBar(Horizontal):
     def on_mount(self) -> None:
         self._sync_children()
 
-    def render(self) -> Text:
-        t = Text()
 
-        if self._extensions_mode:
-            t.append(" EXT ", style="bold black on yellow")
-            t.append(" ", style="dim")
-
-        if self._agent_id:
-            t.append(self._agent_id, style=f"bold {_agent_color(self._agent_id)}")
-            t.append("  ")
-
-        if self._model:
-            t.append(self._model, style="#e6edf3")
-            if self._provider:
-                t.append(f"  {self._provider}", style="#8b949e italic")
-        else:
-            t.append("initializing…", style="dim italic")
-
-        if self._max_tokens:
-            t.append("  ", style="dim")
-            t.append(
-                f"{_fmt_tokens(self._tokens)}/{_fmt_tokens(self._max_tokens)}",
-                style="#c9d1d9 italic",
-            )
-
-        if self._cost > 0:
-            t.append("  ", style="dim")
-            t.append(f"${self._cost:.4f}", style="#c9d1d9 italic")
-
-        return t
