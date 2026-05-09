@@ -4,11 +4,20 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 _AGENT_ID_RE = re.compile(r"^[A-Z]{3}$")
+
+
+@dataclass(slots=True)
+class ToolConfig:
+    """Per-tool configuration within an agent profile."""
+
+    policy: str = "auto"  # "auto", "confirm", or "deny"
+    param_restrictions: dict[str, Any] = field(default_factory=dict)
+    # param_restrictions example: {"working_dir": "/allowed/path"}
 
 
 @dataclass(slots=True)
@@ -20,6 +29,7 @@ class AgentProfile:
     model: str
     allowed_tools: list[str]
     prompt_path: Path | None = None
+    tool_config: dict[str, ToolConfig] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -173,6 +183,7 @@ class SelfEditStore:
             model=profile.model,
             allowed_tools=list(profile.allowed_tools),
             prompt_path=prompt_path,
+            tool_config={},
         )
 
     def _agent_from_row(self, row: Any, scope: str) -> tuple[AgentProfile | None, bool]:
@@ -209,6 +220,15 @@ class SelfEditStore:
                     prompt = prompt_path.read_text(encoding="utf-8")
                 except OSError:
                     pass
+            raw_tc = row.get("tool_config", {})
+            tool_config: dict[str, ToolConfig] = {}
+            if isinstance(raw_tc, dict):
+                for tname, tval in raw_tc.items():
+                    if isinstance(tval, dict):
+                        tool_config[tname] = ToolConfig(
+                            policy=str(tval.get("policy", "auto")),
+                            param_restrictions=dict(tval.get("param_restrictions", {})),
+                        )
             return (
                 AgentProfile(
                     id=agent_id,
@@ -218,6 +238,7 @@ class SelfEditStore:
                     model=str(row.get("model", "")),
                     allowed_tools=[str(x) for x in row.get("allowed_tools", [])],
                     prompt_path=prompt_path,
+                    tool_config=tool_config,
                 ),
                 migrated,
             )
@@ -233,4 +254,8 @@ class SelfEditStore:
             "model": profile.model,
             "allowed_tools": list(profile.allowed_tools),
             "prompt_path": str(prompt_path),
+            "tool_config": {
+                name: {"policy": tc.policy, "param_restrictions": tc.param_restrictions}
+                for name, tc in profile.tool_config.items()
+            },
         }

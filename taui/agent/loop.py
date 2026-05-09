@@ -12,6 +12,7 @@ All events are written to the Store via StreamClient.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -116,6 +117,8 @@ class AgentLoop:
         self.state = AgentState.IDLE
         self._messages: list[Message] = []
         self._steering_queue: list[str] = []
+        self._paused = asyncio.Event()
+        self._paused.set()  # starts unpaused (set = not paused)
 
     @property
     def messages(self) -> list[Message]:
@@ -186,10 +189,36 @@ class AgentLoop:
             logger.exception("Agent loop error agent_id=%s", self.agent_id)
             raise
 
+    # ── Pause / resume / prompt ───────────────────────────────────────────
+
+    def pause(self) -> None:
+        """Pause the loop — in-flight tool calls complete, but no new LLM calls."""
+        self._paused.clear()
+
+    def resume(self) -> None:
+        """Resume the loop — allow new LLM calls."""
+        self._paused.set()
+
+    @property
+    def is_paused(self) -> bool:
+        """Whether the loop is currently paused."""
+        return not self._paused.is_set()
+
+    def update_system_prompt(self, new_prompt: str) -> None:
+        """Hot-swap the system prompt without restarting the loop.
+
+        Updates both the stored prompt and the first message if it's a system message.
+        """
+        self._system_prompt = new_prompt
+        if self._messages and self._messages[0].role == "system":
+            self._messages[0] = Message(role="system", content=new_prompt)
+
     # ── Core loop ─────────────────────────────────────────────────────────
 
     async def _think_and_act(self, turn: int) -> TurnResult:
         """One think→tool→observe cycle."""
+        # Wait if paused (in-flight tool calls already completed)
+        await self._paused.wait()
         # Think: call LLM
         self.state = AgentState.THINKING
         await self._emit(EventType.STATE_CHANGE, {"state": "thinking", "turn": turn})

@@ -9,28 +9,20 @@ from pathlib import Path
 
 from rich.markup import escape
 from textual import on, work
-from textual.events import Key
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.css.query import NoMatches
+from textual.events import Key
 from textual.widgets import Markdown, Static
 
 from taui.agent.context import DEFAULT_MAX_INPUT_TOKENS, estimate_total_tokens
 from taui.commands.builtins import register_builtins as register_builtin_commands
 from taui.commands.registry import CommandRegistry
 from taui.config import Config
-from taui.self_edit import (
-    AgentProfile,
-    SelfEditController,
-    SelfEditSession,
-    SelfEditStore,
-)
-from taui.self_edit.panel import SelfEditPanel
-from taui.self_edit.status_bar import SelfEditStatusBar
+from taui.self_edit.store import AgentProfile, SelfEditStore
 from taui.session import Session
 from taui.tui.approval_controller import ApprovalController
 from taui.tui.messages import StreamReasoningDelta, StreamTextDelta, ToolEnded, ToolStarted
-from taui.tui.screens.session_picker import SessionPickerScreen
 from taui.tui.screens.session_picker import SessionPickerScreen
 from taui.tui.tool_controller import ToolController
 from taui.tui.widgets.agent_response import AgentResponse
@@ -41,11 +33,6 @@ from taui.tui.widgets.sidebar import Sidebar
 from taui.tui.widgets.spinner import ActivityProgress
 
 logger = logging.getLogger(__name__)
-
-_SELF_EDIT_VERBS = frozenset({
-    "show", "edit", "add", "rm", "delete", "activate",
-    "scope", "reload", "help", "cancel",
-})
 
 
 class TauiApp(App[None]):
@@ -160,8 +147,6 @@ class TauiApp(App[None]):
         # Queue for follow-up messages
         self._queued: list[str] = []
         self._pending_indicators: list[tuple[str, str]] = []
-        self._self_edit: SelfEditSession | None = None
-        self._self_edit_controller: SelfEditController | None = None
 
         # History persistence
         self._history_file = Path.home() / ".cache" / "taui" / "prompt_history"
@@ -564,31 +549,6 @@ class TauiApp(App[None]):
     async def handle_input(self, event: ChatInput.Submitted) -> None:
         text = event.value
 
-        if self._self_edit is not None:
-            if text in ("/quit", "/exit"):
-                await self.action_quit_app()
-                return
-            if text == "/new":
-                if self._self_edit_controller is not None:
-                    self._self_edit_controller.reset_specialist_history()
-                chat_log = self.query_one("#chat-log", VerticalScroll)
-                await chat_log.mount(
-                    Static("[dim]specialist history cleared[/dim]", markup=True)
-                )
-                self._smart_scroll()
-                return
-            if text.startswith("/"):
-                verb = text[1:].split()[0].lower() if len(text) > 1 else ""
-                if verb in _SELF_EDIT_VERBS:
-                    # Self-edit verb: strip / and dispatch through controller.
-                    await self._handle_self_edit_input(text)
-                    return
-                # Any other slash command (/q, /clear, etc.) → normal handler.
-                await self._handle_command(text)
-                return
-            # Bare text → specialist agent (current loop is the specialist).
-            # Fall through to the normal send path below.
-
         if text.startswith("/"):
             await self._handle_command(text)
             return
@@ -670,21 +630,6 @@ class TauiApp(App[None]):
             )
         self._smart_scroll()
 
-    async def _handle_self_edit_input(self, text: str) -> None:
-        """Dispatch a self-edit verb command (text may or may not start with /)."""
-        if self._self_edit_controller is None:
-            return
-        self._save_to_history(text)
-        verb_text = text[1:] if text.startswith("/") else text
-        chat_log = self.query_one("#chat-log", VerticalScroll)
-        await chat_log.mount(
-            Static(f"[dim]i> {escape(text)}[/dim]", markup=True)
-        )
-        output = await self._self_edit_controller.handle(verb_text)
-        self._update_self_edit_selection_status()
-        if output:
-            await chat_log.mount(Static(output, markup=False))
-        self._smart_scroll()
 
     # ── Send message and drain queue ──────────────────────────────────
 
@@ -832,9 +777,6 @@ class TauiApp(App[None]):
         command = parts[0].lower()
 
         if command in ("/quit", "/q", "/exit"):
-            if command == "/q" and self._self_edit is not None:
-                await self.action_exit_self_edit()
-                return
             if command == "/q" and self._session and self._session.extensions_mode:
                 result = await self._commands.execute("/ext-mode")
                 style = "yellow" if self._session.extensions_mode else "dim"
@@ -988,8 +930,6 @@ class TauiApp(App[None]):
         self.exit()
 
     async def action_new_chat(self) -> None:
-        if self._self_edit is not None:
-            await self.action_exit_self_edit()
         if self._session:
             await self._session.new_session()
             self._wire_callbacks()
@@ -1001,9 +941,6 @@ class TauiApp(App[None]):
             )
 
     async def action_cancel_request(self) -> None:
-        if self._self_edit is not None:
-            await self.action_quit_app()
-            return
         if self._approval_ctrl.has_active_panel():
             self._approval_ctrl.cancel_active_panel()
         if self._is_processing:
@@ -1037,77 +974,48 @@ class TauiApp(App[None]):
         self.push_screen(ContextBreakdownScreen(messages))
 
     async def action_enter_self_edit(self) -> None:
-        if self._self_edit is not None:
-            return
         if self._session is None:
             return
-        if self._is_processing:
-            chat_log = self.query_one("#chat-log", VerticalScroll)
-            await chat_log.mount(
-                Static(
-                    "[dim]finish or cancel the current turn first.[/dim]",
-                    markup=True,
-                )
-            )
-            self._smart_scroll()
-            return
-        from taui.agent.loop import AgentLoop
+
+        # Pause agent loop
+        self._session._loop.pause()
+        self.notify("All agents paused", timeout=3)
 
         store = SelfEditStore(self._config.working_dir)
-        state = SelfEditSession(
-            scope=store.load_default_scope(),
-            previous_session_id=self._session.session_id,
-        )
-        await self._session.new_session()
-        self._self_edit = state
-        self._self_edit_controller = SelfEditController(
-            app=self,
-            session=self._session,
-            config=self._config,
-            state=state,
-            store=store,
-        )
-        # Spawn a specialist loop with base.md in an isolated session.
-        specialist_prompt = self._self_edit_controller.specialist_system_prompt()
-        specialist = AgentLoop(
-            agent_id=f"self-edit-{self._session.session_id}",
-            llm=self._session._provider,
-            executor=self._session._executor,
-            stream=self._session._stream,
-            system_prompt=specialist_prompt,
-            model=self._config.model,
-            max_turns=self._config.max_turns,
-        )
-        specialist.stream_id = self._session._loop.stream_id
-        state.specialist_loop = specialist
-        self._session._replace_loop(specialist)
-        self._wire_callbacks()
+        agent_id = str(getattr(self._session._loop, "agent_id", "") or "")
 
-        chat_area = self.query_one("#chat-area", Vertical)
-        chat_log = self.query_one("#chat-log", VerticalScroll)
-        await chat_log.remove_children()
-        chat_input = self.query_one("#chat-input", ChatInput)
-        panel = SelfEditPanel(
-            working_dir=self._config.working_dir,
-            store=store,
-            builtin_tool_names=getattr(self._session, "_builtin_tool_names", set()),
-            registry=self._session._registry,
-            ext_registry=getattr(self._session, "_ext_registry", None),
+        from taui.tui.screens.config_screen import ConfigScreen
+
+        screen = ConfigScreen(
+            self._config,
+            store,
+            self._session._registry,
+            current_agent_id=agent_id,
         )
-        await chat_area.mount(panel, before=chat_log)
-        await chat_area.mount(SelfEditStatusBar(), before=chat_input)
-        self._self_edit_controller.attach_panel(panel)
-        # Install bare-word tab completion for self-edit verbs.
-        chat_input.set_self_edit_completer(
-            self._self_edit_controller.build_completer()
-        )
-        await chat_log.mount(
-            Static(
-                "[dim]/? for help or just ask[/dim]",
-                markup=True,
-            )
-        )
-        self._smart_scroll()
+        self._config_screen = screen
+        self.push_screen(screen, callback=self._on_config_screen_dismissed)
+
+    def _on_config_screen_dismissed(self, result: bool) -> None:
+        """Handle ConfigScreen dismissal."""
+        screen = getattr(self, "_config_screen", None)
+        self._config_screen = None
+
+        if self._session is None:
+            return
+
+        # Check if an agent was activated
+        if screen is not None and screen.activated_profile is not None:
+            self._apply_self_edit_profile(screen.activated_profile)
+
+        # If changes were saved, hot-swap system prompt on the current loop
+        if result and self._session:
+            self._session._loop.update_system_prompt(self._config.system_prompt)
+
+        # Resume agent loop
+        self._session._loop.resume()
+        self._wire_callbacks()
+        self._update_status()
+        self.notify("Agents resumed", timeout=2)
 
     def _apply_self_edit_profile(self, profile: AgentProfile) -> None:
         if self._session is None:
@@ -1141,58 +1049,6 @@ class TauiApp(App[None]):
         self._session._replace_loop(loop)
         self._wire_callbacks()
 
-    async def action_exit_self_edit(self) -> None:
-        if self._self_edit is None:
-            return
-        if self._is_processing:
-            chat_log = self.query_one("#chat-log", VerticalScroll)
-            await chat_log.mount(
-                Static(
-                    "[dim]specialist is busy — wait for the turn to finish "
-                    "or press Ctrl+C to cancel.[/dim]",
-                    markup=True,
-                )
-            )
-            self._smart_scroll()
-            return
-        controller = self._self_edit_controller
-        state = self._self_edit
-        self._self_edit = None
-        self._self_edit_controller = None
-
-        try:
-            await self.query_one("#self-edit-panel", SelfEditPanel).remove()
-        except NoMatches:
-            pass
-        try:
-            await self.query_one("#self-edit-status", SelfEditStatusBar).remove()
-        except NoMatches:
-            pass
-
-        output = ""
-        if controller is not None:
-            output = controller.reload()
-
-        chat_input = self.query_one("#chat-input", ChatInput)
-        chat_input.set_self_edit_completer(None)
-        chat_input.focus()
-        self.query_one("#info2", Info2).hide()
-        if state.previous_session_id is not None:
-            await self._resume_session(state.previous_session_id)
-        if state.activated_profile is not None:
-            self._apply_self_edit_profile(state.activated_profile)
-        chat_log = self.query_one("#chat-log", VerticalScroll)
-        message = "left self-edit mode"
-        if output:
-            message = f"{message}; {output}"
-        await chat_log.mount(Static(f"[dim]{escape(message)}[/dim]", markup=True))
-        self._smart_scroll()
-
-    async def action_open_self_edit(self) -> None:
-        await self.action_enter_self_edit()
-
-    async def action_close_self_edit(self) -> None:
-        await self.action_exit_self_edit()
 
     def on_key(self, event: Key) -> None:
         """Intercept keys when Info2 is in model/agent mode."""
@@ -1226,39 +1082,10 @@ class TauiApp(App[None]):
         if info2.is_active:
             info2.hide()
             return
-        if self._self_edit is not None:
-            await self.action_exit_self_edit()
 
     @on(Sidebar.Dismiss)
     def handle_sidebar_dismiss(self, event: Sidebar.Dismiss) -> None:
         self.query_one("#chat-input", ChatInput).focus()
-
-    @on(SelfEditPanel.RowSelected)
-    def handle_self_edit_row_selected(self, event: SelfEditPanel.RowSelected) -> None:
-        if self._self_edit_controller is not None:
-            self._self_edit_controller.on_panel_select(event.kind, event.name)
-        self._update_self_edit_selection_status(event.kind, event.name)
-
-    @on(SelfEditPanel.ScopeChanged)
-    def handle_self_edit_scope_changed(self, event: SelfEditPanel.ScopeChanged) -> None:
-        if self._self_edit_controller is not None:
-            self._self_edit_controller.set_scope(event.scope)
-
-    def _update_self_edit_selection_status(
-        self,
-        kind: str | None = None,
-        name: str | None = None,
-    ) -> None:
-        if kind is None and name is None and self._self_edit is not None:
-            selection = self._self_edit.selection
-            if selection is not None:
-                kind = selection.kind
-                name = selection.name
-        try:
-            status = self.query_one("#self-edit-status", SelfEditStatusBar)
-        except NoMatches:
-            return
-        status.set_selection(kind, name)
 
 
 def _trunc(s: str, n: int = 40) -> str:

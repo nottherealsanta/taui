@@ -1,20 +1,17 @@
-"""Chat-layer self-edit mode."""
+"""Self-edit configuration mode."""
 
-from taui.self_edit.controller import (
-    PendingConfirm,
-    Selection,
-    SelfEditController,
-    SelfEditSession,
+from taui.self_edit.store import (
+    AgentProfile,
+    ExtensionSource,
+    SelfEditStore,
+    ToolConfig,
+    ToolSource,
 )
-from taui.self_edit.store import AgentProfile, ExtensionSource, SelfEditStore, ToolSource
 
 __all__ = [
     "AgentProfile",
     "ExtensionSource",
-    "PendingConfirm",
-    "Selection",
-    "SelfEditController",
-    "SelfEditSession",
     "SelfEditStore",
+    "ToolConfig",
     "ToolSource",
 ]
