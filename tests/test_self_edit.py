@@ -5,8 +5,15 @@ import json
 
 from taui.agent.loop import AgentLoop
 from taui.agent.types import Message
-from taui.self_edit.store import AgentProfile, ExtensionSource, SelfEditStore, ToolConfig
-
+from taui.config import Config
+from taui.self_edit.store import (
+    AgentProfile,
+    ExtensionSource,
+    SelfEditStore,
+    ToolConfig,
+)
+from taui.tools.registry import ToolRegistry
+from taui.tui.widgets.self_edit_panel import SelfEditPanel
 
 # ── Store tests ────────────────────────────────────────────────────────
 
@@ -126,6 +133,25 @@ def test_delete_agent_removes_row_and_prompt_file(tmp_path):
     loaded = store.load_agents()
     assert "TST" not in loaded
     assert not (tmp_path / ".taui" / "self_edit" / "agents" / "TST.md").exists()
+
+
+# ── Self-edit panel tests ─────────────────────────────────────────────
+
+
+async def test_self_edit_help_renders_inside_panel(tmp_path):
+    panel = SelfEditPanel(
+        Config(working_dir=tmp_path),
+        SelfEditStore(tmp_path),
+        ToolRegistry(),
+    )
+    panel.reload()
+
+    await panel.run_verb("/help")
+
+    markup = panel._panel_markup()
+    assert "[bold #f0c808]/help[/bold #f0c808]" in markup
+    assert '/agent new "reviewer"' in markup
+    assert "AGENTS" in markup
 
 
 # ── AgentLoop tests ────────────────────────────────────────────────────

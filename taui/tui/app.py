@@ -1286,24 +1286,6 @@ class TauiApp(App[None]):
             self._session._loop.update_system_prompt(self._config.system_prompt)
             self._configure_self_edit_panel()
 
-    @on(SelfEditPanel.HelpRequested)
-    async def handle_self_edit_help_requested(
-        self, event: SelfEditPanel.HelpRequested
-    ) -> None:
-        await self._show_self_edit_help(event.text)
-
-    async def _show_self_edit_help(self, text: str) -> None:
-        chat_log = self.query_one("#chat-log", VerticalScroll)
-        lines = "\n".join(f"[dim]{escape(line)}[/dim]" for line in text.splitlines())
-        await chat_log.mount(
-            Static(
-                f"[bold #f0c808]/help[/bold #f0c808]\n{lines}",
-                classes="turn-summary",
-                markup=True,
-            )
-        )
-        self._smart_scroll()
-
     @on(Sidebar.Dismiss)
     def handle_sidebar_dismiss(self, event: Sidebar.Dismiss) -> None:
         self.query_one("#chat-input", ChatInput).focus()
