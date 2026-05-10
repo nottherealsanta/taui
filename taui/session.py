@@ -33,7 +33,7 @@ from taui.session_replay import ReplayItem
 from taui.store.store import Store
 from taui.store.stream import StreamClient
 from taui.tools.builtins import register_builtins
-from taui.tools.executor import ToolExecutor, ToolPolicy
+from taui.tools.executor import PolicyDecision, ToolExecutor, ToolPolicy
 from taui.tools.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
@@ -115,7 +115,23 @@ class Session:
             if hasattr(tool, "working_dir"):
                 tool.working_dir = config.working_dir
 
-        policy = ToolPolicy()
+        # Tool policy — safe defaults with config overrides
+        policy_overrides: dict[str, PolicyDecision] = {}
+        if config.auto_approve_reads:
+            # Read-only tools auto-approved when configured
+            for name in ("read", "glob", "grep"):
+                policy_overrides[name] = PolicyDecision.AUTO
+        # Apply explicit per-tool overrides from config file
+        for tool_name, decision_str in config.tool_policy.items():
+            try:
+                policy_overrides[tool_name] = PolicyDecision(decision_str)
+            except ValueError:
+                logger.warning(
+                    "Ignoring invalid tool_policy decision %r for %s",
+                    decision_str,
+                    tool_name,
+                )
+        policy = ToolPolicy(overrides=policy_overrides)
         executor = ToolExecutor(registry=registry, policy=policy)
 
         # Build system prompt

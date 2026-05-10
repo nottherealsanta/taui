@@ -32,8 +32,12 @@ class ToolPolicy:
     Policies are layered: per-tool overrides > defaults.
     """
 
-    # Sensible defaults per architecture doc
-    _DEFAULTS: dict[str, PolicyDecision] = {}
+    # Sensible defaults — destructive / side-effecting tools require confirmation
+    _DEFAULTS: dict[str, PolicyDecision] = {
+        "bash": PolicyDecision.CONFIRM,
+        "write": PolicyDecision.CONFIRM,
+        "edit": PolicyDecision.CONFIRM,
+    }
 
     def __init__(self, overrides: dict[str, PolicyDecision] | None = None) -> None:
         self._overrides = dict(overrides or {})
