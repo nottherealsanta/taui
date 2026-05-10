@@ -116,6 +116,17 @@ class TestBuiltinCommands:
         assert not result.error
         assert "/help" in result.output
         assert "/cost" in result.output
+        assert "/context" in result.output
+
+    async def test_context_command_opens_tree(self):
+        from taui.commands.builtins import register_builtins
+
+        reg = CommandRegistry()
+        register_builtins(reg)
+        result = await reg.execute("/context")
+
+        assert not result.error
+        assert result.metadata["action"] == "open_context_tree"
 
     async def test_cost_no_tracker(self):
         from taui.commands.builtins import register_builtins

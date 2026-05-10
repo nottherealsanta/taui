@@ -11,7 +11,6 @@ from pathlib import Path
 
 from taui.llm_provider.config import load_config
 
-
 # ── Default system prompt ──────────────────────────────────────────────────────
 # Fallback only — Session.create() uses SystemPromptBuilder with template
 # variables instead. This is used when constructing a Config directly

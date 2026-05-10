@@ -9,10 +9,9 @@ types; the agent loop only sees these.
 from __future__ import annotations
 
 import re
-from dataclasses import asdict, dataclass, field
-from enum import Enum
+from dataclasses import asdict, dataclass
+from enum import StrEnum
 from typing import Any, Literal
-
 
 # ── API Format ─────────────────────────────────────────────────────────────────
 
@@ -29,7 +28,7 @@ Wire format the provider speaks:
 # ── Reasoning ──────────────────────────────────────────────────────────────────
 
 
-class ReasoningFormat(str, Enum):
+class ReasoningFormat(StrEnum):
     """How the provider handles reasoning/thinking tokens."""
 
     NONE = "none"  # No reasoning support
@@ -46,7 +45,7 @@ ThinkingLevel = Literal["minimal", "low", "medium", "high", "max"]
 # ── Tool Call ID Formats ───────────────────────────────────────────────────────
 
 
-class ToolIdFormat(str, Enum):
+class ToolIdFormat(StrEnum):
     """Provider constraints on tool call ID strings."""
 
     OPENAI_CHAT = "openai_chat"  # max 40, alphanumeric + underscore

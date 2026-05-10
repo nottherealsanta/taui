@@ -339,7 +339,7 @@ class Store:
         try:
             await asyncio.wait_for(event.wait(), timeout=timeout)
             return True
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return False
         finally:
             waiters = self._waiters.get(stream_id)

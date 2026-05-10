@@ -336,7 +336,7 @@ class TestTauiApp:
         app._apply_self_edit_profile.assert_called_once_with(profile)
         app._update_status.assert_called_once()
 
-    async def test_mount_applies_default_bld_agent(self, tmp_path):
+    async def test_mount_applies_default_def_agent(self, tmp_path):
         from taui.config import Config
         from taui.cost import CostTracker
         from taui.tui import app as app_module
@@ -376,9 +376,9 @@ class TestTauiApp:
         with patch.object(app_module.Session, "create", AsyncMock(return_value=fake)):
             app = TauiApp(Config(working_dir=tmp_path))
             async with app.run_test():
-                assert fake._loop.agent_id == "BLD"
+                assert fake._loop.agent_id == "DEF"
                 info_bar = app.query_one(InfoBar)
-                assert info_bar._agent_id == "BLD"
+                assert info_bar._agent_id == "DEF"
 
     def test_cycle_agent_profile_applies_next_agent(self, tmp_path):
         from taui.config import Config
@@ -393,7 +393,7 @@ class TestTauiApp:
             max_turns = 50
 
         class FakeLoop:
-            agent_id = "BLD"
+            agent_id = "DEF"
             stream_id = "stream-1"
             _messages = []
 
@@ -418,7 +418,7 @@ class TestTauiApp:
 
         app._cycle_agent_profile()
 
-        assert app._session._loop.agent_id == "PLN"
+        assert app._session._loop.agent_id == "DEF"
         app._update_status.assert_called_once()
 
     async def test_open_session_picker_escape_cancel_keeps_session(self, tmp_path):
@@ -459,8 +459,8 @@ class TestTauiApp:
         from taui.self_edit import AgentProfile
 
         screen = AgentPickerScreen(
-            [AgentProfile("BLD", "Build", "build", "", "", [], None)],
-            current="BLD",
+            [AgentProfile("DEF", "Default", "default", "", "", [], None)],
+            current="DEF",
         )
         assert screen is not None
 
@@ -669,13 +669,66 @@ class TestInfoBar:
         bar.update_info(
             provider="copilot",
             model="claude-haiku-4.5",
-            agent_id="BLD",
+            agent_id="DEF",
         )
 
         text = bar.render()
 
-        assert text.plain.startswith("BLD  claude-haiku-4.5")
+        assert text.plain.startswith("DEF  claude-haiku-4.5")
         assert "on " not in str(text.spans[0].style)
+
+    def test_context_tokens_render(self):
+        bar = InfoBar()
+        bar.update_info(
+            provider="copilot",
+            model="claude-haiku-4.5",
+            tokens=1200,
+            max_tokens=180000,
+        )
+
+        assert "1k/180k" in bar.render().plain
+
+    def test_context_badge_click_posts_message(self):
+        from taui.tui.widgets.info_bar import ContextBadge
+
+        badge = ContextBadge()
+        posted: list[object] = []
+        badge.post_message = posted.append  # type: ignore[method-assign]
+
+        badge.on_click()
+
+        assert isinstance(posted[0], InfoBar.ContextBadgeClicked)
+
+
+class TestInfo2:
+    async def test_show_context_tree_mounts_tree(self):
+        from textual.app import App, ComposeResult
+        from textual.widgets import Tree
+
+        from taui.agent.types import Message
+        from taui.tui.widgets.info2 import Info2, Info2Mode
+
+        class Info2Harness(App[None]):
+            def compose(self) -> ComposeResult:
+                yield Info2(id="info2")
+
+        app = Info2Harness()
+        messages = [
+            Message(role="system", content="You are a helper."),
+            Message(role="user", content="Explain the code."),
+            Message(role="assistant", content="Here is the summary."),
+        ]
+
+        async with app.run_test() as pilot:
+            info2 = app.query_one("#info2", Info2)
+            info2.show_context_tree(messages, 180000)
+            await pilot.pause()
+
+            tree = info2.query_one("#context-tree", Tree)
+            assert info2.mode == Info2Mode.CONTEXT
+            assert info2.is_active
+            assert "Context" in str(tree.root.label)
+            assert len(tree.root.children) == 4
 
 
 # ── Messages ─────────────────────────────────────────────────────────

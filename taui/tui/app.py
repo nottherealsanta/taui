@@ -13,7 +13,7 @@ from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.css.query import NoMatches
 from textual.events import Key
-from textual.widgets import Markdown, Static
+from textual.widgets import Markdown, Static, Tree
 
 from taui.agent.context import DEFAULT_MAX_INPUT_TOKENS, estimate_total_tokens
 from taui.commands.builtins import register_builtins as register_builtin_commands
@@ -23,12 +23,14 @@ from taui.self_edit.store import AgentProfile, SelfEditStore
 from taui.session import Session
 from taui.tui.approval_controller import ApprovalController
 from taui.tui.messages import StreamReasoningDelta, StreamTextDelta, ToolEnded, ToolStarted
+from taui.tui.screens.context_breakdown import ContextBreakdownScreen
 from taui.tui.screens.session_picker import SessionPickerScreen
 from taui.tui.tool_controller import ToolController
 from taui.tui.widgets.agent_response import AgentResponse
 from taui.tui.widgets.chat_input import ChatInput
 from taui.tui.widgets.info2 import Info2
 from taui.tui.widgets.info_bar import InfoBar, _agent_color
+from taui.tui.widgets.self_edit_panel import SelfEditPanel
 from taui.tui.widgets.sidebar import Sidebar
 from taui.tui.widgets.spinner import ActivityProgress
 
@@ -99,6 +101,7 @@ class TauiApp(App[None]):
     Markdown {
         padding: 0 2;
         margin: 0 0 1 0;
+        color: white;
     }
     AgentResponse {
         margin: 0;
@@ -106,12 +109,56 @@ class TauiApp(App[None]):
     AgentResponse > MarkdownParagraph:last-child {
         margin-bottom: 0;
     }
-    Markdown H1 { color: $text; text-style: bold; }
-    Markdown H2 { color: $text; text-style: bold; }
-    Markdown H3 { color: $text; text-style: bold; }
-    Markdown H4 { color: $text; }
-    Markdown H5 { color: $text; }
-    Markdown H6 { color: $text-muted; }
+    MarkdownBlock > .code_inline {
+        background: #243244;
+        color: #fbbf24;
+    }
+    MarkdownBlock > .strong {
+        color: #f8fafc;
+        text-style: bold;
+    }
+    MarkdownBlock > .em {
+        color: #c4b5fd;
+        text-style: italic;
+    }
+    MarkdownH1 {
+        color: #7dd3fc;
+        text-style: bold;
+    }
+    MarkdownH2 {
+        color: #67e8f9;
+        text-style: bold;
+    }
+    MarkdownH3 {
+        color: #a7f3d0;
+        text-style: bold;
+    }
+    MarkdownH4, MarkdownH5 {
+        color: #e2e8f0;
+        text-style: bold;
+    }
+    MarkdownH6 {
+        color: #94a3b8;
+        text-style: bold;
+    }
+    MarkdownBullet {
+        color: #67e8f9;
+    }
+    MarkdownBlockQuote {
+        background: #1f2937 45%;
+        border-left: outer #5eead4;
+        color: #cbd5e1;
+    }
+    MarkdownFence {
+        background: #111827;
+        color: #e5e7eb;
+    }
+    MarkdownTableContent {
+        keyline: thin #334155;
+    }
+    MarkdownTableContent > .header {
+        color: #7dd3fc;
+    }
     """
 
     BINDINGS = [
@@ -120,6 +167,7 @@ class TauiApp(App[None]):
         ("ctrl+c", "cancel_request", "Cancel"),
         ("ctrl+d", "ctrl_d", ""),
         ("ctrl+b", "toggle_sidebar", "Sidebar"),
+        ("ctrl+e", "enter_self_edit", "Self-edit"),
         ("ctrl+x", "show_context", "Context"),
         ("escape", "escape", ""),
     ]
@@ -151,6 +199,7 @@ class TauiApp(App[None]):
         # History persistence
         self._history_file = Path.home() / ".cache" / "taui" / "prompt_history"
         self._history: list[str] = []
+        self._self_edit_mode = False
 
     @property
     def session_id(self) -> str | None:
@@ -179,6 +228,12 @@ class TauiApp(App[None]):
         with Horizontal(id="main-layout"):
             yield Sidebar(self._config.working_dir)
             with Vertical(id="chat-area"):
+                yield SelfEditPanel(
+                    self._config,
+                    SelfEditStore(self._config.working_dir),
+                    self._empty_registry(),
+                    id="self-edit-panel",
+                )
                 with VerticalScroll(id="chat-log"):
                     pass
                 yield Info2(id="info2")
@@ -198,7 +253,7 @@ class TauiApp(App[None]):
         self.query_one(InfoBar).update_info(
             provider=self._config.provider,
             model=self._config.model,
-            agent_id="" if self._config.session_id else "BLD",
+            agent_id="" if self._config.session_id else "DEF",
         )
         self.query_one(ActivityProgress).stop()
         self.run_worker(
@@ -220,6 +275,7 @@ class TauiApp(App[None]):
 
         if not self._config.session_id:
             self._apply_default_agent_profile()
+        self._configure_self_edit_panel()
         self._wire_callbacks()
         self._update_status()
         self._session_initializing = False
@@ -235,6 +291,7 @@ class TauiApp(App[None]):
         chat_input.load_history(self._history)
         chat_input.set_model_completer(self._complete_model_arg)
         chat_input.set_arg_completer("agents", self._complete_agents_arg)
+        chat_input.set_self_edit_completer(None)
         # Set up command completions
         completions = []
         for name in self._commands.names:
@@ -250,6 +307,11 @@ class TauiApp(App[None]):
         chat_input.set_completions(completions)
         chat_input.can_submit = True
         chat_input.focus()
+
+    def _empty_registry(self):
+        from taui.tools.registry import ToolRegistry
+
+        return ToolRegistry()
 
     async def _show_startup_error(self, exc: Exception) -> None:
         """Render a startup failure without letting Textual print a traceback."""
@@ -365,18 +427,41 @@ class TauiApp(App[None]):
         return matches
 
     def _apply_default_agent_profile(self) -> None:
-        """Apply BLD as the normal-mode default when starting a fresh session."""
+        """Apply DEF as the normal-mode default when starting a fresh session."""
         if self._session is None or not all(
             hasattr(self._session, name)
             for name in ("_registry", "_executor", "_provider", "_stream")
         ):
             return
         try:
-            profile = SelfEditStore(self._config.working_dir).load_agents().get("BLD")
+            profile = SelfEditStore(self._config.working_dir).load_agents().get("DEF")
         except Exception:
             profile = None
         if profile is not None:
             self._apply_self_edit_profile(profile)
+
+    def _apply_default_agent_profile_id(self) -> None:
+        """Set the agent_id from DEF profile without replacing the loop."""
+        if self._session is None:
+            return
+        try:
+            profile = SelfEditStore(self._config.working_dir).load_agents().get("DEF")
+        except Exception:
+            profile = None
+        if profile is not None:
+            self._session._loop.agent_id = profile.id
+
+    def _configure_self_edit_panel(self) -> None:
+        if self._session is None:
+            return
+        try:
+            panel = self.query_one("#self-edit-panel", SelfEditPanel)
+        except Exception:
+            return
+        if not hasattr(self._session, "_registry"):
+            return
+        panel.set_registry(self._session._registry)
+        panel.set_current_agent(str(getattr(self._session._loop, "agent_id", "") or ""))
 
     def _cycle_agent_profile(self) -> None:
         """Activate the next available agent profile by ID."""
@@ -470,6 +555,10 @@ class TauiApp(App[None]):
     def handle_model_badge_clicked(self, event: InfoBar.ModelBadgeClicked) -> None:
         self._open_model_picker()
 
+    @on(InfoBar.ContextBadgeClicked)
+    def handle_context_badge_clicked(self, event: InfoBar.ContextBadgeClicked) -> None:
+        self._open_context_tree()
+
     def _open_model_picker(self) -> None:
         if self._session is None:
             return
@@ -479,6 +568,15 @@ class TauiApp(App[None]):
         models = list_models(provider)
         info2 = self.query_one("#info2", Info2)
         info2.show_models(models, current=self._session.model_name)
+
+    def _open_context_tree(self) -> None:
+        if self._session is None:
+            return
+        info2 = self.query_one("#info2", Info2)
+        info2.show_context_tree(
+            self._session._loop._messages,
+            DEFAULT_MAX_INPUT_TOKENS,
+        )
 
     def _apply_selected_agent(self, selected: str | None) -> None:
         if selected is None:
@@ -548,6 +646,11 @@ class TauiApp(App[None]):
     @on(ChatInput.Submitted)
     async def handle_input(self, event: ChatInput.Submitted) -> None:
         text = event.value
+
+        if self._self_edit_mode:
+            panel = self.query_one("#self-edit-panel", SelfEditPanel)
+            await panel.run_verb(text)
+            return
 
         if text.startswith("/"):
             await self._handle_command(text)
@@ -811,6 +914,9 @@ class TauiApp(App[None]):
         if action == "open_agent_picker":
             self.handle_agent_badge_clicked(None)
             return
+        if action == "open_context_tree":
+            self._open_context_tree()
+            return
 
         if action not in ("self_edit_open", "model_changed"):
             style = "yellow" if (result.error or (
@@ -859,6 +965,7 @@ class TauiApp(App[None]):
             return False
         ok = await self._session.resume_session(session_id)
         if ok:
+            self._apply_default_agent_profile_id()
             self._wire_callbacks()
             self._update_status()
             await self._render_replay()
@@ -977,44 +1084,35 @@ class TauiApp(App[None]):
         if self._session is None:
             return
 
-        # Pause agent loop
-        self._session._loop.pause()
-        self.notify("All agents paused", timeout=3)
-
-        store = SelfEditStore(self._config.working_dir)
-        agent_id = str(getattr(self._session._loop, "agent_id", "") or "")
-
-        from taui.tui.screens.config_screen import ConfigScreen
-
-        screen = ConfigScreen(
-            self._config,
-            store,
-            self._session._registry,
-            current_agent_id=agent_id,
-        )
-        self._config_screen = screen
-        self.push_screen(screen, callback=self._on_config_screen_dismissed)
-
-    def _on_config_screen_dismissed(self, result: bool) -> None:
-        """Handle ConfigScreen dismissal."""
-        screen = getattr(self, "_config_screen", None)
-        self._config_screen = None
-
-        if self._session is None:
+        if self._self_edit_mode:
+            await self.action_exit_self_edit()
             return
 
-        # Check if an agent was activated
-        if screen is not None and screen.activated_profile is not None:
-            self._apply_self_edit_profile(screen.activated_profile)
+        self._session._loop.pause()
+        self._self_edit_mode = True
+        panel = self.query_one("#self-edit-panel", SelfEditPanel)
+        panel.set_registry(self._session._registry)
+        panel.set_current_agent(str(getattr(self._session._loop, "agent_id", "") or ""))
+        panel.show_panel()
+        chat_input = self.query_one("#chat-input", ChatInput)
+        chat_input.set_self_edit_completer(panel.complete)
+        chat_input.border_title = "self-edit"
+        chat_input.focus()
+        await panel.run_verb("/help")
 
-        # If changes were saved, hot-swap system prompt on the current loop
-        if result and self._session:
-            self._session._loop.update_system_prompt(self._config.system_prompt)
-
-        # Resume agent loop
+    async def action_exit_self_edit(self) -> None:
+        if self._session is None:
+            return
+        panel = self.query_one("#self-edit-panel", SelfEditPanel)
+        panel.hide_panel()
+        self._self_edit_mode = False
+        chat_input = self.query_one("#chat-input", ChatInput)
+        chat_input.set_self_edit_completer(None)
+        chat_input.border_title = None
         self._session._loop.resume()
         self._wire_callbacks()
         self._update_status()
+        chat_input.focus()
         self.notify("Agents resumed", timeout=2)
 
     def _apply_self_edit_profile(self, profile: AgentProfile) -> None:
@@ -1025,7 +1123,8 @@ class TauiApp(App[None]):
 
         registry = self._session._registry
         if profile.allowed_tools:
-            registry = registry.subset(profile.allowed_tools)
+            available = [name for name in profile.allowed_tools if name in registry.names]
+            registry = registry.subset(available) if available else registry
         executor = ToolExecutor(registry=registry, policy=self._session._executor._policy)
         if profile.provider:
             self._config.provider = profile.provider
@@ -1048,6 +1147,7 @@ class TauiApp(App[None]):
         loop.stream_id = stream_id
         self._session._replace_loop(loop)
         self._wire_callbacks()
+        self._configure_self_edit_panel()
 
 
     def on_key(self, event: Key) -> None:
@@ -1059,6 +1159,25 @@ class TauiApp(App[None]):
             return
         if info2.mode == Info2Mode.COMPLETIONS:
             return  # ChatInput handles completion keys
+        if info2.mode == Info2Mode.CONTEXT:
+            if event.key not in ("up", "down", "enter", "space", "escape"):
+                return
+            event.prevent_default()
+            event.stop()
+            if event.key == "escape":
+                info2.hide()
+                return
+            try:
+                tree = info2.query_one("#context-tree", Tree)
+            except NoMatches:
+                return
+            if event.key == "up":
+                tree.action_cursor_up()
+            elif event.key == "down":
+                tree.action_cursor_down()
+            else:
+                tree.action_toggle_node()
+            return
 
         if event.key == "up":
             event.prevent_default()
@@ -1082,6 +1201,44 @@ class TauiApp(App[None]):
         if info2.is_active:
             info2.hide()
             return
+        if self._self_edit_mode:
+            panel = self.query_one("#self-edit-panel", SelfEditPanel)
+            await panel.request_exit()
+
+    @on(SelfEditPanel.Activated)
+    def handle_self_edit_agent_activated(self, event: SelfEditPanel.Activated) -> None:
+        self._apply_self_edit_profile(event.profile)
+        self._update_status()
+
+    @on(SelfEditPanel.ExitRequested)
+    async def handle_self_edit_exit_requested(
+        self, event: SelfEditPanel.ExitRequested
+    ) -> None:
+        await self.action_exit_self_edit()
+
+    @on(SelfEditPanel.Saved)
+    def handle_self_edit_saved(self, event: SelfEditPanel.Saved) -> None:
+        if self._session:
+            self._session._loop.update_system_prompt(self._config.system_prompt)
+            self._configure_self_edit_panel()
+
+    @on(SelfEditPanel.HelpRequested)
+    async def handle_self_edit_help_requested(
+        self, event: SelfEditPanel.HelpRequested
+    ) -> None:
+        await self._show_self_edit_help(event.text)
+
+    async def _show_self_edit_help(self, text: str) -> None:
+        chat_log = self.query_one("#chat-log", VerticalScroll)
+        lines = "\n".join(f"[dim]{escape(line)}[/dim]" for line in text.splitlines())
+        await chat_log.mount(
+            Static(
+                f"[bold #f0c808]/help[/bold #f0c808]\n{lines}",
+                classes="turn-summary",
+                markup=True,
+            )
+        )
+        self._smart_scroll()
 
     @on(Sidebar.Dismiss)
     def handle_sidebar_dismiss(self, event: Sidebar.Dismiss) -> None:

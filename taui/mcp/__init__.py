@@ -131,7 +131,7 @@ class McpClient:
             try:
                 self._process.terminate()
                 await asyncio.wait_for(self._process.wait(), timeout=5.0)
-            except (asyncio.TimeoutError, ProcessLookupError):
+            except (TimeoutError, ProcessLookupError):
                 self._process.kill()
             self._process = None
         # Cancel pending requests
@@ -180,7 +180,7 @@ class McpClient:
 
         try:
             return await asyncio.wait_for(future, timeout=timeout)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             self._pending.pop(req_id, None)
             logger.warning("MCP request timed out: %s", method)
             return None

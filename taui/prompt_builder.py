@@ -28,7 +28,6 @@ from datetime import date
 from enum import IntEnum
 from pathlib import Path
 
-
 MAX_INSTRUCTION_FILE_CHARS = 4_000
 MAX_TOTAL_INSTRUCTION_CHARS = 12_000
 

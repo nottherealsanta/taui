@@ -7,7 +7,7 @@ from textual.app import ComposeResult
 from textual.widget import Widget
 from textual.widgets import Static
 
-from taui.agent.context import DEFAULT_MAX_INPUT_TOKENS, estimate_total_tokens
+from taui.agent.context import DEFAULT_MAX_INPUT_TOKENS
 
 
 class ModelStatus(Static):

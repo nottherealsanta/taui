@@ -14,7 +14,6 @@ from textual.widget import Widget
 from textual.widgets import Label, OptionList
 from textual.widgets.option_list import Option
 
-
 HIGHLIGHT_MARKER_STYLE = "bold #0178d4"
 
 

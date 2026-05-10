@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import TypeAlias
-
 from textual.app import ComposeResult
 from textual.containers import Vertical
 from textual.message import Message
@@ -11,8 +9,7 @@ from textual.reactive import reactive
 from textual.widget import Widget
 from textual.widgets import Static
 
-
-Completion: TypeAlias = tuple[str, str, bool]
+type Completion = tuple[str, str, bool]
 
 
 class CompletionItem(Static):

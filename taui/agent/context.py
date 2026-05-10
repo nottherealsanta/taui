@@ -16,7 +16,6 @@ import json
 
 from taui.agent.types import Message
 
-
 # ── Defaults ───────────────────────────────────────────────────────────────────
 
 DEFAULT_MAX_INPUT_TOKENS = 180_000

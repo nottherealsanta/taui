@@ -88,7 +88,7 @@ class BashTool:
             stdout, _ = await asyncio.wait_for(
                 proc.communicate(), timeout=timeout
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             # Kill the process group
             try:
                 os.killpg(proc.pid, signal.SIGTERM)

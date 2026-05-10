@@ -267,16 +267,16 @@ class ChatInput(TextArea):
     # ── Self-edit bare-word completion ────────────────────────────────
 
     def _show_self_edit_completion(self) -> None:
-        """Show completion dropdown for /verb self-edit commands."""
+        """Show completion dropdown for self-edit commands."""
         from taui.tui.widgets.info2 import Info2
 
         if self._self_edit_completer is None:
             return
         text = self.text
-        if not text.startswith("/"):
+        if not text:
             self._dismiss_completion()
             return
-        matches = self._self_edit_completer(text[1:])
+        matches = self._self_edit_completer(text.removeprefix("/"))
         if not matches:
             self._dismiss_completion()
             return
@@ -292,7 +292,7 @@ class ChatInput(TextArea):
     ) -> None:
         """Replace the current (last) token with value, keeping prior tokens."""
         text = self.text
-        # Strip the leading "/" so we can work on the inner tokens, then restore it.
+        # Strip the leading "/" if present, then restore it for slash-style input.
         if text.startswith("/"):
             inner = text[1:]
             slash = "/"
@@ -594,7 +594,7 @@ class ChatInput(TextArea):
         if self._updating_completion_text:
             return
         text = self.text
-        if self.self_edit_mode and text.startswith("/"):
+        if self.self_edit_mode and text:
             self._show_self_edit_completion()
         elif (
             not self.self_edit_mode

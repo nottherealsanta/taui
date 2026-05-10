@@ -9,8 +9,7 @@ from textual.message import Message
 from textual.widgets import Static
 
 AGENT_COLORS = {
-    "BLD": "#58a6ff",
-    "PLN": "#f2cc60",
+    "DEF": "#58a6ff",
 }
 _AGENT_FALLBACK_COLORS = [
     "#58a6ff",
@@ -74,6 +73,13 @@ class ProviderBadge(Static):
         self.post_message(InfoBar.ModelBadgeClicked())
 
 
+class ContextBadge(Static):
+    """Clickable context token usage."""
+
+    def on_click(self) -> None:
+        self.post_message(InfoBar.ContextBadgeClicked())
+
+
 class InfoBar(Horizontal):
     """Single-line bar below input showing session info."""
 
@@ -86,6 +92,9 @@ class InfoBar(Horizontal):
 
     class ModelBadgeClicked(Message):
         """Posted when the model/provider area is clicked."""
+
+    class ContextBadgeClicked(Message):
+        """Posted when the context token area is clicked."""
 
     DEFAULT_CSS = """
     InfoBar {
@@ -140,8 +149,33 @@ class InfoBar(Horizontal):
         yield AgentBadge(id="info-agent")
         yield ModelBadge("", id="info-model")
         yield ProviderBadge("", id="info-provider")
-        yield Static("", id="info-tokens")
+        yield ContextBadge("", id="info-tokens")
         yield Static("", id="info-cost")
+
+    def render(self) -> Text:
+        parts: list[Text] = []
+        if self._extensions_mode:
+            parts.append(Text(" EXT ", style="bold black on yellow"))
+            parts.append(Text("  "))
+        if self._agent_id:
+            parts.append(Text(self._agent_id, style=f"bold {_agent_color(self._agent_id)}"))
+            parts.append(Text("  "))
+        parts.append(Text(self._model or "initializing...", style="#e6edf3"))
+        if self._provider:
+            parts.append(Text(f"  {self._provider}", style="italic #8b949e"))
+        if self._max_tokens:
+            parts.append(
+                Text(
+                    f"  {_fmt_tokens(self._tokens)}/{_fmt_tokens(self._max_tokens)}",
+                    style="italic #c9d1d9",
+                )
+            )
+        if self._cost > 0:
+            parts.append(Text(f"  ${self._cost:.4f}", style="italic #c9d1d9"))
+        output = Text()
+        for part in parts:
+            output.append(part)
+        return output
 
     def update_info(
         self,
@@ -198,5 +232,3 @@ class InfoBar(Horizontal):
 
     def on_mount(self) -> None:
         self._sync_children()
-
-

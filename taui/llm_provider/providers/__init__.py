@@ -1,6 +1,6 @@
 """Provider implementations."""
 
-from .copilot import CopilotProvider
 from .codex import CodexProvider
+from .copilot import CopilotProvider
 
 __all__ = ["CopilotProvider", "CodexProvider"]

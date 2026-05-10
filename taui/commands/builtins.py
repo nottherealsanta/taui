@@ -55,6 +55,16 @@ class CompactCommand:
 
 
 @dataclass(slots=True)
+class ContextCommand:
+    name: str = "context"
+    description: str = "Show context tree"
+    accepts_args: bool = False
+
+    async def execute(self, ctx: CommandContext) -> CommandResult:
+        return CommandResult.ok("", action="open_context_tree")
+
+
+@dataclass(slots=True)
 class ClearCommand:
     name: str = "clear"
     description: str = "Clear conversation history"
@@ -758,6 +768,7 @@ def register_builtins(
     registry.register(help_cmd)
     registry.register(cost_cmd)
     registry.register(CompactCommand())
+    registry.register(ContextCommand())
     registry.register(clear_cmd)
     registry.register(model_cmd)
     registry.register(agents_cmd)

@@ -11,7 +11,6 @@ import secrets
 import threading
 import urllib.parse
 import webbrowser
-from typing import Optional
 
 
 def generate_pkce() -> tuple[str, str]:
@@ -27,14 +26,14 @@ def wait_for_callback(
     path: str,
     expected_state: str,
     timeout: float = 120.0,
-) -> Optional[str]:
+) -> str | None:
     """
     Start an HTTP server on localhost:port in a daemon thread.
     Wait for GET request to `path` with ?code=...&state=... params.
     Validates state == expected_state.
     Returns authorization code, or None on timeout/cancel.
     """
-    result: list[Optional[str]] = [None]
+    result: list[str | None] = [None]
     ready = threading.Event()
 
     class _Handler(http.server.BaseHTTPRequestHandler):
@@ -107,7 +106,7 @@ def race_callback_or_paste(
     print(f"\nOpen this URL if the browser did not open automatically:\n  {auth_url}\n")
     print("Or paste the full redirect URL here (and press Enter): ", end="", flush=True)
 
-    code_holder: list[Optional[str]] = [None]
+    code_holder: list[str | None] = [None]
     done = threading.Event()
 
     # Thread 1: callback server
@@ -120,8 +119,8 @@ def race_callback_or_paste(
     threading.Thread(target=_server_thread, daemon=True).start()
 
     # Thread 2 (main thread): stdin paste
-    import sys
     import select
+    import sys
 
     deadline_remaining = timeout
     while not done.is_set() and deadline_remaining > 0:

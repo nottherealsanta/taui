@@ -28,14 +28,6 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
-from .types import (
-    ProviderCapabilities,
-    ProviderToolCall,
-    ProviderTurnResult,
-    StreamEvent,
-    Usage,
-)
-
 logger = logging.getLogger(__name__)
 
 
@@ -222,7 +214,10 @@ async def test_multi_tool(provider: Any, model: str) -> TestResult:
 
     try:
         messages = [
-            {"role": "system", "content": "You are a helpful assistant. Use tools for each request."},
+            {
+                "role": "system",
+                "content": "You are a helpful assistant. Use tools for each request.",
+            },
             {
                 "role": "user",
                 "content": "What's the weather in San Francisco and New York? Check both.",
@@ -271,7 +266,10 @@ async def test_reasoning(provider: Any, model: str) -> TestResult:
             name="reasoning",
             passed=True,
             duration_ms=0,
-            details=f"Skipped: provider does not support reasoning (format={caps.reasoning_format.value})",
+            details=(
+                "Skipped: provider does not support reasoning "
+                f"(format={caps.reasoning_format.value})"
+            ),
         )
 
     try:
@@ -279,7 +277,10 @@ async def test_reasoning(provider: Any, model: str) -> TestResult:
             {"role": "system", "content": "Think step by step."},
             {
                 "role": "user",
-                "content": "If a train travels 120 miles in 2 hours, what is its average speed in km/h? (1 mile = 1.609 km)",
+                "content": (
+                    "If a train travels 120 miles in 2 hours, what is its average speed "
+                    "in km/h? (1 mile = 1.609 km)"
+                ),
             },
         ]
 

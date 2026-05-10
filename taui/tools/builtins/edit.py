@@ -14,7 +14,6 @@ from typing import Any
 from taui.tools.base import ToolCategory, ToolResult
 from taui.tools.builtins.common import resolve_path
 
-
 # ── Fuzzy matching chain ──────────────────────────────────────────────────────
 # LLMs are imprecise — they introduce smart quotes, whitespace changes,
 # and Unicode artifacts. The matching chain tries increasingly lenient
@@ -94,7 +93,7 @@ def _find_indentation_flexible(content: str, search: str) -> list[int]:
         block = content_lines[i : i + len(search_lines)]
         block_dedented = textwrap.dedent("".join(block)).splitlines()
         if block_dedented == search_lines:
-            positions.append(sum(len(l) for l in content_lines[:i]))
+            positions.append(sum(len(line) for line in content_lines[:i]))
     return positions
 
 
@@ -177,7 +176,9 @@ class EditTool:
                             "properties": {
                                 "old_text": {
                                     "type": "string",
-                                    "description": "Exact text to find (must be unique in the file).",
+                                    "description": (
+                                        "Exact text to find (must be unique in the file)."
+                                    ),
                                 },
                                 "new_text": {
                                     "type": "string",
@@ -277,7 +278,7 @@ class EditTool:
                 hint = ""
                 if close:
                     hint = "\nSimilar lines in file:\n" + "\n".join(
-                        f"  {l}" for l in close
+                        f"  {line}" for line in close
                     )
                 return ToolResult.fail(
                     f"old_text not found in {path.name}.{hint}\n\n"

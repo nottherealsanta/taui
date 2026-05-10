@@ -61,7 +61,8 @@ class LspClient:
         )
         await self.notify("initialized", {})
         self._initialized = True
-        log.info("LSP server started: %s  caps=%s", self._cmd, list((init_result or {}).get("capabilities", {}).keys()))
+        capabilities = list((init_result or {}).get("capabilities", {}).keys())
+        log.info("LSP server started: %s  caps=%s", self._cmd, capabilities)
 
     async def stop(self) -> None:
         if not self._proc:
@@ -100,7 +101,7 @@ class LspClient:
         self._send(msg)
         try:
             return await asyncio.wait_for(fut, timeout=timeout)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             self._pending.pop(rid, None)
             raise
 

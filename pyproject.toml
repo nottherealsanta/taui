@@ -44,6 +44,30 @@ select = ["E", "F", "I", "UP"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 
+[tool.hatch.build]
+skip-excluded-dirs = true
+
+[tool.hatch.build.targets.sdist]
+only-include = [
+    "AGENTS.md",
+    "LICENSE",
+    "README.md",
+    "docs",
+    "pyproject.toml",
+    "taui",
+    "tests",
+    "uv.lock",
+]
+exclude = [
+    "/taui/**/.taui",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["taui"]
+exclude = [
+    "/taui/**/.taui",
+]
+
 [dependency-groups]
 dev = [
     "pytest-textual-snapshot>=1.1.0",

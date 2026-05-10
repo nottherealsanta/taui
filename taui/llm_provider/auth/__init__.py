@@ -5,9 +5,8 @@ Re-exports credential types and provides get_credentials() factory.
 """
 
 from ..config import load_provider_config
-
-from .copilot import CopilotCredentials, get_copilot_credentials
 from .codex import CodexCredentials, get_codex_credentials
+from .copilot import CopilotCredentials, get_copilot_credentials
 
 PROVIDER_NAMES: dict[str, str] = {
     "copilot": "GitHub Copilot",

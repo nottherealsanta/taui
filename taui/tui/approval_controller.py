@@ -11,7 +11,7 @@ from textual.widgets import Static
 
 from taui.tui.widgets.approval import ApprovalPrompt
 from taui.tui.widgets.chat_input import ChatInput
-from taui.tui.widgets.questions_panel import QuestionSpec, QuestionsPanel
+from taui.tui.widgets.questions_panel import QuestionsPanel, QuestionSpec
 
 if TYPE_CHECKING:
     from taui.tui.app import TauiApp

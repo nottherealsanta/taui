@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import difflib
 
-from textual import on
 from textual.app import ComposeResult
 from textual.containers import Container, Horizontal, VerticalScroll
 from textual.events import Key

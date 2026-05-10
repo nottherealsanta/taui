@@ -6,8 +6,8 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass
-from enum import Enum
-from typing import Any, Literal
+from enum import StrEnum
+from typing import Any
 
 from taui.tools.base import ToolResult
 from taui.tools.registry import ToolRegistry
@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 # ── Policy ────────────────────────────────────────────────────────────────────
 
 
-class PolicyDecision(str, Enum):
+class PolicyDecision(StrEnum):
     """What happens when a tool is invoked."""
 
     AUTO = "auto"  # Execute without asking

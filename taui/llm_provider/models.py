@@ -113,7 +113,13 @@ def list_models(provider: str, *, force_refresh: bool = False) -> list[dict]:
 
 # Preferred model patterns per provider (first match wins)
 PREFERRED_MODELS: dict[str, list[str]] = {
-    "copilot": ["claude-haiku-4.5", "claude-sonnet-4.6", "claude-sonnet-4.5", "claude-sonnet-4", "gpt-5.3-codex"],
+    "copilot": [
+        "claude-haiku-4.5",
+        "claude-sonnet-4.6",
+        "claude-sonnet-4.5",
+        "claude-sonnet-4",
+        "gpt-5.3-codex",
+    ],
     "codex": ["gpt-5.3-codex", "gpt-5.2-codex", "gpt-5.1-codex"],
 }
 
@@ -123,8 +129,6 @@ def get_default_model(provider: str) -> str:
     models = list_models(provider)
     if not models:
         return DEFAULT_MODELS.get(provider, "claude-haiku-4.5")
-
-    model_ids = {m["id"] for m in models}
 
     # Try preferred models first (exact prefix match)
     for prefix in PREFERRED_MODELS.get(provider, []):

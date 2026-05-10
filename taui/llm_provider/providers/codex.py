@@ -8,15 +8,12 @@ import json
 import logging
 from typing import Any
 
-import httpx
-
 from ..auth.codex import CodexCredentials, ensure_valid_token
 from ..base import BaseLLMProvider
 from ..types import (
     LLMRequest,
     ProviderCapabilities,
     ProviderToolCall,
-    ProviderTurnResult,
     ReasoningFormat,
     StreamEvent,
     ToolIdFormat,

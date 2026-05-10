@@ -7,7 +7,7 @@ from pathlib import Path
 from textual.app import ComposeResult
 from textual.containers import Vertical
 from textual.message import Message
-from textual.widgets import Collapsible, DirectoryTree, Static
+from textual.widgets import DirectoryTree, Static
 
 
 class Sidebar(Vertical):

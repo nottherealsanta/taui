@@ -13,7 +13,7 @@ from taui.self_edit.store import AgentProfile, ExtensionSource, SelfEditStore, T
 
 def test_self_edit_scope_roundtrip(tmp_path):
     store = SelfEditStore(tmp_path)
-    assert store.load_default_scope() == "project"
+    assert store.load_default_scope() == "global"
     store.save_default_scope("global")
     assert store.load_default_scope() == "global"
 
@@ -21,9 +21,10 @@ def test_self_edit_scope_roundtrip(tmp_path):
 def test_agents_include_defaults_and_save_prompt_file(tmp_path):
     store = SelfEditStore(tmp_path)
     agents = store.load_agents()
-    assert "BLD" in agents
-    assert agents["BLD"].prompt_path is not None
-    assert agents["BLD"].prompt_path.exists()
+    assert list(agents) == ["DEF"]
+    assert agents["DEF"].prompt_path is not None
+    assert agents["DEF"].prompt_path.exists()
+    assert agents["DEF"].allowed_tools == []
 
     custom = AgentProfile(
         id="ABC",
@@ -105,6 +106,26 @@ def test_agent_profile_tool_config_roundtrip(tmp_path):
     assert "TST" in loaded
     assert loaded["TST"].tool_config["bash"].policy == "confirm"
     assert loaded["TST"].tool_config["bash"].param_restrictions == {"working_dir": "/tmp"}
+
+
+def test_delete_agent_removes_row_and_prompt_file(tmp_path):
+    store = SelfEditStore(tmp_path)
+    profile = AgentProfile(
+        id="TST",
+        name="Test",
+        prompt="test prompt",
+        provider="copilot",
+        model="gpt-4",
+        allowed_tools=[],
+    )
+    store.save_agent(profile, "project")
+    assert "TST" in store.load_agents()
+
+    store.delete_agent("TST", "project")
+
+    loaded = store.load_agents()
+    assert "TST" not in loaded
+    assert not (tmp_path / ".taui" / "self_edit" / "agents" / "TST.md").exists()
 
 
 # ── AgentLoop tests ────────────────────────────────────────────────────

@@ -9,7 +9,6 @@ from typing import Any
 
 from taui.tools.base import ToolCategory, ToolResult
 
-
 _READ_OPS = frozenset({
     "status", "diff", "log", "show", "blame",
     "branch_list", "branch_current", "stash_list",

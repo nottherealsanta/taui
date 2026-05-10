@@ -16,7 +16,6 @@ import base64
 import re
 import time
 from dataclasses import dataclass
-from typing import Optional
 
 import httpx
 
@@ -54,7 +53,7 @@ class CopilotCredentials:
     github_token: str
     copilot_token: str
     expires_at_ms: int
-    enterprise_domain: Optional[str] = None
+    enterprise_domain: str | None = None
 
 
 # ── URL helpers ────────────────────────────────────────────────────────────────
@@ -69,8 +68,8 @@ def _get_urls(domain: str) -> dict[str, str]:
 
 
 def get_copilot_base_url(
-    copilot_token: Optional[str] = None,
-    enterprise_domain: Optional[str] = None,
+    copilot_token: str | None = None,
+    enterprise_domain: str | None = None,
 ) -> str:
     """Derive the Copilot API base URL from the token's proxy-ep field."""
     if copilot_token:
@@ -164,7 +163,7 @@ def poll_for_github_access_token(
 
 def refresh_copilot_token(
     github_token: str,
-    enterprise_domain: Optional[str] = None,
+    enterprise_domain: str | None = None,
 ) -> CopilotCredentials:
     """Step 3: exchange a GitHub OAuth token for a short-lived Copilot API token."""
     domain = enterprise_domain or "github.com"
@@ -212,7 +211,7 @@ def ensure_valid_token(credentials: CopilotCredentials) -> CopilotCredentials:
 # ── Interactive login ──────────────────────────────────────────────────────────
 
 
-def login(enterprise_domain: Optional[str] = None) -> CopilotCredentials:
+def login(enterprise_domain: str | None = None) -> CopilotCredentials:
     """
     Full interactive device-flow login.
 

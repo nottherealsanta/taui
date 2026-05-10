@@ -10,7 +10,6 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-
 # ── Pricing table (USD per 1M tokens) ─────────────────────────────────────────
 
 _PRICING: dict[str, tuple[float, float]] = {

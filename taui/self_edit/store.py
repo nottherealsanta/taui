@@ -50,20 +50,9 @@ class ExtensionSource:
 
 _DEFAULT_AGENTS = [
     AgentProfile(
-        id="BLD",
-        name="Build",
-        prompt="Implementation-focused software engineer. Make scoped changes and verify them.",
-        provider="",
-        model="",
-        allowed_tools=[],
-    ),
-    AgentProfile(
-        id="PLN",
-        name="Plan",
-        prompt=(
-            "Planning-focused software engineer. Clarify requirements and "
-            "produce concrete plans."
-        ),
+        id="DEF",
+        name="Default",
+        prompt="You are a pragmatic software engineer. Make scoped changes and verify them.",
         provider="",
         model="",
         allowed_tools=[],
@@ -97,13 +86,13 @@ class SelfEditStore:
     def load_default_scope(self) -> str:
         path = self._state_file()
         if not path.exists():
-            return "project"
+            return "global"
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
-            scope = data.get("scope", "project")
+            scope = data.get("scope", "global")
             return "global" if scope == "global" else "project"
         except (OSError, json.JSONDecodeError):
-            return "project"
+            return "global"
 
     def save_default_scope(self, scope: str) -> None:
         out = self._state_file()
@@ -167,6 +156,30 @@ class SelfEditStore:
             rows.append(row)
         data["profiles"] = rows
         path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+    def delete_agent(self, agent_id: str, scope: str) -> None:
+        """Delete a saved agent row and prompt file for the given scope."""
+        normalized = agent_id.upper()
+        path = self._agents_file(scope)
+        if path.exists():
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                data = {"profiles": []}
+            rows = [
+                row
+                for row in list(data.get("profiles", []))
+                if str(row.get("id", "")).upper() != normalized
+            ]
+            data["profiles"] = rows
+            try:
+                path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+            except OSError:
+                pass
+
+        prompt_path = self._agent_prompt_file(scope, normalized)
+        if prompt_path.exists():
+            prompt_path.unlink()
 
     def _default_with_path(self, profile: AgentProfile) -> AgentProfile:
         prompt_path = self._agent_prompt_file("project", profile.id)

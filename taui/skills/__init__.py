@@ -23,7 +23,7 @@ as a system message, expanding the agent's capabilities mid-session.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 logger = logging.getLogger(__name__)

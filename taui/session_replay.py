@@ -10,7 +10,6 @@ from taui.agent.types import Message
 from taui.llm_provider.types import ProviderToolCall
 from taui.store.events import Event, EventType
 
-
 ReplayKind = Literal["user", "assistant", "tool_call", "tool_result", "error"]
 
 
