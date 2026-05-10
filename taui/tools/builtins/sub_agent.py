@@ -7,6 +7,7 @@ completion and returns its final text response.
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -45,6 +46,10 @@ class SubAgentTool:
     _parent_executor: Any = None
     _model: str = "default"
     _system_prompt: str = ""
+
+    # Callbacks forwarded from the parent loop for TUI visibility
+    _on_tool_call: Callable[[str, str, dict], Awaitable[None]] | None = None
+    _on_tool_result: Callable[[str, str, str, bool], Awaitable[None]] | None = None
 
     def __post_init__(self):
         if self.schema is None:
@@ -119,6 +124,12 @@ class SubAgentTool:
             model=self._model,
             max_turns=max_turns,
         )
+
+        # Forward tool call/result callbacks so sub-agent activity is visible in TUI
+        if self._on_tool_call is not None:
+            child_loop._on_tool_call = self._on_tool_call
+        if self._on_tool_result is not None:
+            child_loop._on_tool_result = self._on_tool_result
 
         try:
             result = await child_loop.run(task)

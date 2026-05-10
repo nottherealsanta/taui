@@ -511,6 +511,19 @@ class TauiApp(App[None]):
         loop._on_approval = self._approval_ctrl.on_approval
         loop._on_questions_batch = self._approval_ctrl.on_questions_batch
 
+        # Wire sub-agent callbacks so child tool calls are visible in the TUI
+        try:
+            from taui.tools.builtins.sub_agent import SubAgentTool
+
+            registry = getattr(self._session, "_registry", None)
+            if registry is not None:
+                sub_agent = registry.get("sub_agent")
+                if isinstance(sub_agent, SubAgentTool):
+                    sub_agent._on_tool_call = self._tool_ctrl.on_tool_call
+                    sub_agent._on_tool_result = self._tool_ctrl.on_tool_result
+        except (ValueError, ImportError):
+            pass
+
     def _on_text_delta_sync(self, fragment: str) -> None:
         """Handle real-time streaming token from the LLM provider."""
         self._streamed_text = True
