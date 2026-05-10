@@ -22,7 +22,13 @@ from taui.config import Config
 from taui.self_edit.store import AgentProfile, SelfEditStore
 from taui.session import Session
 from taui.tui.approval_controller import ApprovalController
-from taui.tui.messages import StreamReasoningDelta, StreamTextDelta, ToolEnded, ToolStarted
+from taui.tui.messages import (
+    CompactionOccurred,
+    StreamReasoningDelta,
+    StreamTextDelta,
+    ToolEnded,
+    ToolStarted,
+)
 from taui.tui.screens.context_breakdown import ContextBreakdownScreen
 from taui.tui.screens.session_picker import SessionPickerScreen
 from taui.tui.tool_controller import ToolController
@@ -510,6 +516,7 @@ class TauiApp(App[None]):
         loop._on_reasoning_delta = self._on_reasoning_delta_sync
         loop._on_approval = self._approval_ctrl.on_approval
         loop._on_questions_batch = self._approval_ctrl.on_questions_batch
+        loop._on_compact = self._on_compact_sync
 
         # Wire sub-agent callbacks so child tool calls are visible in the TUI
         try:
@@ -538,7 +545,21 @@ class TauiApp(App[None]):
         if not self._streamed_text:
             self.post_message(StreamTextDelta(text))
 
+    def _on_compact_sync(self, removed: int, before: int, after: int) -> None:
+        """Handle auto-compaction notification from the agent loop."""
+        self.post_message(CompactionOccurred(removed, before, after))
+
     # ── Tool event handlers ───────────────────────────────────────────
+
+    @on(CompactionOccurred)
+    async def handle_compaction(self, event: CompactionOccurred) -> None:
+        chat_log = self.query_one("#chat-log", VerticalScroll)
+        msg = (
+            f"Context auto-compacted: {event.removed} messages removed, "
+            f"tokens {event.before_tokens:,} → {event.after_tokens:,}"
+        )
+        await chat_log.mount(Static(f"[dim]{msg}[/dim]", markup=True))
+        chat_log.scroll_end()
 
     @on(ToolStarted)
     async def handle_tool_started(self, event: ToolStarted) -> None:
@@ -939,6 +960,10 @@ class TauiApp(App[None]):
                 Static(f"[{style}]{result.output}[/{style}]", markup=True)
             )
 
+        if action == "compact_requested":
+            await self._handle_compact(chat_log)
+            return
+
         if action == "debug_questions":
             self.run_worker(
                 self._approval_ctrl.debug_questions(chat_log),
@@ -964,6 +989,32 @@ class TauiApp(App[None]):
             self._update_status()
         if action == "session_resumed":
             await self._render_replay()
+
+    async def _handle_compact(self, chat_log: VerticalScroll) -> None:
+        """Run compaction and report before/after token counts."""
+        if not self._session:
+            await chat_log.mount(
+                Static("[dim]No active session.[/dim]", markup=True)
+            )
+            return
+
+        from taui.agent.context import compact_messages, estimate_total_tokens
+
+        loop = self._session._loop
+        before_tokens = estimate_total_tokens(loop._messages)
+        removed = compact_messages(loop._messages)
+        after_tokens = estimate_total_tokens(loop._messages)
+
+        if removed:
+            msg = (
+                f"Compacted: removed {removed} messages. "
+                f"Tokens: {before_tokens:,} → {after_tokens:,} "
+                f"(saved {before_tokens - after_tokens:,})"
+            )
+        else:
+            msg = f"No compaction needed. Current tokens: {before_tokens:,}"
+        await chat_log.mount(Static(f"[dim]{msg}[/dim]", markup=True))
+        chat_log.scroll_end()
 
     async def _open_session_picker(self, sessions: list[dict]) -> None:
         """Open the session picker and resume the selected session."""

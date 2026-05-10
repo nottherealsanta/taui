@@ -114,6 +114,9 @@ class AgentLoop:
             | None
         ) = None
 
+        # Compaction notification callback: (removed, before_tokens, after_tokens) -> None
+        self._on_compact: Callable[[int, int, int], None] | None = None
+
         self.state = AgentState.IDLE
         self._messages: list[Message] = []
         self._steering_queue: list[str] = []
@@ -320,14 +323,18 @@ class AgentLoop:
 
     def _maybe_compact(self) -> None:
         """Compact messages if approaching token budget."""
-        est = estimate_total_tokens(self._messages)
+        before = estimate_total_tokens(self._messages)
         soft = int(DEFAULT_MAX_INPUT_TOKENS * 0.80)
-        if est > soft:
+        if before > soft:
             removed = compact_messages(self._messages)
             if removed:
+                after = estimate_total_tokens(self._messages)
                 logger.info(
-                    "Compacted %d messages agent_id=%s", removed, self.agent_id
+                    "Compacted %d messages agent_id=%s tokens=%d->%d",
+                    removed, self.agent_id, before, after,
                 )
+                if self._on_compact:
+                    self._on_compact(removed, before, after)
 
     async def _execute_questions_batch(
         self, tcs: list[ProviderToolCall]

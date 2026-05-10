@@ -48,3 +48,13 @@ class AgentBusy(Message):
 
 class AgentIdle(Message):
     """Posted when agent finishes processing."""
+
+
+class CompactionOccurred(Message):
+    """Posted when auto-compaction runs during agent loop."""
+
+    def __init__(self, removed: int, before_tokens: int, after_tokens: int) -> None:
+        super().__init__()
+        self.removed = removed
+        self.before_tokens = before_tokens
+        self.after_tokens = after_tokens
