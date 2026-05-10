@@ -8,6 +8,15 @@ from ..config import load_provider_config
 from .codex import CodexCredentials, get_codex_credentials
 from .copilot import CopilotCredentials, get_copilot_credentials
 
+
+def _get_provider_names() -> dict[str, str]:
+    """Get provider names from the registry."""
+    from taui.llm_provider.registry import get_provider_entry, get_provider_names
+
+    return {name: get_provider_entry(name).label for name in get_provider_names()}
+
+
+# Lazy-loaded provider names dict (populated on first access via functions that use it)
 PROVIDER_NAMES: dict[str, str] = {
     "copilot": "GitHub Copilot",
     "codex": "OpenAI Codex (ChatGPT Plus/Pro)",
@@ -16,13 +25,10 @@ PROVIDER_NAMES: dict[str, str] = {
 
 def get_credentials(provider: str):
     """Return credentials for the given provider name. Triggers interactive login if needed."""
-    match provider:
-        case "copilot":
-            return get_copilot_credentials()
-        case "codex":
-            return get_codex_credentials()
-        case _:
-            raise ValueError(f"Unknown provider: {provider!r}")
+    from taui.llm_provider.registry import get_provider_entry
+
+    entry = get_provider_entry(provider)
+    return entry.auth()
 
 
 def has_any_credentials() -> bool:

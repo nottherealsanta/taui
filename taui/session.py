@@ -27,7 +27,6 @@ from taui.extensions.builtins import (
 )
 from taui.hooks import HookRegistry
 from taui.llm_provider.auth import get_credentials
-from taui.llm_provider.providers import CodexProvider, CopilotProvider
 from taui.prompt_builder import ProjectContext, SystemPromptBuilder
 from taui.session_replay import ReplayItem
 from taui.store.store import Store
@@ -41,15 +40,9 @@ logger = logging.getLogger(__name__)
 
 async def _create_provider(config: Config):
     """Create and authenticate an LLM provider from config."""
-    creds = await asyncio.to_thread(get_credentials, config.provider)
+    from taui.llm_provider.registry import create_provider
 
-    match config.provider:
-        case "copilot":
-            return CopilotProvider(credentials=creds)
-        case "codex":
-            return CodexProvider(credentials=creds)
-        case _:
-            raise ValueError(f"Unknown provider: {config.provider!r}")
+    return await asyncio.to_thread(create_provider, config.provider)
 
 
 class Session:

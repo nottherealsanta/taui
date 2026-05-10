@@ -32,9 +32,11 @@ def parse_args(argv: list[str] | None = None) -> dict:
         prog="taui",
         description="Agentic coding interface you can reshape.",
     )
+    from taui.llm_provider.registry import get_provider_names
+
     parser.add_argument(
         "-p", "--provider",
-        choices=["copilot", "codex"],
+        choices=get_provider_names(),
         default=None,
         help="LLM provider (default: copilot)",
     )
