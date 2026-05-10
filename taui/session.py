@@ -371,9 +371,13 @@ class Session:
         if self._ext_registry:
             self._ext_registry.unload_all()
             self._ext_registry.discover()
-            loaded_all = self._ext_registry.load_all(
-                tools=self._registry, commands=None, hooks=self.hooks,
-            )
+            try:
+                loaded_all = self._ext_registry.load_all(
+                    tools=self._registry, commands=None, hooks=self.hooks,
+                )
+            except Exception:
+                logger.exception("Failed during extension reload")
+                loaded_all = []
             loaded = []
             for name in loaded_all:
                 ext = self._ext_registry.get(name)

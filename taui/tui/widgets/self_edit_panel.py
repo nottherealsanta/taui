@@ -111,11 +111,6 @@ class SelfEditPanel(Widget):
     class Saved(Message):
         pass
 
-    class HelpRequested(Message):
-        def __init__(self, text: str) -> None:
-            super().__init__()
-            self.text = text
-
     def __init__(
         self,
         config: Config,
@@ -139,6 +134,7 @@ class SelfEditPanel(Widget):
         self._expanded: set[tuple[str, str]] = set()
         self._pending = _PendingChanges({}, set(), {}, {})
         self._discard_on_next_exit = False
+        self._show_help = False
 
     @property
     def has_changes(self) -> bool:
@@ -200,7 +196,8 @@ class SelfEditPanel(Widget):
         raw_args = command.raw_args
 
         if verb in ("?", "help"):
-            self.post_message(self.HelpRequested(self._help_text()))
+            self._show_help = True
+            self.refresh_render()
             return
         if verb in ("agent", "tool", "skill", "mcp"):
             self._verb_asset(verb, args, raw_args)
@@ -659,7 +656,27 @@ Workflow:
             pass
 
     def _panel_markup(self) -> str:
-        return ""
+        lines: list[str] = []
+        if self._show_help:
+            lines.append("[bold #f0c808]/help[/bold #f0c808]")
+            lines.extend(f"[dim]{escape(line)}[/dim]" for line in self._help_text().splitlines())
+            lines.append("")
+
+        last_section = ""
+        for index, row in enumerate(self._rows):
+            if row.section != last_section:
+                if lines and lines[-1]:
+                    lines.append("")
+                lines.append(f"[bold]{row.section.upper()}[/bold]")
+                last_section = row.section
+            marker = "[#f0c808]>[/#f0c808]" if index == self._cursor else " "
+            label = escape(row.label)
+            detail = escape(row.detail)
+            if row.expanded and "\n" in row.label:
+                lines.append(f"{marker} [dim]{label}[/dim]")
+            else:
+                lines.append(f"{marker} {label} [dim]{detail}[/dim]".rstrip())
+        return "\n".join(lines)
 
     def _help_text(self) -> str:
         return (

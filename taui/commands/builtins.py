@@ -407,13 +407,30 @@ class ReloadCommand:
             return CommandResult.fail("No session.")
 
         session = self._get_session()
-        loaded = session.reload_extensions()
-        if loaded:
-            return CommandResult.ok(
-                f"Reloaded {len(loaded)} extension(s): {', '.join(loaded)}",
-                action="reloaded",
+        try:
+            loaded = session.reload_extensions()
+        except Exception as exc:
+            return CommandResult.fail(
+                f"Reload failed: {exc}", action="reloaded",
             )
-        return CommandResult.ok("No extensions loaded.", action="reloaded")
+
+        # Collect errors from extensions that failed to load
+        errors: list[str] = []
+        ext_reg = getattr(session, "_ext_registry", None)
+        if ext_reg:
+            for ext in ext_reg._extensions.values():
+                if ext.error and ext.scope != "builtin":
+                    errors.append(f"  {ext.name}: {ext.error}")
+
+        parts: list[str] = []
+        if loaded:
+            parts.append(f"Reloaded {len(loaded)} extension(s): {', '.join(loaded)}")
+        else:
+            parts.append("No extensions loaded.")
+        if errors:
+            parts.append(f"Errors ({len(errors)}):\n" + "\n".join(errors))
+
+        return CommandResult.ok("\n".join(parts), action="reloaded")
 
 
 def _time_ago(ts: float) -> str:
