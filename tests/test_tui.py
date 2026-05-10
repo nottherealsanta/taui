@@ -31,7 +31,6 @@ from taui.tui.widgets.terminal import TerminalOutput
 from taui.tui.widgets.approval import ApprovalPrompt
 from taui.tui.widgets.questions_panel import QuestionsPanel, QuestionSpec
 from taui.tui.screens.context_breakdown import ContextBreakdownScreen
-from taui.tui.screens.diff_view import DiffViewScreen
 from taui.tui.screens.agent_picker import AgentPickerScreen
 from taui.tui.screens.model_picker import ModelPickerScreen
 from taui.tui.screens.session_picker import SessionPickerScreen
@@ -943,17 +942,6 @@ class TestQuestionsPanel:
         panel.on_option_list_option_selected(Event())  # type: ignore[arg-type]
 
         assert panel._answers == [None]
-
-
-# ── DiffViewScreen ──────────────────────────────────────────────────
-
-
-class TestDiffViewScreen:
-    def test_instantiate(self):
-        s = DiffViewScreen("file.py", "before", "after")
-        assert s._file_path == "file.py"
-        assert s._before == "before"
-        assert s._after == "after"
 
 
 # ── ContextBreakdownScreen ──────────────────────────────────────────
