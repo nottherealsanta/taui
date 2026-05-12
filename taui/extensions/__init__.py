@@ -75,6 +75,7 @@ class ExtensionContext:
     tools: Any                  # ToolRegistry | None
     commands: Any               # CommandRegistry | None
     hooks: Any                  # HookRegistry | None
+    policy: Any = None          # ToolPolicy | None
     skills: SkillContribution = field(default_factory=SkillContribution)
 
 
@@ -158,7 +159,11 @@ class ExtensionRegistry:
             )
 
     def load_all(
-        self, tools: Any = None, commands: Any = None, hooks: Any = None,
+        self,
+        tools: Any = None,
+        commands: Any = None,
+        hooks: Any = None,
+        policy: Any = None,
     ) -> list[str]:
         """Load all enabled extensions. Returns names of loaded extensions."""
         loaded: list[str] = []
@@ -170,7 +175,7 @@ class ExtensionRegistry:
                 ext.error = None
                 loaded.append(ext.name)
                 continue
-            if self._load_one(ext, tools, commands, hooks):
+            if self._load_one(ext, tools, commands, hooks, policy):
                 loaded.append(ext.name)
         return loaded
 
@@ -180,6 +185,7 @@ class ExtensionRegistry:
         tools: Any = None,
         commands: Any = None,
         hooks: Any = None,
+        policy: Any = None,
     ) -> bool:
         """Load a single extension. Returns True on success."""
         if ext.loaded:
@@ -201,6 +207,7 @@ class ExtensionRegistry:
                     tools=tools,
                     commands=commands,
                     hooks=hooks,
+                    policy=policy,
                     skills=SkillContribution(ext.path.parent if ext.path else None),
                 )
                 register_fn(ctx)

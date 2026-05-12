@@ -38,6 +38,20 @@ def _agent_color(agent_id: str) -> str:
     return _AGENT_FALLBACK_COLORS[index]
 
 
+class ScopeBadge(Static):
+    """Active self-edit scope (project/global). Hidden when empty."""
+
+    def set_scope(self, scope: str) -> None:
+        if scope:
+            self.update(
+                Text.assemble(("scope: ", "italic"), (scope, "bold"))
+            )
+            self.display = True
+        else:
+            self.update("")
+            self.display = False
+
+
 class AgentBadge(Static):
     """Clickable active agent id."""
 
@@ -111,26 +125,33 @@ class InfoBar(Horizontal):
         padding: 0;
         background: transparent;
     }
+    InfoBar #info-extension {
+        margin-right: 2;
+    }
+    InfoBar #info-scope {
+        color: #f0c808;
+        margin-right: 2;
+    }
     InfoBar #info-agent {
         margin-right: 2;
     }
     InfoBar #info-model {
         color: #e6edf3;
+        margin-right: 2;
     }
     InfoBar #info-provider {
         color: #8b949e;
         text-style: italic;
-        margin-left: 2;
+        margin-right: 2;
     }
     InfoBar #info-tokens {
         color: #c9d1d9;
         text-style: italic;
-        margin-left: 2;
+        margin-right: 2;
     }
     InfoBar #info-cost {
         color: #c9d1d9;
         text-style: italic;
-        margin-left: 2;
     }
     """
 
@@ -143,39 +164,16 @@ class InfoBar(Horizontal):
         self._cost = 0.0
         self._extensions_mode = False
         self._agent_id = ""
+        self._self_edit_scope = ""
 
     def compose(self) -> ComposeResult:
         yield Static("", id="info-extension")
+        yield ScopeBadge("", id="info-scope")
         yield AgentBadge(id="info-agent")
         yield ModelBadge("", id="info-model")
         yield ProviderBadge("", id="info-provider")
         yield ContextBadge("", id="info-tokens")
         yield Static("", id="info-cost")
-
-    def render(self) -> Text:
-        parts: list[Text] = []
-        if self._extensions_mode:
-            parts.append(Text(" EXT ", style="bold black on yellow"))
-            parts.append(Text("  "))
-        if self._agent_id:
-            parts.append(Text(self._agent_id, style=f"bold {_agent_color(self._agent_id)}"))
-            parts.append(Text("  "))
-        parts.append(Text(self._model or "initializing...", style="#e6edf3"))
-        if self._provider:
-            parts.append(Text(f"  {self._provider}", style="italic #8b949e"))
-        if self._max_tokens:
-            parts.append(
-                Text(
-                    f"  {_fmt_tokens(self._tokens)}/{_fmt_tokens(self._max_tokens)}",
-                    style="italic #c9d1d9",
-                )
-            )
-        if self._cost > 0:
-            parts.append(Text(f"  ${self._cost:.4f}", style="italic #c9d1d9"))
-        output = Text()
-        for part in parts:
-            output.append(part)
-        return output
 
     def update_info(
         self,
@@ -187,6 +185,7 @@ class InfoBar(Horizontal):
         cost: float = 0.0,
         extensions_mode: bool = False,
         agent_id: str = "",
+        self_edit_scope: str = "",
     ) -> None:
         self._provider = provider
         self._model = model
@@ -195,6 +194,7 @@ class InfoBar(Horizontal):
         self._cost = cost
         self._extensions_mode = extensions_mode
         self._agent_id = agent_id
+        self._self_edit_scope = self_edit_scope
         self._sync_children()
 
     def _sync_children(self) -> None:
@@ -209,6 +209,7 @@ class InfoBar(Horizontal):
             extension.update("")
             extension.display = False
 
+        self.query_one("#info-scope", ScopeBadge).set_scope(self._self_edit_scope)
         self.query_one("#info-agent", AgentBadge).set_agent(self._agent_id)
         self.query_one("#info-model", Static).update(
             self._model or Text("initializing…", style="dim italic")

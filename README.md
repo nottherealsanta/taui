@@ -104,6 +104,12 @@ edit = "deny"       # block entirely
 
 Valid policy values: `auto`, `confirm`, `deny`.
 
+Approval prompts also support persistent auto-approval for a whole tool. Choosing the
+project option writes a generated extension to `.taui/extensions/`; choosing the global
+option writes it to `~/.taui/extensions/`. The generated extension replaces the tool with
+an equivalent wrapper and sets that tool's policy to `auto` when extensions load. Project
+scope is the default persistent choice.
+
 ## Key Bindings
 
 | Key | Action |

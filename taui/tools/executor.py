@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import fnmatch
 import logging
 import time
 from dataclasses import dataclass
@@ -41,6 +42,7 @@ class ToolPolicy:
 
     def __init__(self, overrides: dict[str, PolicyDecision] | None = None) -> None:
         self._overrides = dict(overrides or {})
+        self._patterns: list[tuple[str, str]] = []
 
     def decide(self, tool_name: str) -> PolicyDecision:
         """Resolve the policy for a tool name."""
@@ -53,6 +55,29 @@ class ToolPolicy:
     def set(self, tool_name: str, decision: PolicyDecision) -> None:
         """Override the policy for a specific tool."""
         self._overrides[tool_name] = decision
+
+    def set_overrides(self, overrides: dict[str, PolicyDecision]) -> None:
+        """Replace per-tool policy overrides while preserving session patterns."""
+        self._overrides = dict(overrides)
+
+    def add_pattern(self, tool_name: str, pattern: str) -> None:
+        """Add a glob pattern for auto-approving similar tool calls."""
+        self._patterns.append((tool_name, pattern))
+
+    def should_auto_approve(self, tool_name: str, arguments: dict) -> bool:
+        """Return True if arguments match a stored auto-approve pattern."""
+        for pat_tool, pat_glob in self._patterns:
+            if pat_tool != tool_name:
+                continue
+            if tool_name == "bash":
+                subject = arguments.get("command", "")
+            elif tool_name in ("write", "edit"):
+                subject = arguments.get("file_path", "") or arguments.get("filePath", "")
+            else:
+                subject = ""
+            if fnmatch.fnmatch(subject, pat_glob):
+                return True
+        return False
 
 
 # ── Execution outcomes ────────────────────────────────────────────────────────
@@ -156,11 +181,12 @@ class ToolExecutor:
             )
         if decision == PolicyDecision.CONFIRM:
             if approved is None:
-                return NeedsApproval(
-                    tool_call_id=tool_call_id,
-                    tool_name=tool_name,
-                    arguments=arguments,
-                )
+                if not self._policy.should_auto_approve(tool_name, arguments):
+                    return NeedsApproval(
+                        tool_call_id=tool_call_id,
+                        tool_name=tool_name,
+                        arguments=arguments,
+                    )
             if approved is False:
                 return Denied(
                     result=ToolResult.fail("Tool execution rejected by user.")

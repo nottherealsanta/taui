@@ -3,22 +3,43 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import os
 from typing import TYPE_CHECKING
 
 from rich.markup import escape
 from textual.containers import Vertical, VerticalScroll
 from textual.widgets import Static
 
-from taui.tui.widgets.approval import ApprovalPrompt
+from taui.extensions.auto_approve import write_auto_approve_extension
 from taui.tui.widgets.chat_input import ChatInput
+from taui.tui.widgets.info2 import Info2
 from taui.tui.widgets.questions_panel import QuestionsPanel, QuestionSpec
 
 if TYPE_CHECKING:
     from taui.tui.app import TauiApp
 
+logger = logging.getLogger(__name__)
+
 
 def _trunc(s: str, n: int = 40) -> str:
     return s[: n - 3] + "..." if len(s) > n else s
+
+
+def _make_pattern(tool_name: str, arguments: dict) -> str:
+    if tool_name == "bash":
+        cmd = arguments.get("command", "")
+        parts = cmd.split()
+        if len(parts) >= 2:
+            return " ".join(parts[:2]) + " *"
+        return cmd + " *" if cmd else "*"
+    if tool_name in ("write", "edit"):
+        path = arguments.get("file_path", "") or arguments.get("filePath", "")
+        if path:
+            parent = os.path.dirname(path)
+            return os.path.join(parent, "*") if parent else "*"
+        return "*"
+    return "*"
 
 
 class ApprovalController:
@@ -33,6 +54,16 @@ class ApprovalController:
         panel = self._active_questions_panel
         if panel and panel._future and not panel._future.done():
             panel._future.cancel()
+
+    def cancel_active_approval(self) -> None:
+        """Cancel any pending info2 approval."""
+        try:
+            info2 = self._app.query_one("#info2", Info2)
+            from taui.tui.widgets.info2 import Info2Mode
+            if info2.mode == Info2Mode.APPROVAL:
+                info2.dismiss()
+        except Exception:
+            pass
 
     async def on_questions_batch(
         self, specs: list[tuple[str, list[str] | None]]
@@ -58,14 +89,39 @@ class ApprovalController:
     async def on_approval(
         self, call_id: str, name: str, arguments: dict
     ) -> bool:
-        chat_log = self._app.query_one("#chat-log", VerticalScroll)
         args_short = ", ".join(
             f"{k}={_trunc(str(v))}" for k, v in arguments.items()
         )
-        prompt = ApprovalPrompt(name, args_short)
-        await chat_log.mount(prompt)
-        self._app._smart_scroll()
-        return await prompt.wait_for_response()
+        pattern = _make_pattern(name, arguments)
+        info2 = self._app.query_one("#info2", Info2)
+        chat_input = self._app.query_one("#chat-input", ChatInput)
+        info2.show_approval(name, args_short, pattern)
+        try:
+            result = await info2.wait_for_approval()
+        finally:
+            if not chat_input.disabled:
+                chat_input.focus()
+        if result.pattern is not None and self._app._session:
+            try:
+                self._app._session._executor._policy.add_pattern(name, result.pattern)
+            except Exception:
+                pass
+        if result.tool_scope is not None and self._app._session:
+            try:
+                path = write_auto_approve_extension(
+                    name,
+                    self._app._session.config.working_dir,
+                    result.tool_scope,
+                )
+                self._app._session.reload_extensions()
+                logger.info(
+                    "Created auto-approve extension for %s at %s",
+                    name,
+                    path,
+                )
+            except Exception:
+                logger.exception("Failed to create auto-approve extension for %s", name)
+        return result.approved
 
     async def debug_questions(self, chat_log: VerticalScroll) -> None:
         try:

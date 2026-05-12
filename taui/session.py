@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -26,7 +27,6 @@ from taui.extensions.builtins import (
     new_hook_registry,
 )
 from taui.hooks import HookRegistry
-from taui.llm_provider.auth import get_credentials
 from taui.prompt_builder import ProjectContext, SystemPromptBuilder
 from taui.session_replay import ReplayItem
 from taui.store.store import Store
@@ -43,6 +43,16 @@ async def _create_provider(config: Config):
     from taui.llm_provider.registry import create_provider
 
     return await asyncio.to_thread(create_provider, config.provider)
+
+
+@dataclass
+class _SessionSnapshot:
+    """Frozen view of a main-session's in-memory state, used to restore on /exit."""
+    session_id: str
+    loop: AgentLoop
+    message_count: int
+    loaded_offset: int
+    last_replay_items: list[ReplayItem] = field(default_factory=list)
 
 
 class Session:
@@ -83,12 +93,19 @@ class Session:
         self.hooks = hooks or HookRegistry()
         self.session_id = session_id or uuid4().hex[:12]
         self.extensions_mode = False
+        self.self_edit_mode = False
         self._system_prompt: str = ""
         self._extensions_prompt: str = ""
+        self._self_edit_prompt: str = ""
+        self._self_edit_executor: ToolExecutor | None = None
+        self._self_edit_scope: str = ""
         self._message_count = 0
         self._loaded_offset = 0
         self._last_replay_items: list[ReplayItem] = []
         self.last_resume_error: str = ""
+        self._base_policy_overrides: dict[str, PolicyDecision] = {}
+        self._builtin_tools: dict[str, Any] = {}
+        self._pre_self_edit_state: _SessionSnapshot | None = None
 
     @classmethod
     async def create(cls, config: Config | None = None) -> Session:
@@ -147,10 +164,16 @@ class Session:
 
         # Built-in extensions are preloaded; user extensions are file-backed.
         builtin_tool_names = set(registry.names)
+        builtin_tools = {name: registry.get(name) for name in registry.names}
         ext_registry = ExtensionRegistry(config.working_dir, include_builtins=True)
         ext_registry.discover()
         hooks = new_hook_registry()
-        ext_registry.load_all(tools=registry, commands=None, hooks=hooks)
+        ext_registry.load_all(
+            tools=registry,
+            commands=None,
+            hooks=hooks,
+            policy=executor.policy,
+        )
 
         # Let extensions transform the system prompt
         if hooks.has("system_prompt"):
@@ -181,9 +204,19 @@ class Session:
             hooks=hooks,
             session_id=session_id,
         )
+        from taui.self_edit.factory import build_self_edit_executor, build_self_edit_system_prompt
+
         session._system_prompt = system_prompt
         session._extensions_prompt = _EXTENSIONS_SYSTEM_PROMPT
+        session._self_edit_prompt = build_self_edit_system_prompt(config.working_dir)
+        session._self_edit_executor = build_self_edit_executor(
+            registry,
+            executor,
+            config.working_dir,
+        )
         session._builtin_tool_names = builtin_tool_names
+        session._builtin_tools = builtin_tools
+        session._base_policy_overrides = policy_overrides
         configure_builtin_extensions(session)
         session._refresh_loop_integrations()
 
@@ -196,8 +229,10 @@ class Session:
                     for p in ext.skill_paths:
                         skill_reg.add_from_path(p, scope=ext.scope)
 
-        # Register session in store
+        # Register session in store and materialize the stream so resume works
+        # even if the user quits before sending a message.
         await store.create_session(session.session_id, stream_id=session._loop.stream_id)
+        await stream.ensure_stream(session._loop.stream_id)
         session._loaded_offset = await stream.get_length(session._loop.stream_id)
 
         return session
@@ -245,12 +280,18 @@ class Session:
         self._message_count = 0
         self._last_replay_items = []
 
-        prompt = self._extensions_prompt if self.extensions_mode else self._system_prompt
+        if self.self_edit_mode:
+            prompt = self._self_edit_prompt
+            executor = self._self_edit_executor or self._executor
+        else:
+            prompt = self._extensions_prompt if self.extensions_mode else self._system_prompt
+            executor = self._executor
 
+        agent_id = "SEF" if self.self_edit_mode else self.session_id
         loop = AgentLoop(
-            agent_id=self.session_id,
+            agent_id=agent_id,
             llm=self._provider,
-            executor=self._executor,
+            executor=executor,
             stream=self._stream,
             system_prompt=prompt,
             model=self.config.model,
@@ -258,11 +299,15 @@ class Session:
         )
         self._replace_loop(loop)
 
+        mode = "self_edit" if self.self_edit_mode else (
+            "extensions" if self.extensions_mode else "normal"
+        )
         await self._store.create_session(
             self.session_id,
-            mode="extensions" if self.extensions_mode else "normal",
+            mode=mode,
             stream_id=self._loop.stream_id,
         )
+        await self._stream.ensure_stream(self._loop.stream_id)
         self._loaded_offset = await self._stream.get_length(self._loop.stream_id)
 
         # Observer hook
@@ -299,6 +344,7 @@ class Session:
             mode="extensions" if self.extensions_mode else "normal",
             stream_id=self._loop.stream_id,
         )
+        await self._stream.ensure_stream(self._loop.stream_id)
         self._loaded_offset = await self._stream.get_length(self._loop.stream_id)
 
         # Observer hook
@@ -309,6 +355,112 @@ class Session:
         )
 
         return self.extensions_mode
+
+    async def toggle_self_edit_mode(self) -> bool:
+        """Toggle self-edit mode. Returns new state.
+
+        Entering self-edit snapshots the current main-session state (id, loop,
+        offsets) so that exiting restores it instead of creating a fresh, empty
+        main session.
+        """
+        entering = not self.self_edit_mode
+        self.self_edit_mode = entering
+
+        if entering:
+            self._pre_self_edit_state = _SessionSnapshot(
+                session_id=self.session_id,
+                loop=self._loop,
+                message_count=self._message_count,
+                loaded_offset=self._loaded_offset,
+                last_replay_items=list(self._last_replay_items),
+            )
+
+            from taui.self_edit.factory import (
+                build_self_edit_executor,
+                build_self_edit_system_prompt,
+            )
+            from taui.self_edit.store import SelfEditStore
+            self._self_edit_prompt = build_self_edit_system_prompt(
+                self.config.working_dir
+            )
+            self._self_edit_executor = build_self_edit_executor(
+                self._registry,
+                self._executor,
+                self.config.working_dir,
+            )
+            self._self_edit_scope = SelfEditStore(
+                self.config.working_dir
+            ).load_default_scope()
+            prompt = self._self_edit_prompt
+            executor = self._self_edit_executor or self._executor
+
+            self.session_id = uuid4().hex[:12]
+            self._message_count = 0
+            self._last_replay_items = []
+
+            loop = AgentLoop(
+                agent_id="SEF",
+                llm=self._provider,
+                executor=executor,
+                stream=self._stream,
+                system_prompt=prompt,
+                model=self.config.model,
+                max_turns=self.config.max_turns,
+            )
+            self._replace_loop(loop)
+
+            await self._store.create_session(
+                self.session_id,
+                mode="self_edit",
+                stream_id=self._loop.stream_id,
+            )
+            await self._stream.ensure_stream(self._loop.stream_id)
+            self._loaded_offset = await self._stream.get_length(self._loop.stream_id)
+            return self.self_edit_mode
+
+        # Exiting self-edit — restore the prior main session if we have one.
+        self._self_edit_scope = ""
+        snap = self._pre_self_edit_state
+        self._pre_self_edit_state = None
+        if snap is not None:
+            self.session_id = snap.session_id
+            self._replace_loop(snap.loop)
+            self._message_count = snap.message_count
+            # Rebuild replay items from the stream so the TUI can re-render the
+            # transcript. The snapshot's items are typically empty because they
+            # are only populated on resume, not on plain send().
+            await self._replay_stream()
+            return self.self_edit_mode
+
+        # Fallback (no snapshot, e.g. self-edit was the initial mode): make a
+        # fresh main session.
+        prompt = self._extensions_prompt if self.extensions_mode else self._system_prompt
+        executor = self._executor
+
+        self.session_id = uuid4().hex[:12]
+        self._message_count = 0
+        self._last_replay_items = []
+
+        loop = AgentLoop(
+            agent_id=self.session_id,
+            llm=self._provider,
+            executor=executor,
+            stream=self._stream,
+            system_prompt=prompt,
+            model=self.config.model,
+            max_turns=self.config.max_turns,
+        )
+        self._replace_loop(loop)
+
+        mode = "extensions" if self.extensions_mode else "normal"
+        await self._store.create_session(
+            self.session_id,
+            mode=mode,
+            stream_id=self._loop.stream_id,
+        )
+        await self._stream.ensure_stream(self._loop.stream_id)
+        self._loaded_offset = await self._stream.get_length(self._loop.stream_id)
+        return self.self_edit_mode
 
     async def resume_session(self, session_id: str) -> bool:
         """Resume a previous session by replaying its messages."""
@@ -328,14 +480,28 @@ class Session:
 
         self.session_id = session_id
         self.extensions_mode = meta.get("mode") == "extensions"
+        self.self_edit_mode = meta.get("mode") == "self_edit"
         self._message_count = meta.get("message_count", 0)
 
-        prompt = self._extensions_prompt if self.extensions_mode else self._system_prompt
+        if self.self_edit_mode:
+            from taui.self_edit.factory import build_self_edit_executor
 
+            self._self_edit_executor = build_self_edit_executor(
+                self._registry,
+                self._executor,
+                self.config.working_dir,
+            )
+            prompt = self._self_edit_prompt
+            executor = self._self_edit_executor or self._executor
+        else:
+            prompt = self._extensions_prompt if self.extensions_mode else self._system_prompt
+            executor = self._executor
+
+        agent_id = "SEF" if self.self_edit_mode else _agent_id_from_stream(stream_id, session_id)
         loop = AgentLoop(
-            agent_id=_agent_id_from_stream(stream_id, session_id),
+            agent_id=agent_id,
             llm=self._provider,
-            executor=self._executor,
+            executor=executor,
             stream=self._stream,
             system_prompt=prompt,
             model=self.config.model,
@@ -363,6 +529,12 @@ class Session:
         ext_tools = [n for n in self._registry.names if n not in builtin]
         for name in ext_tools:
             self._registry.unregister(name)
+        for name, tool in getattr(self, "_builtin_tools", {}).items():
+            self._registry.register_or_replace(tool)
+
+        self._executor.policy.set_overrides(
+            getattr(self, "_base_policy_overrides", {})
+        )
 
         # Clear all hooks (only extensions register hooks)
         self.hooks.clear()
@@ -373,7 +545,10 @@ class Session:
             self._ext_registry.discover()
             try:
                 loaded_all = self._ext_registry.load_all(
-                    tools=self._registry, commands=None, hooks=self.hooks,
+                    tools=self._registry,
+                    commands=None,
+                    hooks=self.hooks,
+                    policy=self._executor.policy,
                 )
             except Exception:
                 logger.exception("Failed during extension reload")
@@ -418,6 +593,31 @@ class Session:
     @property
     def working_dir(self) -> Path:
         return self.config.working_dir
+
+    @property
+    def self_edit_scope(self) -> str:
+        """Active self-edit scope: 'global', 'project', or '' if not in self-edit."""
+        return self._self_edit_scope
+
+    async def switch_self_edit_scope(self) -> str:
+        """Toggle self-edit scope between 'global' and 'project' in place."""
+        if not self.self_edit_mode:
+            return self._self_edit_scope
+
+        from taui.self_edit.factory import build_self_edit_executor
+        from taui.self_edit.store import SelfEditStore
+
+        new_scope = "project" if self._self_edit_scope == "global" else "global"
+        SelfEditStore(self.config.working_dir).save_default_scope(new_scope)
+        self._self_edit_scope = new_scope
+
+        self._self_edit_executor = build_self_edit_executor(
+            self._registry,
+            self._executor,
+            self.config.working_dir,
+        )
+        self._loop._executor = self._self_edit_executor
+        return new_scope
 
     def _apply_write_guard(self) -> None:
         """Set or clear the write guard on file-write tools."""
@@ -464,7 +664,10 @@ class Session:
 
     async def _replay_stream(self) -> None:
         transcript = await self._stream.load_conversation(self._loop.stream_id)
-        prompt = self._extensions_prompt if self.extensions_mode else self._system_prompt
+        if self.self_edit_mode:
+            prompt = self._self_edit_prompt
+        else:
+            prompt = self._extensions_prompt if self.extensions_mode else self._system_prompt
         self._loop._messages = [Message(role="system", content=prompt)]
         self._loop._messages.extend(transcript.messages)
         self._last_replay_items = transcript.items

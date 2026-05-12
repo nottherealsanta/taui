@@ -51,10 +51,14 @@ class ChatInput(TextArea):
     class AgentCycleRequested(Message):
         """Posted when the user cycles the active agent from the input."""
 
+    class ScopeCycleRequested(Message):
+        """Posted when the user toggles self-edit scope from the input."""
+
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.can_submit: bool = False
         self.agent_busy: bool = False
+        self.self_edit_mode: bool = False
         self._history_messages: list[str] = []
         self._history_index: int = -1
         self._saved_input: str = ""
@@ -63,9 +67,6 @@ class ChatInput(TextArea):
         self._completion_active: bool = False
         self._updating_completion_text: bool = False
         self._arg_completers: dict[str, Callable[[str], list[Completion]]] = {}
-        # Self-edit bare-word completion
-        self.self_edit_mode: bool = False
-        self._self_edit_completer: Callable[[str], list[Completion]] | None = None
 
     def set_completions(self, completions: list[tuple[str, str] | Completion]) -> None:
         """Set available completions.
@@ -100,13 +101,6 @@ class ChatInput(TextArea):
             self._arg_completers.pop(name, None)
             return
         self._arg_completers[name] = completer
-
-    def set_self_edit_completer(
-        self, completer: Callable[[str], list[Completion]] | None
-    ) -> None:
-        """Install a bare-word completer for self-edit mode (None to disable)."""
-        self._self_edit_completer = completer
-        self.self_edit_mode = completer is not None
 
     def load_history(self, messages: list[str]) -> None:
         """Load message history (newest first) for Up/Down navigation."""
@@ -264,101 +258,6 @@ class ChatInput(TextArea):
             keep_completion=keep_completion,
         )
 
-    # ── Self-edit bare-word completion ────────────────────────────────
-
-    def _show_self_edit_completion(self) -> None:
-        """Show completion dropdown for self-edit commands."""
-        from taui.tui.widgets.info2 import Info2
-
-        if self._self_edit_completer is None:
-            return
-        text = self.text
-        if not text:
-            self._dismiss_completion()
-            return
-        matches = self._self_edit_completer(text.removeprefix("/"))
-        if not matches:
-            self._dismiss_completion()
-            return
-        try:
-            info2 = self.app.query_one(Info2)
-            info2.show_completions(matches, prefix="/")
-            self._completion_active = True
-        except Exception:
-            pass
-
-    def _replace_self_edit_completion(
-        self, value: str, *, trailing_space: bool
-    ) -> None:
-        """Replace the current (last) token with value, keeping prior tokens."""
-        text = self.text
-        # Strip the leading "/" if present, then restore it for slash-style input.
-        if text.startswith("/"):
-            inner = text[1:]
-            slash = "/"
-        else:
-            inner = text
-            slash = ""
-        if inner.endswith(" "):
-            inner_prefix = inner
-        else:
-            parts = inner.rsplit(" ", 1)
-            inner_prefix = (parts[0] + " ") if len(parts) > 1 else ""
-        suffix = " " if trailing_space else ""
-        new_text = f"{slash}{inner_prefix}{value}{suffix}"
-        self._updating_completion_text = True
-        try:
-            self.clear()
-            self.insert(new_text)
-        finally:
-            self._updating_completion_text = False
-        # After inserting, show next tier (e.g. kind after verb).
-        self._completion_active = False
-        self._show_self_edit_completion()
-
-    def _accept_self_edit_completion(self) -> None:
-        """Accept the currently selected self-edit completion."""
-        from taui.tui.widgets.info2 import Info2
-
-        try:
-            info2 = self.app.query_one(Info2)
-            value = info2.current_value
-            if value:
-                self._replace_self_edit_completion(value, trailing_space=True)
-        except Exception:
-            self._dismiss_completion()
-
-    def _fill_selected_self_edit_completion(self) -> None:
-        """Mirror selected self-edit completion into the text box (no dismiss)."""
-        from taui.tui.widgets.info2 import Info2
-
-        try:
-            info2 = self.app.query_one(Info2)
-            value = info2.current_value
-            if value:
-                text = self.text
-                if text.startswith("/"):
-                    inner = text[1:]
-                    slash = "/"
-                else:
-                    inner = text
-                    slash = ""
-                if inner.endswith(" "):
-                    inner_prefix = inner
-                else:
-                    parts = inner.rsplit(" ", 1)
-                    inner_prefix = (parts[0] + " ") if len(parts) > 1 else ""
-                self._updating_completion_text = True
-                try:
-                    self.clear()
-                    self.insert(f"{slash}{inner_prefix}{value}")
-                finally:
-                    self._updating_completion_text = False
-        except Exception:
-            self._dismiss_completion()
-
-    # ── /end self-edit completion ─────────────────────────────────────
-
     def _fill_selected_completion(self) -> None:
         """Mirror the selected completion into the text box."""
         from taui.tui.widgets.info2 import Info2
@@ -452,6 +351,18 @@ class ChatInput(TextArea):
             return False
 
     async def _on_key(self, event: Key) -> None:
+        # Approval/model/agent/context panels own these keys when active. This also
+        # covers the short window before focus has moved away from the input.
+        if event.key in ("up", "down", "enter", "space", "escape"):
+            from taui.tui.widgets.info2 import Info2, Info2Mode
+
+            try:
+                info2 = self.app.query_one(Info2)
+                if info2.is_active and info2.mode != Info2Mode.COMPLETIONS:
+                    return  # bubble to app.on_key
+            except Exception:
+                pass
+
         # --- Tab ---
         if event.key == "tab":
             from taui.tui.widgets.info2 import Info2, Info2Mode
@@ -462,9 +373,7 @@ class ChatInput(TextArea):
                     event.prevent_default()
                     event.stop()
                     if info2.mode == Info2Mode.COMPLETIONS:
-                        if self.self_edit_mode:
-                            self._accept_self_edit_completion()
-                        elif not self._submit_selected_completion_if_no_args():
+                        if not self._submit_selected_completion_if_no_args():
                             self._accept_completion()
                     else:
                         info2.accept()
@@ -474,7 +383,10 @@ class ChatInput(TextArea):
             event.prevent_default()
             event.stop()
             self._dismiss_completion()
-            self.post_message(self.AgentCycleRequested())
+            if self.self_edit_mode:
+                self.post_message(self.ScopeCycleRequested())
+            else:
+                self.post_message(self.AgentCycleRequested())
             return
 
         # --- Escape ---
@@ -505,9 +417,7 @@ class ChatInput(TextArea):
         if self._completion_active and event.key == "enter":
             event.prevent_default()
             event.stop()
-            if self.self_edit_mode:
-                self._accept_self_edit_completion()
-            elif not self._submit_selected_completion_if_no_args():
+            if not self._submit_selected_completion_if_no_args():
                 self._accept_completion()
             return
 
@@ -534,17 +444,6 @@ class ChatInput(TextArea):
             else:
                 self.insert("\n")
             return
-
-        # --- Let Info2 handle arrow keys when it is active ---
-        if event.key in ("up", "down"):
-            from taui.tui.widgets.info2 import Info2
-
-            try:
-                info2 = self.app.query_one(Info2)
-                if info2.is_active:
-                    return  # bubble to app.on_key
-            except Exception:
-                pass
 
         if event.key == "up":
             cursor_row = self.cursor_location[0]
@@ -594,12 +493,8 @@ class ChatInput(TextArea):
         if self._updating_completion_text:
             return
         text = self.text
-        if self.self_edit_mode and text:
-            self._show_self_edit_completion()
-        elif (
-            not self.self_edit_mode
-            and text.startswith("/")
-            and (" " not in text[1:] or self._command_arg_prefix() is not None)
+        if text.startswith("/") and (
+            " " not in text[1:] or self._command_arg_prefix() is not None
         ):
             self._show_completion()
         elif self._completion_active:

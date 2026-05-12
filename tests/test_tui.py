@@ -126,6 +126,7 @@ class TestTauiApp:
             provider_name = "copilot"
             model_name = "claude-haiku-4.5"
             extensions_mode = False
+            self_edit_mode = False
             cost_tracker = FakeTracker()
             replay_items = []
             _loop = FakeLoop()
@@ -157,6 +158,7 @@ class TestTauiApp:
             provider_name = "copilot"
             model_name = "claude-haiku-4.5"
             extensions_mode = False
+            self_edit_mode = False
             cost_tracker = MagicMock(total_cost_usd=0.0)
             _loop = MagicMock(_messages=[], agent_id="")
 
@@ -222,6 +224,7 @@ class TestTauiApp:
             provider_name = "copilot"
             model_name = "claude-haiku-4.5"
             extensions_mode = False
+            self_edit_mode = False
             cost_tracker = MagicMock(total_cost_usd=0.0)
             _loop = MagicMock(_messages=[], agent_id="")
 
@@ -266,6 +269,7 @@ class TestTauiApp:
             _loop = FakeLoop()
             provider_name = "copilot"
             extensions_mode = False
+            self_edit_mode = False
             cost_tracker = FakeTracker()
 
             @property
@@ -362,6 +366,7 @@ class TestTauiApp:
             _ext_registry = None
             provider_name = "copilot"
             extensions_mode = False
+            self_edit_mode = False
             cost_tracker = CostTracker()
 
             @property
@@ -406,6 +411,7 @@ class TestTauiApp:
             _system_prompt = ""
             provider_name = "copilot"
             extensions_mode = False
+            self_edit_mode = False
             cost_tracker = CostTracker()
 
             def _replace_loop(self, loop):
@@ -429,6 +435,7 @@ class TestTauiApp:
             provider_name = "copilot"
             model_name = "claude-haiku-4.5"
             extensions_mode = False
+            self_edit_mode = False
             cost_tracker = MagicMock(total_cost_usd=0.0)
             _loop = MagicMock(_messages=[], agent_id="")
 
@@ -641,6 +648,40 @@ class TestChatInput:
 
         assert isinstance(posted[0], ChatInput.AgentCycleRequested)
 
+    async def test_enter_bubbles_when_approval_panel_is_active(self, monkeypatch):
+        from taui.tui.widgets.info2 import Info2, Info2Mode
+
+        ci = ChatInput()
+        ci.can_submit = True
+        ci.text = "do not submit"
+        calls: list[str] = []
+
+        class FakeInfo2:
+            is_active = True
+            mode = Info2Mode.APPROVAL
+
+        class FakeApp:
+            def query_one(self, widget_type):
+                assert widget_type is Info2
+                return FakeInfo2()
+
+        class FakeEvent:
+            key = "enter"
+
+            def prevent_default(self):
+                calls.append("prevent_default")
+
+            def stop(self):
+                calls.append("stop")
+
+        ci.post_message = calls.append  # type: ignore[method-assign]
+        monkeypatch.setattr(ChatInput, "app", property(lambda self: FakeApp()))
+
+        await ci._on_key(FakeEvent())
+
+        assert calls == []
+        assert ci.text == "do not submit"
+
     def test_model_completion_matches_model_id_without_provider_prefix(self):
         assert _model_completion_matches("cl", "copilot", "claude-haiku-4.5")
         assert _model_completion_matches("hku", "copilot", "claude-haiku-4.5")
@@ -663,7 +704,7 @@ class TestToolStatusWidget:
 
 
 class TestInfoBar:
-    def test_agent_id_renders_without_spinner_slot(self):
+    def test_update_info_records_agent_and_model(self):
         bar = InfoBar()
         bar.update_info(
             provider="copilot",
@@ -671,12 +712,11 @@ class TestInfoBar:
             agent_id="DEF",
         )
 
-        text = bar.render()
+        assert bar._agent_id == "DEF"
+        assert bar._model == "claude-haiku-4.5"
+        assert bar._provider == "copilot"
 
-        assert text.plain.startswith("DEF  claude-haiku-4.5")
-        assert "on " not in str(text.spans[0].style)
-
-    def test_context_tokens_render(self):
+    def test_update_info_records_token_usage(self):
         bar = InfoBar()
         bar.update_info(
             provider="copilot",
@@ -685,7 +725,8 @@ class TestInfoBar:
             max_tokens=180000,
         )
 
-        assert "1k/180k" in bar.render().plain
+        assert bar._tokens == 1200
+        assert bar._max_tokens == 180000
 
     def test_context_badge_click_posts_message(self):
         from taui.tui.widgets.info_bar import ContextBadge
@@ -705,6 +746,7 @@ class TestInfo2:
         from textual.widgets import Tree
 
         from taui.agent.types import Message
+        from taui.llm_provider.types import ProviderToolCall
         from taui.tui.widgets.info2 import Info2, Info2Mode
 
         class Info2Harness(App[None]):
@@ -712,10 +754,36 @@ class TestInfo2:
                 yield Info2(id="info2")
 
         app = Info2Harness()
+        long_user_content = "Explain the code without cutting off this long content."
         messages = [
-            Message(role="system", content="You are a helper."),
-            Message(role="user", content="Explain the code."),
-            Message(role="assistant", content="Here is the summary."),
+            Message(
+                role="system",
+                content=(
+                    "You are a helper.\n\n"
+                    "# Available tools\n"
+                    "- read: read files\n\n"
+                    "# Guidelines\n"
+                    "Be concise."
+                ),
+            ),
+            Message(role="user", content=long_user_content),
+            Message(
+                role="assistant",
+                content="I will inspect it.",
+                tool_calls=[
+                    ProviderToolCall(
+                        call_id="call_1",
+                        name="read",
+                        arguments={"path": "taui/tui/widgets/info2.py"},
+                    )
+                ],
+            ),
+            Message(
+                role="tool",
+                content="file contents",
+                tool_call_id="call_1",
+                name="read",
+            ),
         ]
 
         async with app.run_test() as pilot:
@@ -727,7 +795,87 @@ class TestInfo2:
             assert info2.mode == Info2Mode.CONTEXT
             assert info2.is_active
             assert "Context" in str(tree.root.label)
-            assert len(tree.root.children) == 4
+            assert len(tree.root.children) == 3
+            labels = [str(child.label) for child in tree.root.children]
+            assert "system" in labels[0]
+            assert "tool def" in labels[1]
+            assert "user 1" in labels[2]
+            assert "tokens" not in labels[2]
+            assert "t" in labels[2]
+            assert tree.root.children[2].label.spans
+            assert all(not child.is_expanded for child in tree.root.children)
+            tool_def_labels = [
+                child.label.plain
+                for group in tree.root.children[1].children
+                for child in group.children
+            ]
+            assert "- read: read files" in tool_def_labels
+
+            user = tree.root.children[2]
+            user_labels = [
+                child.label.plain
+                for group in user.children
+                for child in group.children
+            ]
+            assert long_user_content in user_labels
+            assistant = next(
+                child for child in user.children if "assistant" in str(child.label)
+            )
+            assert not assistant.is_expanded
+            assert not any("role:" in str(child.label) for child in assistant.children)
+            assert not any("tokens:" in str(child.label) for child in assistant.children)
+            assert any(
+                "tool_call: read call_1" in str(child.label)
+                for child in assistant.children
+            )
+            assert any("tool" in str(child.label) for child in assistant.children)
+
+    async def test_show_approval_focuses_info2(self):
+        from textual.app import App, ComposeResult
+
+        from taui.tui.widgets.info2 import Info2, Info2Item, Info2Mode
+
+        class Info2Harness(App[None]):
+            def compose(self) -> ComposeResult:
+                yield Info2(id="info2")
+
+        app = Info2Harness()
+
+        async with app.run_test() as pilot:
+            info2 = app.query_one("#info2", Info2)
+            info2.show_approval("bash", "command=ls", "ls *")
+            await pilot.pause()
+
+            assert info2.mode == Info2Mode.APPROVAL
+            assert app.focused is info2
+            labels = [str(item.render()) for item in info2.query(Info2Item)]
+            assert any("Allow all bash commands (project extension)" in l for l in labels)
+            assert any("Allow all bash commands (global extension)" in l for l in labels)
+
+    async def test_approval_can_select_project_tool_scope(self):
+        from textual.app import App, ComposeResult
+
+        from taui.tui.widgets.info2 import Info2
+
+        class Info2Harness(App[None]):
+            def compose(self) -> ComposeResult:
+                yield Info2(id="info2")
+
+        app = Info2Harness()
+
+        async with app.run_test() as pilot:
+            info2 = app.query_one("#info2", Info2)
+            info2.show_approval("bash", "command=ls", "ls *")
+            waiter = asyncio.create_task(info2.wait_for_approval())
+            await pilot.pause()
+
+            info2.selected_index = 2
+            info2.accept()
+            result = await waiter
+
+            assert result.approved is True
+            assert result.pattern is None
+            assert result.tool_scope == "project"
 
 
 # ── Messages ─────────────────────────────────────────────────────────

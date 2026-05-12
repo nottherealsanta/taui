@@ -8,7 +8,7 @@ current behavior and edit it when architecture, commands, or conventions change.
 Taui is a customizable agentic coding interface for developers.
 
 - Package: `taui`
-- Version: `0.2.1`
+- Version: `0.3`
 - Runtime: Python `>=3.13`
 - UI: full-screen Textual TUI only
 - Entry point: `taui.main:main`
@@ -119,6 +119,9 @@ Important boundaries:
 - reasoning/text deltas via Textual messages
 - compact tool status rendering with FIFO start/end matching
 - inline approval and question handling
+- approval prompts can persistently auto-approve an entire tool by generating a
+  project `.taui/extensions/taui_auto_approve_<tool>.py` extension by default, or a
+  global `~/.taui/extensions/taui_auto_approve_<tool>.py` extension when selected
 - sidebar toggle
 - prompt history at `~/.cache/taui/prompt_history`
 - `@file` expansion before sending a message

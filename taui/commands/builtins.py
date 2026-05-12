@@ -248,14 +248,15 @@ def _profile_provider_model(profile: Any) -> str:
 
 @dataclass(slots=True)
 class SelfEditModeCommand:
-    """Open self-edit mode in the TUI."""
+    """Start a self-edit session, optionally with an initial message."""
 
     name: str = "i"
-    description: str = "Open self-edit mode"
-    accepts_args: bool = False
+    description: str = "Start a self-edit session: /i [message]"
+    accepts_args: bool = True
 
     async def execute(self, ctx: CommandContext) -> CommandResult:
-        return CommandResult.ok("Opened self-edit mode.", action="self_edit_open")
+        msg = " ".join(ctx.args).strip()
+        return CommandResult.ok(msg, action="self_edit_open", message=msg)
 
 
 @dataclass(slots=True)

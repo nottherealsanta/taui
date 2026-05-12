@@ -9,6 +9,8 @@ Modes:
 
 from __future__ import annotations
 
+import asyncio
+from dataclasses import dataclass
 from enum import Enum, auto
 from typing import Any
 
@@ -24,12 +26,22 @@ from taui.agent.context import estimate_message_tokens, estimate_total_tokens
 type Completion = tuple[str, str, bool]  # (name, description, accepts_args)
 
 
+@dataclass(slots=True)
+class ApprovalResult:
+    """Result from an approval prompt."""
+
+    approved: bool
+    pattern: str | None = None
+    tool_scope: str | None = None
+
+
 class Info2Mode(Enum):
     HIDDEN = auto()
     COMPLETIONS = auto()
     MODELS = auto()
     AGENTS = auto()
     CONTEXT = auto()
+    APPROVAL = auto()
 
 
 class Info2Item(Static):
@@ -50,6 +62,8 @@ class Info2Item(Static):
 
 class Info2(ScrollableContainer):
     """Unified expandable panel for completions, pickers, and context views."""
+
+    can_focus = True
 
     DEFAULT_CSS = """
     Info2 {
@@ -72,6 +86,14 @@ class Info2(ScrollableContainer):
         background: transparent;
     }
     """
+
+    ROLE_STYLES = {
+        "system": "#d2a8ff",
+        "tool def": "#56d4dd",
+        "user": "#7ee787",
+        "assistant": "#58a6ff",
+        "tool": "#ffa657",
+    }
 
     selected_index: reactive[int] = reactive(0)
 
@@ -102,6 +124,14 @@ class Info2(ScrollableContainer):
     class Dismissed(Message):
         """Panel was dismissed without selection."""
 
+    class ApprovalResponse(Message):
+        """User responded to an approval prompt."""
+
+        def __init__(self, approved: bool, pattern: str | None) -> None:
+            super().__init__()
+            self.approved = approved
+            self.pattern = pattern
+
     # ── Init ───────────────────────────────────────────────────────────
 
     def __init__(self, **kwargs) -> None:
@@ -113,6 +143,10 @@ class Info2(ScrollableContainer):
         self._current_marker: str = ""
         self._prefix: str = "/"
         self._context_tree: Tree[str] | None = None
+        self._approval_tool: str = ""
+        self._approval_args: str = ""
+        self._approval_pattern: str = ""
+        self._approval_future: asyncio.Future | None = None
 
     def compose(self) -> ComposeResult:
         return iter(())
@@ -182,8 +216,30 @@ class Info2(ScrollableContainer):
         self.call_after_refresh(self._context_tree.focus)
         self.add_class("active")
 
+    def show_approval(self, tool_name: str, args_summary: str, pattern: str) -> None:
+        """Show a tool approval prompt in the panel."""
+        if self._approval_future and not self._approval_future.done():
+            self._approval_future.cancel()
+        self._mode = Info2Mode.APPROVAL
+        self._approval_tool = tool_name
+        self._approval_args = args_summary
+        self._approval_pattern = pattern
+        self._approval_future = asyncio.get_event_loop().create_future()
+        self.selected_index = 0
+        self._rebuild_approval()
+        self.add_class("active")
+        self.call_after_refresh(self.focus)
+
+    async def wait_for_approval(self) -> ApprovalResult:
+        """Await the user's approval decision."""
+        if self._approval_future is None:
+            return ApprovalResult(False)
+        return await self._approval_future
+
     def hide(self) -> None:
         """Hide the panel."""
+        if self._approval_future and not self._approval_future.done():
+            self._approval_future.set_result(ApprovalResult(False))
         self._mode = Info2Mode.HIDDEN
         self._items = []
         self._model_items = []
@@ -208,6 +264,8 @@ class Info2(ScrollableContainer):
                 if self._agent_items and 0 <= self.selected_index < len(self._agent_items):
                     return self._agent_items[self.selected_index].id
             case Info2Mode.CONTEXT:
+                return None
+            case Info2Mode.APPROVAL:
                 return None
         return None
 
@@ -253,10 +311,30 @@ class Info2(ScrollableContainer):
             case Info2Mode.CONTEXT:
                 if self._context_tree is not None:
                     self._context_tree.action_toggle_node()
+            case Info2Mode.APPROVAL:
+                fut = self._approval_future
+                idx = self.selected_index
+                self._approval_future = None
+                self.hide()
+                if fut and not fut.done():
+                    if idx == 0:
+                        fut.set_result(ApprovalResult(True))
+                    elif idx == 1:
+                        fut.set_result(ApprovalResult(True, pattern=self._approval_pattern))
+                    elif idx == 2:
+                        fut.set_result(ApprovalResult(True, tool_scope="project"))
+                    elif idx == 3:
+                        fut.set_result(ApprovalResult(True, tool_scope="global"))
+                    else:
+                        fut.set_result(ApprovalResult(False))
 
     def dismiss(self) -> None:
         """Dismiss without selection."""
+        fut = self._approval_future
+        self._approval_future = None
         self.hide()
+        if fut and not fut.done():
+            fut.set_result(ApprovalResult(False))
         self.post_message(self.Dismissed())
 
     # ── Internal ───────────────────────────────────────────────────────
@@ -271,6 +349,8 @@ class Info2(ScrollableContainer):
                 return len(self._agent_items)
             case Info2Mode.CONTEXT:
                 return 0
+            case Info2Mode.APPROVAL:
+                return 5
         return 0
 
     def _rebuild_completions(self) -> None:
@@ -307,35 +387,55 @@ class Info2(ScrollableContainer):
         )
         tree.root.expand()
 
-        groups = [
-            ("system", "System"),
-            ("user", "User Messages"),
-            ("assistant", "Assistant"),
-            ("tool", "Tool Results"),
-        ]
-        grouped = {
-            role: [
-                (index, message)
-                for index, message in enumerate(messages, start=1)
-                if getattr(message, "role", "unknown") == role
-            ]
-            for role, _ in groups
-        }
-
-        for role, label in groups:
-            entries = grouped[role]
-            tokens = sum(estimate_message_tokens(message) for _, message in entries)
-            group = tree.root.add(
-                f"{label} ({len(entries)} messages, {tokens:,} tokens)",
-                expand=True,
-            )
-            if not entries:
-                group.add_leaf("(none)")
+        current_user = None
+        current_reply = None
+        user_count = 0
+        for message in messages:
+            role = str(getattr(message, "role", "unknown") or "unknown")
+            content = self._message_content(message)
+            if role == "system":
+                system_content, tool_def_content = self._split_system_tool_def(content)
+                if system_content:
+                    system_tokens = self._estimate_text_tokens("system", system_content)
+                    system_node = tree.root.add(
+                        self._context_message_label("system", system_tokens, user_count),
+                        expand=False,
+                    )
+                    self._add_context_message_details(system_node, message, system_content)
+                if tool_def_content:
+                    tool_def_tokens = self._estimate_text_tokens("tool def", tool_def_content)
+                    tool_def_node = tree.root.add(
+                        self._context_message_label(
+                            "tool def", tool_def_tokens, user_count
+                        ),
+                        expand=False,
+                    )
+                    self._add_context_message_details(tool_def_node, message, tool_def_content)
                 continue
-            for index, message in entries:
-                message_tokens = estimate_message_tokens(message)
-                preview = self._message_preview(message)
-                group.add_leaf(f"#{index}  {message_tokens:,} tokens  {preview}")
+            if role == "user":
+                user_count += 1
+            message_tokens = estimate_message_tokens(message)
+            label = self._context_message_label(role, message_tokens, user_count)
+            if role == "user":
+                current_user = tree.root.add(label, expand=False)
+                current_reply = None
+                self._add_context_message_details(
+                    current_user, message, content
+                )
+                continue
+            if role == "assistant":
+                parent = current_user or tree.root
+                current_reply = parent.add(label, expand=False)
+                self._add_context_message_details(
+                    current_reply, message, content
+                )
+                continue
+            if role == "tool":
+                parent = current_reply or current_user or tree.root
+            else:
+                parent = tree.root
+            group = parent.add(label, expand=False)
+            self._add_context_message_details(group, message, content)
         return tree
 
     def _model_label(self, model: dict) -> Text:
@@ -361,7 +461,7 @@ class Info2(ScrollableContainer):
         return text
 
     @staticmethod
-    def _message_preview(message: Any, limit: int = 80) -> str:
+    def _message_content(message: Any) -> str:
         content = getattr(message, "content", None) or ""
         if not content and getattr(message, "tool_calls", None):
             names = [
@@ -371,10 +471,79 @@ class Info2(ScrollableContainer):
             content = "tool calls: " + ", ".join(names)
         if not content and getattr(message, "name", None):
             content = str(getattr(message, "name"))
-        preview = " ".join(str(content).split())
-        if len(preview) > limit:
-            return preview[: limit - 3] + "..."
-        return preview or "(empty)"
+        return str(content) or "(empty)"
+
+    @staticmethod
+    def _split_system_tool_def(content: str) -> tuple[str, str]:
+        marker = "# Available tools"
+        start = content.find(marker)
+        if start < 0:
+            return content, ""
+        next_header = content.find("\n# ", start + len(marker))
+        if next_header < 0:
+            system_content = content[:start].rstrip()
+            tool_def_content = content[start:].strip()
+        else:
+            system_content = (content[:start] + content[next_header:]).strip()
+            tool_def_content = content[start:next_header].strip()
+        return system_content, tool_def_content
+
+    @staticmethod
+    def _estimate_text_tokens(role: str, content: str) -> int:
+        return max(1, (len(role) + len(content)) // 4 + 1)
+
+    @staticmethod
+    def _context_message_label(
+        role: str,
+        message_tokens: int,
+        user_count: int,
+    ) -> Text:
+        text = Text()
+        if role == "user":
+            text.append(f"user {user_count}", style=f"bold {Info2.ROLE_STYLES['user']}")
+        else:
+            text.append(role, style=f"bold {Info2.ROLE_STYLES.get(role, '#c9d1d9')}")
+        text.append(f"  {message_tokens:,}t", style="italic dim")
+        return text
+
+    @staticmethod
+    def _add_context_message_details(
+        node: Any,
+        message: Any,
+        content: str,
+    ) -> None:
+        content_node = node.add(Text("content", style="dim"), expand=True)
+        for line in content.splitlines() or [content]:
+            content_node.add_leaf(Text(line if line else " ", style="#c9d1d9"))
+        if getattr(message, "name", None):
+            node.add_leaf(Text(f"name: {getattr(message, 'name')}", style="dim"))
+        if getattr(message, "tool_call_id", None):
+            node.add_leaf(
+                Text(f"tool_call_id: {getattr(message, 'tool_call_id')}", style="dim")
+            )
+        for call in getattr(message, "tool_calls", None) or []:
+            name = str(getattr(call, "name", "tool"))
+            call_id = str(getattr(call, "call_id", ""))
+            node.add_leaf(
+                Text(f"tool_call: {name} {call_id}".rstrip(), style="#ffa657")
+            )
+
+    def _rebuild_approval(self) -> None:
+        self.remove_children()
+        header = Static(f"Allow {self._approval_tool}({self._approval_args})?")
+        self.mount(header)
+        options = [
+            "  Allow",
+            f"  Allow all '{self._approval_pattern}' for this session",
+            f"  Allow all {self._approval_tool} commands (project extension)",
+            f"  Allow all {self._approval_tool} commands (global extension)",
+            "  Deny",
+        ]
+        for i, label in enumerate(options):
+            item = Info2Item(label)
+            if i == self.selected_index:
+                item.add_class("highlighted")
+            self.mount(item)
 
     def _update_highlight(self) -> None:
         items = self.query(Info2Item)
