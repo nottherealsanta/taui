@@ -40,6 +40,17 @@ class McpServerConfig:
     command: list[str]
     env: dict[str, str] = field(default_factory=dict)
     enabled: bool = True
+    transport: str = "stdio"
+    prefix: str | None = None  # Override the default "mcp__<server>__" prefix
+
+    def tool_prefix(self) -> str:
+        """Return the prefix used to qualify tool names for this server.
+
+        Falls back to ``mcp__<server>__`` when no custom prefix is set.
+        """
+        if self.prefix is not None:
+            return self.prefix
+        return f"mcp__{self.name}__"
 
 
 @dataclass(slots=True)
@@ -50,6 +61,11 @@ class McpTool:
     description: str
     input_schema: dict[str, Any]
     server_name: str
+
+    @property
+    def prefixed_name(self) -> str:
+        """Return the default ``mcp__<server>__<name>`` qualified name."""
+        return f"mcp__{self.server_name}__{self.name}"
 
 
 class McpClient:
@@ -315,6 +331,133 @@ class McpClient:
         self._sampling_handler = handler
 
 
+class McpHttpClient:
+    """MCP client using HTTP/SSE transport.
+
+    Connects to an MCP server via HTTP POST for requests and
+    Server-Sent Events for notifications.
+    """
+
+    def __init__(self, base_url: str, *, name: str = "") -> None:
+        self._base_url = base_url.rstrip("/")
+        self._name = name
+        self._tools: list[McpTool] = []
+        self._connected = False
+
+    @property
+    def connected(self) -> bool:
+        return self._connected
+
+    @property
+    def tools(self) -> list[McpTool]:
+        return list(self._tools)
+
+    async def connect(self) -> None:
+        """Initialize connection and list tools."""
+        result = await self._post("initialize", {
+            "protocolVersion": "2024-11-05",
+            "capabilities": {},
+            "clientInfo": {"name": "taui", "version": "0.4"},
+        })
+        if result is None:
+            raise ConnectionError(
+                f"MCP HTTP server at {self._base_url} did not respond"
+            )
+
+        await self._post("notifications/initialized", {}, notify=True)
+
+        tools_result = await self._post("tools/list", {})
+        if tools_result and "tools" in tools_result:
+            self._tools = [
+                McpTool(
+                    name=t["name"],
+                    description=t.get("description", ""),
+                    input_schema=t.get("inputSchema", {}),
+                    server_name=self._name,
+                )
+                for t in tools_result["tools"]
+            ]
+        self._connected = True
+
+    async def disconnect(self) -> None:
+        """Mark as disconnected."""
+        self._connected = False
+        self._tools.clear()
+
+    async def call_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        """Call a tool via HTTP POST."""
+        result = await self._post("tools/call", {
+            "name": name,
+            "arguments": arguments,
+        })
+        if result is None:
+            raise RuntimeError(f"No response for tool '{name}'")
+        return result
+
+    async def list_resources(self) -> list[dict[str, Any]]:
+        result = await self._post("resources/list", {})
+        if result and "resources" in result:
+            return result["resources"]
+        return []
+
+    async def list_prompts(self) -> list[dict[str, Any]]:
+        result = await self._post("prompts/list", {})
+        if result and "prompts" in result:
+            return result["prompts"]
+        return []
+
+    async def _post(
+        self,
+        method: str,
+        params: dict[str, Any],
+        *,
+        notify: bool = False,
+        timeout: float = 30.0,
+    ) -> dict[str, Any] | None:
+        """Send a JSON-RPC request via HTTP POST."""
+        msg: dict[str, Any] = {
+            "jsonrpc": "2.0",
+            "method": method,
+            "params": params,
+        }
+        if not notify:
+            msg["id"] = id(msg)
+
+        url = f"{self._base_url}/rpc"
+        data = json.dumps(msg).encode()
+
+        def _do_request() -> bytes | None:
+            import urllib.error
+            import urllib.request
+
+            req = urllib.request.Request(
+                url,
+                data=data,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                    return resp.read()
+            except urllib.error.URLError:
+                return None
+
+        try:
+            raw = await asyncio.to_thread(_do_request)
+        except Exception:
+            return None
+
+        if raw is None:
+            return None
+        if notify:
+            return {}
+        try:
+            resp = json.loads(raw)
+            return resp.get("result")
+        except json.JSONDecodeError:
+            return None
+
+
 class McpManager:
     """Manages multiple MCP server connections.
 
@@ -358,6 +501,8 @@ class McpManager:
                     command=command,
                     env=cfg.get("env", {}),
                     enabled=cfg.get("enabled", True),
+                    transport=cfg.get("transport", "stdio"),
+                    prefix=cfg.get("prefix"),
                 )
         except Exception as e:
             logger.warning("Failed to load MCP config from %s: %s", path, e)
