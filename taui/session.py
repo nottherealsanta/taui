@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -32,6 +33,7 @@ from taui.prompt_builder import ProjectContext, SystemPromptBuilder
 from taui.session_replay import ReplayItem
 from taui.store.store import Store
 from taui.store.stream import StreamClient
+from taui.tools.base import ToolResult
 from taui.tools.builtins import register_builtins
 from taui.tools.executor import PolicyDecision, ToolExecutor, ToolPolicy
 from taui.tools.registry import ToolRegistry
@@ -106,6 +108,7 @@ class Session:
         self._last_replay_items: list[ReplayItem] = []
         self.last_resume_error: str = ""
         self._base_policy_overrides: dict[str, PolicyDecision] = {}
+        self._result_processors: list[Callable[[str, str, ToolResult], ToolResult]] = []
         self._builtin_tools: dict[str, Any] = {}
         self._pre_self_edit_state: _SessionSnapshot | None = None
         self._variant_registry: AgentVariantRegistry = AgentVariantRegistry()
@@ -753,6 +756,19 @@ class Session:
 
         return sub
 
+    def add_result_processor(
+        self,
+        fn: Callable[[str, str, ToolResult], ToolResult],
+    ) -> None:
+        """Register a post-processor for tool results.
+
+        fn(tool_name, call_id, result) -> ToolResult
+
+        Processors run in order after each tool execution, before the result
+        is written to the stream. Use for secret redaction, content tagging, etc.
+        """
+        self._result_processors.append(fn)
+
     async def close(self) -> None:
         """Clean up resources."""
         await close_builtin_extensions(self)
@@ -928,6 +944,14 @@ class Session:
             self._loop._messages.append(Message(role="system", content=content))
 
         skills_tool._inject_message = inject_skill_message
+
+        def process_result(name: str, call_id: str, content: str) -> str:
+            result = ToolResult.ok(content)
+            for fn in self._result_processors:
+                result = fn(name, call_id, result)
+            return result.content
+
+        self._loop._on_result_process = process_result
 
     async def _replay_stream(self) -> None:
         transcript = await self._stream.load_conversation(self._loop.stream_id)

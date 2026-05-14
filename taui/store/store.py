@@ -112,6 +112,7 @@ class Store:
         self.db_path = db_path or (workspace / ".taui" / "store.db")
         self._db: aiosqlite.Connection | None = None
         self._waiters: dict[str, list[asyncio.Event]] = {}
+        self._write_count: int = 0
 
     # ── Lifecycle ─────────────────────────────────────────────────────────
 
@@ -123,6 +124,7 @@ class Store:
         self._db = await aiosqlite.connect(self.db_path)
         self._db.row_factory = aiosqlite.Row
         await self._db.execute("PRAGMA journal_mode = WAL")
+        await self._db.execute("PRAGMA synchronous = NORMAL")
         await self._db.executescript(_SCHEMA)
         await self._migrate_schema()
         await self._db.commit()
@@ -143,6 +145,13 @@ class Store:
     def db(self) -> aiosqlite.Connection:
         assert self._db is not None, "Store not connected"
         return self._db
+
+    async def checkpoint(self) -> None:
+        """Run a WAL checkpoint for crash safety."""
+        try:
+            await self.db.execute("PRAGMA wal_checkpoint(PASSIVE)")
+        except Exception:
+            logger.debug("WAL checkpoint failed", exc_info=True)
 
     async def _migrate_schema(self) -> None:
         """Apply small forward-compatible migrations."""
@@ -277,6 +286,10 @@ class Store:
         except Exception:
             await self.db.rollback()
             raise
+
+        self._write_count += 1
+        if self._write_count % 100 == 0:
+            await self.checkpoint()
 
         self._notify(stream_id)
         return write_offset

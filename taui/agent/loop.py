@@ -24,6 +24,7 @@ from taui.agent.context import DEFAULT_MAX_INPUT_TOKENS, compact_messages, estim
 from taui.agent.tokenizer import Tokenizer, create_tokenizer
 from taui.agent.types import Message
 from taui.llm_provider.errors import ContextOverflowError, QuotaExceededError
+from taui.llm_provider.rate_limit import RateLimiter
 from taui.llm_provider.types import ProviderToolCall, ProviderTurnResult
 from taui.store.events import EventType
 from taui.store.stream import StreamClient
@@ -121,6 +122,7 @@ class AgentLoop:
         on_text_delta: Callable[[str], None] | None = None,
         on_reasoning_delta: Callable[[str], None] | None = None,
         tokenizer: Tokenizer | None = None,
+        rate_limiter: RateLimiter | None = None,
     ) -> None:
         self.agent_id = agent_id or uuid4().hex[:12]
         self.stream_id = f"agents/{self.agent_id}"
@@ -148,8 +150,13 @@ class AgentLoop:
         # Compaction notification callback: (removed, before_tokens, after_tokens) -> None
         self._on_compact: Callable[[int, int, int], None] | None = None
 
+        # Result post-processor callback: (tool_name, call_id, content) -> content
+        self._on_result_process: Callable[[str, str, str], str] | None = None
+
         # Tokenizer for token estimation and calibration
         self._tokenizer: Tokenizer = tokenizer or create_tokenizer()
+
+        self._rate_limiter = rate_limiter
 
         self.state = AgentState.IDLE
         self._messages: list[Message] = []
@@ -423,7 +430,11 @@ class AgentLoop:
         self._llm.on_reasoning_delta = self._on_reasoning_delta
         try:
             try:
-                return await self._llm.create_turn(messages, self._model, tools=tools)
+                if self._rate_limiter:
+                    async with self._rate_limiter.acquire():
+                        return await self._llm.create_turn(messages, self._model, tools=tools)
+                else:
+                    return await self._llm.create_turn(messages, self._model, tools=tools)
             except ContextOverflowError:
                 # Auto-recovery: aggressive compaction + one retry
                 before = estimate_total_tokens(self._messages, self._tokenizer)
@@ -442,7 +453,11 @@ class AgentLoop:
                     if self._on_compact:
                         self._on_compact(removed, before, after)
                     messages = self._build_llm_messages()
-                return await self._llm.create_turn(messages, self._model, tools=tools)
+                if self._rate_limiter:
+                    async with self._rate_limiter.acquire():
+                        return await self._llm.create_turn(messages, self._model, tools=tools)
+                else:
+                    return await self._llm.create_turn(messages, self._model, tools=tools)
         finally:
             self._llm.on_text_delta = None
             self._llm.on_reasoning_delta = None
@@ -556,6 +571,9 @@ class AgentLoop:
             case Denied(result=result):
                 content = result.content
                 is_error = result.error
+
+        if self._on_result_process and not is_error:
+            content = self._on_result_process(tc.name, tc.call_id, content)
 
         self._messages.append(
             Message(

@@ -628,12 +628,81 @@ def _message_to_dict(message: Any) -> dict[str, Any]:
     return {"role": role, "content": content}
 
 
+def _export_messages(messages: list, session_id: str, fmt: str) -> str:
+    """Render messages in the given format."""
+    if fmt == "jsonl":
+        import json
+        lines = []
+        for msg in messages:
+            role = msg.role if hasattr(msg, "role") else msg.get("role", "unknown")
+            content = msg.content if hasattr(msg, "content") else msg.get("content", "")
+            if isinstance(content, list):
+                content = "\n".join(
+                    p.get("text", "") for p in content if isinstance(p, dict)
+                )
+            lines.append(json.dumps({"role": role, "content": content or ""}))
+        return "\n".join(lines) + "\n"
+
+    if fmt == "html":
+        lines = [
+            "<!DOCTYPE html>",
+            "<html><head>",
+            f"<title>Session {session_id}</title>",
+            "<style>",
+            "body { font-family: system-ui; max-width: 800px; margin: 2em auto; }",
+            ".user { background: #e3f2fd; padding: 1em; border-radius: 8px; margin: 0.5em 0; }",
+            ".assistant { background: #f5f5f5; padding: 1em; "
+            "border-radius: 8px; margin: 0.5em 0; }",
+            ".system { color: #888; font-size: 0.9em; }",
+            ".tool { background: #fff3e0; padding: 0.5em; border-radius: 4px; font-size: 0.9em; }",
+            "</style>",
+            "</head><body>",
+            f"<h1>Session {session_id}</h1>",
+        ]
+        for msg in messages:
+            role = msg.role if hasattr(msg, "role") else msg.get("role", "unknown")
+            content = msg.content if hasattr(msg, "content") else msg.get("content", "")
+            if isinstance(content, list):
+                content = "\n".join(
+                    p.get("text", "") for p in content if isinstance(p, dict)
+                )
+            if not content:
+                continue
+            escaped = (content or "").replace("&", "&amp;")
+            escaped = escaped.replace("<", "&lt;").replace(">", "&gt;")
+            escaped = escaped.replace("\n", "<br>\n")
+            lines.append(f'<div class="{role}"><strong>{role.title()}</strong><br>{escaped}</div>')
+        lines.append("</body></html>")
+        return "\n".join(lines) + "\n"
+
+    # Default: markdown
+    lines = [f"# Session {session_id}\n"]
+    for msg in messages:
+        role = msg.role if hasattr(msg, "role") else msg.get("role", "unknown")
+        content = msg.content if hasattr(msg, "content") else msg.get("content", "")
+        if isinstance(content, list):
+            content = "\n".join(
+                p.get("text", "") for p in content if isinstance(p, dict)
+            )
+        if not content:
+            continue
+        if role == "user":
+            lines.append(f"## User\n\n{content}\n")
+        elif role == "assistant":
+            lines.append(f"## Assistant\n\n{content}\n")
+        elif role == "tool":
+            lines.append(f"### Tool Result\n\n```\n{content}\n```\n")
+        elif role == "system":
+            lines.append(f"*System: {content[:200]}*\n")
+    return "\n".join(lines) + "\n"
+
+
 @dataclass(slots=True)
 class ExportCommand:
-    """Export session to a markdown file."""
+    """Export session to file (markdown, JSONL, or HTML)."""
 
     name: str = "export"
-    description: str = "Export session to markdown (/export [file])"
+    description: str = "Export session (/export [--jsonl|--html] [file])"
     accepts_args: bool = True
     _get_session: Any = None
 
@@ -643,36 +712,32 @@ class ExportCommand:
         session = self._get_session()
         messages = session._loop._messages
 
-        # Build markdown
-        lines = [f"# Session {session.session_id}\n"]
-        for msg in messages:
-            role = msg.get("role", "unknown")
-            content = msg.get("content", "")
-            if isinstance(content, list):
-                content = "\n".join(
-                    p.get("text", "") for p in content
-                    if isinstance(p, dict)
-                )
-            if not content:
-                continue
-            if role == "user":
-                lines.append(f"## User\n\n{content}\n")
-            elif role == "assistant":
-                lines.append(f"## Assistant\n\n{content}\n")
+        # Parse args
+        fmt = "markdown"
+        out_path = None
+        for arg in (ctx.args or []):
+            if arg == "--jsonl":
+                fmt = "jsonl"
+            elif arg == "--html":
+                fmt = "html"
+            elif arg == "--md" or arg == "--markdown":
+                fmt = "markdown"
+            else:
+                out_path = arg
 
-        md = "\n".join(lines)
+        content = _export_messages(messages, session.session_id, fmt)
+        ext = {"markdown": ".md", "jsonl": ".jsonl", "html": ".html"}[fmt]
 
-        # Determine output path
         from pathlib import Path
-        if ctx.args:
-            out = Path(ctx.args[0])
+        if out_path:
+            out = Path(out_path)
         else:
             exports_dir = session.working_dir / ".taui" / "exports"
             exports_dir.mkdir(parents=True, exist_ok=True)
-            out = exports_dir / f"session-{session.session_id}.md"
+            out = exports_dir / f"session-{session.session_id}{ext}"
 
-        out.write_text(md)
-        return CommandResult.ok(f"Exported to {out}")
+        out.write_text(content)
+        return CommandResult.ok(f"Exported ({fmt}) to {out}")
 
 
 @dataclass(slots=True)

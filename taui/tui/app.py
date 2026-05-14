@@ -1139,11 +1139,11 @@ class TauiApp(App[None]):
             )
             return
 
-        from taui.agent.context import compact_messages, estimate_total_tokens
+        from taui.agent.context import estimate_total_tokens, manual_compact
 
         loop = self._session._loop
         before_tokens = estimate_total_tokens(loop._messages)
-        removed = compact_messages(loop._messages)
+        removed = manual_compact(loop._messages)
         after_tokens = estimate_total_tokens(loop._messages)
 
         if removed:

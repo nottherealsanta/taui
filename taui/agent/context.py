@@ -169,3 +169,18 @@ def compact_messages(
             messages.insert(insert_at, summary)
 
     return removed
+
+
+def manual_compact(
+    messages: list[Message],
+    max_input_tokens: int = DEFAULT_MAX_INPUT_TOKENS,
+    tokenizer: Tokenizer | None = None,
+) -> int:
+    """User-initiated compaction via /compact. More aggressive than auto."""
+    return compact_messages(
+        messages,
+        max_input_tokens=max_input_tokens,
+        soft_ratio=0.60,
+        hard_ratio=0.70,
+        tokenizer=tokenizer,
+    )
