@@ -207,7 +207,12 @@ class Session:
         # Built-in extensions are preloaded; user extensions are file-backed.
         builtin_tool_names = set(registry.names)
         builtin_tools = {name: registry.get(name) for name in registry.names}
-        ext_registry = ExtensionRegistry(config.working_dir, include_builtins=True)
+        extra_dirs = [Path(d) for d in config.extension_dirs]
+        ext_registry = ExtensionRegistry(
+            config.working_dir,
+            include_builtins=True,
+            extra_dirs=extra_dirs,
+        )
         ext_registry.discover()
         hooks = new_hook_registry()
 

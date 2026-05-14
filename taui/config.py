@@ -54,6 +54,7 @@ class Config:
     verbose_tools: bool = True  # show full tool output (toggle with /verbose)
     theme: dict = field(default_factory=dict)  # style overrides
     keybindings: dict = field(default_factory=dict)  # custom keybindings
+    extension_dirs: list[str] = field(default_factory=list)
 
     @classmethod
     def load(cls, **overrides) -> Config:
@@ -77,6 +78,10 @@ class Config:
             kwargs["tool_policy"] = taui_cfg["tool_policy"]
         if "permission" in taui_cfg:
             kwargs["permission"] = taui_cfg["permission"]
+        if "extension_dirs" in taui_cfg:
+            val = taui_cfg["extension_dirs"]
+            if isinstance(val, list):
+                kwargs["extension_dirs"] = val
 
         # CLI/env overrides win
         kwargs.update({k: v for k, v in overrides.items() if v is not None})

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -107,21 +108,57 @@ async def _run_git(
 async def _status(args: dict, cwd: Path) -> ToolResult:
     output, _ = await _run_git(["status", "--porcelain=v1"], cwd)
     if not output.strip():
-        return ToolResult.ok("Working tree clean.", clean=True)
-    return ToolResult.ok(output, clean=False)
+        return ToolResult.ok(
+            "Working tree clean.",
+            clean=True, files=[], counts={},
+        )
+    # Parse porcelain output into file list
+    files = []
+    counts: dict[str, int] = {}
+    for line in output.strip().split("\n"):
+        if len(line) < 4:
+            continue
+        status_code = line[:2].strip()
+        filepath = line[3:]
+        files.append({"status": status_code, "path": filepath})
+        counts[status_code] = counts.get(status_code, 0) + 1
+    return ToolResult.ok(
+        output, clean=False, files=files, counts=counts,
+    )
 
 
 async def _diff(args: dict, cwd: Path) -> ToolResult:
-    cmd = ["diff"]
+    cmd = ["diff", "--stat"]
     if args.get("staged"):
         cmd.append("--staged")
     path = args.get("file")
     if isinstance(path, str):
         cmd += ["--", path]
-    output, _ = await _run_git(cmd, cwd)
-    if not output.strip():
+    stat_output, _ = await _run_git(cmd, cwd)
+
+    # Also get the full diff for content
+    full_cmd = ["diff"]
+    if args.get("staged"):
+        full_cmd.append("--staged")
+    if isinstance(path, str):
+        full_cmd += ["--", path]
+    full_output, _ = await _run_git(full_cmd, cwd)
+
+    if not full_output.strip():
         return ToolResult.ok("No changes.", empty=True)
-    return ToolResult.ok(output)
+
+    # Count hunks
+    hunks = len(re.findall(r"^@@", full_output, re.MULTILINE))
+    files_changed = len(re.findall(
+        r"^diff --git", full_output, re.MULTILINE
+    ))
+
+    return ToolResult.ok(
+        full_output,
+        stat=stat_output.strip(),
+        hunks=hunks,
+        files_changed=files_changed,
+    )
 
 
 async def _log(args: dict, cwd: Path) -> ToolResult:

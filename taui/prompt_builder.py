@@ -160,6 +160,7 @@ class SystemPromptBuilder:
         self._append_sections: list[str] = []
         self._max_total_tokens = max_total_tokens
         self._last_budget_report: list[dict[str, Any]] = []
+        self._last_env_snapshot: dict[str, str] = {}
 
     def with_project_context(self, ctx: ProjectContext) -> SystemPromptBuilder:
         self._project_context = ctx
@@ -228,6 +229,33 @@ class SystemPromptBuilder:
         # Plain-text appended sections
         parts.extend(self._append_sections)
         return parts
+
+    def render_diff(self) -> str | None:
+        """Return only the changed env vars since the last render.
+
+        Returns None if nothing changed, or a compact diff string.
+        Useful for mid-conversation system messages that avoid
+        re-injecting the full ProjectContext.
+        """
+        current = self._resolve_variables()
+        env_keys = ("cwd", "date", "platform", "git_status")
+        snapshot = {k: current.get(k, "") for k in env_keys}
+
+        if not self._last_env_snapshot:
+            self._last_env_snapshot = snapshot
+            return None
+
+        changes: list[str] = []
+        for key in env_keys:
+            old = self._last_env_snapshot.get(key, "")
+            new = snapshot.get(key, "")
+            if old != new:
+                changes.append(f"[{key} changed]\n{new}")
+
+        self._last_env_snapshot = snapshot
+        if not changes:
+            return None
+        return "\n\n".join(changes)
 
     def render(self) -> str:
         result = "\n\n".join(s for s in self.build() if s.strip())

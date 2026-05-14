@@ -14,6 +14,7 @@ import asyncio
 import json
 import logging
 import time
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
@@ -441,6 +442,37 @@ class Store:
         ) as cur:
             rows = await cur.fetchall()
         return [dict(row) for row in rows]
+
+    async def subscribe(
+        self,
+        stream_id: str,
+        *,
+        from_offset: int = 0,
+        poll_interval: float = 0.5,
+    ) -> AsyncIterator[Event]:
+        """Async iterator that yields events as they arrive.
+
+        Starts from from_offset and yields new events as they are
+        appended. Useful for external observers tailing a live stream.
+
+        Usage::
+
+            async for event in store.subscribe("agents/abc"):
+                print(event.type, event.data)
+        """
+        offset = from_offset
+        while self._db is not None:
+            events = await self.read(
+                stream_id, from_offset=offset, limit=100
+            )
+            for event in events:
+                yield event
+                offset = event.offset + 1
+            if not events:
+                # Wait for new data or poll interval
+                await self.wait_for_new(
+                    stream_id, timeout=poll_interval
+                )
 
     async def get_session(self, session_id: str) -> dict[str, Any] | None:
         """Get a single session's metadata."""

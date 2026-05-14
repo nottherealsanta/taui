@@ -414,8 +414,11 @@ class Info2(ScrollableContainer):
     def _rebuild_completions(self) -> None:
         self.remove_children()
         for i, (name, desc, _) in enumerate(self._items):
-            label = f"{self._prefix}{name:<14s} {desc}"
-            item = Info2Item(label)
+            text = Text()
+            text.append(f"{self._prefix}{name}", style="bold")
+            if desc:
+                text.append(f"  {desc}", style="dim")
+            item = Info2Item(text)
             if i == self.selected_index:
                 item.add_class("highlighted")
             self.mount(item)

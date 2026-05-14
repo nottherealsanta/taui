@@ -101,9 +101,16 @@ class ExtensionRegistry:
     GLOBAL_DIR = Path.home() / ".taui" / "extensions"
     PROJECT_DIR = ".taui/extensions"
 
-    def __init__(self, working_dir: Path, *, include_builtins: bool = False) -> None:
+    def __init__(
+        self,
+        working_dir: Path,
+        *,
+        include_builtins: bool = False,
+        extra_dirs: list[Path] | None = None,
+    ) -> None:
         self._working_dir = working_dir
         self._include_builtins = include_builtins
+        self._extra_dirs = extra_dirs or []
         self._extensions: dict[str, Extension] = {}
 
     def discover(self) -> None:
@@ -119,6 +126,10 @@ class ExtensionRegistry:
         # Project extensions (override global)
         project_dir = self._working_dir / self.PROJECT_DIR
         self._scan_dir(project_dir, scope="project")
+
+        # Extra directories from config
+        for extra in self._extra_dirs:
+            self._scan_dir(extra, scope="extra")
 
     def _scan_dir(self, base: Path, scope: str) -> None:
         """Scan a directory for extension .py files."""
