@@ -357,10 +357,6 @@ in real use.
   After §3.1 lands, render the todo list as a collapsible panel in
   the sidebar with click-to-expand task details.
 
-- [ ] **[P2] Voice input.**
-  codeaashu/claude-code has `voice/`. Optional, behind extra. Not
-  core but a fun extension example.
-
 ---
 
 ## 8. Extensions Surface — make user-land win
@@ -394,11 +390,7 @@ hooks, and skills — that's most of the way. Gaps:
   that show `/i` how to scaffold a new agent variant, a new
   context strategy, a new permission rule.
 
-~~- [ ] **[P2] Extension marketplace listing.**~~
-  Not required — the extension surface is sufficient without a marketplace.
-  A `taui-extensions` GitHub topic + a `taui ext list/install/remove`
-  CLI that fetches from a curated index. Defer; first prove the
-  surface is rich enough that anyone wants to publish.
+
 
 ---
 
