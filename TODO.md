@@ -394,7 +394,8 @@ hooks, and skills — that's most of the way. Gaps:
   that show `/i` how to scaffold a new agent variant, a new
   context strategy, a new permission rule.
 
-- [ ] **[P2] Extension marketplace listing.**
+~~- [ ] **[P2] Extension marketplace listing.**~~
+  Not required — the extension surface is sufficient without a marketplace.
   A `taui-extensions` GitHub topic + a `taui ext list/install/remove`
   CLI that fetches from a curated index. Defer; first prove the
   surface is rich enough that anyone wants to publish.
