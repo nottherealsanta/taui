@@ -137,6 +137,14 @@ class Session:
                 if hasattr(tool, "_file_tracker"):
                     tool._file_tracker = file_tracker
 
+        # Wire LSP manager into the lsp tool
+        from taui.lsp import LspManager
+        lsp_manager = LspManager(config.working_dir)
+        if "lsp" in registry:
+            tool = registry.get("lsp")
+            if hasattr(tool, "_lsp_manager"):
+                tool._lsp_manager = lsp_manager
+
         # Tool policy — safe defaults with config overrides
         policy_overrides: dict[str, PolicyDecision] = {}
         if config.auto_approve_reads:
@@ -239,6 +247,7 @@ class Session:
 
         session._system_prompt = system_prompt
         session._extensions_prompt = _EXTENSIONS_SYSTEM_PROMPT
+        session._lsp_manager = lsp_manager
         session._self_edit_prompt = build_self_edit_system_prompt(config.working_dir)
         session._self_edit_executor = build_self_edit_executor(
             registry,
@@ -545,8 +554,8 @@ class Session:
         return True
 
     async def list_sessions(self) -> list[dict]:
-        """List recent sessions."""
-        return await self._store.list_sessions()
+        """List recent sessions with parent relationships."""
+        return await self._store.list_sessions_with_parents()
 
     def reload_extensions(self) -> list[str]:
         """Hot-reload extensions: unload, re-discover, re-load.
@@ -727,6 +736,11 @@ class Session:
     async def close(self) -> None:
         """Clean up resources."""
         await close_builtin_extensions(self)
+        if hasattr(self, "_lsp_manager"):
+            try:
+                await self._lsp_manager.stop_all()
+            except Exception:
+                logger.debug("Error stopping LSP manager", exc_info=True)
         try:
             await self._store.close()
         except Exception:

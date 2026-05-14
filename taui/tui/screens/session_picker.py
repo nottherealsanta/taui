@@ -1,4 +1,4 @@
-"""Session picker modal screen."""
+"""Session picker modal screen with tree view."""
 
 from __future__ import annotations
 
@@ -50,15 +50,19 @@ class SessionPickerScreen(ModalScreen[str | None]):
 
     def __init__(self, sessions: list[dict]) -> None:
         super().__init__()
-        self._sessions = sessions[:20]
+        self._sessions = sessions[:50]
+        self._ordered = _build_tree_order(self._sessions)
 
     def compose(self) -> ComposeResult:
         with Container(id="session-picker-dialog"):
             yield Label("[bold]Resume Session[/bold]", classes="dialog-title")
             yield OptionList(
                 *[
-                    Option(_session_prompt(session), id=str(session["session_id"]))
-                    for session in self._sessions
+                    Option(
+                        _session_prompt(s["session"], s["depth"]),
+                        id=str(s["session"]["session_id"]),
+                    )
+                    for s in self._ordered
                 ],
                 id="session-options",
             )
@@ -71,8 +75,10 @@ class SessionPickerScreen(ModalScreen[str | None]):
     def on_option_selected(self, event: OptionList.OptionSelected) -> None:
         option_id = event.option_id
         if option_id is None:
-            option_id = str(self._sessions[event.option_index]["session_id"])
-        self.dismiss(str(option_id))
+            idx = event.option_index
+            if idx < len(self._ordered):
+                option_id = str(self._ordered[idx]["session"]["session_id"])
+        self.dismiss(str(option_id) if option_id else None)
 
     def on_key(self, event: Key) -> None:
         if event.key == "escape":
@@ -80,18 +86,60 @@ class SessionPickerScreen(ModalScreen[str | None]):
             self.dismiss(None)
 
 
-def _session_prompt(session: dict) -> Text:
+def _build_tree_order(sessions: list[dict]) -> list[dict]:
+    """Order sessions as a tree based on parent_session_id.
+
+    Returns list of {"session": dict, "depth": int} in display order.
+    Root sessions (no parent) come first sorted by last_active desc,
+    children are nested under their parent.
+    """
+    by_id: dict[str, dict] = {}
+    children: dict[str, list[dict]] = {}
+
+    for s in sessions:
+        sid = str(s.get("session_id", ""))
+        by_id[sid] = s
+        parent = s.get("parent_session_id")
+        if parent and str(parent) != sid:
+            children.setdefault(str(parent), []).append(s)
+
+    # Roots: sessions with no parent or parent not in current set
+    roots = [
+        s
+        for s in sessions
+        if not s.get("parent_session_id") or str(s.get("parent_session_id")) not in by_id
+    ]
+
+    result: list[dict] = []
+
+    def _add(session: dict, depth: int) -> None:
+        result.append({"session": session, "depth": depth})
+        sid = str(session.get("session_id", ""))
+        for child in children.get(sid, []):
+            _add(child, depth + 1)
+
+    for root in roots:
+        _add(root, 0)
+
+    return result
+
+
+def _session_prompt(session: dict, depth: int = 0) -> Text:
     sid = str(session.get("session_id", ""))
-    desc = str(
-        session.get("description")
-        or _fallback_name(session)
-    )[:40]
+    desc = str(session.get("description") or _fallback_name(session))[:40]
     mode = str(session.get("mode", "normal"))
     msgs = int(session.get("message_count", 0) or 0)
     ago = _time_ago(float(session.get("last_active", 0) or 0))
     mode_tag = " [ext]" if mode == "extensions" else ""
 
+    # Tree prefix
+    prefix = ""
+    if depth > 0:
+        prefix = "  " * (depth - 1) + "├─ "
+
     text = Text()
+    if prefix:
+        text.append(prefix, style="dim")
     text.append(sid, style="bold cyan")
     text.append(f"  {desc:<40s}  ", style="white")
     text.append(f"{msgs:>3} msgs  {ago}{mode_tag}", style="dim")

@@ -416,6 +416,19 @@ class Store:
             rows = await cur.fetchall()
         return [dict(row) for row in rows]
 
+    async def list_sessions_with_parents(self, *, limit: int = 50) -> list[dict[str, Any]]:
+        """List recent sessions with parent session info resolved through streams."""
+        async with self.db.execute(
+            "SELECT s.*, ps.session_id AS parent_session_id "
+            "FROM sessions s "
+            "LEFT JOIN streams st ON s.stream_id = st.stream_id "
+            "LEFT JOIN sessions ps ON st.parent_id = ps.stream_id "
+            "ORDER BY s.last_active DESC LIMIT ?",
+            (limit,),
+        ) as cur:
+            rows = await cur.fetchall()
+        return [dict(row) for row in rows]
+
     async def get_session(self, session_id: str) -> dict[str, Any] | None:
         """Get a single session's metadata."""
         async with self.db.execute(

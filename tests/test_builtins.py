@@ -263,18 +263,20 @@ class TestRegisterBuiltins:
         assert "mcp" in reg
         assert "session_name" in reg
         assert "peek" in reg
-        assert len(reg) == 17
+        assert "lsp" in reg
+        assert len(reg) == 18
 
     def test_schemas_exported(self):
         reg = ToolRegistry()
         register_builtins(reg)
         schemas = reg.schemas()
-        assert len(schemas) == 17
+        assert len(schemas) == 18
         names = {s["function"]["name"] for s in schemas}
         assert names == {
             "read", "write", "edit", "glob", "grep", "bash", "git",
             "question", "memory", "skills", "sub_agent", "mcp",
             "session_name", "peek", "task", "webfetch", "apply_patch",
+            "lsp",
         }
 
 

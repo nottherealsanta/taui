@@ -467,3 +467,37 @@ class TestEventType:
         )
         with pytest.raises(AttributeError):
             event.offset = 1  # type: ignore[misc]
+
+
+class TestListSessionsWithParents:
+    async def test_returns_parent_session_id(self, tmp_path):
+        store = Store(tmp_path)
+        await store.connect()
+        try:
+            # Create parent stream and session
+            await store.create_stream("stream-parent")
+            await store.create_session("parent-sess", stream_id="stream-parent")
+
+            # Create child stream with parent_id
+            await store.create_stream("stream-child", parent_id="stream-parent")
+            await store.create_session("child-sess", stream_id="stream-child")
+
+            sessions = await store.list_sessions_with_parents()
+            by_id = {s["session_id"]: s for s in sessions}
+
+            assert by_id["child-sess"]["parent_session_id"] == "parent-sess"
+            assert by_id["parent-sess"].get("parent_session_id") is None
+        finally:
+            await store.close()
+
+    async def test_orphan_has_none_parent(self, tmp_path):
+        store = Store(tmp_path)
+        await store.connect()
+        try:
+            await store.create_stream("orphan-stream")
+            await store.create_session("orphan-sess", stream_id="orphan-stream")
+
+            sessions = await store.list_sessions_with_parents()
+            assert sessions[0].get("parent_session_id") is None
+        finally:
+            await store.close()

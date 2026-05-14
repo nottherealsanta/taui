@@ -10,6 +10,7 @@ from taui.tools.builtins.bash import BashTool
 from taui.tools.builtins.edit import EditTool
 from taui.tools.builtins.files import GlobTool, GrepTool, ReadTool, WriteTool
 from taui.tools.builtins.git import GitTool
+from taui.tools.builtins.lsp import LspTool
 from taui.tools.builtins.mcp import McpTool
 from taui.tools.builtins.memory import MemoryTool
 from taui.tools.builtins.peek import PeekTool
@@ -42,12 +43,14 @@ def register_builtins(registry: ToolRegistry) -> None:
         TaskTool(),
         WebfetchTool(),
         ApplyPatchTool(),
+        LspTool(),
     ]:
         registry.register(tool)
 
 
 __all__ = [
     "ApplyPatchTool",
+    "LspTool",
     "BashTool",
     "EditTool",
     "GitTool",
