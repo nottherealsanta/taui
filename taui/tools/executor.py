@@ -38,7 +38,7 @@ class PolicyDecision(StrEnum):
 class ToolPolicy:
     """Resolves the policy decision for a given tool.
 
-    Policies are layered: per-tool overrides > defaults.
+    Policies are layered: ruleset > per-tool overrides > defaults.
     """
 
     # Sensible defaults — destructive / side-effecting tools require confirmation
@@ -51,9 +51,20 @@ class ToolPolicy:
     def __init__(self, overrides: dict[str, PolicyDecision] | None = None) -> None:
         self._overrides = dict(overrides or {})
         self._patterns: list[tuple[str, str]] = []
+        self._ruleset: PermissionRuleset | None = None
 
-    def decide(self, tool_name: str) -> PolicyDecision:
-        """Resolve the policy for a tool name."""
+    def decide(self, tool_name: str, arguments: dict | None = None) -> PolicyDecision:
+        """Resolve the policy for a tool name.
+
+        If a ruleset is set, it is consulted first using the tool arguments to
+        extract the subject for pattern matching.  Falls back to per-tool
+        overrides and built-in defaults when no ruleset rule matches.
+        """
+        if self._ruleset is not None:
+            subject = self._ruleset.extract_subject(tool_name, arguments or {})
+            decision = self._ruleset.decide(tool_name, subject)
+            if decision is not None:
+                return decision
         if tool_name in self._overrides:
             return self._overrides[tool_name]
         if tool_name in self._DEFAULTS:
@@ -68,12 +79,24 @@ class ToolPolicy:
         """Replace per-tool policy overrides while preserving session patterns."""
         self._overrides = dict(overrides)
 
+    def set_ruleset(self, ruleset: PermissionRuleset | None) -> None:
+        """Attach a PermissionRuleset for pattern-based decisions."""
+        self._ruleset = ruleset
+
     def add_pattern(self, tool_name: str, pattern: str) -> None:
         """Add a glob pattern for auto-approving similar tool calls."""
         self._patterns.append((tool_name, pattern))
 
     def should_auto_approve(self, tool_name: str, arguments: dict) -> bool:
-        """Return True if arguments match a stored auto-approve pattern."""
+        """Return True if arguments match a stored auto-approve pattern or ruleset AUTO rule."""
+        # Check ruleset first
+        if self._ruleset is not None:
+            subject = self._ruleset.extract_subject(tool_name, arguments)
+            decision = self._ruleset.decide(tool_name, subject)
+            if decision == PolicyDecision.AUTO:
+                return True
+            if decision is not None:
+                return False
         for pat_tool, pat_glob in self._patterns:
             if pat_tool != tool_name:
                 continue
@@ -86,6 +109,14 @@ class ToolPolicy:
             if fnmatch.fnmatch(subject, pat_glob):
                 return True
         return False
+
+
+# Late-binding import to avoid a circular dependency: permissions imports from
+# executor, so we annotate with a string and import only for type checks.
+from typing import TYPE_CHECKING  # noqa: E402
+
+if TYPE_CHECKING:
+    from taui.permissions import PermissionRuleset
 
 
 # ── Execution outcomes ────────────────────────────────────────────────────────
@@ -184,7 +215,7 @@ class ToolExecutor:
             )
 
         # Check policy
-        decision = self._policy.decide(tool_name)
+        decision = self._policy.decide(tool_name, arguments)
         if decision == PolicyDecision.DENY:
             return Denied(
                 result=ToolResult.fail(f"Tool {tool_name!r} is denied by policy.")

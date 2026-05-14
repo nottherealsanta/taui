@@ -152,6 +152,15 @@ class Session:
                     tool_name,
                 )
         policy = ToolPolicy(overrides=policy_overrides)
+
+        # Pattern-based permission ruleset (project layer from config)
+        if config.permission:
+            from taui.permissions import PermissionRuleset
+
+            ruleset = PermissionRuleset()
+            ruleset.add_rules(config.permission, layer="project")
+            policy.set_ruleset(ruleset)
+
         executor = ToolExecutor(registry=registry, policy=policy)
 
         # Truncation store — shared between the executor and the peek tool

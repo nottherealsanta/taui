@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 
+from taui.agent.tokenizer import Tokenizer
 from taui.agent.types import Message
 
 # ── Defaults ───────────────────────────────────────────────────────────────────
@@ -26,8 +27,8 @@ COMPACTION_HARD_RATIO = 0.90
 # ── Token estimation ──────────────────────────────────────────────────────────
 
 
-def estimate_message_tokens(msg: Message) -> int:
-    """Rough token estimate: ~4 chars per token."""
+def estimate_message_tokens(msg: Message, tokenizer: Tokenizer | None = None) -> int:
+    """Rough token estimate: ~4 chars per token, or via tokenizer if provided."""
     total = len(msg.role)
     if msg.content:
         total += len(msg.content)
@@ -39,11 +40,14 @@ def estimate_message_tokens(msg: Message) -> int:
         total += len(msg.tool_call_id)
     if msg.name:
         total += len(msg.name)
+    if tokenizer is not None:
+        # Build a representative string and let the tokenizer estimate
+        return tokenizer.estimate(" " * total)
     return max(1, total // 4 + 1)
 
 
-def estimate_total_tokens(messages: list[Message]) -> int:
-    return sum(estimate_message_tokens(m) for m in messages)
+def estimate_total_tokens(messages: list[Message], tokenizer: Tokenizer | None = None) -> int:
+    return sum(estimate_message_tokens(m, tokenizer) for m in messages)
 
 
 # ── Preservation logic ────────────────────────────────────────────────────────
@@ -98,6 +102,7 @@ def compact_messages(
     max_input_tokens: int = DEFAULT_MAX_INPUT_TOKENS,
     soft_ratio: float = COMPACTION_SOFT_RATIO,
     hard_ratio: float = COMPACTION_HARD_RATIO,
+    tokenizer: Tokenizer | None = None,
 ) -> int:
     """Compact a message list in-place. Returns number of messages removed.
 
@@ -115,7 +120,7 @@ def compact_messages(
 
     # Phase 1: soft compaction
     preserve = _preserved_indexes(messages)
-    while estimate_total_tokens(messages) > soft_limit:
+    while estimate_total_tokens(messages, tokenizer) > soft_limit:
         idx = _oldest_droppable(messages, preserve)
         if idx is None:
             break
@@ -124,9 +129,9 @@ def compact_messages(
         removed += 1
 
     # Phase 2: hard compaction
-    if estimate_total_tokens(messages) > hard_limit:
+    if estimate_total_tokens(messages, tokenizer) > hard_limit:
         preserve = _preserved_indexes(messages)
-        while estimate_total_tokens(messages) > hard_limit:
+        while estimate_total_tokens(messages, tokenizer) > hard_limit:
             idx = _oldest_droppable(messages, preserve)
             if idx is None:
                 break

@@ -21,6 +21,7 @@ from typing import Any
 from uuid import uuid4
 
 from taui.agent.context import DEFAULT_MAX_INPUT_TOKENS, compact_messages, estimate_total_tokens
+from taui.agent.tokenizer import Tokenizer, create_tokenizer
 from taui.agent.types import Message
 from taui.llm_provider.errors import ContextOverflowError, QuotaExceededError
 from taui.llm_provider.types import ProviderToolCall, ProviderTurnResult
@@ -59,6 +60,34 @@ class RunResult:
     state: AgentState = AgentState.DONE
     turn_results: list[TurnResult] = field(default_factory=list)
 
+    @property
+    def total_usage(self) -> dict[str, int]:
+        """Aggregate usage across all turns."""
+        totals: dict[str, int] = {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+        }
+        for tr in self.turn_results:
+            if tr.usage:
+                for key in totals:
+                    totals[key] += tr.usage.get(key, 0)
+        return totals
+
+    @property
+    def cost_usd(self) -> float | None:
+        """Total estimated cost in USD across all turns. None if no usage data."""
+        usage = self.total_usage
+        if usage["input_tokens"] == 0 and usage["output_tokens"] == 0:
+            return None
+        total = 0.0
+        for tr in self.turn_results:
+            if tr.usage and tr.usage.get("cost_usd") is not None:
+                total += tr.usage["cost_usd"]
+        return total if total > 0 else None
+
 
 class AgentLoop:
     """The think → tool → observe agent loop.
@@ -91,6 +120,7 @@ class AgentLoop:
         on_text: Callable[[str], Awaitable[None]] | None = None,
         on_text_delta: Callable[[str], None] | None = None,
         on_reasoning_delta: Callable[[str], None] | None = None,
+        tokenizer: Tokenizer | None = None,
     ) -> None:
         self.agent_id = agent_id or uuid4().hex[:12]
         self.stream_id = f"agents/{self.agent_id}"
@@ -117,6 +147,9 @@ class AgentLoop:
 
         # Compaction notification callback: (removed, before_tokens, after_tokens) -> None
         self._on_compact: Callable[[int, int, int], None] | None = None
+
+        # Tokenizer for token estimation and calibration
+        self._tokenizer: Tokenizer = tokenizer or create_tokenizer()
 
         self.state = AgentState.IDLE
         self._messages: list[Message] = []
@@ -271,7 +304,20 @@ class AgentLoop:
         usage_data = None
         if llm_result.usage:
             usage_data = llm_result.usage.to_dict()
+            if usage_data.get("cost_usd") is None:
+                from taui.llm_provider.types import estimate_cost_usd
+
+                usage_data["cost_usd"] = estimate_cost_usd(
+                    self._model,
+                    usage_data.get("input_tokens", 0),
+                    usage_data.get("output_tokens", 0),
+                )
             await self._emit(EventType.USAGE, usage_data)
+            # Calibrate tokenizer based on actual input tokens from provider
+            actual_input = llm_result.usage.input_tokens
+            if actual_input and actual_input > 0:
+                estimated = estimate_total_tokens(self._messages, self._tokenizer)
+                self._tokenizer.calibrate(estimated, actual_input)
 
         # If no tool calls, we're done with this turn
         if not llm_result.tool_calls:
@@ -334,19 +380,39 @@ class AgentLoop:
         self._llm.on_text_delta = self._on_text_delta
         self._llm.on_reasoning_delta = self._on_reasoning_delta
         try:
-            return await self._llm.create_turn(messages, self._model, tools=tools)
+            try:
+                return await self._llm.create_turn(messages, self._model, tools=tools)
+            except ContextOverflowError:
+                # Auto-recovery: aggressive compaction + one retry
+                before = estimate_total_tokens(self._messages, self._tokenizer)
+                removed = compact_messages(
+                    self._messages,
+                    soft_ratio=0.50,
+                    hard_ratio=0.60,
+                    tokenizer=self._tokenizer,
+                )
+                if removed:
+                    after = estimate_total_tokens(self._messages, self._tokenizer)
+                    logger.info(
+                        "Auto-recovery compaction agent_id=%s removed=%d tokens=%d->%d",
+                        self.agent_id, removed, before, after,
+                    )
+                    if self._on_compact:
+                        self._on_compact(removed, before, after)
+                    messages = self._build_llm_messages()
+                return await self._llm.create_turn(messages, self._model, tools=tools)
         finally:
             self._llm.on_text_delta = None
             self._llm.on_reasoning_delta = None
 
     def _maybe_compact(self) -> None:
         """Compact messages if approaching token budget."""
-        before = estimate_total_tokens(self._messages)
+        before = estimate_total_tokens(self._messages, self._tokenizer)
         soft = int(DEFAULT_MAX_INPUT_TOKENS * 0.80)
         if before > soft:
-            removed = compact_messages(self._messages)
+            removed = compact_messages(self._messages, tokenizer=self._tokenizer)
             if removed:
-                after = estimate_total_tokens(self._messages)
+                after = estimate_total_tokens(self._messages, self._tokenizer)
                 logger.info(
                     "Compacted %d messages agent_id=%s tokens=%d->%d",
                     removed, self.agent_id, before, after,

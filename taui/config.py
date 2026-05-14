@@ -48,6 +48,7 @@ class Config:
     # Tool policy
     auto_approve_reads: bool = True
     tool_policy: dict[str, str] = field(default_factory=dict)  # per-tool overrides
+    permission: dict[str, dict[str, str]] = field(default_factory=dict)  # pattern-based rules
 
     # CLI display
     verbose_tools: bool = True  # show full tool output (toggle with /verbose)
@@ -74,6 +75,8 @@ class Config:
             kwargs["keybindings"] = taui_cfg["keybindings"]
         if "tool_policy" in taui_cfg:
             kwargs["tool_policy"] = taui_cfg["tool_policy"]
+        if "permission" in taui_cfg:
+            kwargs["permission"] = taui_cfg["permission"]
 
         # CLI/env overrides win
         kwargs.update({k: v for k, v in overrides.items() if v is not None})
