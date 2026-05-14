@@ -6,20 +6,21 @@ This folder contains the LLM provider base class, provider implementations, and 
 
 - `base.py` — `BaseLLMProvider` abstract base class with retry, streaming, error handling
 - `types.py` — Shared types: `StreamEvent`, `ProviderTurnResult`, `ProviderCapabilities`, etc.
-- `provider_probe.py` — Interactive script to test provider features (streaming, tools, reasoning)
+
+The interactive probe script lives at `scripts/provider_probe.py` (at the repo
+root, outside the installed package).
 
 ## Usage
 
 ```bash
 # Probe a provider's capabilities
-python -m taui.llm_provider.provider_probe copilot
-python -m taui.llm_provider.provider_probe codex
-python -m taui.llm_provider.provider_probe openai
+uv run python scripts/provider_probe.py copilot
+uv run python scripts/provider_probe.py codex
 
 # Run with specific tests
-python -m taui.llm_provider.provider_probe copilot --test streaming
-python -m taui.llm_provider.provider_probe copilot --test tools
-python -m taui.llm_provider.provider_probe copilot --test reasoning
+uv run python scripts/provider_probe.py copilot --test streaming
+uv run python scripts/provider_probe.py copilot --test tools
+uv run python scripts/provider_probe.py copilot --test reasoning
 ```
 
 ## Documentation

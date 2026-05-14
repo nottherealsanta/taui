@@ -1,12 +1,14 @@
 """
 taui.lsp — Language Server Protocol client manager.
 
+**Experimental — scaffolding for future LSP-aware tools.** No built-in
+tool currently consumes this module; ``Session`` instantiates an
+``LspManager`` only so it can be shut down cleanly. Subject to change
+or removal.
+
 Manages per-language LSP server subprocesses and provides
 high-level operations: go-to-definition, references, hover,
 document/workspace symbols, diagnostics, and call hierarchy.
-
-Each language gets its own subprocess. Servers are started on
-first use and shared across subsequent requests for that language.
 """
 
 from taui.lsp.client import LspClient, LspError

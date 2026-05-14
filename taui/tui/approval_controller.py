@@ -8,7 +8,7 @@ import os
 from typing import TYPE_CHECKING
 
 from rich.markup import escape
-from textual.containers import Vertical, VerticalScroll
+from textual.containers import VerticalScroll
 from textual.widgets import Static
 
 from taui.extensions.auto_approve import write_auto_approve_extension
@@ -69,20 +69,18 @@ class ApprovalController:
         self, specs: list[tuple[str, list[str] | None]]
     ) -> list[str | None]:
         q_specs = [QuestionSpec(q, opts) for q, opts in specs]
-        chat_area = self._app.query_one("#chat-area", Vertical)
         chat_input = self._app.query_one("#chat-input", ChatInput)
+        info2 = self._app.query_one("#info2", Info2)
         chat_input.disabled = True
-        panel = QuestionsPanel(q_specs)
+        panel = info2.show_questions(q_specs)
         self._active_questions_panel = panel
         try:
-            await chat_area.mount(panel, before=chat_input)
             self._app._smart_scroll()
             return await panel.wait_for_answers()
         finally:
-            if panel.is_mounted:
-                await panel.remove()
             if self._active_questions_panel is panel:
                 self._active_questions_panel = None
+            info2.hide()
             chat_input.disabled = False
             chat_input.focus()
 

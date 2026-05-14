@@ -28,6 +28,15 @@ class ToolController:
     def reset_section(self) -> None:
         self._current_tool_section = None
 
+    def reset(self) -> None:
+        """Drop all in-flight tool state. Used when a session is reset and
+        the widgets pointed at by `_active_tool_widgets` are about to be
+        unmounted by a chat-log clear."""
+        self._tool_counter = 0
+        self._pending_tool_keys.clear()
+        self._active_tool_widgets.clear()
+        self._current_tool_section = None
+
     async def on_tool_call(
         self, call_id: str, name: str, arguments: dict
     ) -> None:

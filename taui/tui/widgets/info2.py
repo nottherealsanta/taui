@@ -22,6 +22,7 @@ from textual.reactive import reactive
 from textual.widgets import Static, Tree
 
 from taui.agent.context import estimate_message_tokens, estimate_total_tokens
+from taui.tui.widgets.questions_panel import QuestionsPanel, QuestionSpec
 
 type Completion = tuple[str, str, bool]  # (name, description, accepts_args)
 
@@ -42,6 +43,7 @@ class Info2Mode(Enum):
     AGENTS = auto()
     CONTEXT = auto()
     APPROVAL = auto()
+    QUESTIONS = auto()
 
 
 class Info2Item(Static):
@@ -80,6 +82,10 @@ class Info2(ScrollableContainer):
     }
     Info2.active {
         display: block;
+    }
+    Info2.questions {
+        max-height: 24;
+        padding: 1 0 0 0;
     }
     Info2 Tree {
         height: auto;
@@ -147,6 +153,7 @@ class Info2(ScrollableContainer):
         self._approval_args: str = ""
         self._approval_pattern: str = ""
         self._approval_future: asyncio.Future | None = None
+        self._questions_panel: QuestionsPanel | None = None
 
     def compose(self) -> ComposeResult:
         return iter(())
@@ -230,6 +237,17 @@ class Info2(ScrollableContainer):
         self.add_class("active")
         self.call_after_refresh(self.focus)
 
+    def show_questions(self, specs: list[QuestionSpec]) -> QuestionsPanel:
+        """Mount a question panel inside info2 and return it."""
+        self._mode = Info2Mode.QUESTIONS
+        self.remove_children()
+        panel = QuestionsPanel(specs)
+        self._questions_panel = panel
+        self.mount(panel)
+        self.add_class("active")
+        self.add_class("questions")
+        return panel
+
     async def wait_for_approval(self) -> ApprovalResult:
         """Await the user's approval decision."""
         if self._approval_future is None:
@@ -245,8 +263,10 @@ class Info2(ScrollableContainer):
         self._model_items = []
         self._agent_items = []
         self._context_tree = None
+        self._questions_panel = None
         self.remove_children()
         self.remove_class("active")
+        self.remove_class("questions")
 
     # ── Navigation ─────────────────────────────────────────────────────
 
@@ -351,6 +371,8 @@ class Info2(ScrollableContainer):
                 return 0
             case Info2Mode.APPROVAL:
                 return 5
+            case Info2Mode.QUESTIONS:
+                return 0
         return 0
 
     def _rebuild_completions(self) -> None:

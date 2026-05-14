@@ -114,37 +114,39 @@ class QuestionsPanel(Widget):
     QuestionsPanel {
         layout: vertical;
         height: auto;
-        background: $surface;
+        background: transparent;
         padding: 0;
-        margin: 0 2 1 2;
+        margin: 0;
     }
     QuestionsPanel .qp-question-row {
         height: 1;
-        padding: 0 0;
+        padding: 0;
+        margin: 0 0 1 0;
     }
     QuestionsPanel .qp-indicator {
         width: auto;
         color: $text-muted;
-        padding: 0 1 0 0;
+        padding: 0 2 0 0;
     }
     QuestionsPanel .qp-question {
         width: 1fr;
-        padding: 0 1;
+        padding: 0 2;
         color: $text;
+        text-style: bold;
     }
     QuestionsPanel .qp-pane {
         height: auto;
     }
     QuestionsPanel .qp-options-box {
         height: auto;
-        margin: 1 0 0 0;
-        background: $surface;
+        margin: 0;
+        background: transparent;
     }
     QuestionsPanel OptionList {
         height: auto;
         margin: 0;
-        padding: 0;
-        background: $surface;
+        padding: 0 1;
+        background: transparent;
         border: none;
         scrollbar-size-vertical: 1;
         scrollbar-size-horizontal: 0;
@@ -153,16 +155,17 @@ class QuestionsPanel(Widget):
         border: none;
     }
     QuestionsPanel OptionList > .option-list--option {
-        padding: 0 1;
+        padding: 0 2;
+        color: $text-muted;
     }
     QuestionsPanel OptionList > .option-list--option-highlighted {
         color: $text;
-        background: transparent;
+        background: $surface-lighten-1;
         text-style: bold;
     }
     QuestionsPanel OptionList:focus > .option-list--option-highlighted {
         color: $text;
-        background: transparent;
+        background: $surface-lighten-1;
         text-style: bold;
     }
     QuestionsPanel .qp-hidden {
@@ -293,7 +296,7 @@ class QuestionsPanel(Widget):
     ) -> Text:
         prefix = Text("┃ ", style=HIGHLIGHT_MARKER_STYLE) if highlighted else Text("  ")
         body = Text(f"{option_number}. {label}")
-        return prefix + body
+        return Text("\n") + prefix + body + Text("\n")
 
     def _custom_prompt(
         self,
@@ -304,13 +307,14 @@ class QuestionsPanel(Widget):
     ) -> Text:
         value = self._custom_answers[question_index]
         prefix = Text("┃ ", style=HIGHLIGHT_MARKER_STYLE) if highlighted else Text("  ")
-        prompt = prefix + Text(f"{option_count + 1}. ")
+        prompt = Text("\n") + prefix + Text(f"{option_count + 1}. ")
         if value:
             prompt.append(value)
         if active:
             prompt.append("▌")
         elif not value:
             prompt.append("custom", style="dim")
+        prompt.append("\n")
         return prompt
 
     def _question_index_for_option_list(self, option_list: OptionList) -> int | None:

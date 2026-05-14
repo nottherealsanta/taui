@@ -38,20 +38,6 @@ def _agent_color(agent_id: str) -> str:
     return _AGENT_FALLBACK_COLORS[index]
 
 
-class ScopeBadge(Static):
-    """Active self-edit scope (project/global). Hidden when empty."""
-
-    def set_scope(self, scope: str) -> None:
-        if scope:
-            self.update(
-                Text.assemble(("scope: ", "italic"), (scope, "bold"))
-            )
-            self.display = True
-        else:
-            self.update("")
-            self.display = False
-
-
 class AgentBadge(Static):
     """Clickable active agent id."""
 
@@ -128,10 +114,6 @@ class InfoBar(Horizontal):
     InfoBar #info-extension {
         margin-right: 2;
     }
-    InfoBar #info-scope {
-        color: #f0c808;
-        margin-right: 2;
-    }
     InfoBar #info-agent {
         margin-right: 2;
     }
@@ -164,11 +146,9 @@ class InfoBar(Horizontal):
         self._cost = 0.0
         self._extensions_mode = False
         self._agent_id = ""
-        self._self_edit_scope = ""
 
     def compose(self) -> ComposeResult:
         yield Static("", id="info-extension")
-        yield ScopeBadge("", id="info-scope")
         yield AgentBadge(id="info-agent")
         yield ModelBadge("", id="info-model")
         yield ProviderBadge("", id="info-provider")
@@ -185,7 +165,6 @@ class InfoBar(Horizontal):
         cost: float = 0.0,
         extensions_mode: bool = False,
         agent_id: str = "",
-        self_edit_scope: str = "",
     ) -> None:
         self._provider = provider
         self._model = model
@@ -194,7 +173,6 @@ class InfoBar(Horizontal):
         self._cost = cost
         self._extensions_mode = extensions_mode
         self._agent_id = agent_id
-        self._self_edit_scope = self_edit_scope
         self._sync_children()
 
     def _sync_children(self) -> None:
@@ -209,7 +187,6 @@ class InfoBar(Horizontal):
             extension.update("")
             extension.display = False
 
-        self.query_one("#info-scope", ScopeBadge).set_scope(self._self_edit_scope)
         self.query_one("#info-agent", AgentBadge).set_agent(self._agent_id)
         self.query_one("#info-model", Static).update(
             self._model or Text("initializing…", style="dim italic")

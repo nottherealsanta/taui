@@ -604,12 +604,16 @@ class Session:
         if not self.self_edit_mode:
             return self._self_edit_scope
 
-        from taui.self_edit.factory import build_self_edit_executor
+        from taui.self_edit.factory import (
+            build_self_edit_executor,
+            build_self_edit_system_prompt,
+        )
         from taui.self_edit.store import SelfEditStore
 
         new_scope = "project" if self._self_edit_scope == "global" else "global"
         SelfEditStore(self.config.working_dir).save_default_scope(new_scope)
         self._self_edit_scope = new_scope
+        self._self_edit_prompt = build_self_edit_system_prompt(self.config.working_dir)
 
         self._self_edit_executor = build_self_edit_executor(
             self._registry,
@@ -617,6 +621,7 @@ class Session:
             self.config.working_dir,
         )
         self._loop._executor = self._self_edit_executor
+        self._loop.update_system_prompt(self._self_edit_prompt)
         return new_scope
 
     def _apply_write_guard(self) -> None:

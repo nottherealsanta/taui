@@ -8,13 +8,13 @@ Tests each provider for:
 4. Error handling (context overflow, rate limits)
 5. Credential refresh
 
-Usage:
-    python -m taui.llm_provider.provider_probe copilot
-    python -m taui.llm_provider.provider_probe codex
-    python -m taui.llm_provider.provider_probe copilot --test streaming
-    python -m taui.llm_provider.provider_probe copilot --test tools
-    python -m taui.llm_provider.provider_probe copilot --test reasoning
-    python -m taui.llm_provider.provider_probe copilot --test all
+Usage (from the repo root):
+    uv run python scripts/provider_probe.py copilot
+    uv run python scripts/provider_probe.py codex
+    uv run python scripts/provider_probe.py copilot --test streaming
+    uv run python scripts/provider_probe.py copilot --test tools
+    uv run python scripts/provider_probe.py copilot --test reasoning
+    uv run python scripts/provider_probe.py copilot --test all
 """
 
 from __future__ import annotations
@@ -480,15 +480,15 @@ def _create_provider(provider_name: str) -> tuple[Any, str]:
     Create a provider instance and return (provider, default_model).
     """
     if provider_name == "copilot":
-        from .auth.copilot import get_copilot_credentials
-        from .providers.copilot import CopilotProvider
+        from taui.llm_provider.auth.copilot import get_copilot_credentials
+        from taui.llm_provider.providers.copilot import CopilotProvider
 
         creds = get_copilot_credentials()
         return CopilotProvider(creds), "claude-haiku-4.5"
 
     elif provider_name == "codex":
-        from .auth.codex import get_codex_credentials
-        from .providers.codex import CodexProvider
+        from taui.llm_provider.auth.codex import get_codex_credentials
+        from taui.llm_provider.providers.codex import CodexProvider
 
         creds = get_codex_credentials()
         return CodexProvider(creds), "gpt-5.3-codex"
@@ -505,10 +505,10 @@ def main() -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python -m taui.llm_provider.provider_probe copilot
-  python -m taui.llm_provider.provider_probe codex --test tools
-  python -m taui.llm_provider.provider_probe copilot --test streaming --test reasoning
-  python -m taui.llm_provider.provider_probe copilot --model claude-opus-4
+  uv run python scripts/provider_probe.py copilot
+  uv run python scripts/provider_probe.py codex --test tools
+  uv run python scripts/provider_probe.py copilot --test streaming --test reasoning
+  uv run python scripts/provider_probe.py copilot --model claude-opus-4
         """,
     )
     parser.add_argument("provider", help="Provider to test (copilot, codex)")

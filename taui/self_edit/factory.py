@@ -167,6 +167,18 @@ def collect_self_edit_inventory(working_dir: Path) -> SelfEditInventory:
 
 
 def _format_inventory_markdown(inv: SelfEditInventory) -> str:
+    active_cwd = self_edit_working_dir(inv.working_dir, inv.active_scope)
+    inactive_scope = "project" if inv.active_scope == "global" else "global"
+    active_relative_paths = ", ".join(
+        f"`{path}`"
+        for path in (
+            "commands/",
+            "extensions/",
+            "skills/",
+            "self_edit/agents.json",
+            "mcp.toml",
+        )
+    )
     lines = [
         "# Scope & inventory",
         "",
@@ -183,7 +195,11 @@ def _format_inventory_markdown(inv: SelfEditInventory) -> str:
         "scope unless the user specifies otherwise.",
         "",
         f"- Active scope for new agents: **{inv.active_scope}**",
-        f"- Working directory: `{inv.working_dir}`",
+        f"- Project working directory: `{inv.working_dir}`",
+        f"- Tool working directory: `{active_cwd}`",
+        f"- Relative paths resolve from the **{inv.active_scope}** tool working directory.",
+        f"- For active-scope files, use relative paths like {active_relative_paths}.",
+        f"- To inspect or edit the inactive **{inactive_scope}** scope, use an absolute path.",
         "",
         "| Category | Built-in | Global | Project |",
         "| --- | --- | --- | --- |",

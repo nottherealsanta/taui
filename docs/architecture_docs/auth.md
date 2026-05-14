@@ -403,7 +403,7 @@ def get_credentials(provider: str):
         case _: raise ValueError(f"Unknown provider: {provider!r}")
 ```
 
-Factory function that dispatches to the right auth module. Used by `provider_probe.py`.
+Factory function that dispatches to the right auth module. Used by `scripts/provider_probe.py`.
 
 ---
 

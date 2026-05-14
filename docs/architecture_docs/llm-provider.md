@@ -32,7 +32,6 @@ taui/llm_provider/
 ├── types.py                 # shared types: StreamEvent, ProviderTurnResult, ProviderCapabilities, etc
 ├── base.py                  # BaseLLMProvider ABC: retry, SSE parsing, error classification
 ├── config.py                # TOML config persistence (~/.config/taui/config.toml)
-├── provider_probe.py        # interactive test runner (python -m taui.llm_provider.provider_probe)
 ├── README.md                # usage docs
 ├── auth/
 │   ├── __init__.py          # re-exports: get_credentials(), CopilotCredentials, CodexCredentials
@@ -359,7 +358,9 @@ Does NOT extract `response_id` from `response.completed`. **Known gap.**
 
 ## provider_probe.py — Test Runner
 
-Run: `python -m taui.llm_provider.provider_probe copilot`
+Lives at `scripts/provider_probe.py` (outside the installed package).
+
+Run: `uv run python scripts/provider_probe.py copilot`
 
 ### Tests
 
@@ -382,7 +383,7 @@ codex   → "gpt-5.3-codex"
 ### Command Line
 
 ```
-python -m taui.llm_provider.provider_probe <provider> [--model MODEL] [--test TEST] [-v]
+uv run python scripts/provider_probe.py <provider> [--model MODEL] [--test TEST] [-v]
 ```
 
 ---

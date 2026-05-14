@@ -16,7 +16,6 @@ Taui is a customizable agentic coding interface for developers.
 - Core idea: users control the agent, tools, prompts, extensions, skills, and storage
 
 The active product lives in `taui/`, `tests/`, `docs/`, and top-level package files.
-Treat `archive/` as historical reference unless the user explicitly asks to modify it.
 
 ## Quick Start
 
@@ -104,8 +103,8 @@ Important boundaries:
 | `taui/skills/` | Skill package discovery and lazy loading |
 | `taui/llm_provider/` | Provider abstraction, auth, model discovery, Copilot/Codex implementations |
 | `taui/self_edit/` | `/i` self-edit mode, panels, controller, scaffolding, playbooks |
-| `taui/lsp/` | LSP client lifecycle and types |
-| `taui/symbols/` | Lightweight source symbol extraction |
+| `taui/lsp/` | LSP client lifecycle and types (experimental — no current consumer) |
+| `taui/symbols/` | Lightweight source symbol extraction (experimental — no current consumer) |
 | `tests/` | Pytest suite with mock providers and isolated tool/TUI tests |
 | `docs/architecture_docs/` | Deeper design notes; verify against code before copying details |
 
@@ -203,9 +202,8 @@ def register(ctx):
     ctx.skills.add_path("skills/my-skill.md")
 ```
 
-Legacy `register(tools, commands, hooks)` and `register(tools, commands)` signatures are
-still supported. Extension failures should be logged and isolated; a bad extension must
-not prevent Taui from starting.
+Extension failures should be logged and isolated; a bad extension must not prevent Taui
+from starting.
 
 ### Skills
 
@@ -264,7 +262,6 @@ project directory so `.taui/store.db` writes are intentional.
 
 ## Common Pitfalls
 
-- Do not edit `archive/` to fix active behavior.
 - Do not duplicate state outside the SQLite store for sessions, stream replay, approvals,
   or agent lifecycle.
 - Do not put provider-specific assumptions in the agent loop; keep them in

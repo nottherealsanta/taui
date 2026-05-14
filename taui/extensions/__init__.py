@@ -21,11 +21,6 @@ Each extension module must define::
         ctx.hooks.banner(lambda session: "hello")
         ctx.skills.add_path("skills/my-skill.md")
 
-Legacy two- and three-argument signatures continue to work::
-
-    def register(tools, commands, hooks): ...
-    def register(tools, commands): ...
-
 Extensions are isolated from core — a broken extension logs a warning
 but does not crash the agent.
 """
@@ -33,7 +28,6 @@ but does not crash the agent.
 from __future__ import annotations
 
 import importlib.util
-import inspect
 import logging
 import sys
 from dataclasses import dataclass, field
@@ -198,26 +192,15 @@ class ExtensionRegistry:
                 logger.warning("Extension '%s' has no register() function", ext.name)
                 return False
 
-            sig = inspect.signature(register_fn)
-            params = list(sig.parameters)
-
-            if len(params) == 1:
-                # New-style: register(ctx)
-                ctx = ExtensionContext(
-                    tools=tools,
-                    commands=commands,
-                    hooks=hooks,
-                    policy=policy,
-                    skills=SkillContribution(ext.path.parent if ext.path else None),
-                )
-                register_fn(ctx)
-                ext.skill_paths = ctx.skills.paths
-            elif len(params) >= 3 or "hooks" in sig.parameters:
-                # Legacy three-argument: register(tools, commands, hooks)
-                register_fn(tools=tools, commands=commands, hooks=hooks)
-            else:
-                # Legacy two-argument: register(tools, commands)
-                register_fn(tools=tools, commands=commands)
+            ctx = ExtensionContext(
+                tools=tools,
+                commands=commands,
+                hooks=hooks,
+                policy=policy,
+                skills=SkillContribution(ext.path.parent if ext.path else None),
+            )
+            register_fn(ctx)
+            ext.skill_paths = ctx.skills.paths
 
             ext.loaded = True
             ext.error = None

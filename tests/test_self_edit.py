@@ -10,6 +10,7 @@ from taui.config import Config
 from taui.self_edit.factory import (
     build_scoped_tool_registry,
     build_self_edit_executor,
+    build_self_edit_system_prompt,
     load_self_edit_system_prompt,
 )
 from taui.self_edit.scoping import PathAllowlist, wrap_tool_with_allowlist
@@ -226,6 +227,18 @@ def test_load_self_edit_system_prompt_mentions_categories():
         assert category in prompt, f"Expected '{category}' in self-edit system prompt"
 
 
+def test_build_self_edit_system_prompt_includes_active_cwd_and_relative_paths(tmp_path):
+    SelfEditStore(tmp_path).save_default_scope("project")
+
+    prompt = build_self_edit_system_prompt(tmp_path)
+
+    assert "Active scope for new agents: **project**" in prompt
+    assert f"Tool working directory: `{tmp_path / '.taui'}`" in prompt
+    assert "Relative paths resolve from the **project** tool working directory." in prompt
+    assert "`commands/`" in prompt
+    assert "Do not prefix these with `.taui/`" in prompt
+
+
 # ── build_scoped_tool_registry tests ──────────────────────────────────
 
 
@@ -438,10 +451,15 @@ async def test_switch_self_edit_scope_flips_persists_and_rebuilds(tmp_path):
     session._executor = base_executor
     session.self_edit_mode = True
     session._self_edit_scope = "global"
+    session._self_edit_prompt = build_self_edit_system_prompt(tmp_path)
     session._self_edit_executor = build_self_edit_executor(
         base, base_executor, tmp_path
     )
-    session._loop = SimpleNamespace(_executor=session._self_edit_executor)
+    session._loop = SimpleNamespace(
+        _executor=session._self_edit_executor,
+        prompt_updates=[],
+    )
+    session._loop.update_system_prompt = session._loop.prompt_updates.append
 
     new_scope = await session.switch_self_edit_scope()
 
@@ -449,6 +467,8 @@ async def test_switch_self_edit_scope_flips_persists_and_rebuilds(tmp_path):
     assert session._self_edit_scope == "project"
     assert SelfEditStore(tmp_path).load_default_scope() == "project"
     assert session._loop._executor is session._self_edit_executor
+    assert session._loop.prompt_updates == [session._self_edit_prompt]
+    assert "Active scope for new agents: **project**" in session._self_edit_prompt
     bash_tool = session._self_edit_executor.registry.get("bash")
     assert isinstance(bash_tool, _ScopedTool)
     assert bash_tool._relative_root == tmp_path / ".taui"

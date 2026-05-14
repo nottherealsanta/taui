@@ -57,7 +57,7 @@ class TestExtensionDiscovery:
             assert ext.path is None
 
     def test_discover_keeps_builtin_names_reserved(self, tmp_path: Path):
-        _make_extension(tmp_path, "mcp", "def register(tools, commands): pass")
+        _make_extension(tmp_path, "mcp", "def register(ctx): pass")
         reg = ExtensionRegistry(tmp_path, include_builtins=True)
         reg.discover()
 
@@ -67,7 +67,7 @@ class TestExtensionDiscovery:
         assert ext.path is None
 
     def test_discover_project_extension(self, tmp_path: Path):
-        _make_extension(tmp_path, "my_ext", "def register(tools, commands): pass")
+        _make_extension(tmp_path, "my_ext", "def register(ctx): pass")
         reg = ExtensionRegistry(tmp_path)
         reg.discover()
         assert "my_ext" in reg.names
@@ -76,14 +76,14 @@ class TestExtensionDiscovery:
         assert not ext.loaded
 
     def test_discover_multiple(self, tmp_path: Path):
-        _make_extension(tmp_path, "alpha", "def register(tools, commands): pass")
-        _make_extension(tmp_path, "beta", "def register(tools, commands): pass")
+        _make_extension(tmp_path, "alpha", "def register(ctx): pass")
+        _make_extension(tmp_path, "beta", "def register(ctx): pass")
         reg = ExtensionRegistry(tmp_path)
         reg.discover()
         assert sorted(reg.names) == ["alpha", "beta"]
 
     def test_discover_ignores_underscore_files(self, tmp_path: Path):
-        _make_extension(tmp_path, "_internal", "def register(tools, commands): pass")
+        _make_extension(tmp_path, "_internal", "def register(ctx): pass")
         reg = ExtensionRegistry(tmp_path)
         reg.discover()
         assert reg.names == []
@@ -109,8 +109,8 @@ class TestExtensionDiscovery:
         assert reg.get("nonexistent") is None
 
     def test_list_all(self, tmp_path: Path):
-        _make_extension(tmp_path, "alpha", "def register(tools, commands): pass")
-        _make_extension(tmp_path, "beta", "def register(tools, commands): pass")
+        _make_extension(tmp_path, "alpha", "def register(ctx): pass")
+        _make_extension(tmp_path, "beta", "def register(ctx): pass")
         reg = ExtensionRegistry(tmp_path)
         reg.discover()
         all_exts = reg.list_all()
@@ -126,7 +126,7 @@ class TestExtensionLoading:
         _make_extension(
             tmp_path,
             "hello",
-            "def register(tools, commands): pass",
+            "def register(ctx): pass",
         )
         reg = ExtensionRegistry(tmp_path)
         reg.discover()
@@ -153,8 +153,8 @@ class PingTool:
     async def execute(self, arguments: dict[str, Any]) -> ToolResult:
         return ToolResult.ok("pong")
 
-def register(tools, commands):
-    tools.register(PingTool())
+def register(ctx):
+    ctx.tools.register(PingTool())
 '''
         _make_extension(tmp_path, "ping_ext", code)
         reg = ExtensionRegistry(tmp_path)
@@ -178,8 +178,8 @@ class PingCommand:
     async def execute(self, ctx: CommandContext) -> CommandResult:
         return CommandResult.ok("pong")
 
-def register(tools, commands):
-    commands.register(PingCommand())
+def register(ctx):
+    ctx.commands.register(PingCommand())
 '''
         _make_extension(tmp_path, "ping_cmd", code)
         reg = ExtensionRegistry(tmp_path)
@@ -211,7 +211,7 @@ def register(tools, commands):
         assert "register()" in ext.error
 
     def test_load_disabled_extension(self, tmp_path: Path):
-        _make_extension(tmp_path, "disabled", "def register(tools, commands): pass")
+        _make_extension(tmp_path, "disabled", "def register(ctx): pass")
         reg = ExtensionRegistry(tmp_path)
         reg.discover()
         reg.get("disabled").enabled = False
@@ -220,8 +220,8 @@ def register(tools, commands):
         assert not reg.get("disabled").loaded
 
     def test_loaded_extensions(self, tmp_path: Path):
-        _make_extension(tmp_path, "ext1", "def register(tools, commands): pass")
-        _make_extension(tmp_path, "ext2", "def register(tools, commands): pass")
+        _make_extension(tmp_path, "ext1", "def register(ctx): pass")
+        _make_extension(tmp_path, "ext2", "def register(ctx): pass")
         reg = ExtensionRegistry(tmp_path)
         reg.discover()
         reg.load_all()
@@ -233,7 +233,7 @@ def register(tools, commands):
         counter_file = tmp_path / "counter"
         counter_file.write_text("0")
         code = f'''
-def register(tools, commands):
+def register(ctx):
     with open("{counter_file}", "r+") as f:
         n = int(f.read().strip())
         f.seek(0)
@@ -245,38 +245,6 @@ def register(tools, commands):
         reg.load_all()
         reg.load_all()  # Second call should be no-op
         assert counter_file.read_text().strip() == "1"
-
-    def test_load_extension_with_hooks(self, tmp_path: Path):
-        """Extension with hooks parameter works."""
-        from taui.hooks import HookRegistry
-
-        code = '''
-def register(tools, commands, hooks):
-    hooks.banner(lambda session: "hello from ext")
-'''
-        _make_extension(tmp_path, "hook_ext", code)
-        reg = ExtensionRegistry(tmp_path)
-        reg.discover()
-
-        hooks = HookRegistry()
-        loaded = reg.load_all(hooks=hooks)
-        assert loaded == ["hook_ext"]
-        assert hooks.has("banner")
-        assert hooks.count("banner") == 1
-
-    def test_load_legacy_extension_without_hooks(self, tmp_path: Path):
-        """Extension without hooks parameter still loads fine."""
-        from taui.hooks import HookRegistry
-
-        code = 'def register(tools, commands): pass'
-        _make_extension(tmp_path, "legacy", code)
-        reg = ExtensionRegistry(tmp_path)
-        reg.discover()
-
-        hooks = HookRegistry()
-        loaded = reg.load_all(hooks=hooks)
-        assert loaded == ["legacy"]
-        assert reg.get("legacy").loaded
 
     def test_load_new_style_ctx_extension(self, tmp_path: Path):
         """New-style register(ctx) extension loads and receives context."""
@@ -414,7 +382,7 @@ class TestExtensionsCommand:
         from taui.commands.builtins import ExtensionsCommand
         from taui.commands.registry import CommandContext
 
-        _make_extension(tmp_path, "myext", "def register(tools, commands): pass")
+        _make_extension(tmp_path, "myext", "def register(ctx): pass")
         reg = ExtensionRegistry(tmp_path)
         reg.discover()
         reg.load_all()
