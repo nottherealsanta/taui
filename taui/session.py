@@ -207,11 +207,25 @@ class Session:
         ext_registry = ExtensionRegistry(config.working_dir, include_builtins=True)
         ext_registry.discover()
         hooks = new_hook_registry()
+
+        # Create variant and context strategy registries before loading extensions
+        # so extensions can register their own variants, strategies, and providers.
+        from taui.agent.context_strategy import ContextStrategyRegistry
+        from taui.llm_provider.ext_registry import ProviderRegistrationProxy
+
+        variant_registry = AgentVariantRegistry()
+        variant_registry.discover_from_dir(config.working_dir / ".taui" / "agents")
+        context_strategy_registry = ContextStrategyRegistry()
+        provider_proxy = ProviderRegistrationProxy()
+
         ext_registry.load_all(
             tools=registry,
             commands=None,
             hooks=hooks,
             policy=executor.policy,
+            agents=variant_registry,
+            context=context_strategy_registry,
+            providers=provider_proxy,
         )
 
         # Let extensions transform the system prompt
@@ -257,8 +271,9 @@ class Session:
         session._builtin_tool_names = builtin_tool_names
         session._builtin_tools = builtin_tools
         session._base_policy_overrides = policy_overrides
-        # Discover agent variants from .taui/agents/
-        session._variant_registry.discover_from_dir(config.working_dir / ".taui" / "agents")
+        # Wire pre-built registries (variants discovered and extensions already loaded)
+        session._variant_registry = variant_registry
+        session._context_strategy_registry = context_strategy_registry
         configure_builtin_extensions(session)
         session._wire_session_name_tool()
         session._refresh_loop_integrations()
@@ -582,11 +597,16 @@ class Session:
             self._ext_registry.unload_all()
             self._ext_registry.discover()
             try:
+                from taui.llm_provider.ext_registry import ProviderRegistrationProxy
+
                 loaded_all = self._ext_registry.load_all(
                     tools=self._registry,
                     commands=None,
                     hooks=self.hooks,
                     policy=self._executor.policy,
+                    agents=getattr(self, "_variant_registry", None),
+                    context=getattr(self, "_context_strategy_registry", None),
+                    providers=ProviderRegistrationProxy(),
                 )
             except Exception:
                 logger.exception("Failed during extension reload")

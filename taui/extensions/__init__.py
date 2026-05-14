@@ -71,6 +71,9 @@ class ExtensionContext:
     hooks: Any                  # HookRegistry | None
     policy: Any = None          # ToolPolicy | None
     skills: SkillContribution = field(default_factory=SkillContribution)
+    agents: Any = None          # AgentVariantRegistry | None
+    context: Any = None         # ContextStrategyRegistry | None  (future)
+    providers: Any = None       # ProviderRegistrationProxy | None
 
 
 @dataclass(slots=True)
@@ -158,6 +161,9 @@ class ExtensionRegistry:
         commands: Any = None,
         hooks: Any = None,
         policy: Any = None,
+        agents: Any = None,
+        context: Any = None,
+        providers: Any = None,
     ) -> list[str]:
         """Load all enabled extensions. Returns names of loaded extensions."""
         loaded: list[str] = []
@@ -169,7 +175,7 @@ class ExtensionRegistry:
                 ext.error = None
                 loaded.append(ext.name)
                 continue
-            if self._load_one(ext, tools, commands, hooks, policy):
+            if self._load_one(ext, tools, commands, hooks, policy, agents, context, providers):
                 loaded.append(ext.name)
         return loaded
 
@@ -180,6 +186,9 @@ class ExtensionRegistry:
         commands: Any = None,
         hooks: Any = None,
         policy: Any = None,
+        agents: Any = None,
+        context: Any = None,
+        providers: Any = None,
     ) -> bool:
         """Load a single extension. Returns True on success."""
         if ext.loaded:
@@ -198,6 +207,9 @@ class ExtensionRegistry:
                 hooks=hooks,
                 policy=policy,
                 skills=SkillContribution(ext.path.parent if ext.path else None),
+                agents=agents,
+                context=context,
+                providers=providers,
             )
             register_fn(ctx)
             ext.skill_paths = ctx.skills.paths
