@@ -43,10 +43,13 @@ def test_self_edit_scope_roundtrip(tmp_path):
 def test_agents_include_defaults_and_save_prompt_file(tmp_path):
     store = SelfEditStore(tmp_path)
     agents = store.load_agents()
-    assert list(agents) == ["DEF"]
+    assert list(agents) == ["DEF", "PLN"]
     assert agents["DEF"].prompt_path is not None
     assert agents["DEF"].prompt_path.exists()
     assert agents["DEF"].allowed_tools == []
+    assert agents["PLN"].prompt_path is not None
+    assert agents["PLN"].prompt_path.exists()
+    assert agents["PLN"].allowed_tools == ["read", "glob", "grep"]
 
     custom = AgentProfile(
         id="ABC",

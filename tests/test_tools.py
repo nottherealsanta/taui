@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from taui.tools.base import Tool, ToolCategory, ToolResult
+from taui.tools.base import ToolCategory, ToolResult
 from taui.tools.executor import (
     Completed,
     Denied,
@@ -17,7 +17,6 @@ from taui.tools.executor import (
     ToolPolicy,
 )
 from taui.tools.registry import ToolRegistry
-
 
 # ── Test tool implementations ─────────────────────────────────────────────────
 

@@ -114,7 +114,7 @@ def collect_self_edit_inventory(working_dir: Path) -> SelfEditInventory:
     rows = (
         InventoryRow(
             label="Agents",
-            builtin_label="1 (DEF)",
+            builtin_label="2",
             global_count=_count_agents(home / ".taui" / "self_edit" / "agents.json"),
             global_path="~/.taui/self_edit/agents/",
             project_count=_count_agents(
@@ -239,7 +239,7 @@ def _count_agents(path: Path) -> int:
     return sum(
         1
         for row in rows
-        if isinstance(row, dict) and str(row.get("id", "")).upper() != "DEF"
+        if isinstance(row, dict) and str(row.get("id", "")).upper() not in {"DEF", "PLN"}
     )
 
 

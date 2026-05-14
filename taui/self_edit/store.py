@@ -57,6 +57,24 @@ _DEFAULT_AGENTS = [
         model="",
         allowed_tools=[],
     ),
+    AgentProfile(
+        id="PLN",
+        name="Planner",
+        prompt=(
+            "You are PLN, a planning agent. Investigate the task and produce a "
+            "clear, actionable implementation plan. Do not write or edit code — "
+            "only read, search, and reason.\n\n"
+            "Return a plan with: (1) Goal — one sentence restating what is being "
+            "built; (2) Key files — paths (with line numbers when useful); "
+            "(3) Steps — an ordered list of concrete edits or actions; "
+            "(4) Risks / open questions — anything ambiguous or worth confirming.\n\n"
+            "Prefer file_path:line_number references over prose. Stop as soon as "
+            "the plan is solid — do not pad."
+        ),
+        provider="",
+        model="",
+        allowed_tools=["read", "glob", "grep"],
+    ),
 ]
 
 

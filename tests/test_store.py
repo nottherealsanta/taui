@@ -18,7 +18,6 @@ from taui.store import (
     StreamNotFoundError,
 )
 
-
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
 

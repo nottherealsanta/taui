@@ -1,7 +1,5 @@
 """Tests for taui.session — wiring tests with a mock provider."""
 
-import pytest
-from pathlib import Path
 
 from taui.config import Config
 from taui.llm_provider.types import ProviderTurnResult, Usage
@@ -316,10 +314,10 @@ class TestSessionWiring:
     async def test_reload_extensions_no_registry(self, tmp_path):
         """reload_extensions works when no ext_registry is set."""
         from taui.agent.loop import AgentLoop
+        from taui.hooks import HookRegistry
         from taui.store.store import Store
         from taui.store.stream import StreamClient
         from taui.tools.executor import ToolExecutor, ToolPolicy
-        from taui.hooks import HookRegistry
 
         config = Config(working_dir=tmp_path)
         provider = MockProvider()
@@ -395,12 +393,13 @@ class TestSessionWiring:
     async def test_reload_extensions_removes_ext_tools(self, tmp_path):
         """reload_extensions removes tools that weren't in the builtin set."""
         from dataclasses import dataclass, field
+
         from taui.agent.loop import AgentLoop
+        from taui.hooks import HookRegistry
         from taui.store.store import Store
         from taui.store.stream import StreamClient
-        from taui.tools.executor import ToolExecutor, ToolPolicy
-        from taui.hooks import HookRegistry
         from taui.tools.base import ToolResult
+        from taui.tools.executor import ToolExecutor, ToolPolicy
 
         @dataclass
         class FakeTool:

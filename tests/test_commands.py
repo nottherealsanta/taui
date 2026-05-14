@@ -7,7 +7,6 @@ import pytest
 
 from taui.commands.registry import CommandContext, CommandRegistry, CommandResult
 
-
 # ── Test command ────────────────────────────────────────────────────────────────
 
 
@@ -446,8 +445,9 @@ class TestBuiltinCommands:
         assert "No previous" in result.output
 
     async def test_sessions_list(self):
-        from taui.commands.builtins import register_builtins
         import time
+
+        from taui.commands.builtins import register_builtins
 
         class FakeSession:
             async def list_sessions(self):
@@ -639,8 +639,8 @@ class TestBuiltinCommands:
 
 class TestExtensionsWriteGuard:
     def test_guard_allows_taui_dir(self, tmp_path):
-        from taui.session import Session
         from taui.config import Config
+        from taui.session import Session
 
         config = Config(working_dir=tmp_path, provider="copilot", model="test")
         # Minimal session for testing guard
@@ -653,8 +653,8 @@ class TestExtensionsWriteGuard:
         assert result is None  # None means allowed
 
     def test_guard_rejects_outside(self, tmp_path):
-        from taui.session import Session
         from taui.config import Config
+        from taui.session import Session
 
         config = Config(working_dir=tmp_path, provider="copilot", model="test")
         session = Session.__new__(Session)
@@ -667,8 +667,8 @@ class TestExtensionsWriteGuard:
         assert "restricted" in result.content.lower()
 
     async def test_write_tool_with_guard(self, tmp_path):
-        from taui.tools.builtins.files import WriteTool
         from taui.tools.base import ToolResult
+        from taui.tools.builtins.files import WriteTool
 
         tool = WriteTool()
         tool.working_dir = tmp_path
@@ -689,8 +689,8 @@ class TestExtensionsWriteGuard:
         assert (tmp_path / "test.txt").read_text() == "hi"
 
     async def test_edit_tool_with_guard(self, tmp_path):
-        from taui.tools.builtins.edit import EditTool
         from taui.tools.base import ToolResult
+        from taui.tools.builtins.edit import EditTool
 
         # Create a file first
         f = tmp_path / "test.txt"

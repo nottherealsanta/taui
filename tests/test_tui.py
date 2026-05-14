@@ -3,39 +3,34 @@
 from __future__ import annotations
 
 import asyncio
-import tempfile
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
 from textual.css.query import NoMatches
 from textual.widgets import Static
 
 from taui.tui import TauiApp, run_tui
 from taui.tui.app import _model_completion_matches, _trunc
 from taui.tui.messages import (
-    AgentBusy,
-    AgentIdle,
     StreamTextDelta,
     ToolEnded,
     ToolStarted,
 )
-from taui.tui.widgets.chat_input import ChatInput
-from taui.tui.widgets.tool_status import ToolStatusWidget
-from taui.tui.widgets.spinner import ActivityProgress
-from taui.tui.widgets.status_bar import StatusBar, ModelStatus, ContextStatus
-from taui.tui.widgets.footer import CustomFooter
-from taui.tui.widgets.agent_response import AgentResponse
-from taui.tui.widgets.sidebar import Sidebar
-from taui.tui.widgets.terminal import TerminalOutput
-from taui.tui.widgets.approval import ApprovalPrompt
-from taui.tui.widgets.questions_panel import QuestionsPanel, QuestionSpec
-from taui.tui.screens.context_breakdown import ContextBreakdownScreen
 from taui.tui.screens.agent_picker import AgentPickerScreen
+from taui.tui.screens.context_breakdown import ContextBreakdownScreen
 from taui.tui.screens.model_picker import ModelPickerScreen
 from taui.tui.screens.session_picker import SessionPickerScreen
+from taui.tui.widgets.agent_response import AgentResponse
+from taui.tui.widgets.approval import ApprovalPrompt
+from taui.tui.widgets.chat_input import ChatInput
+from taui.tui.widgets.footer import CustomFooter
 from taui.tui.widgets.info_bar import InfoBar
-
+from taui.tui.widgets.questions_panel import QuestionsPanel, QuestionSpec
+from taui.tui.widgets.sidebar import Sidebar
+from taui.tui.widgets.spinner import ActivityProgress
+from taui.tui.widgets.status_bar import ContextStatus, ModelStatus
+from taui.tui.widgets.terminal import TerminalOutput
+from taui.tui.widgets.tool_status import ToolStatusWidget
 
 # ── _trunc ────────────────────────────────────────────────────────────
 
@@ -213,9 +208,10 @@ class TestTauiApp:
                 assert app.query_one("#chat-input", ChatInput).can_submit is True
                 release.set()
 
-    async def test_open_session_picker_resumes_selection(self, tmp_path):
+    async def test_open_session_picker_shows_info2(self, tmp_path):
         from taui.config import Config
         from taui.tui import app as app_module
+        from taui.tui.widgets.info2 import Info2, Info2Mode
 
         class FakeSession:
             session_id = "current"
@@ -240,12 +236,49 @@ class TestTauiApp:
         fake = FakeSession()
         with patch.object(app_module.Session, "create", AsyncMock(return_value=fake)):
             async with app.run_test():
-                app._wire_callbacks = MagicMock()  # type: ignore[method-assign]
-                app._update_status = MagicMock()  # type: ignore[method-assign]
-                app.push_screen_wait = AsyncMock(  # type: ignore[method-assign]
-                    return_value="abc123"
-                )
-                await app._open_session_picker([{"session_id": "abc123"}])
+                sessions = [{"session_id": "abc123"}]
+                await app._open_session_picker(sessions)
+                info2 = app.query_one("#info2", Info2)
+                assert info2._mode == Info2Mode.SESSIONS
+                assert len(info2._session_items) == 1
+
+    async def test_session_picker_accept_resumes(self, tmp_path):
+        from taui.config import Config
+        from taui.tui import app as app_module
+        from taui.tui.widgets.info2 import Info2
+
+        class FakeSession:
+            session_id = "current"
+            last_resume_error = ""
+            replay_items = []
+            provider_name = "copilot"
+            model_name = "claude-haiku-4.5"
+            extensions_mode = False
+            self_edit_mode = False
+            cost_tracker = MagicMock(total_cost_usd=0.0)
+            _loop = MagicMock(_messages=[], agent_id="")
+
+            def __init__(self):
+                self.resumed: list[str] = []
+
+            async def resume_session(self, session_id: str) -> bool:
+                self.resumed.append(session_id)
+                self.session_id = session_id
+                return True
+
+        app = TauiApp(Config(working_dir=tmp_path))
+        fake = FakeSession()
+        with patch.object(app_module.Session, "create", AsyncMock(return_value=fake)):
+            async with app.run_test():
+                app._wire_callbacks = MagicMock()
+                app._update_status = MagicMock()
+                sessions = [{"session_id": "abc123"}]
+                await app._open_session_picker(sessions)
+                info2 = app.query_one("#info2", Info2)
+                # Accept the selected session
+                info2.accept()
+                # Give the worker time to run
+                await asyncio.sleep(0.1)
                 assert fake.resumed == ["abc123"]
 
     async def test_model_command_refreshes_status(self, tmp_path):
@@ -342,9 +375,9 @@ class TestTauiApp:
     async def test_mount_applies_default_def_agent(self, tmp_path):
         from taui.config import Config
         from taui.cost import CostTracker
-        from taui.tui import app as app_module
         from taui.tools.executor import ToolExecutor, ToolPolicy
         from taui.tools.registry import ToolRegistry
+        from taui.tui import app as app_module
 
         class FakeConfig:
             provider = "copilot"
@@ -423,12 +456,13 @@ class TestTauiApp:
 
         app._cycle_agent_profile()
 
-        assert app._session._loop.agent_id == "DEF"
+        assert app._session._loop.agent_id == "PLN"
         app._update_status.assert_called_once()
 
-    async def test_open_session_picker_escape_cancel_keeps_session(self, tmp_path):
+    async def test_open_session_picker_dismiss_keeps_session(self, tmp_path):
         from taui.config import Config
         from taui.tui import app as app_module
+        from taui.tui.widgets.info2 import Info2, Info2Mode
 
         class FakeSession:
             session_id = "current"
@@ -445,8 +479,11 @@ class TestTauiApp:
         app = TauiApp(Config(working_dir=tmp_path))
         with patch.object(app_module.Session, "create", AsyncMock(return_value=FakeSession())):
             async with app.run_test():
-                app.push_screen_wait = AsyncMock(return_value=None)  # type: ignore[method-assign]
                 await app._open_session_picker([{"session_id": "abc123"}])
+                info2 = app.query_one("#info2", Info2)
+                # Dismiss without selecting
+                info2.dismiss()
+                assert info2._mode == Info2Mode.HIDDEN
                 assert app.session_id == "current"
 
     def test_session_picker_instantiates(self):
@@ -648,7 +685,7 @@ class TestChatInput:
 
         assert isinstance(posted[0], ChatInput.AgentCycleRequested)
 
-    async def test_enter_bubbles_when_approval_panel_is_active(self, monkeypatch):
+    async def test_enter_handled_when_approval_panel_is_active(self, monkeypatch):
         from taui.tui.widgets.info2 import Info2, Info2Mode
 
         ci = ChatInput()
@@ -659,6 +696,9 @@ class TestChatInput:
         class FakeInfo2:
             is_active = True
             mode = Info2Mode.APPROVAL
+
+            def accept(self):
+                calls.append("accept")
 
         class FakeApp:
             def query_one(self, widget_type):
@@ -679,7 +719,9 @@ class TestChatInput:
 
         await ci._on_key(FakeEvent())
 
-        assert calls == []
+        assert "stop" in calls
+        assert "prevent_default" in calls
+        assert "accept" in calls
         assert ci.text == "do not submit"
 
     def test_model_completion_matches_model_id_without_provider_prefix(self):
@@ -849,8 +891,8 @@ class TestInfo2:
             assert info2.mode == Info2Mode.APPROVAL
             assert app.focused is info2
             labels = [str(item.render()) for item in info2.query(Info2Item)]
-            assert any("Allow all bash commands (project extension)" in l for l in labels)
-            assert any("Allow all bash commands (global extension)" in l for l in labels)
+            assert any("Allow all bash commands (project extension)" in lb for lb in labels)
+            assert any("Allow all bash commands (global extension)" in lb for lb in labels)
 
     async def test_approval_can_select_project_tool_scope(self):
         from textual.app import App, ComposeResult
@@ -1132,7 +1174,7 @@ class TestActivityProgress:
         progress = ActivityProgress()
         progress._running = True
         before = progress.render()
-        progress._advance()
+        progress._advance_bounce()
         after = progress.render()
 
         assert before.plain == after.plain

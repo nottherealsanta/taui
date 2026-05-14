@@ -351,15 +351,29 @@ class ChatInput(TextArea):
             return False
 
     async def _on_key(self, event: Key) -> None:
-        # Approval/model/agent/context panels own these keys when active. This also
-        # covers the short window before focus has moved away from the input.
+        # Approval/model/agent/context/sessions panels own these keys when
+        # active. We must stop+prevent here so TextArea._on_key (which runs
+        # next in the MRO) doesn't swallow the event.
         if event.key in ("up", "down", "enter", "space", "escape"):
             from taui.tui.widgets.info2 import Info2, Info2Mode
 
             try:
                 info2 = self.app.query_one(Info2)
                 if info2.is_active and info2.mode != Info2Mode.COMPLETIONS:
-                    return  # bubble to app.on_key
+                    event.stop()
+                    event.prevent_default()
+                    if event.key == "up":
+                        info2.move_up()
+                    elif event.key == "down":
+                        info2.move_down()
+                    elif event.key == "enter":
+                        info2.accept()
+                    elif event.key == "escape":
+                        if info2.mode == Info2Mode.APPROVAL:
+                            info2.dismiss()
+                        else:
+                            info2.hide()
+                    return
             except Exception:
                 pass
 

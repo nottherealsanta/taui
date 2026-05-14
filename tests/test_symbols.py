@@ -4,11 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
-from taui.symbols.models import SymbolEntry
 from taui.symbols.indexer import SymbolIndexer
-
+from taui.symbols.models import SymbolEntry
 
 # ── models ─────────────────────────────────────────────────────────────────────
 

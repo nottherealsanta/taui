@@ -5,15 +5,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-import pytest
-
 from taui.agent.loop import AgentLoop
 from taui.llm_provider.types import ProviderToolCall, ProviderTurnResult
 from taui.tools.base import ToolCategory, ToolResult
 from taui.tools.builtins.sub_agent import SubAgentTool
 from taui.tools.executor import ToolExecutor, ToolPolicy
 from taui.tools.registry import ToolRegistry
-
 
 # ── Mock LLM ──────────────────────────────────────────────────────────────────
 

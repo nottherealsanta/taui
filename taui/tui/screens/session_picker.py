@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from datetime import datetime
 
 from rich.text import Text
 from textual import on
@@ -81,7 +82,10 @@ class SessionPickerScreen(ModalScreen[str | None]):
 
 def _session_prompt(session: dict) -> Text:
     sid = str(session.get("session_id", ""))
-    desc = str(session.get("description") or "(no description)")[:40]
+    desc = str(
+        session.get("description")
+        or _fallback_name(session)
+    )[:40]
     mode = str(session.get("mode", "normal"))
     msgs = int(session.get("message_count", 0) or 0)
     ago = _time_ago(float(session.get("last_active", 0) or 0))
@@ -92,6 +96,14 @@ def _session_prompt(session: dict) -> Text:
     text.append(f"  {desc:<40s}  ", style="white")
     text.append(f"{msgs:>3} msgs  {ago}{mode_tag}", style="dim")
     return text
+
+
+def _fallback_name(session: dict) -> str:
+    """Label for sessions that never called session_name — their created time."""
+    ts = float(session.get("created_at", 0) or 0)
+    if ts <= 0:
+        return "(unnamed)"
+    return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
 
 
 def _time_ago(ts: float) -> str:

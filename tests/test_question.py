@@ -1,6 +1,5 @@
 """Tests for QuestionTool."""
 
-import pytest
 
 from taui.tools.builtins.question import QuestionTool
 

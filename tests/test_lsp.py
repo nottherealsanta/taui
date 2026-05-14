@@ -7,6 +7,8 @@ import json
 
 import pytest
 
+from taui.lsp.client import _HEADER_SEP, LspClient, LspError
+from taui.lsp.manager import _DEFAULT_SERVERS, LspManager
 from taui.lsp.types import (
     Diagnostic,
     HoverResult,
@@ -15,9 +17,6 @@ from taui.lsp.types import (
     Range,
     SymbolInfo,
 )
-from taui.lsp.client import LspClient, LspError, _HEADER_SEP
-from taui.lsp.manager import LspManager, _DEFAULT_SERVERS
-
 
 # ── types ──────────────────────────────────────────────────────────────────────
 

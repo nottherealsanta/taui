@@ -7,9 +7,9 @@ from typing import Any
 
 import pytest
 
-from taui.mcp import McpClient, McpManager, McpServerConfig, McpTool as McpToolInfo
+from taui.mcp import McpClient, McpManager, McpServerConfig
+from taui.mcp import McpTool as McpToolInfo
 from taui.tools.builtins.mcp import McpTool
-
 
 # ═══ McpServerConfig ══════════════════════════════════════════════════════════
 

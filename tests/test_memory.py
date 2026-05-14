@@ -1,7 +1,7 @@
 """Tests for MemoryTool."""
 
+
 import pytest
-from pathlib import Path
 
 from taui.tools.builtins.memory import MemoryTool
 

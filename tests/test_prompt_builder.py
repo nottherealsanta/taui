@@ -1,10 +1,8 @@
 """Tests for taui.prompt_builder."""
 
-from pathlib import Path
 from unittest.mock import MagicMock
 
 from taui.prompt_builder import (
-    ContextFile,
     DEFAULT_TEMPLATE,
     ProjectContext,
     SectionPriority,

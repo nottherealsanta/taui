@@ -18,6 +18,7 @@ from typing import Any
 from uuid import uuid4
 
 from taui.agent.loop import AgentLoop, Message, RunResult
+from taui.agent.variants import AgentVariantRegistry
 from taui.config import Config
 from taui.cost import CostTracker
 from taui.extensions import ExtensionRegistry
@@ -107,6 +108,7 @@ class Session:
         self._base_policy_overrides: dict[str, PolicyDecision] = {}
         self._builtin_tools: dict[str, Any] = {}
         self._pre_self_edit_state: _SessionSnapshot | None = None
+        self._variant_registry: AgentVariantRegistry = AgentVariantRegistry()
 
     @classmethod
     async def create(cls, config: Config | None = None) -> Session:
@@ -246,6 +248,8 @@ class Session:
         session._builtin_tool_names = builtin_tool_names
         session._builtin_tools = builtin_tools
         session._base_policy_overrides = policy_overrides
+        # Discover agent variants from .taui/agents/
+        session._variant_registry.discover_from_dir(config.working_dir / ".taui" / "agents")
         configure_builtin_extensions(session)
         session._wire_session_name_tool()
         session._refresh_loop_integrations()
@@ -599,6 +603,127 @@ class Session:
         logger.info("Reloaded extensions: %s", loaded)
         return loaded
 
+    async def fork(self, *, at_offset: int | None = None) -> Session:
+        """Fork this session at an offset, creating a branched session.
+
+        The fork gets its own stream with parent_id linked to the original.
+        Messages up to at_offset are copied. The original session is unchanged.
+        """
+        fork_id = uuid4().hex[:12]
+        parent_stream = self._loop.stream_id
+        fork_stream = f"agents/{fork_id}"
+
+        # Create the forked stream with parent link
+        await self._stream.ensure_stream(fork_stream, parent_id=parent_stream)
+
+        # Copy events up to offset
+        if at_offset is not None:
+            events = await self._store.read(parent_stream, from_offset=0, limit=at_offset)
+            for event in events:
+                await self._store.append(fork_stream, event.type, event.data, offset=event.offset)
+
+        prompt = self._extensions_prompt if self.extensions_mode else self._system_prompt
+        loop = AgentLoop(
+            agent_id=fork_id,
+            llm=self._provider,
+            executor=self._executor,
+            stream=self._stream,
+            system_prompt=prompt,
+            model=self.config.model,
+            max_turns=self.config.max_turns,
+        )
+        loop.stream_id = fork_stream
+
+        # Replay messages into the new loop
+        transcript = await self._stream.load_conversation(fork_stream)
+        loop._messages = [Message(role="system", content=prompt)]
+        loop._messages.extend(transcript.messages)
+
+        forked = Session(
+            config=self.config,
+            provider=self._provider,
+            registry=self._registry,
+            executor=self._executor,
+            store=self._store,
+            stream=self._stream,
+            loop=loop,
+            cost_tracker=self.cost_tracker,
+            hooks=self.hooks,
+            session_id=fork_id,
+        )
+        forked._system_prompt = self._system_prompt
+        forked._extensions_prompt = self._extensions_prompt
+
+        await self._store.create_session(fork_id, stream_id=fork_stream)
+        forked._loaded_offset = await self._stream.get_length(fork_stream)
+
+        return forked
+
+    async def create_sub_session(
+        self,
+        *,
+        name: str | None = None,
+        tools: list[str] | None = None,
+        system_prompt: str | None = None,
+        model: str | None = None,
+        max_turns: int | None = None,
+    ) -> Session:
+        """Create a sub-session with optional overrides.
+
+        Reuses the parent's store and provider. The sub-session's stream
+        has parent_id set to the current session's stream.
+        """
+        sub_id = name or uuid4().hex[:12]
+        sub_stream = f"agents/{sub_id}"
+
+        # Tool registry — subset or full
+        if tools:
+            registry = self._registry.subset(tools)
+        else:
+            registry = self._registry
+
+        executor = ToolExecutor(
+            registry=registry,
+            policy=self._executor.policy,
+            timeout=self._executor._timeout,
+        )
+
+        prompt = system_prompt or self._system_prompt
+        mdl = model or self.config.model
+        turns = max_turns or self.config.max_turns
+
+        await self._stream.ensure_stream(sub_stream, parent_id=self._loop.stream_id)
+
+        loop = AgentLoop(
+            agent_id=sub_id,
+            llm=self._provider,
+            executor=executor,
+            stream=self._stream,
+            system_prompt=prompt,
+            model=mdl,
+            max_turns=turns,
+        )
+        loop.stream_id = sub_stream
+
+        sub = Session(
+            config=self.config,
+            provider=self._provider,
+            registry=registry,
+            executor=executor,
+            store=self._store,
+            stream=self._stream,
+            loop=loop,
+            cost_tracker=self.cost_tracker,
+            hooks=self.hooks,
+            session_id=sub_id,
+        )
+        sub._system_prompt = prompt
+
+        await self._store.create_session(sub_id, stream_id=sub_stream)
+        sub._loaded_offset = 0
+
+        return sub
+
     async def close(self) -> None:
         """Clean up resources."""
         await close_builtin_extensions(self)
@@ -648,6 +773,65 @@ class Session:
         self._loop._executor = self._self_edit_executor
         self._loop.update_system_prompt(self._self_edit_prompt)
         return new_scope
+
+    def switch_variant(self, name: str) -> bool:
+        """Apply a named agent variant to the current loop.
+
+        Adjusts tool availability, system prompt, and executor based on the variant
+        configuration. Returns True on success, False if the variant is not found.
+        """
+        from taui.tools.base import ToolCategory
+
+        variant = self._variant_registry.get(name)
+        if variant is None:
+            logger.warning("Unknown agent variant: %r", name)
+            return False
+
+        # Build the effective tool registry for this variant
+        if variant.tool_names is not None:
+            # Explicit tool subset
+            available = [n for n in variant.tool_names if n in self._registry]
+            effective_registry = self._registry.subset(available)
+        elif variant.read_only:
+            # Exclude write/shell/git categories
+            excluded = {ToolCategory.FILE_WRITE, ToolCategory.SHELL, ToolCategory.GIT}
+            allowed = [
+                t.name
+                for t in self._registry._tools.values()
+                if t.category not in excluded
+            ]
+            effective_registry = self._registry.subset(allowed)
+        else:
+            effective_registry = self._registry
+
+        # Build executor with the effective registry
+        from taui.tools.executor import ToolExecutor
+
+        effective_executor = ToolExecutor(
+            registry=effective_registry,
+            policy=self._executor.policy,
+        )
+        effective_executor._truncation_store = getattr(
+            self._executor, "_truncation_store", None
+        )
+
+        # Apply permission overrides from variant if present
+        if variant.permission:
+            from taui.permissions import PermissionRuleset
+
+            ruleset = PermissionRuleset()
+            ruleset.add_rules(variant.permission, layer="variant")
+            effective_executor.policy.set_ruleset(ruleset)
+
+        # Determine system prompt
+        if variant.system_prompt is not None:
+            prompt = variant.system_prompt
+        else:
+            prompt = self._system_prompt
+
+        self._loop._executor = effective_executor
+        self._loop.update_system_prompt(prompt)
+        return True
 
     def _apply_write_guard(self) -> None:
         """Set or clear the write guard on file-write tools."""

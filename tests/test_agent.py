@@ -8,13 +8,12 @@ from typing import Any
 
 import pytest
 
-from taui.agent.loop import AgentLoop, AgentState, Message
-from taui.llm_provider.types import ProviderToolCall, ProviderTurnResult, Usage
-from taui.store import Store, StreamClient, EventType
+from taui.agent.loop import AgentLoop, AgentState
+from taui.llm_provider.types import ProviderToolCall, ProviderTurnResult
+from taui.store import EventType, Store, StreamClient
 from taui.tools.base import ToolCategory, ToolResult
 from taui.tools.executor import ToolExecutor
 from taui.tools.registry import ToolRegistry
-
 
 # ── Mock LLM Provider ────────────────────────────────────────────────────────
 
@@ -207,7 +206,7 @@ class TestAgentLoopWithStore:
         assert result.text == "Hello from agent!"
 
         # Read events from the stream
-        events = await stream.read_all(f"agents/test-agent")
+        events = await stream.read_all("agents/test-agent")
         event_types = [e.type for e in events]
         assert EventType.STREAM_START in event_types
         assert EventType.USER_MESSAGE in event_types
@@ -323,7 +322,7 @@ class TestAgentLoopCallbacks:
 
     async def test_on_approval_approves(self):
         """on_approval returning True allows the tool to run."""
-        from taui.tools.executor import ToolPolicy, PolicyDecision
+        from taui.tools.executor import PolicyDecision, ToolPolicy
 
         async def auto_approve(call_id, name, arguments) -> bool:
             return True
@@ -339,14 +338,14 @@ class TestAgentLoopCallbacks:
             _text_response("Done."),
         ])
         loop = AgentLoop(llm=llm, executor=executor, on_approval=auto_approve)
-        result = await loop.run("List files")
+        await loop.run("List files")
         # Should succeed because approval was granted
         tool_msgs = [m for m in loop.messages if m.role == "tool"]
         assert "main.py" in tool_msgs[0].content
 
     async def test_on_approval_denies(self):
         """on_approval returning False blocks the tool."""
-        from taui.tools.executor import ToolPolicy, PolicyDecision
+        from taui.tools.executor import PolicyDecision, ToolPolicy
 
         async def deny_all(call_id, name, arguments) -> bool:
             return False
@@ -362,6 +361,6 @@ class TestAgentLoopCallbacks:
             _text_response("OK, I won't do that."),
         ])
         loop = AgentLoop(llm=llm, executor=executor, on_approval=deny_all)
-        result = await loop.run("List files")
+        await loop.run("List files")
         tool_msgs = [m for m in loop.messages if m.role == "tool"]
         assert "denied" in tool_msgs[0].content.lower()

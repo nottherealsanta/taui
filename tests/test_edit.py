@@ -1,10 +1,9 @@
 """Tests for the edit tool — fuzzy matching, multi-edit, edge cases."""
 
+
 import pytest
-from pathlib import Path
 
 from taui.tools.builtins.edit import EditTool, find_match
-
 
 # ── find_match unit tests ─────────────────────────────────────────────────────
 

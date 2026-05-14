@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from taui.config import Config, DEFAULT_SYSTEM_PROMPT
+from taui.config import DEFAULT_SYSTEM_PROMPT, Config
 
 
 class TestConfig:

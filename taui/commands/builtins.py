@@ -332,7 +332,7 @@ class SessionsCommand:
         lines = ["Sessions:"]
         for s in sessions[:20]:
             sid = s["session_id"]
-            desc = s.get("description", "") or "(no description)"
+            desc = s.get("description", "") or _fallback_session_name(s)
             mode = s.get("mode", "normal")
             msgs = s.get("message_count", 0)
             ago = _time_ago(s.get("last_active", 0))
@@ -446,6 +446,15 @@ def _time_ago(ts: float) -> str:
     if delta < 86400:
         return f"{int(delta / 3600)}h ago"
     return f"{int(delta / 86400)}d ago"
+
+
+def _fallback_session_name(session: dict) -> str:
+    """Label for sessions that never called session_name — their created time."""
+    from datetime import datetime
+    ts = float(session.get("created_at", 0) or 0)
+    if ts <= 0:
+        return "(unnamed)"
+    return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
 
 
 @dataclass(slots=True)

@@ -30,7 +30,6 @@ from taui.tui.messages import (
     ToolStarted,
 )
 from taui.tui.screens.context_breakdown import ContextBreakdownScreen
-from taui.tui.screens.session_picker import SessionPickerScreen
 from taui.tui.tool_controller import ToolController
 from taui.tui.widgets.agent_response import AgentResponse
 from taui.tui.widgets.chat_input import ChatInput
@@ -670,6 +669,23 @@ class TauiApp(App[None]):
     def handle_context_badge_clicked(self, event: InfoBar.ContextBadgeClicked) -> None:
         self._open_context_tree()
 
+    @on(InfoBar.SessionBadgeClicked)
+    def handle_session_badge_clicked(
+        self, event: InfoBar.SessionBadgeClicked
+    ) -> None:
+        if self._session is None:
+            return
+        self.run_worker(
+            self._load_and_show_sessions(), name="load_sessions", exclusive=True
+        )
+
+    async def _load_and_show_sessions(self) -> None:
+        if self._session is None:
+            return
+        sessions = await self._session.list_sessions()
+        if sessions:
+            self._show_session_picker(sessions)
+
     def _open_model_picker(self) -> None:
         if self._session is None:
             return
@@ -715,6 +731,14 @@ class TauiApp(App[None]):
     @on(Info2.AgentSelected)
     def handle_info2_agent_selected(self, event: Info2.AgentSelected) -> None:
         self._apply_selected_agent(event.agent_id)
+
+    @on(Info2.SessionSelected)
+    def handle_info2_session_selected(self, event: Info2.SessionSelected) -> None:
+        self.run_worker(
+            self._resume_session(event.session_id),
+            name="session_resume",
+            exclusive=True,
+        )
 
     # ── Streaming text handlers ───────────────────────────────────────
 
@@ -766,7 +790,8 @@ class TauiApp(App[None]):
             chat_log = self.query_one("#chat-log", VerticalScroll)
             await chat_log.mount(
                 Static(
-                    "[yellow]No session is active. Fix auth/network access and restart, or run /login.[/yellow]",
+                    "[yellow]No session is active. Fix auth/network access "
+                    "and restart, or run /login.[/yellow]",
                     markup=True,
                 )
             )
@@ -1055,7 +1080,7 @@ class TauiApp(App[None]):
         if action == "session_picker":
             sessions = result.metadata.get("sessions", [])
             if sessions:
-                await self._open_session_picker(sessions)
+                self._show_session_picker(sessions)
             return
 
         if action == "open_model_picker":
@@ -1132,12 +1157,14 @@ class TauiApp(App[None]):
         await chat_log.mount(Static(f"[dim]{msg}[/dim]", markup=True))
         chat_log.scroll_end()
 
+    def _show_session_picker(self, sessions: list[dict]) -> None:
+        """Show the inline session picker in Info2."""
+        info2 = self.query_one("#info2", Info2)
+        info2.show_sessions(sessions)
+
     async def _open_session_picker(self, sessions: list[dict]) -> None:
-        """Open the session picker and resume the selected session."""
-        selected = await self.push_screen_wait(SessionPickerScreen(sessions))
-        if selected is None:
-            return
-        await self._resume_session(selected)
+        """Open the inline session picker (legacy entry point)."""
+        self._show_session_picker(sessions)
 
     async def _resume_session(self, session_id: str) -> bool:
         """Resume a session, render its transcript, and report failures inline."""

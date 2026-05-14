@@ -1,7 +1,7 @@
 """Tests for taui.tools.builtins.common — shared utilities."""
 
+
 import pytest
-from pathlib import Path
 
 from taui.tools.builtins.common import (
     SKIP_DIRS,

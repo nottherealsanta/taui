@@ -5,13 +5,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-import pytest
-
+from taui.commands.registry import CommandRegistry
 from taui.extensions import Extension, ExtensionRegistry
 from taui.extensions.builtins import BUILTIN_EXTENSION_NAMES
 from taui.tools.registry import ToolRegistry
-from taui.commands.registry import CommandRegistry
-
 
 # ═══ Extension dataclass ══════════════════════════════════════════════════════
 

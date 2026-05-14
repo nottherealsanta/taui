@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
 
 import pytest
 
@@ -13,7 +12,6 @@ from taui.tools.builtins.bash import BashTool
 from taui.tools.builtins.files import GlobTool, GrepTool, ReadTool, WriteTool
 from taui.tools.builtins.session_name import SessionNameTool
 from taui.tools.registry import ToolRegistry
-
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -265,15 +263,19 @@ class TestRegisterBuiltins:
         assert "mcp" in reg
         assert "session_name" in reg
         assert "peek" in reg
-        assert len(reg) == 14
+        assert len(reg) == 17
 
     def test_schemas_exported(self):
         reg = ToolRegistry()
         register_builtins(reg)
         schemas = reg.schemas()
-        assert len(schemas) == 14
+        assert len(schemas) == 17
         names = {s["function"]["name"] for s in schemas}
-        assert names == {"read", "write", "edit", "glob", "grep", "bash", "git", "question", "memory", "skills", "sub_agent", "mcp", "session_name", "peek"}
+        assert names == {
+            "read", "write", "edit", "glob", "grep", "bash", "git",
+            "question", "memory", "skills", "sub_agent", "mcp",
+            "session_name", "peek", "task", "webfetch", "apply_patch",
+        }
 
 
 class TestSessionNameTool:

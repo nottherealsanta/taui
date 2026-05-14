@@ -10,6 +10,7 @@ from textual.widgets import Static
 
 AGENT_COLORS = {
     "DEF": "#58a6ff",
+    "PLN": "#d2a8ff",
 }
 _AGENT_FALLBACK_COLORS = [
     "#58a6ff",
@@ -80,6 +81,13 @@ class ContextBadge(Static):
         self.post_message(InfoBar.ContextBadgeClicked())
 
 
+class SessionBadge(Static):
+    """Clickable session indicator."""
+
+    def on_click(self) -> None:
+        self.post_message(InfoBar.SessionBadgeClicked())
+
+
 class InfoBar(Horizontal):
     """Single-line bar below input showing session info."""
 
@@ -95,6 +103,9 @@ class InfoBar(Horizontal):
 
     class ContextBadgeClicked(Message):
         """Posted when the context token area is clicked."""
+
+    class SessionBadgeClicked(Message):
+        """Posted when the session area is clicked."""
 
     DEFAULT_CSS = """
     InfoBar {
@@ -135,6 +146,11 @@ class InfoBar(Horizontal):
         color: #c9d1d9;
         text-style: italic;
     }
+    InfoBar #info-session {
+        color: #8b949e;
+        text-style: italic;
+        margin-left: 2;
+    }
     """
 
     def __init__(self) -> None:
@@ -154,6 +170,7 @@ class InfoBar(Horizontal):
         yield ProviderBadge("", id="info-provider")
         yield ContextBadge("", id="info-tokens")
         yield Static("", id="info-cost")
+        yield SessionBadge("⏱", id="info-session")
 
     def update_info(
         self,

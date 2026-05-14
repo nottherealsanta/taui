@@ -3,13 +3,9 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
-
-import pytest
 
 from taui.skills import MAX_SKILL_CHARS, Skill, SkillRegistry
 from taui.tools.builtins.skills import SkillsTool
-
 
 # ═══ Skill dataclass ══════════════════════════════════════════════════════════
 

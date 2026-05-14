@@ -1,7 +1,7 @@
 """Tests for GitTool."""
 
+
 import pytest
-from pathlib import Path
 
 from taui.tools.builtins.git import GitTool
 
