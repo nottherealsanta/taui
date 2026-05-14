@@ -349,7 +349,7 @@ in real use.
   + a "Switch to build" button on the InfoBar. Mirror opencode's
   plan/build agent flow.
 
-- [ ] **[P2] Inline `/` slash-command help.**
+- [x] **[P2] Inline `/` slash-command help.**
   Tab completion on `/` shows the description column. Today the
   dropdown shows only names.
 
