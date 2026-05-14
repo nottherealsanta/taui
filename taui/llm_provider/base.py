@@ -29,6 +29,13 @@ from typing import Any
 
 import httpx
 
+from .errors import (
+    AuthExpiredError,
+    ContextOverflowError,
+    ProviderError,
+    QuotaExceededError,
+    TransientProviderError,
+)
 from .types import (
     ApiFormat,
     LLMRequest,
@@ -248,7 +255,7 @@ class BaseLLMProvider(ABC):
         for attempt in range(MAX_RETRIES + 1):
             try:
                 return await self._accumulate_turn(req)
-            except PermissionError:
+            except AuthExpiredError:
                 raise  # 401 — never retry auth failures
             except httpx.HTTPStatusError as exc:
                 status = exc.response.status_code
@@ -256,26 +263,33 @@ class BaseLLMProvider(ABC):
 
                 # Context overflow → fail immediately
                 if self.is_context_overflow(status, body):
-                    raise RuntimeError(
-                        "Context length exceeded. Try shortening the conversation."
+                    raise ContextOverflowError(
+                        "Context length exceeded. Try shortening the conversation.",
+                        status_code=status,
+                        body=body,
                     ) from exc
 
                 # Usage limit → fail immediately with reset info
                 if self.is_usage_limit(status, body):
-                    msg = self._extract_usage_limit_message(body)
-                    raise RuntimeError(msg) from exc
+                    msg, resets_in = self._extract_usage_limit_info(body)
+                    raise QuotaExceededError(
+                        msg, status_code=status, body=body, resets_in_seconds=resets_in
+                    ) from exc
 
                 # Not retryable → raise with body for debugging
                 if not self.is_retryable(status, body):
-                    raise RuntimeError(
-                        f"HTTP {status}: {body[:1000]}"
+                    raise ProviderError(
+                        f"HTTP {status}: {body[:1000]}", status_code=status, body=body
                     ) from exc
 
                 last_exc = exc
                 delay = self._compute_retry_delay(exc.response, attempt)
                 if delay > MAX_SERVER_DELAY:
-                    raise RuntimeError(
-                        f"Server requested {delay:.0f}s retry delay. Try again later."
+                    raise TransientProviderError(
+                        f"Server requested {delay:.0f}s retry delay. Try again later.",
+                        status_code=status,
+                        body=body,
+                        retry_after=delay,
                     ) from exc
 
                 logger.info(
@@ -299,8 +313,9 @@ class BaseLLMProvider(ABC):
                 )
                 await asyncio.sleep(delay)
 
-        raise RuntimeError(
-            f"Request failed after {MAX_RETRIES} retries: {repr(last_exc)}"
+        raise TransientProviderError(
+            f"Request failed after {MAX_RETRIES} retries: {repr(last_exc)}",
+            retry_after=None,
         ) from last_exc
 
     async def _accumulate_turn(self, req: LLMRequest) -> ProviderTurnResult:
@@ -403,9 +418,10 @@ class BaseLLMProvider(ABC):
             ) as response:
                 # Auth failure
                 if response.status_code == 401:
-                    raise PermissionError(
+                    raise AuthExpiredError(
                         "Authentication failed (401). Delete ~/.config/taui/config.toml "
-                        "and re-run to log in again."
+                        "and re-run to log in again.",
+                        status_code=401,
                     )
 
                 # HTTP error — read body for error classification
@@ -489,21 +505,27 @@ class BaseLLMProvider(ABC):
         return BASE_RETRY_DELAY * (2**attempt)
 
     @staticmethod
-    def _extract_usage_limit_message(body: str) -> str:
-        """Extract a human-readable usage limit message from the response body."""
+    def _extract_usage_limit_info(body: str) -> tuple[str, int | None]:
+        """Extract a human-readable usage limit message and reset seconds from the response body."""
         try:
             data = json.loads(body)
             if "error" in data and isinstance(data["error"], dict):
                 msg = data["error"].get("message", "Usage limit reached.")
-                resets_in = data["error"].get("resets_in_seconds")
+                resets_in: int | None = data["error"].get("resets_in_seconds")
                 if resets_in:
                     hours = resets_in // 3600
                     minutes = (resets_in % 3600) // 60
-                    return f"{msg} Resets in {hours}h {minutes}m."
-                return msg
+                    return f"{msg} Resets in {hours}h {minutes}m.", resets_in
+                return msg, None
         except (json.JSONDecodeError, TypeError):
             pass
-        return "Subscription or quota usage limit reached. Try again later."
+        return "Subscription or quota usage limit reached. Try again later.", None
+
+    @staticmethod
+    def _extract_usage_limit_message(body: str) -> str:
+        """Extract a human-readable usage limit message from the response body."""
+        msg, _ = BaseLLMProvider._extract_usage_limit_info(body)
+        return msg
 
 
 # ── Internal helpers ───────────────────────────────────────────────────────────

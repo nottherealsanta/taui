@@ -34,6 +34,7 @@ from taui.store.stream import StreamClient
 from taui.tools.builtins import register_builtins
 from taui.tools.executor import PolicyDecision, ToolExecutor, ToolPolicy
 from taui.tools.registry import ToolRegistry
+from taui.tools.truncation import TruncationStore
 
 logger = logging.getLogger(__name__)
 
@@ -125,6 +126,15 @@ class Session:
             if hasattr(tool, "working_dir"):
                 tool.working_dir = config.working_dir
 
+        # Wire file tracker on read/write/edit tools
+        from taui.tools.file_tracker import FileTracker
+        file_tracker = FileTracker()
+        for name in ("read", "write", "edit"):
+            if name in registry:
+                tool = registry.get(name)
+                if hasattr(tool, "_file_tracker"):
+                    tool._file_tracker = file_tracker
+
         # Tool policy — safe defaults with config overrides
         policy_overrides: dict[str, PolicyDecision] = {}
         if config.auto_approve_reads:
@@ -143,6 +153,16 @@ class Session:
                 )
         policy = ToolPolicy(overrides=policy_overrides)
         executor = ToolExecutor(registry=registry, policy=policy)
+
+        # Truncation store — shared between the executor and the peek tool
+        truncation_store = TruncationStore()
+        executor._truncation_store = truncation_store
+        # Wire the store into the peek tool so it can retrieve stored outputs
+        try:
+            peek_tool = registry.get("peek")
+            peek_tool._truncation_store = truncation_store
+        except ValueError:
+            pass
 
         # Build system prompt
         builder = SystemPromptBuilder()
@@ -218,6 +238,7 @@ class Session:
         session._builtin_tools = builtin_tools
         session._base_policy_overrides = policy_overrides
         configure_builtin_extensions(session)
+        session._wire_session_name_tool()
         session._refresh_loop_integrations()
 
         # Wire skill paths bundled by extensions into the skill registry.
@@ -258,18 +279,13 @@ class Session:
                     input_tokens=tr.usage.get("input_tokens", 0),
                     output_tokens=tr.usage.get("output_tokens", 0),
                 )
-        # Update session metadata
+        # Update session metadata. Descriptions come from the session_name tool;
+        # if the agent didn't call it, /sessions falls back to created time.
         try:
             await self._store.update_session(
                 self.session_id,
                 message_count=self._message_count,
             )
-            # Auto-describe on first message if no description yet
-            if self._message_count == 1 and result.text:
-                desc = result.text[:120].split("\n")[0]
-                await self._store.update_session(
-                    self.session_id, description=desc,
-                )
         except Exception:
             logger.debug("Failed to update session metadata", exc_info=True)
         return result
@@ -651,6 +667,25 @@ class Session:
     def replay_items(self) -> list[ReplayItem]:
         """Transcript items from the most recent successful resume."""
         return list(self._last_replay_items)
+
+    def _wire_session_name_tool(self) -> None:
+        """Give the session_name tool a callback that writes the description."""
+        try:
+            tool = self._registry.get("session_name")
+        except ValueError:
+            return
+
+        async def set_name(name: str) -> None:
+            try:
+                await self._store.update_session(
+                    self.session_id, description=name,
+                )
+            except Exception:
+                logger.debug(
+                    "Failed to save session name", exc_info=True,
+                )
+
+        tool._set_name = set_name
 
     def _replace_loop(self, loop: AgentLoop) -> None:
         self._loop = loop

@@ -10,11 +10,19 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
-from taui.tools.base import ToolResult
+from taui.tools.base import ToolCategory, ToolResult
 from taui.tools.registry import ToolRegistry
+from taui.tools.truncation import TruncationStore
 
 logger = logging.getLogger(__name__)
 
+
+# ── Retry config ─────────────────────────────────────────────────────────────
+
+_RETRY_CATEGORIES: frozenset[ToolCategory] = frozenset(
+    {ToolCategory.FILE_READ, ToolCategory.SEARCH}
+)
+_RETRY_DELAYS: tuple[float, ...] = (0.25, 1.0, 4.0)
 
 # ── Policy ────────────────────────────────────────────────────────────────────
 
@@ -133,10 +141,12 @@ class ToolExecutor:
         policy: ToolPolicy | None = None,
         *,
         timeout: float = 120.0,
+        truncation_store: TruncationStore | None = None,
     ) -> None:
         self._registry = registry
         self._policy = policy or ToolPolicy()
         self._timeout = timeout
+        self._truncation_store = truncation_store
 
     @property
     def registry(self) -> ToolRegistry:
@@ -192,29 +202,59 @@ class ToolExecutor:
                     result=ToolResult.fail("Tool execution rejected by user.")
                 )
 
-        # Execute
+        # Execute with optional retry for idempotent categories
         start = time.perf_counter()
-        try:
-            result = await asyncio.wait_for(
-                tool.execute(arguments), timeout=self._timeout
-            )
-        except TimeoutError:
-            elapsed = time.perf_counter() - start
-            logger.warning(
-                "Tool timed out tool=%s timeout=%.1fs", tool_name, elapsed
-            )
-            return Completed(
-                result=ToolResult.fail(
-                    f"Tool {tool_name!r} timed out after {self._timeout:.0f}s."
-                )
-            )
-        except Exception as exc:
-            elapsed = time.perf_counter() - start
-            logger.exception("Tool raised tool=%s elapsed=%.3fs", tool_name, elapsed)
-            return Completed(
-                result=ToolResult.fail(f"Tool {tool_name!r} failed: {exc}")
-            )
-
+        result = await self._execute_with_retry(tool_name, tool, arguments)
         elapsed = time.perf_counter() - start
         result.metadata.setdefault("duration_ms", int(elapsed * 1000))
+
+        # Truncate large outputs so the LLM context window isn't flooded.
+        # The full content is stored in the truncation store behind a peek handle.
+        if (
+            self._truncation_store is not None
+            and not result.error
+            and result.content
+            # Never truncate the peek tool itself — that would be circular.
+            and tool_name != "peek"
+        ):
+            result = ToolResult(
+                content=self._truncation_store.maybe_truncate(result.content, tool_name),
+                error=result.error,
+                metadata=result.metadata,
+            )
+
         return Completed(result=result)
+
+    async def _execute_with_retry(
+        self, tool_name: str, tool: Any, arguments: dict[str, Any],
+    ) -> ToolResult:
+        """Execute a tool, retrying on failure for idempotent categories."""
+        delays = _RETRY_DELAYS if tool.category in _RETRY_CATEGORIES else ()
+        max_attempts = len(delays) + 1
+        last_result: ToolResult | None = None
+
+        for attempt in range(max_attempts):
+            try:
+                result = await asyncio.wait_for(tool.execute(arguments), timeout=self._timeout)
+            except TimeoutError:
+                logger.warning("Tool timed out tool=%s timeout=%.1fs", tool_name, self._timeout)
+                result = ToolResult.fail(
+                    f"Tool {tool_name!r} timed out after {self._timeout:.0f}s."
+                )
+            except Exception as exc:
+                logger.exception("Tool raised tool=%s attempt=%d", tool_name, attempt + 1)
+                result = ToolResult.fail(f"Tool {tool_name!r} failed: {exc}")
+
+            if not result.error:
+                return result
+
+            last_result = result
+            if attempt < len(delays):
+                logger.debug(
+                    "Retrying idempotent tool tool=%s attempt=%d delay=%.2fs",
+                    tool_name, attempt + 1, delays[attempt],
+                )
+                await asyncio.sleep(delays[attempt])
+
+        assert last_result is not None
+        return last_result

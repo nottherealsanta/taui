@@ -17,6 +17,7 @@ from taui.tools.builtins.common import (
     resolve_path,
     suggest_similar,
 )
+from taui.tools.file_tracker import FileTracker
 
 _MAX_LINE_CHARS = 2000
 
@@ -35,6 +36,7 @@ class ReadTool:
     )
     category: ToolCategory = ToolCategory.FILE_READ
     working_dir: Path = field(default_factory=Path.cwd)
+    _file_tracker: FileTracker | None = None
     guidelines: str = (
         "Use `read` before editing a file — never edit blind. "
         "For large files, use `offset` and `limit` to page through. "
@@ -79,7 +81,10 @@ class ReadTool:
         if path.is_dir():
             return self._read_dir(path)
 
-        return self._read_file(path, arguments)
+        result = self._read_file(path, arguments)
+        if not result.error and self._file_tracker is not None:
+            self._file_tracker.record_read(path)
+        return result
 
     def _read_dir(self, path: Path) -> ToolResult:
         try:
@@ -141,6 +146,7 @@ class WriteTool:
     category: ToolCategory = ToolCategory.FILE_WRITE
     working_dir: Path = field(default_factory=Path.cwd)
     _path_guard: Any = None
+    _file_tracker: FileTracker | None = None
     guidelines: str = (
         "Use `write` for creating new files or replacing entire file contents. "
         "For targeted changes to existing files, prefer `edit` instead."
@@ -175,6 +181,11 @@ class WriteTool:
             if guard_result is not None:
                 return guard_result
 
+        if self._file_tracker is not None:
+            tracker_error = self._file_tracker.check_before_write(path)
+            if tracker_error is not None:
+                return ToolResult.fail(tracker_error)
+
         content = arguments.get("content", "")
 
         try:
@@ -199,6 +210,8 @@ class WriteTool:
         lines = content.count("\n") + (
             1 if content and not content.endswith("\n") else 0
         )
+        if self._file_tracker is not None:
+            self._file_tracker.update_after_write(path)
         return ToolResult.ok(
             f"Wrote {lines} lines to {path}", path=str(path), lines=lines
         )

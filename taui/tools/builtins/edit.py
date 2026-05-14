@@ -13,6 +13,7 @@ from typing import Any
 
 from taui.tools.base import ToolCategory, ToolResult
 from taui.tools.builtins.common import resolve_path
+from taui.tools.file_tracker import FileTracker
 
 # ── Fuzzy matching chain ──────────────────────────────────────────────────────
 # LLMs are imprecise — they introduce smart quotes, whitespace changes,
@@ -151,6 +152,7 @@ class EditTool:
     category: ToolCategory = ToolCategory.FILE_WRITE
     working_dir: Path = field(default_factory=Path.cwd)
     _path_guard: Any = None
+    _file_tracker: FileTracker | None = None
     guidelines: str = (
         "Keep old_text as small as possible while still being unique in the file. "
         "Include a few lines of context around the change to ensure uniqueness. "
@@ -202,6 +204,11 @@ class EditTool:
             guard_result = self._path_guard(path)
             if guard_result is not None:
                 return guard_result
+
+        if self._file_tracker is not None:
+            tracker_error = self._file_tracker.check_before_write(path)
+            if tracker_error is not None:
+                return ToolResult.fail(tracker_error)
 
         if not path.is_file():
             return ToolResult.fail(f"Not a file: {path}")
@@ -329,6 +336,8 @@ class EditTool:
         diff_text = "".join(diff)
 
         strategies_used = list({m[3] for m in matches})
+        if self._file_tracker is not None:
+            self._file_tracker.update_after_write(path)
         return ToolResult.ok(
             diff_text if diff_text else "(no changes)",
             path=str(path),

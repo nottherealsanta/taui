@@ -11,7 +11,9 @@ from taui.tools.builtins.files import GlobTool, GrepTool, ReadTool, WriteTool
 from taui.tools.builtins.git import GitTool
 from taui.tools.builtins.mcp import McpTool
 from taui.tools.builtins.memory import MemoryTool
+from taui.tools.builtins.peek import PeekTool
 from taui.tools.builtins.question import QuestionTool
+from taui.tools.builtins.session_name import SessionNameTool
 from taui.tools.builtins.skills import SkillsTool
 from taui.tools.builtins.sub_agent import SubAgentTool
 from taui.tools.registry import ToolRegistry
@@ -29,7 +31,9 @@ def register_builtins(registry: ToolRegistry) -> None:
         GitTool(),
         McpTool(),
         MemoryTool(),
+        PeekTool(),
         QuestionTool(),
+        SessionNameTool(),
         SkillsTool(),
         SubAgentTool(),
     ]:
@@ -44,8 +48,10 @@ __all__ = [
     "GrepTool",
     "McpTool",
     "MemoryTool",
+    "PeekTool",
     "QuestionTool",
     "ReadTool",
+    "SessionNameTool",
     "SkillsTool",
     "SubAgentTool",
     "WriteTool",

@@ -11,6 +11,7 @@ import pytest
 from taui.tools.builtins import register_builtins
 from taui.tools.builtins.bash import BashTool
 from taui.tools.builtins.files import GlobTool, GrepTool, ReadTool, WriteTool
+from taui.tools.builtins.session_name import SessionNameTool
 from taui.tools.registry import ToolRegistry
 
 
@@ -262,12 +263,53 @@ class TestRegisterBuiltins:
         assert "sub_agent" in reg
         assert "skills" in reg
         assert "mcp" in reg
-        assert len(reg) == 12
+        assert "session_name" in reg
+        assert "peek" in reg
+        assert len(reg) == 14
 
     def test_schemas_exported(self):
         reg = ToolRegistry()
         register_builtins(reg)
         schemas = reg.schemas()
-        assert len(schemas) == 12
+        assert len(schemas) == 14
         names = {s["function"]["name"] for s in schemas}
-        assert names == {"read", "write", "edit", "glob", "grep", "bash", "git", "question", "memory", "skills", "sub_agent", "mcp"}
+        assert names == {"read", "write", "edit", "glob", "grep", "bash", "git", "question", "memory", "skills", "sub_agent", "mcp", "session_name", "peek"}
+
+
+class TestSessionNameTool:
+    async def test_rejects_when_unwired(self):
+        tool = SessionNameTool()
+        r = await tool.execute({"name": "foo"})
+        assert r.error
+        assert "not wired" in r.content
+
+    async def test_saves_name_via_callback(self):
+        tool = SessionNameTool()
+        saved: list[str] = []
+
+        async def set_name(name: str) -> None:
+            saved.append(name)
+
+        tool._set_name = set_name
+        r = await tool.execute({"name": "fix /sessions crash"})
+        assert not r.error
+        assert saved == ["fix /sessions crash"]
+        assert r.metadata["name"] == "fix /sessions crash"
+
+    async def test_rejects_empty(self):
+        tool = SessionNameTool()
+        tool._set_name = lambda n: None  # type: ignore[assignment]
+        r = await tool.execute({"name": "  "})
+        assert r.error
+
+    async def test_truncates_long_name(self):
+        tool = SessionNameTool()
+        saved: list[str] = []
+
+        async def set_name(name: str) -> None:
+            saved.append(name)
+
+        tool._set_name = set_name
+        r = await tool.execute({"name": "x" * 200})
+        assert not r.error
+        assert len(saved[0]) == 80

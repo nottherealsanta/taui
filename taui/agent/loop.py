@@ -22,6 +22,7 @@ from uuid import uuid4
 
 from taui.agent.context import DEFAULT_MAX_INPUT_TOKENS, compact_messages, estimate_total_tokens
 from taui.agent.types import Message
+from taui.llm_provider.errors import ContextOverflowError, QuotaExceededError
 from taui.llm_provider.types import ProviderToolCall, ProviderTurnResult
 from taui.store.events import EventType
 from taui.store.stream import StreamClient
@@ -186,6 +187,23 @@ class AgentLoop:
                 turn_results=turn_results,
             )
 
+        except ContextOverflowError as exc:
+            self.state = AgentState.ERROR
+            await self._emit(EventType.ERROR, {"error": str(exc), "error_type": "context_overflow"})
+            logger.warning("Context overflow agent_id=%s", self.agent_id)
+            raise
+        except QuotaExceededError as exc:
+            self.state = AgentState.ERROR
+            await self._emit(
+                EventType.ERROR,
+                {
+                    "error": str(exc),
+                    "error_type": "quota_exceeded",
+                    "resets_in_seconds": exc.resets_in_seconds,
+                },
+            )
+            logger.warning("Quota exceeded agent_id=%s", self.agent_id)
+            raise
         except Exception as exc:
             self.state = AgentState.ERROR
             await self._emit(EventType.ERROR, {"error": str(exc)})
