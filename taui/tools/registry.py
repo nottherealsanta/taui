@@ -111,3 +111,8 @@ class ToolRegistry:
         if not sections:
             return ""
         return "## Tool Guidelines\n\n" + "\n".join(sections)
+
+    def output_schema(self, name: str) -> dict[str, Any] | None:
+        """Get a tool's output schema, if defined."""
+        tool = self.get(name)
+        return getattr(tool, "output_schema", None)

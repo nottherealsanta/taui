@@ -160,6 +160,7 @@ class EditTool:
         "Always `read` the file first — never edit blind."
     )
     schema: dict[str, Any] = field(default=None)  # type: ignore[assignment]
+    output_schema: dict[str, Any] = field(default=None)  # type: ignore[assignment]
 
     def __post_init__(self):
         if self.schema is None:
@@ -192,6 +193,14 @@ class EditTool:
                     },
                 },
                 "required": ["path", "edits"],
+            }
+        if self.output_schema is None:
+            self.output_schema = {
+                "type": "object",
+                "properties": {
+                    "diff": {"type": "string", "description": "Unified diff of changes"},
+                    "lines_changed": {"type": "integer"},
+                },
             }
 
     async def execute(self, arguments: dict[str, Any]) -> ToolResult:

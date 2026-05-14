@@ -617,6 +617,9 @@ class AgentLoop:
                 entry["tool_call_id"] = msg.tool_call_id
             if msg.name and msg.role == "tool":
                 entry["name"] = msg.name
+            # Mark system messages as cacheable for provider-level prompt caching
+            if msg.role == "system" and not msg.tool_call_id:
+                entry["_cache"] = True
             result.append(entry)
         return result
 

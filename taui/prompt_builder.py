@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from enum import IntEnum
 from pathlib import Path
+from typing import Any
 
 MAX_INSTRUCTION_FILE_CHARS = 4_000
 MAX_TOTAL_INSTRUCTION_CHARS = 12_000
@@ -158,6 +159,7 @@ class SystemPromptBuilder:
         self._sections: list[PromptSection] = []
         self._append_sections: list[str] = []
         self._max_total_tokens = max_total_tokens
+        self._last_budget_report: list[dict[str, Any]] = []
 
     def with_project_context(self, ctx: ProjectContext) -> SystemPromptBuilder:
         self._project_context = ctx
@@ -228,7 +230,22 @@ class SystemPromptBuilder:
         return parts
 
     def render(self) -> str:
-        return "\n\n".join(s for s in self.build() if s.strip())
+        result = "\n\n".join(s for s in self.build() if s.strip())
+        import os
+        if os.environ.get("TAUI_DEBUG_PROMPT"):
+            import logging
+            logger = logging.getLogger(__name__)
+            for entry in self._last_budget_report:
+                logger.info(
+                    "prompt_section key=%s priority=%s tokens=%d included=%s",
+                    entry["key"], entry["priority"], entry["tokens"], entry["included"],
+                )
+        return result
+
+    @property
+    def budget_report(self) -> list[dict[str, Any]]:
+        """Per-section budget breakdown from the last render."""
+        return list(self._last_budget_report)
 
     def _resolve_variables(self) -> dict[str, str]:
         """Merge all sources into the final variable dict."""
@@ -281,6 +298,15 @@ class SystemPromptBuilder:
             if tokens <= remaining:
                 selected.add(idx)
                 remaining -= tokens
+
+        self._last_budget_report = []
+        for idx, section in indexed:
+            self._last_budget_report.append({
+                "key": section.key,
+                "priority": section.priority.value,
+                "tokens": section.estimated_tokens,
+                "included": idx in selected,
+            })
 
         return [self._sections[i].truncated() for i in sorted(selected)]
 
