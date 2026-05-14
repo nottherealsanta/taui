@@ -162,6 +162,7 @@ class InfoBar(Horizontal):
         self._cost = 0.0
         self._extensions_mode = False
         self._agent_id = ""
+        self._plan_mode = False
 
     def compose(self) -> ComposeResult:
         yield Static("", id="info-extension")
@@ -182,6 +183,7 @@ class InfoBar(Horizontal):
         cost: float = 0.0,
         extensions_mode: bool = False,
         agent_id: str = "",
+        plan_mode: bool = False,
     ) -> None:
         self._provider = provider
         self._model = model
@@ -190,6 +192,7 @@ class InfoBar(Horizontal):
         self._cost = cost
         self._extensions_mode = extensions_mode
         self._agent_id = agent_id
+        self._plan_mode = plan_mode
         self._sync_children()
 
     def _sync_children(self) -> None:
@@ -203,6 +206,13 @@ class InfoBar(Horizontal):
         else:
             extension.update("")
             extension.display = False
+
+        # Plan mode indicator (after extension indicator)
+        if self._plan_mode and not self._extensions_mode:
+            extension.update(
+                Text(" PLAN ", style="bold black on #d2a8ff")
+            )
+            extension.display = True
 
         self.query_one("#info-agent", AgentBadge).set_agent(self._agent_id)
         self.query_one("#info-model", Static).update(

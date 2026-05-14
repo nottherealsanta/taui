@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -65,6 +66,7 @@ class McpClient:
         self._pending: dict[int, asyncio.Future] = {}
         self._tools: list[McpTool] = []
         self._reader_task: asyncio.Task | None = None
+        self._sampling_handler: Callable | None = None
 
     @property
     def connected(self) -> bool:
@@ -154,6 +156,39 @@ class McpClient:
             raise RuntimeError(f"No response from MCP server for tool '{name}'")
         return result
 
+    async def list_resources(self) -> list[dict[str, Any]]:
+        """List resources exposed by the MCP server."""
+        result = await self._request("resources/list", {})
+        if result and "resources" in result:
+            return result["resources"]
+        return []
+
+    async def read_resource(self, uri: str) -> dict[str, Any]:
+        """Read a specific resource by URI."""
+        result = await self._request("resources/read", {"uri": uri})
+        if result is None:
+            raise RuntimeError(f"No response for resource '{uri}'")
+        return result
+
+    async def list_prompts(self) -> list[dict[str, Any]]:
+        """List prompt templates exposed by the MCP server."""
+        result = await self._request("prompts/list", {})
+        if result and "prompts" in result:
+            return result["prompts"]
+        return []
+
+    async def get_prompt(
+        self, name: str, arguments: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """Get a rendered prompt template."""
+        params: dict[str, Any] = {"name": name}
+        if arguments:
+            params["arguments"] = arguments
+        result = await self._request("prompts/get", params)
+        if result is None:
+            raise RuntimeError(f"No response for prompt '{name}'")
+        return result
+
     async def _request(
         self, method: str, params: dict[str, Any], *, timeout: float = 30.0
     ) -> dict[str, Any] | None:
@@ -221,10 +256,63 @@ class McpClient:
                         )
                     elif not future.done():
                         future.set_result(msg.get("result", {}))
+
+                # Handle sampling requests from server
+                method = msg.get("method")
+                if method == "sampling/createMessage":
+                    req_id_server = msg.get("id")
+                    if req_id_server is not None:
+                        await self._handle_sampling(
+                            req_id_server, msg.get("params", {})
+                        )
         except asyncio.CancelledError:
             pass
         except Exception:
             logger.debug("MCP read loop error", exc_info=True)
+
+    async def _handle_sampling(
+        self, req_id: int, params: dict[str, Any]
+    ) -> None:
+        """Handle a sampling/createMessage request from the server."""
+        if self._sampling_handler:
+            try:
+                result = await self._sampling_handler(params)
+                response = {
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "result": result,
+                }
+            except Exception as exc:
+                response = {
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "error": {
+                        "code": -32000,
+                        "message": str(exc),
+                    },
+                }
+        else:
+            response = {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "error": {
+                    "code": -32601,
+                    "message": "Sampling not supported",
+                },
+            }
+        data = json.dumps(response) + "\n"
+        if self._process and self._process.stdin:
+            self._process.stdin.write(data.encode())
+            await self._process.stdin.drain()
+
+    def set_sampling_handler(
+        self, handler: Callable | None
+    ) -> None:
+        """Set a callback for sampling requests.
+
+        handler(params: dict) -> dict with model response.
+        """
+        self._sampling_handler = handler
 
 
 class McpManager:
@@ -335,3 +423,37 @@ class McpManager:
             if client.connected:
                 tools.extend(client.tools)
         return tools
+
+    async def all_resources(self) -> list[dict[str, Any]]:
+        """Get resources from all connected servers."""
+        resources: list[dict[str, Any]] = []
+        for name, client in self._clients.items():
+            if client.connected:
+                try:
+                    server_resources = await client.list_resources()
+                    for r in server_resources:
+                        r["_server"] = name
+                    resources.extend(server_resources)
+                except Exception:
+                    logger.debug(
+                        "Failed listing resources from %s",
+                        name, exc_info=True,
+                    )
+        return resources
+
+    async def all_prompts(self) -> list[dict[str, Any]]:
+        """Get prompt templates from all connected servers."""
+        prompts: list[dict[str, Any]] = []
+        for name, client in self._clients.items():
+            if client.connected:
+                try:
+                    server_prompts = await client.list_prompts()
+                    for p in server_prompts:
+                        p["_server"] = name
+                    prompts.extend(server_prompts)
+                except Exception:
+                    logger.debug(
+                        "Failed listing prompts from %s",
+                        name, exc_info=True,
+                    )
+        return prompts

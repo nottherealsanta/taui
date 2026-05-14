@@ -7,12 +7,10 @@ completion and returns its final text response.
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
 from taui.tools.base import ToolCategory, ToolResult
-from taui.tools.registry import ToolRegistry
 
 
 @dataclass
@@ -40,16 +38,15 @@ class SubAgentTool:
     )
     schema: dict[str, Any] = field(default=None)  # type: ignore[assignment]
 
-    # Injected by Session.create()
+    # Injected by Session.create() — preferred path
+    _session: Any = None
+    _model: str = "default"
+
+    # Legacy fallback — direct LLM/executor injection (for tests)
     _llm: Any = None
     _stream: Any = None
     _parent_executor: Any = None
-    _model: str = "default"
     _system_prompt: str = ""
-
-    # Callbacks forwarded from the parent loop for TUI visibility
-    _on_tool_call: Callable[[str, str, dict], Awaitable[None]] | None = None
-    _on_tool_result: Callable[[str, str, str, bool], Awaitable[None]] | None = None
 
     def __post_init__(self):
         if self.schema is None:
@@ -84,52 +81,85 @@ class SubAgentTool:
         if not isinstance(task, str) or not task.strip():
             return ToolResult.fail("'task' must be a non-empty string.")
 
-        if self._llm is None or self._parent_executor is None:
-            return ToolResult.fail("Sub-agent not configured. Missing LLM or executor.")
+        if self._session is None and self._llm is None:
+            return ToolResult.fail(
+                "Sub-agent not configured. No parent session."
+            )
 
         # Resolve tool subset
-        parent_registry = self._parent_executor.registry
         requested_tools = arguments.get("tools")
         default_tools = ["read", "glob", "grep", "bash"]
+        tool_names: list[str] | None
 
         if requested_tools and isinstance(requested_tools, list):
-            tool_names = [t for t in requested_tools if t in parent_registry]
+            tool_names = [t for t in requested_tools if t != "sub_agent"]
         else:
-            tool_names = [t for t in default_tools if t in parent_registry]
-
-        # Never give sub-agent the sub_agent tool (no recursion)
-        tool_names = [t for t in tool_names if t != "sub_agent"]
-
-        if tool_names:
-            child_registry = parent_registry.subset(tool_names)
-        else:
-            child_registry = ToolRegistry()
+            tool_names = [t for t in default_tools]
 
         max_turns = min(arguments.get("max_turns", 10), 25)
 
-        # Import here to avoid circular dependency
+        # Preferred path: use Session.create_sub_session()
+        if self._session is not None:
+            try:
+                sub = await self._session.create_sub_session(
+                    tools=tool_names or None,
+                    system_prompt=(
+                        "You are a focused research agent. "
+                        "Complete the given task concisely and "
+                        "return your findings."
+                    ),
+                    model=self._model or None,
+                    max_turns=max_turns,
+                )
+                result = await sub.send(task)
+                return ToolResult.ok(
+                    result.text,
+                    turns=result.turns,
+                    state=result.state.value,
+                )
+            except Exception as exc:
+                return ToolResult.fail(f"Sub-agent failed: {exc}")
+
+        # Legacy fallback: direct AgentLoop construction
+        return await self._execute_legacy(
+            task, tool_names, max_turns
+        )
+
+    async def _execute_legacy(
+        self,
+        task: str,
+        tool_names: list[str] | None,
+        max_turns: int,
+    ) -> ToolResult:
+        """Fallback execution using direct LLM/executor injection."""
         from taui.agent.loop import AgentLoop
         from taui.tools.executor import ToolExecutor, ToolPolicy
+        from taui.tools.registry import ToolRegistry
 
-        child_executor = ToolExecutor(registry=child_registry, policy=ToolPolicy())
+        parent_registry = self._parent_executor.registry
+        names = tool_names or []
+        names = [t for t in names if t in parent_registry]
+        names = [t for t in names if t != "sub_agent"]
+
+        if names:
+            child_registry = parent_registry.subset(names)
+        else:
+            child_registry = ToolRegistry()
+
+        child_executor = ToolExecutor(
+            registry=child_registry, policy=ToolPolicy()
+        )
         child_loop = AgentLoop(
             llm=self._llm,
             executor=child_executor,
             stream=self._stream,
             system_prompt=self._system_prompt or (
-                "You are a focused research agent. Complete the given task "
-                "concisely and return your findings. You have a limited turn budget, "
-                "so be efficient."
+                "You are a focused research agent. Complete "
+                "the given task concisely."
             ),
             model=self._model,
             max_turns=max_turns,
         )
-
-        # Forward tool call/result callbacks so sub-agent activity is visible in TUI
-        if self._on_tool_call is not None:
-            child_loop._on_tool_call = self._on_tool_call
-        if self._on_tool_result is not None:
-            child_loop._on_tool_result = self._on_tool_result
 
         try:
             result = await child_loop.run(task)
