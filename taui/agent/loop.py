@@ -340,9 +340,7 @@ class AgentLoop:
         other_tcs = [tc for tc in llm_result.tool_calls if tc.name != "question"]
 
         # Execute non-question tools first
-        for tc in other_tcs:
-            await self._execute_tool(tc)
-            self._drain_steering()
+        await self._execute_tools_with_parallelism(other_tcs)
 
         # Execute question tools — batched if possible
         if question_tcs and self._on_questions_batch and len(question_tcs) > 0:
@@ -369,7 +367,51 @@ class AgentLoop:
         """Inject any pending steering messages into the conversation."""
         while self._steering_queue:
             msg = self._steering_queue.pop(0)
-            self._messages.append(Message(role="user", content=msg))
+            self._messages.append(Message(role="user", content=msg, kind="steer"))
+
+    async def _execute_tools_with_parallelism(
+        self, tool_calls: list[ProviderToolCall]
+    ) -> None:
+        """Execute tool calls, gathering consecutive parallel-safe ones."""
+        from taui.tools.base import ToolCategory
+
+        PARALLEL_SAFE = {ToolCategory.FILE_READ, ToolCategory.SEARCH}
+        i = 0
+        while i < len(tool_calls):
+            tc = tool_calls[i]
+            tool = (
+                self._executor.registry.get(tc.name)
+                if tc.name in self._executor.registry
+                else None
+            )
+            is_safe = tool and getattr(tool, "category", None) in PARALLEL_SAFE
+
+            if is_safe:
+                # Collect consecutive parallel-safe calls
+                batch = [tc]
+                j = i + 1
+                while j < len(tool_calls):
+                    next_tc = tool_calls[j]
+                    next_tool = (
+                        self._executor.registry.get(next_tc.name)
+                        if next_tc.name in self._executor.registry
+                        else None
+                    )
+                    if next_tool and getattr(next_tool, "category", None) in PARALLEL_SAFE:
+                        batch.append(next_tc)
+                        j += 1
+                    else:
+                        break
+                if len(batch) > 1:
+                    await asyncio.gather(*(self._execute_tool(t) for t in batch))
+                else:
+                    await self._execute_tool(batch[0])
+                self._drain_steering()
+                i = j
+            else:
+                await self._execute_tool(tc)
+                self._drain_steering()
+                i += 1
 
     async def _call_llm(self) -> ProviderTurnResult:
         """Call the LLM with current conversation and tool schemas."""

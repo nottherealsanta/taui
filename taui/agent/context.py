@@ -57,10 +57,21 @@ def _preserved_indexes(messages: list[Message]) -> set[int]:
     """Indexes of messages that must NOT be dropped."""
     preserve: set[int] = set()
 
-    # Latest system and user messages
-    for role in ("system", "user"):
+    # Latest system message
+    for i in range(len(messages) - 1, -1, -1):
+        if messages[i].role == "system":
+            preserve.add(i)
+            break
+
+    # Latest real user message (prefer kind="user" over "contextual"/"steer")
+    for i in range(len(messages) - 1, -1, -1):
+        if messages[i].role == "user" and getattr(messages[i], "kind", "user") == "user":
+            preserve.add(i)
+            break
+    else:
+        # Fallback: preserve any latest user message regardless of kind
         for i in range(len(messages) - 1, -1, -1):
-            if messages[i].role == role:
+            if messages[i].role == "user":
                 preserve.add(i)
                 break
 

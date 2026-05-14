@@ -15,6 +15,7 @@ from taui.tools.builtins.mcp import McpTool
 from taui.tools.builtins.memory import MemoryTool
 from taui.tools.builtins.peek import PeekTool
 from taui.tools.builtins.question import QuestionTool
+from taui.tools.builtins.repo_overview import RepoOverviewTool
 from taui.tools.builtins.session_name import SessionNameTool
 from taui.tools.builtins.skills import SkillsTool
 from taui.tools.builtins.sub_agent import SubAgentTool
@@ -44,6 +45,7 @@ def register_builtins(registry: ToolRegistry) -> None:
         WebfetchTool(),
         ApplyPatchTool(),
         LspTool(),
+        RepoOverviewTool(),
     ]:
         registry.register(tool)
 
@@ -61,6 +63,7 @@ __all__ = [
     "PeekTool",
     "QuestionTool",
     "ReadTool",
+    "RepoOverviewTool",
     "SessionNameTool",
     "SkillsTool",
     "SubAgentTool",
