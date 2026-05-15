@@ -149,12 +149,25 @@ class CodexProvider(BaseLLMProvider):
             if role == "system":
                 system = content
             elif role == "user":
-                items.append(
-                    {
-                        "role": "user",
-                        "content": [{"type": "input_text", "text": content or ""}],
-                    }
-                )
+                user_content: list[dict[str, Any]] = []
+                if isinstance(content, list):
+                    # Already content blocks (multimodal from _build_llm_messages)
+                    for block in content:
+                        if isinstance(block, dict):
+                            btype = block.get("type", "")
+                            if btype == "text":
+                                user_content.append(
+                                    {"type": "input_text", "text": block.get("text", "")}
+                                )
+                            elif btype == "image_url":
+                                url = block.get("image_url", {}).get("url", "")
+                                if url:
+                                    user_content.append(
+                                        {"type": "input_image", "image_url": url}
+                                    )
+                else:
+                    user_content.append({"type": "input_text", "text": content or ""})
+                items.append({"role": "user", "content": user_content})
             elif role == "assistant":
                 if content:
                     items.append(

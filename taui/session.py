@@ -303,14 +303,22 @@ class Session:
 
         return session
 
-    async def send(self, message: str) -> RunResult:
-        """Send a user message and get the agent's response."""
+    async def send(
+        self,
+        message: str,
+        *,
+        images: list[str] | None = None,
+    ) -> RunResult:
+        """Send a user message and get the agent's response.
+
+        *images* is an optional list of data-URL encoded images to attach.
+        """
         await self._sync_replay_from_store()
 
         # Pipeline hook: let extensions preprocess the message
         message = await self.hooks.transform("before_send", message, self)
 
-        result = await self._loop.run(message)
+        result = await self._loop.run(message, images=images)
         self._message_count += 1
         self._loaded_offset = await self._stream.get_length(self._loop.stream_id)
 

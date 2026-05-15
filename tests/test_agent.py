@@ -364,3 +364,73 @@ class TestAgentLoopCallbacks:
         await loop.run("List files")
         tool_msgs = [m for m in loop.messages if m.role == "tool"]
         assert "denied" in tool_msgs[0].content.lower()
+
+
+# ── Image / multimodal message tests ─────────────────────────────────────────
+
+
+class TestMultimodalMessages:
+    """Tests for image support in AgentLoop."""
+
+    def test_build_llm_messages_with_images(self):
+        """Messages with images should produce content-block arrays."""
+        from taui.agent.types import Message
+
+        loop = AgentLoop(
+            llm=MockLLMProvider([]),
+            executor=ToolExecutor(ToolRegistry()),
+        )
+        loop._messages = [
+            Message(role="system", content="You are helpful."),
+            Message(
+                role="user",
+                content="What is in this image?",
+                images=["data:image/png;base64,abc123"],
+            ),
+        ]
+        built = loop._build_llm_messages()
+        assert len(built) == 2
+
+        user_msg = built[1]
+        assert user_msg["role"] == "user"
+        assert isinstance(user_msg["content"], list)
+        assert len(user_msg["content"]) == 2
+        assert user_msg["content"][0] == {"type": "text", "text": "What is in this image?"}
+        assert user_msg["content"][1] == {
+            "type": "image_url",
+            "image_url": {"url": "data:image/png;base64,abc123"},
+        }
+
+    def test_build_llm_messages_without_images(self):
+        """Messages without images should remain plain strings."""
+        from taui.agent.types import Message
+
+        loop = AgentLoop(
+            llm=MockLLMProvider([]),
+            executor=ToolExecutor(ToolRegistry()),
+        )
+        loop._messages = [
+            Message(role="system", content="You are helpful."),
+            Message(role="user", content="Hello"),
+        ]
+        built = loop._build_llm_messages()
+        assert built[1]["content"] == "Hello"
+
+    @pytest.mark.asyncio
+    async def test_run_with_images(self, tmp_path):
+        """AgentLoop.run() should accept and store images."""
+        store = Store(tmp_path)
+        await store.connect()
+        stream = StreamClient(store)
+
+        llm = MockLLMProvider([_text_response("I see a cat.")])
+        loop = AgentLoop(llm=llm, executor=ToolExecutor(ToolRegistry()), stream=stream)
+
+        result = await loop.run("What is this?", images=["data:image/png;base64,abc"])
+        assert result.text == "I see a cat."
+
+        # Verify the user message has images
+        user_msgs = [m for m in loop.messages if m.role == "user"]
+        assert user_msgs[0].images == ["data:image/png;base64,abc"]
+
+        await store.close()

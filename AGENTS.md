@@ -123,7 +123,10 @@ Important boundaries:
   global `~/.taui/extensions/taui_auto_approve_<tool>.py` extension when selected
 - sidebar toggle
 - prompt history at `~/.cache/taui/prompt_history`
-- `@file` expansion before sending a message
+- `@file` expansion before sending a message (text files inlined, image files
+  attached as base64 data URLs)
+- image paste support: drag-and-drop image file paths, `@image.png` references,
+  `Ctrl+V` to paste from system clipboard
 - session replay and session picker
 - self-edit mode through `/i`
 

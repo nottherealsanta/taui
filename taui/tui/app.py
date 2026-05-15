@@ -32,9 +32,11 @@ from taui.tui.messages import (
 from taui.tui.screens.context_breakdown import ContextBreakdownScreen
 from taui.tui.tool_controller import ToolController
 from taui.tui.widgets.agent_response import AgentResponse
+from taui.tui.widgets.attachments_bar import AttachmentsBar
 from taui.tui.widgets.chat_input import ChatInput
 from taui.tui.widgets.info2 import Info2
 from taui.tui.widgets.info_bar import InfoBar, _agent_color
+from taui.tui.widgets.reply_footer import ReplyFooter
 from taui.tui.widgets.sidebar import Sidebar
 from taui.tui.widgets.spinner import ActivityProgress
 from taui.tui.widgets.tool_status import ToolStatusWidget
@@ -194,9 +196,10 @@ class TauiApp(App[None]):
         self._current_reasoning: Static | None = None
         self._reasoning_buf: str = ""
         self._streamed_text: bool = False
+        self._reply_footer: ReplyFooter | None = None
 
         # Queue for follow-up messages
-        self._queued: list[str] = []
+        self._queued: list[tuple[str, list[str] | None]] = []
         self._pending_indicators: list[tuple[str, str]] = []
 
         # History persistence
@@ -234,6 +237,7 @@ class TauiApp(App[None]):
                     pass
                 yield Info2(id="info2")
                 with Vertical(id="chat-container"):
+                    yield AttachmentsBar(id="attachments-bar")
                     chat_input = ChatInput(
                         id="chat-input",
                         language=None,
@@ -255,6 +259,10 @@ class TauiApp(App[None]):
         )
         self._set_chat_panel_visible(False)
         self.query_one(ActivityProgress).start_breathing()
+
+        chat_log = self.query_one("#chat-log", VerticalScroll)
+        chat_log.anchor()
+
         self.run_worker(
             self._initialize_session(),
             name="session_init",
@@ -380,16 +388,31 @@ class TauiApp(App[None]):
 
     # ── @file expansion ───────────────────────────────────────────────
 
-    def _expand_file_refs(self, text: str) -> str:
-        """Expand @path references to file contents."""
+    def _expand_file_refs(self, text: str) -> tuple[str, list[str] | None]:
+        """Expand @path references to file contents or image attachments.
+
+        Returns (expanded_text, images) where images is a list of data: URLs
+        for any referenced image files, or None if no images were found.
+        """
+        from taui.tui.widgets.chat_input import _IMAGE_EXTENSIONS, _encode_image_file
+
         words = text.split()
         result: list[str] = []
+        images: list[str] = []
         for word in words:
             if word.startswith("@") and len(word) > 1:
                 fpath = Path(word[1:])
                 if not fpath.is_absolute():
                     fpath = self._config.working_dir / fpath
                 if fpath.is_file():
+                    # Check if it's an image file
+                    if fpath.suffix.lower() in _IMAGE_EXTENSIONS:
+                        data_url = _encode_image_file(fpath)
+                        if data_url:
+                            images.append(data_url)
+                            result.append(f"[Image {len(images)}]")
+                            continue
+                    # Text file
                     try:
                         content = fpath.read_text()
                         result.append(f"\n```{fpath.name}\n{content}\n```\n")
@@ -397,7 +420,7 @@ class TauiApp(App[None]):
                     except (OSError, UnicodeDecodeError):
                         pass
             result.append(word)
-        return " ".join(result)
+        return " ".join(result), images or None
 
     # ── Command registry ──────────────────────────────────────────────
 
@@ -531,6 +554,7 @@ class TauiApp(App[None]):
         self._current_reasoning = None
         self._reasoning_buf = ""
         self._streamed_text = False
+        self._reply_footer = None
         self._pending_indicators.clear()
         self._tool_ctrl.reset()
 
@@ -749,9 +773,8 @@ class TauiApp(App[None]):
         if self._current_reasoning is not None:
             self._current_reasoning = None
         if self._current_response is None:
-            chat_log = self.query_one("#chat-log", VerticalScroll)
             self._current_response = AgentResponse()
-            await chat_log.mount(self._current_response)
+            await self._mount_in_reply(self._current_response)
         await self._current_response.append_text(event.text)
         self._smart_scroll()
 
@@ -763,13 +786,12 @@ class TauiApp(App[None]):
         if len(display) > 300:
             display = display[:300] + "..."
         if self._current_reasoning is None:
-            chat_log = self.query_one("#chat-log", VerticalScroll)
             self._current_reasoning = Static(
                 f"[dim italic]{escape(display)}[/dim italic]",
                 classes="reasoning-text",
                 markup=True,
             )
-            await chat_log.mount(self._current_reasoning)
+            await self._mount_in_reply(self._current_reasoning)
         else:
             self._current_reasoning.update(
                 f"[dim italic]{escape(display)}[/dim italic]"
@@ -781,6 +803,7 @@ class TauiApp(App[None]):
     @on(ChatInput.Submitted)
     async def handle_input(self, event: ChatInput.Submitted) -> None:
         text = event.value
+        images = event.images or None
 
         if text.startswith("/"):
             await self._handle_command(text)
@@ -801,13 +824,15 @@ class TauiApp(App[None]):
         # Save to history
         self._save_to_history(text)
 
-        # Expand @file references
-        text = self._expand_file_refs(text)
+        # Expand @file references (may add images)
+        text, extra_images = self._expand_file_refs(text)
+        if extra_images:
+            images = (images or []) + extra_images
 
         if self._is_processing:
             if event.queue:
                 # Alt+Enter while busy → queue
-                self._queued.append(text)
+                self._queued.append((text, images))
                 self._pending_indicators.append(("q", text))
                 await self._show_indicator("q", text)
             else:
@@ -821,15 +846,23 @@ class TauiApp(App[None]):
         # Normal send
         chat_log = self.query_one("#chat-log", VerticalScroll)
         display_text = escape(text)
+        if images:
+            labels = " ".join(f"\\[Image {i + 1}]" for i in range(len(images)))
+            image_note = f"  [dim]{labels}[/dim]"
+        else:
+            image_note = ""
         await chat_log.mount(
             Static(
-                f"[bold #e6edf3]{display_text}[/bold #e6edf3]",
+                f"[bold #e6edf3]{display_text}[/bold #e6edf3]{image_note}",
                 classes="user-message",
                 markup=True,
             )
         )
-        self._smart_scroll()
-        self._send_and_drain(text)
+        # Clear the attachments bar after submit
+        self.query_one(AttachmentsBar).clear_all()
+        # Submitting is an explicit intent to see the result — re-arm anchor.
+        self._snap_to_bottom()
+        self._send_and_drain(text, images)
 
     @on(ChatInput.AgentCycleRequested)
     async def handle_agent_cycle_requested(
@@ -851,43 +884,77 @@ class TauiApp(App[None]):
             Static(self._self_edit_scope_line(new_scope), markup=True)
         )
         self._update_status()
-        self._smart_scroll()
+
+    @on(ChatInput.ImageAttached)
+    async def handle_image_attached(
+        self,
+        event: ChatInput.ImageAttached,
+    ) -> None:
+        """Add pills to the attachments bar for newly attached images."""
+        chat_input = self.query_one(ChatInput)
+        bar = self.query_one(AttachmentsBar)
+        # Sync bar with pending images — add pills for new ones
+        existing = bar.count
+        for i in range(existing, chat_input.pending_image_count):
+            idx = i + 1
+            bar.add(f"Image {idx}", chat_input._pending_images[i])
+
+    @on(AttachmentsBar.Cleared)
+    async def handle_attachment_cleared(
+        self,
+        event: AttachmentsBar.Cleared,
+    ) -> None:
+        """Remove the corresponding pending image when a pill is dismissed."""
+        chat_input = self.query_one(ChatInput)
+        idx = event.index
+        if 0 <= idx < len(chat_input._pending_images):
+            chat_input._pending_images.pop(idx)
+
+    @on(ChatInput.InputCleared)
+    async def handle_input_cleared(self, event: ChatInput.InputCleared) -> None:
+        """Clear attachments bar when user double-presses Escape."""
+        self.query_one(AttachmentsBar).clear_all()
+
+    @on(ChatInput.CancelRequested)
+    async def handle_cancel_requested(
+        self, event: ChatInput.CancelRequested
+    ) -> None:
+        """Escape on empty input cancels streaming like Ctrl+C."""
+        await self.action_cancel_request()
 
     async def _show_indicator(self, mode: str, text: str) -> None:
         """Show a steer/queue indicator in the chat log."""
-        chat_log = self.query_one("#chat-log", VerticalScroll)
         if mode == "s":
-            await chat_log.mount(
-                Static(
-                    f"[dim]  s> {escape(text)}[/dim]",
-                    classes="steer-indicator",
-                    markup=True,
-                )
+            widget = Static(
+                f"[dim]  s> {escape(text)}[/dim]",
+                classes="steer-indicator",
+                markup=True,
             )
         else:
-            await chat_log.mount(
-                Static(
-                    f"[#f5a524]  q> {escape(text)}[/#f5a524]",
-                    classes="queue-indicator",
-                    markup=True,
-                )
+            widget = Static(
+                f"[#f5a524]  q> {escape(text)}[/#f5a524]",
+                classes="queue-indicator",
+                markup=True,
             )
+        await self._mount_in_reply(widget)
         self._smart_scroll()
 
 
     # ── Send message and drain queue ──────────────────────────────────
 
     @work(exclusive=True)
-    async def _send_and_drain(self, text: str) -> None:
+    async def _send_and_drain(
+        self, text: str, images: list[str] | None = None
+    ) -> None:
         assert self._session is not None
         self._set_busy(True)
 
         try:
-            await self._do_send(text)
+            await self._do_send(text, images=images)
 
             # Drain queued messages
             while self._queued:
-                msg = self._queued.pop(0)
+                msg, queued_images = self._queued.pop(0)
                 chat_log = self.query_one("#chat-log", VerticalScroll)
                 await chat_log.mount(
                     Static(
@@ -902,11 +969,13 @@ class TauiApp(App[None]):
                         markup=True,
                     )
                 )
-                await self._do_send(msg)
+                await self._do_send(msg, images=queued_images)
         finally:
             self._set_busy(False)
 
-    async def _do_send(self, text: str) -> None:
+    async def _do_send(
+        self, text: str, *, images: list[str] | None = None
+    ) -> None:
         """Send a single message and display the result."""
         assert self._session is not None
 
@@ -920,21 +989,20 @@ class TauiApp(App[None]):
         self._current_reasoning = None
         self._reasoning_buf = ""
         self._streamed_text = False
+        self._reply_footer = None
+        await self._begin_reply_footer()
 
         try:
-            result = await self._session.send(text)
+            result = await self._session.send(text, images=images)
 
             # Finalize any streaming response
             await self._finalize_response()
 
             # If no streaming happened (fallback), show response as markdown
             if result.text and not self._streamed_text:
-                chat_log = self.query_one("#chat-log", VerticalScroll)
-                md = Markdown(result.text)
-                await chat_log.mount(md)
+                await self._mount_in_reply(Markdown(result.text))
 
             # Turn summary
-            chat_log = self.query_one("#chat-log", VerticalScroll)
             summary_parts: list[str] = []
             tracker = self._session.cost_tracker
             if tracker.total_cost_usd > 0:
@@ -948,25 +1016,31 @@ class TauiApp(App[None]):
                     pass
             if summary_parts:
                 summary = f"[dim]{' · '.join(summary_parts)}[/dim]"
-                await chat_log.mount(
+                await self._mount_in_reply(
                     Static(summary, classes="turn-summary", markup=True)
                 )
 
             self._update_status()
             self._smart_scroll()
         except asyncio.CancelledError:
-            chat_log = self.query_one("#chat-log", VerticalScroll)
-            await chat_log.mount(
+            await self._mount_in_reply(
                 Static("[dim]Request cancelled.[/dim]", markup=True)
             )
         except Exception as exc:
-            chat_log = self.query_one("#chat-log", VerticalScroll)
-            await chat_log.mount(
+            await self._mount_in_reply(
                 Static(f"[red]Error: {exc}[/red]", markup=True)
             )
         finally:
             progress.stop()
             self._tool_ctrl.reset_section()
+            # Intentionally do NOT clear `self._reply_footer` here. Stream
+            # deltas are dispatched off Textual's message queue and a few
+            # can still be pending after `_session.send()` returns. Nulling
+            # the ref now would cause those late deltas to fall into the
+            # `footer is None` branch of `_mount_in_reply` and mount their
+            # content past the footer. The next turn's `_do_send` nulls it
+            # (and `_begin_reply_footer` rebuilds a fresh one) once we're
+            # safely past any in-flight callbacks from the prior turn.
 
     async def _finalize_response(self) -> None:
         """Finalize the current streaming response if any."""
@@ -1002,16 +1076,53 @@ class TauiApp(App[None]):
         except Exception:
             pass
 
+    # ── Per-reply footer ──────────────────────────────────────────────
+
+    async def _begin_reply_footer(self) -> None:
+        """Eagerly mount the per-turn footer at the start of `_do_send`.
+
+        Doing this once, before any callbacks can fire, guarantees a single
+        ReplyFooter per turn — no race window where two streaming callbacks
+        both think they need to create one."""
+        if self._reply_footer is not None:
+            return
+        chat_log = self.query_one("#chat-log", VerticalScroll)
+        agent_id = ""
+        model = ""
+        if self._session is not None:
+            agent_id = str(getattr(self._session._loop, "agent_id", "") or "")
+            model = self._session.model_name or ""
+        footer = ReplyFooter(agent_id, model)
+        self._reply_footer = footer
+        await chat_log.mount(footer)
+
+    async def _mount_in_reply(self, widget) -> None:
+        """Mount a widget into the chat log above the current turn's footer."""
+        chat_log = self.query_one("#chat-log", VerticalScroll)
+        footer = self._reply_footer
+        if footer is not None:
+            await chat_log.mount(widget, before=footer)
+        else:
+            await chat_log.mount(widget)
+
     # ── Smart scroll ──────────────────────────────────────────────────
 
     def _smart_scroll(self) -> None:
-        """Scroll to bottom only if content exceeds the visible area."""
+        """No-op: the chat log is anchored, so layout passes auto-pin to bottom.
+
+        Kept as a hook for callsites that historically forced scroll; user
+        scroll-up auto-releases the anchor and Textual's compositor re-engages
+        it when the user scrolls back to the end."""
+
+    def _snap_to_bottom(self) -> None:
+        """Re-engage the bottom anchor — used on explicit user actions
+        (submitting a message, running a command) so the user immediately
+        sees the result even if they had scrolled up."""
         try:
             chat_log = self.query_one("#chat-log", VerticalScroll)
         except NoMatches:
             return
-        if chat_log.virtual_size.height > chat_log.size.height:
-            chat_log.scroll_end(animate=False)
+        chat_log.anchor()
 
     # ── Slash commands ────────────────────────────────────────────────
 
@@ -1196,8 +1307,24 @@ class TauiApp(App[None]):
         tool_section: Vertical | None = None
         pending_widgets: dict[str, ToolStatusWidget] = {}
         pending_order: list[str] = []
+        turn_has_content = False
+
+        async def _flush_turn_footer() -> None:
+            """Cap the just-replayed turn with a footer like a live turn."""
+            agent_id = ""
+            model = ""
+            if self._session is not None:
+                agent_id = str(
+                    getattr(self._session._loop, "agent_id", "") or ""
+                )
+                model = self._session.model_name or ""
+            await chat_log.mount(ReplyFooter(agent_id, model))
+
         for item in self._session.replay_items:
             if item.kind == "user":
+                if turn_has_content:
+                    await _flush_turn_footer()
+                    turn_has_content = False
                 tool_section = None
                 await chat_log.mount(
                     Static(
@@ -1212,6 +1339,7 @@ class TauiApp(App[None]):
                 await chat_log.mount(resp)
                 await resp.append_text(item.text)
                 await resp.finalize()
+                turn_has_content = True
             elif item.kind == "tool_call":
                 if tool_section is None:
                     tool_section = Vertical(classes="tool-section")
@@ -1225,6 +1353,7 @@ class TauiApp(App[None]):
                 key = item.call_id or f"__pos_{len(pending_order)}"
                 pending_widgets[key] = widget
                 pending_order.append(key)
+                turn_has_content = True
             elif item.kind == "tool_result":
                 key = item.call_id if item.call_id in pending_widgets else (
                     pending_order[0] if pending_order else ""
@@ -1245,7 +1374,41 @@ class TauiApp(App[None]):
                         markup=True,
                     )
                 )
-        self._smart_scroll()
+                turn_has_content = True
+
+        if turn_has_content:
+            await _flush_turn_footer()
+        # AgentResponse (Markdown) widgets render asynchronously, so the
+        # chat-log's virtual size keeps growing for several refresh cycles
+        # after the last mount returns. Poll scroll_end on a short worker
+        # until the scroll position settles, so the user lands at the end
+        # of the transcript rather than mid-history.
+        self._pin_replay_to_end()
+
+    @work(exclusive=True, group="replay_scroll")
+    async def _pin_replay_to_end(self) -> None:
+        try:
+            chat_log = self.query_one("#chat-log", VerticalScroll)
+        except NoMatches:
+            return
+        # Re-engage anchor so any subsequent content growth also sticks.
+        chat_log.anchor()
+        last_y = -1.0
+        stable_passes = 0
+        for _ in range(40):  # up to ~2s
+            await asyncio.sleep(0.05)
+            try:
+                chat_log.scroll_end(animate=False, immediate=True, force=True)
+            except Exception:
+                return
+            y = float(chat_log.scroll_y)
+            if y == last_y:
+                stable_passes += 1
+                if stable_passes >= 3:
+                    break
+            else:
+                stable_passes = 0
+                last_y = y
 
     # ── Actions ───────────────────────────────────────────────────────
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from textual.containers import Vertical, VerticalScroll
+from textual.containers import Vertical
 
 from taui.tui.messages import ToolEnded, ToolStarted
 from taui.tui.widgets.tool_status import ToolStatusWidget
@@ -74,10 +74,9 @@ class ToolController:
     async def handle_tool_started(self, event: ToolStarted) -> None:
         await self._app._finalize_response()
 
-        chat_log = self._app.query_one("#chat-log", VerticalScroll)
         if self._current_tool_section is None:
             self._current_tool_section = Vertical(classes="tool-section")
-            await chat_log.mount(self._current_tool_section)
+            await self._app._mount_in_reply(self._current_tool_section)
 
         widget = ToolStatusWidget(event.tool_name, event.args_str)
         await self._current_tool_section.mount(widget)

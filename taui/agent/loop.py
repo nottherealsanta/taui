@@ -171,11 +171,18 @@ class AgentLoop:
 
     # ── Public API ────────────────────────────────────────────────────────
 
-    async def run(self, user_message: str) -> RunResult:
+    async def run(
+        self,
+        user_message: str,
+        *,
+        images: list[str] | None = None,
+    ) -> RunResult:
         """Run the full agent loop for a user message.
 
         Returns when the agent produces a final text response,
         hits max turns, or encounters an unrecoverable error.
+
+        *images* is an optional list of data-URL encoded images to attach.
         """
         # Set up stream
         if self._stream:
@@ -189,8 +196,13 @@ class AgentLoop:
             )
 
         # Add user message
-        self._messages.append(Message(role="user", content=user_message))
-        await self._emit(EventType.USER_MESSAGE, {"text": user_message})
+        self._messages.append(
+            Message(role="user", content=user_message, images=images or None)
+        )
+        event_data: dict[str, Any] = {"text": user_message}
+        if images:
+            event_data["images"] = images
+        await self._emit(EventType.USER_MESSAGE, event_data)
 
         turn_results: list[TurnResult] = []
 
@@ -603,7 +615,17 @@ class AgentLoop:
         result: list[dict[str, Any]] = []
         for msg in self._messages:
             entry: dict[str, Any] = {"role": msg.role}
-            if msg.content is not None:
+            if msg.images and msg.content is not None:
+                # Multimodal: emit content-block array
+                blocks: list[dict[str, Any]] = [
+                    {"type": "text", "text": msg.content},
+                ]
+                for image_url in msg.images:
+                    blocks.append(
+                        {"type": "image_url", "image_url": {"url": image_url}}
+                    )
+                entry["content"] = blocks
+            elif msg.content is not None:
                 entry["content"] = msg.content
             if msg.tool_calls:
                 entry["tool_calls"] = [

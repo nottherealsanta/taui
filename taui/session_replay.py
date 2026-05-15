@@ -56,7 +56,9 @@ def replay_events(events: list[Event]) -> ReplayTranscript:
         data = event.data
         if event.type == EventType.USER_MESSAGE:
             text = str(data.get("text", ""))
-            messages.append(Message(role="user", content=text))
+            raw_images = data.get("images")
+            images = raw_images if isinstance(raw_images, list) else None
+            messages.append(Message(role="user", content=text, images=images))
             items.append(ReplayItem(kind="user", text=text))
         elif event.type == EventType.ASSISTANT_MESSAGE:
             text = str(data.get("text") or "")

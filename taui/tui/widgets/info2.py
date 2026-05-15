@@ -452,7 +452,7 @@ class Info2(ScrollableContainer):
         pct = (total_tokens / max_tokens * 100) if max_tokens else 0.0
         tree: Tree[str] = Tree(
             f"Context {total_tokens:,}/{max_tokens:,} tokens ({pct:.1f}%)",
-            id="context-tree",
+            classes="context-tree",
         )
         tree.root.expand()
 

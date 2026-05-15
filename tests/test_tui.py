@@ -518,30 +518,73 @@ class TestFileExpansion:
         f.write_text("file content here")
         config = Config(working_dir=tmp_path)
         app = TauiApp(config)
-        result = app._expand_file_refs(f"@{f.name}")
+        result, images = app._expand_file_refs(f"@{f.name}")
         assert "file content here" in result
         assert "```test.txt" in result
+        assert images is None
 
     def test_expand_nonexistent_file(self, tmp_path):
         from taui.config import Config
         config = Config(working_dir=tmp_path)
         app = TauiApp(config)
-        result = app._expand_file_refs("@nonexistent.txt")
+        result, images = app._expand_file_refs("@nonexistent.txt")
         assert result == "@nonexistent.txt"
+        assert images is None
 
     def test_no_expansion_without_at(self, tmp_path):
         from taui.config import Config
         config = Config(working_dir=tmp_path)
         app = TauiApp(config)
-        result = app._expand_file_refs("hello world")
+        result, images = app._expand_file_refs("hello world")
         assert result == "hello world"
+        assert images is None
 
     def test_bare_at_not_expanded(self, tmp_path):
         from taui.config import Config
         config = Config(working_dir=tmp_path)
         app = TauiApp(config)
-        result = app._expand_file_refs("@")
+        result, images = app._expand_file_refs("@")
         assert result == "@"
+        assert images is None
+
+    def test_expand_image_file(self, tmp_path):
+        """@image.png references should produce a data: URL image."""
+        import base64
+
+        from taui.config import Config
+        img = tmp_path / "screenshot.png"
+        png_data = base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4"
+            "2mP8/58BAwAI/AL+hc2rNAAAAABJRU5ErkJggg=="
+        )
+        img.write_bytes(png_data)
+        config = Config(working_dir=tmp_path)
+        app = TauiApp(config)
+        result, images = app._expand_file_refs("@screenshot.png")
+        assert "[Image 1]" in result
+        assert images is not None
+        assert len(images) == 1
+        assert images[0].startswith("data:image/png;base64,")
+
+    def test_expand_mixed_text_and_image(self, tmp_path):
+        """@file refs can mix text and image files."""
+        import base64
+
+        from taui.config import Config
+        txt = tmp_path / "notes.txt"
+        txt.write_text("hello")
+        img = tmp_path / "pic.png"
+        img.write_bytes(base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4"
+            "2mP8/58BAwAI/AL+hc2rNAAAAABJRU5ErkJggg=="
+        ))
+        config = Config(working_dir=tmp_path)
+        app = TauiApp(config)
+        result, images = app._expand_file_refs("look @notes.txt and @pic.png")
+        assert "```notes.txt" in result
+        assert "[Image 1]" in result
+        assert images is not None
+        assert len(images) == 1
 
 
 # ── History persistence ──────────────────────────────────────────────
@@ -577,6 +620,112 @@ class TestChatInput:
         msg_q = ChatInput.Submitted("follow up", queue=True)
         assert msg_q.value == "follow up"
         assert msg_q.queue is True
+
+    def test_submitted_message_carries_images(self):
+        msg = ChatInput.Submitted("look at this", images=["data:image/png;base64,abc"])
+        assert msg.images == ["data:image/png;base64,abc"]
+
+        msg_no_img = ChatInput.Submitted("just text")
+        assert msg_no_img.images == []
+
+    def test_attach_and_clear_images(self):
+        ci = ChatInput()
+        assert ci.pending_image_count == 0
+        ci.attach_image("data:image/png;base64,abc")
+        assert ci.pending_image_count == 1
+        ci.attach_image("data:image/jpeg;base64,def")
+        assert ci.pending_image_count == 2
+        ci.clear_images()
+        assert ci.pending_image_count == 0
+
+
+class TestEncodeImageFile:
+    def test_encode_png(self, tmp_path):
+        import base64
+
+        from taui.tui.widgets.chat_input import _encode_image_file
+        img = tmp_path / "test.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 10)
+        result = _encode_image_file(img)
+        assert result is not None
+        assert result.startswith("data:image/png;base64,")
+        # Decode the base64 part to verify round-trip
+        b64_part = result.split(",", 1)[1]
+        decoded = base64.b64decode(b64_part)
+        assert decoded == img.read_bytes()
+
+    def test_encode_jpeg(self, tmp_path):
+        from taui.tui.widgets.chat_input import _encode_image_file
+        img = tmp_path / "photo.jpg"
+        img.write_bytes(b"\xff\xd8\xff" + b"\x00" * 10)
+        result = _encode_image_file(img)
+        assert result is not None
+        assert result.startswith("data:image/jpeg;base64,")
+
+    def test_encode_nonexistent(self, tmp_path):
+        from taui.tui.widgets.chat_input import _encode_image_file
+        result = _encode_image_file(tmp_path / "nope.png")
+        assert result is None
+
+
+class TestExtractImagePaths:
+    def test_single_image_path(self, tmp_path):
+        from taui.tui.widgets.chat_input import _extract_image_paths
+        img = tmp_path / "shot.png"
+        img.write_bytes(b"\x89PNG" + b"\x00" * 10)
+        images: list[str] = []
+        result = _extract_image_paths(str(img), images)
+        assert result == "[Image 1]"
+        assert len(images) == 1
+
+    def test_no_image_path(self, tmp_path):
+        from taui.tui.widgets.chat_input import _extract_image_paths
+        images: list[str] = []
+        result = _extract_image_paths("hello world", images)
+        assert result == "hello world"
+        assert len(images) == 0
+
+    def test_quoted_path(self, tmp_path):
+        from taui.tui.widgets.chat_input import _extract_image_paths
+        img = tmp_path / "shot.png"
+        img.write_bytes(b"\x89PNG" + b"\x00" * 10)
+        images: list[str] = []
+        result = _extract_image_paths(f'"{img}"', images)
+        assert result == "[Image 1]"
+        assert len(images) == 1
+
+
+class TestAttachmentsBar:
+    def test_add_and_count(self):
+        from taui.tui.widgets.attachments_bar import AttachmentsBar
+        bar = AttachmentsBar()
+        assert bar.count == 0
+        bar._items = []  # ensure clean state
+        idx = bar.add("Image 1", "data:image/png;base64,abc")
+        assert idx == 0
+        assert bar.count == 1
+        assert bar.items[0].label == "Image 1"
+
+    def test_remove(self):
+        from taui.tui.widgets.attachments_bar import AttachmentsBar
+        bar = AttachmentsBar()
+        bar._items = []
+        bar.add("Image 1", "data:a")
+        bar.add("Image 2", "data:b")
+        data = bar.remove(0)
+        assert data == "data:a"
+        assert bar.count == 1
+        assert bar.items[0].label == "Image 2"
+
+    def test_clear_all(self):
+        from taui.tui.widgets.attachments_bar import AttachmentsBar
+        bar = AttachmentsBar()
+        bar._items = []
+        bar.add("Image 1", "data:a")
+        bar.add("Image 2", "data:b")
+        data = bar.clear_all()
+        assert data == ["data:a", "data:b"]
+        assert bar.count == 0
 
     def test_initial_state(self):
         ci = ChatInput()
@@ -833,7 +982,7 @@ class TestInfo2:
             info2.show_context_tree(messages, 180000)
             await pilot.pause()
 
-            tree = info2.query_one("#context-tree", Tree)
+            tree = info2.query_one(Tree)
             assert info2.mode == Info2Mode.CONTEXT
             assert info2.is_active
             assert "Context" in str(tree.root.label)
@@ -871,6 +1020,12 @@ class TestInfo2:
                 for child in assistant.children
             )
             assert any("tool" in str(child.label) for child in assistant.children)
+
+            info2.show_context_tree(messages, 180000)
+            await pilot.pause()
+
+            assert len(info2.query(Tree)) == 1
+            assert info2.query_one(Tree).has_class("context-tree")
 
     async def test_show_approval_focuses_info2(self):
         from textual.app import App, ComposeResult

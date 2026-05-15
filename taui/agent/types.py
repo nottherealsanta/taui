@@ -17,3 +17,4 @@ class Message:
     tool_call_id: str | None = None  # For role="tool" responses
     name: str | None = None  # Tool name for role="tool"
     kind: str = "user"  # "user" | "contextual" | "steer"
+    images: list[str] | None = None  # data: URLs for inline images
