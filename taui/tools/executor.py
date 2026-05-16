@@ -233,6 +233,14 @@ class ToolExecutor:
                     result=ToolResult.fail("Tool execution rejected by user.")
                 )
 
+        # Schema-level validation — catch missing required args before the tool
+        # raises a KeyError, which would otherwise be retried 3× for FILE_READ /
+        # SEARCH categories and surface as a cryptic "Tool 'x' failed: 'path'".
+        missing = _missing_required_args(tool, arguments)
+        if missing:
+            msg = f"Tool {tool_name!r} called with missing required argument(s): " + ", ".join(missing)
+            return Completed(result=ToolResult.fail(msg))
+
         # Execute with optional retry for idempotent categories
         start = time.perf_counter()
         result = await self._execute_with_retry(tool_name, tool, arguments)
@@ -289,3 +297,14 @@ class ToolExecutor:
 
         assert last_result is not None
         return last_result
+
+
+def _missing_required_args(tool: Any, arguments: dict[str, Any]) -> list[str]:
+    """Return the list of required schema fields that aren't in `arguments`."""
+    schema = getattr(tool, "schema", None)
+    if not isinstance(schema, dict):
+        return []
+    required = schema.get("required") or []
+    if not isinstance(required, list):
+        return []
+    return [name for name in required if name not in arguments]
