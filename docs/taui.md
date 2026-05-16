@@ -1,73 +1,186 @@
 # Taui
-There are many coding harnesses out there. Taui is the one you can reshape.
 
-Taui is a highly customizable agentic coding interface. Instead of adapting your workflow to a fixed assistant, you control the interface itself: UI, agent, tools, prompts, and storage.
+Taui is a customizable agentic coding interface for developers. It runs entirely as a
+full-screen Textual TUI — there is no web UI, REST API, or other interface. The terminal
+is the product.
 
-Taui is a full-screen Textual TUI. Running `taui` starts the terminal interface: sidebar, scrollable chat, live streaming, tool status, approvals, questions, steering, and queued follow-up messages.
+## Philosophy
 
-The defaults are intentionally focused. The goal is not to ship several competing shells, but to provide one polished interface with extension points for tools, prompts, commands, skills, storage, and agent behavior.
+**You control the agent.** Taui is a harness, not a product with an opinionated
+workflow. The tools the agent can call, the permissions required for each tool, the
+system prompt, the agent variant in use, the extensions loaded, and the skills available
+are all under your control without modifying any source code.
 
-## How It Works
+**The store is the truth.** All agent activity — messages, tool calls, results, usage —
+is written to an append-only SQLite event store at `.taui/store.db`. Session replay,
+cost tracking, and transcript export all read from the store. There is no second event
+bus.
 
-1. Start from a prompt, plan, spec, or tangle.
-2. Ask the agent to inspect, plan, edit, or implement.
-3. Spawn sub-agents when a task should be split into focused sub-work.
-4. Let Taui call tools, update state, and feed results back into the conversation.
-5. If the interface itself gets in your way, enter `/i` to reshape it — change tools, prompts, UI, or storage. Changes land as extensions that can't break the core.
+**Extensions, not forks.** Customization happens through the extension surface
+(`register(ctx)`). Extensions can register tools, commands, hooks, skills, agent
+variants, context strategies, and providers. Broken extensions are isolated; they cannot
+crash the agent.
 
-## Self-Edit Mode
-
-The central idea: `/i` enters self-edit mode, where Taui can modify its own UI, agent behavior, tools, prompts, and storage.
-
-Self-edits are treated as extensions, not patches to the core. When you modify Taui through `/i`, the changes land in an extension layer that sits on top of the base system:
-
-- **Extensions are isolated.** A broken extension (bad tool, crashing hook, malformed prompt) does not take down the core agent loop, the Store, or the TUI. The base system always remains functional.
-- **Extensions are reversible.** Every self-edit is logged to the Store. You can list active extensions, disable one, or roll back to the base state.
-- **Extensions are scoped.** An extension can be project-local (only active in this workspace) or global (active everywhere). The agent can create either.
-- **The core is protected.** Self-edit mode cannot modify the core agent loop, the Store schema, or the transport layer. It can extend tools, add UI components, modify prompts, and register new commands — but the base system is not in the blast radius.
-
-If the agent breaks something through `/i`, start Taui with extensions disabled once that recovery flag is available, then fix or remove the offending extension from `.taui/extensions/`.
-
-See [self-edit.md](architecture_docs/self-edit.md) for the full extension system design — scopes, lifecycle, loading order, and what self-edit can and cannot touch.
+**Safety by default.** Destructive tools (`bash`, `write`, `edit`) require confirmation
+before they run. Permissions can be layered (agent → project → global) using a TOML DSL.
+Read-only agent variants block file writes entirely. Self-edit mode confines writes to
+`.taui/`.
 
 ## Core Capabilities
 
-- Sub-agents can be spawned for focused sub-tasks; each child completes by calling the sub-agent-only return-to-parent tool with required context, and the parent waits for that handoff before continuing.
-- Tools are part of the system surface, so Taui can create or extend tools and use them in later conversations.
-- TUI customization can change layout, panes, and interaction patterns instead of forcing a fixed workflow.
-- Storage customization lets you change how Taui stores specs, tangles, history, or other project state.
-- Agent memory allows agents to retain useful context from prior conversation state and use it in later decisions.
-- LSP integration can provide code intelligence such as completion, navigation, and symbol lookup.
-- Clarification and amendment workflows let agents ask concrete questions when they hit ambiguity instead of guessing, and propose spec amendments when implementation conflicts with the current plan.
-- Tool policies control which tools are auto-approved, which require confirmation, and which are forbidden. Policies are configured per tool, per agent, per project, or globally — most specific wins. See [architecture.md](architecture.md) for default policies per tool.
-- Skill system lets agents install, load, and use skills as reusable capability packages that extend what they can do. Skill tokens are estimated as chat_count / 4 = n_tokens; if current context plus estimated skill tokens exceeds 80 percent of window size, Context Manager compaction runs before injection. Skill context is not pinned by default.
+### Full-Screen TUI
 
-## Advanced Workflows
+The only interface. Provided by [Textual](https://github.com/Textualize/textual).
+Features include:
 
-- Branch-like message history lets you fork a conversation at any point and explore alternate paths.
-- Prompt-level customization lets you tune how the agent behaves.
-- Taui can support spec-driven or tangle-driven workflows where prose, planning, and implementation stay close together.
-- Durable store makes agent sessions an append-only event log in SQLite. Clients can reconnect, replay from any offset, and multiple windows can watch the same session. Token streaming survives page refresh.
-- Single-process runtime is the default: the TUI and agent runtime run in one Python process to keep streaming and coordination simple. Components are modular with explicit interfaces, so they can be separated into distinct processes later without redesigning boundaries.
-- Session replay lets you replay or audit any past agent run step by step, since everything is logged to the same SQLite store.
-- Git-aware workflows let agents branch, commit, diff, and open PRs as part of their tool surface, not just edit files.
+- Scrollable chat log with streaming markdown responses
+- Reasoning and text delta streaming
+- Compact tool status display with FIFO start/end matching
+- Inline approval prompts for tool confirmation
+- `@file` expansion (text files inlined, image files as base64 data URLs)
+- Image paste via `Ctrl+V`, drag-and-drop, or `@image.png` references
+- Prompt history persisted at `~/.cache/taui/prompt_history`
+- Session picker and replay (`/sessions`)
+- Sidebar toggle (`Ctrl+B`)
+- Context breakdown modal (`Ctrl+X`)
 
-## Design Goal
+Key bindings (verify against `TauiApp.BINDINGS` in `taui/tui/app.py`):
 
-Taui is meant to be a coding interface you can evolve, not just use. The default app is minimal on purpose. The architecture is the product.
+| Binding | Action |
+|---------|--------|
+| `Ctrl+Q` | Quit |
+| `Ctrl+N` | New session |
+| `Ctrl+C` | Cancel active request or approval |
+| `Ctrl+B` | Toggle sidebar |
+| `Ctrl+X` | Context breakdown |
+| `Escape` | Exit self-edit mode |
 
----
+### Agent Loop
 
-## Future Extensions
+The agent runs a think → tool → observe cycle (`taui/agent/loop.py`):
 
-See [future.md](future.md) for ideas the architecture can support but that are not current requirements.
+1. Sends the conversation to the LLM provider
+2. Executes tool calls returned by the LLM (FILE_READ and SEARCH tools run in parallel)
+3. Feeds results back and repeats
+4. Stops when the LLM produces a final text response or `max_turns` is reached
 
----
+### Sub-Agents
 
-## Self-Edit & Extensions
+The `sub_agent` builtin tool spawns a child `Session` with an optional tool subset,
+system prompt, model, and turn limit. The child session's stream has `parent_id` set to
+the parent's stream for lineage tracking.
 
-See [self-edit.md](architecture_docs/self-edit.md) for the extension system — how `/i` works, extension scopes, lifecycle, and boundaries.
+### Tools
 
-## Architecture
+Builtin tools cover file read/write/edit, search (glob, grep), bash execution, git
+operations, MCP, memory, question, skills, sub-agents, and LSP. Extensions can register
+additional tools via `ctx.tools.register(my_tool)`.
 
-See [architecture.md](architecture.md) for the full architecture, component descriptions, diagrams, and per-agent vs shared scoping.
+### Extensions
+
+Python files loaded from `~/.taui/extensions/*.py` (global) and
+`.taui/extensions/*.py` (project). Each file must define `register(ctx)`. Project
+extensions override global ones with the same name. Extensions are isolated — errors are
+logged, not re-raised. See `docs/build-your-harness.md` for the full registration API.
+
+### Skills
+
+Markdown prompt files discovered from:
+
+- `~/.config/agents/skills/<name>/SKILL.md`
+- `~/.taui/skills/<name>/SKILL.md`
+- `.agents/skills/<name>/SKILL.md`
+- `.taui/skills/<name>/SKILL.md`
+
+Loaded lazily on demand. Extensions can bundle skills via `ctx.skills.add_path(...)`.
+
+### Memory
+
+The `memory` builtin tool writes structured facts to a persistent memory store that
+survives across sessions.
+
+### MCP
+
+The `mcp` builtin tool connects to MCP servers and exposes their tools to the agent.
+
+### LSP (Experimental)
+
+The `lsp` builtin tool wraps an `LspManager` (`taui/lsp/`). No active consumers exist
+yet; the surface is experimental.
+
+### Session Replay
+
+All sessions are replayable from the store. `/sessions` opens a picker; selecting a
+session rebuilds the conversation from its stream. Fork and resume are first-class
+operations.
+
+### Permissions
+
+Three-layer permission DSL: agent → project → global. Patterns use fnmatch glob syntax.
+Rules are expressed in TOML. See `docs/permission-dsl.md`.
+
+### Hooks
+
+Extensions can intercept UI rendering, message pipelines, tool calls, session start, and
+approval decisions. See `docs/extension-hooks.md`.
+
+### Agent Variants
+
+Named bundles of (model, system_prompt, tool_names, read_only, max_turns, permission).
+Builtin variants: `build` (full access) and `plan` (read-only). Custom variants can be
+added via TOML files in `.taui/agents/` or via `ctx.agents.register()`. See
+`docs/agents.md`.
+
+### Cost Tracking
+
+Every LLM response includes usage data. `CostTracker` accumulates input/output tokens
+and cost estimates per model. `/cost` shows the running total for the current session.
+
+### Slash Commands
+
+Registered in `taui/commands/builtins.py`. Relevant commands include `/help`, `/cost`,
+`/compact`, `/clear`, `/model`, `/provider`, `/extensions`, `/i`, `/sessions`, `/new`,
+`/reload`, `/copy`, `/export`, `/hotkeys`, `/verbose`, `/debug questions`.
+
+## Self-Edit Mode (`/i`)
+
+`/i` enters self-edit mode. The active session loop is replaced with a specialist
+`AgentLoop` built by `taui/self_edit/factory.py` using playbooks from
+`taui/self_edit/playbooks/`.
+
+**Safety guarantees:**
+
+- Writes are confined to `.taui/` — the `_extensions_guard` path guard on `write` and
+  `edit` tools rejects any path outside the project's `.taui/` directory.
+- Self-edit snapshots the prior session state (`_SessionSnapshot`) before entering, and
+  restores it on exit via `Escape`.
+- Scope can be toggled between `project` (`.taui/`) and `global` (`~/.taui/`) within
+  self-edit mode.
+- Core taui source files are structurally unreachable from self-edit mode.
+
+The intended use is creating or modifying extension files, skills, commands, and tools
+through the extension surface.
+
+## System Prompt
+
+Template-based with `{variable}` substitution. Variables are populated from working
+directory, date, platform, git state, tool metadata, and discovered instruction files
+(`AGENTS.md`, `.taui/instructions.md`). Override the entire template by creating
+`.taui/system_prompt.md`. See `docs/system-prompt.md`.
+
+## Context Management
+
+Automatic compaction keeps conversation history within the LLM's token budget. Two
+phases: soft (drop oldest to 80%) and hard (drop oldest to 90%). Manual compaction via
+`/compact` uses a more aggressive 60%/70% ratio. `Ctrl+X` shows a per-section
+breakdown. See `docs/context-strategies.md`.
+
+## Quick Start
+
+```bash
+uv run taui                        # default provider and model
+uv run taui -p copilot -m <model>  # explicit provider and model
+uv run taui -d /path/to/project    # specific working directory
+uv run taui --session <id>         # resume a session
+uv run taui --login                # authenticate with a provider
+```

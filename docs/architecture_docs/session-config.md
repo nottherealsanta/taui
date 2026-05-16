@@ -1,210 +1,314 @@
-# Session, Config & Cost
+# Session and Configuration
 
-Session is the composition root — it wires together provider, tools, store, and agent loop into one usable unit.
+## Session as Composition Root
+
+`Session` (`taui/session.py`) is the central wiring point for a single interactive agent
+session. It owns and connects:
+
+- An authenticated LLM provider
+- The tool registry and executor
+- An `AgentLoop` (the think → tool → observe state machine)
+- The SQLite event store and stream client
+- Extension registry and hook registry
+- A cost tracker
+- Self-edit and variant sub-systems
+
+`Session.__init__` takes all components as keyword arguments. `Session.create()` is the
+only supported way to build a fully wired session from a `Config`.
 
 ---
 
-## Session (`taui/session.py`)
-
-### Composition Root Pattern
-
-`Session` has two constructors:
+## `Session.create()` Wiring Sequence
 
 ```python
-# Production: creates and wires everything
 session = await Session.create(config)
-
-# Testing: inject all dependencies directly
-session = Session(
-    config=config,
-    provider=mock_llm,
-    registry=registry,
-    executor=executor,
-    store=store,
-    stream=stream,
-    loop=loop,
-)
 ```
 
-This pattern means tests never need auth, never touch the network, and never create real databases.
+1. **Provider** — `_create_provider(config)` runs `create_provider(config.provider)` in
+   a thread and returns an authenticated LLM provider.
 
-### What `Session.create()` Does
+2. **Tool registry** — `ToolRegistry` is created and builtin tools are registered via
+   `register_builtins(registry)`. `working_dir` is set on every tool that declares it.
 
-```python
-async def create(config: Config | None = None) -> Session:
-    # 1. Load config (defaults + file + overrides)
-    config = config or Config.load()
+3. **File tracker** — A `FileTracker` is wired into `read`, `write`, and `edit` tools.
 
-    # 2. Authenticate + create LLM provider
-    provider = _create_provider(config)
-    #   → get_credentials(config.provider) for auth
-    #   → CopilotProvider or CodexProvider
+4. **LSP manager** — `LspManager(config.working_dir)` is created and injected into the
+   `lsp` tool if present.
 
-    # 3. Build tool registry
-    registry = ToolRegistry()
-    register_builtins(registry)            # 9 tools
-    for tool in registry:
-        tool.working_dir = config.working_dir
+5. **Tool policy** — A `ToolPolicy` is built with `PolicyDecision` overrides:
+   - `auto_approve_reads=True` auto-approves `read`, `glob`, and `grep`.
+   - `config.tool_policy` provides explicit per-tool string overrides (validated against
+     `PolicyDecision` enum).
+   - `config.permission` populates a `PermissionRuleset` at the `"project"` layer.
 
-    # 4. Create tool executor with default policy
-    policy = ToolPolicy()
-    executor = ToolExecutor(registry=registry, policy=policy)
+6. **ToolExecutor** — `ToolExecutor(registry, policy)` is created. A shared
+   `TruncationStore` is wired into the executor and the `peek` tool.
 
-    # 5. Build system prompt with template + context
-    builder = SystemPromptBuilder()
-    ctx = ProjectContext.discover_with_git(config.working_dir)
-    builder.with_project_context(ctx)
-    builder.with_tools(registry)           # Tool snippets + guidelines
-    system_prompt = builder.render()
+7. **System prompt** — `SystemPromptBuilder` discovers `ProjectContext` (with git
+   metadata when available), injects tool metadata and adaptive guidelines, then renders
+   the final prompt string.
 
-    # 6. Open event store
-    store = Store(config.working_dir)
-    await store.connect()
-    stream = StreamClient(store)
+8. **Store and stream** — `Store(config.working_dir)` is connected (WAL mode, creates
+   `.taui/store.db`). A `StreamClient` is created over the store.
 
-    # 7. Create agent loop
-    loop = AgentLoop(
-        llm=provider,
-        executor=executor,
-        stream=stream,
-        system_prompt=system_prompt,
-        model=config.model,
-        max_turns=config.max_turns,
-    )
+9. **Extension registry** — `ExtensionRegistry` is created with `include_builtins=True`
+   and any `config.extension_dirs`. `discover()` finds all extension files.
 
-    return Session(config=..., provider=..., ...)
-```
+10. **Variant and context strategy registries** — `AgentVariantRegistry` discovers from
+    `.taui/agents/`. `ContextStrategyRegistry` and `ProviderRegistrationProxy` are
+    created for extension use.
 
-### Public API
+11. **Extension loading** — `ext_registry.load_all(tools, commands=None, hooks, policy,
+    agents, context, providers)` loads all discovered extensions, which may register
+    tools, hooks, policy overrides, variants, and context strategies.
 
-```python
-result = await session.send("Fix the bug in main.py")
-# → RunResult(text, turns, state, turn_results)
-# Also records cost from each turn's usage data
+12. **System prompt hook** — If any extension registered a `system_prompt` hook, the
+    prompt is run through `hooks.transform("system_prompt", prompt, None)`.
 
-await session.close()
-# → Commits and closes the SQLite store
+13. **AgentLoop** — Created with `agent_id=session_id`, provider, executor, stream,
+    system prompt, model, and `max_turns`.
 
-session.cost_tracker          # CostTracker instance
-session.provider_name         # "copilot" or "codex"
-session.model_name            # "claude-sonnet-4.6"
-session.working_dir           # Path
-```
+14. **Session instantiation** — The `Session` object is constructed with all wired
+    components.
 
-### Provider Creation
+15. **Post-wiring** — Self-edit prompt and executor are built, variant registry is
+    attached, `configure_builtin_extensions(session)` is called, `session_name` tool is
+    wired with a callback, and `_refresh_loop_integrations()` injects the skills and
+    result-processor pipeline into the loop.
 
-```python
-def _create_provider(config: Config):
-    creds = get_credentials(config.provider)  # Device flow / PKCE OAuth
-    match config.provider:
-        case "copilot": return CopilotProvider(credentials=creds)
-        case "codex":   return CodexProvider(credentials=creds)
-```
+16. **Skill paths from extensions** — Any extension-bundled skill paths are registered
+    into the skill registry.
 
-Providers are duck-typed — Session and AgentLoop accept `llm: Any`, calling `create_turn()` on it.
+17. **Store registration** — Session is written to the store and its stream is
+    materialized. The initial stream offset is saved so future resumes work even if no
+    messages were sent.
 
 ---
 
-## Config (`taui/config.py`)
+## Session Public API
+
+### `send(message, *, images=None) -> RunResult`
+
+Sends a user message and drives the agent loop for one conversation turn.
+
+1. `_sync_replay_from_store()` — checks if the stream has grown externally and replays
+   if needed.
+2. `hooks.transform("before_send", message, self)` — extension preprocessing.
+3. `loop.run(message, images=images)` — the agent loop runs to completion.
+4. `hooks.transform("after_result", result, self)` — extension postprocessing.
+5. Token usage from `result.turn_results` is recorded into `cost_tracker`.
+6. Session metadata is updated in the store.
+
+### `new_session()`
+
+Discards the current loop and creates a fresh one with the same provider, executor, and
+store. Chooses the appropriate system prompt based on current mode (self-edit /
+extensions / normal). Registers the new session in the store and runs the
+`on_session_start` hook.
+
+### `toggle_extensions_mode() -> bool`
+
+Toggles `extensions_mode`. Applies or removes the write guard on `write` and `edit`
+tools (restricts writes to `.taui/` when active). Creates a new loop with the extensions
+system prompt or the normal system prompt. Runs the `on_mode_change` hook.
+
+### `toggle_self_edit_mode() -> bool`
+
+**Entering**: snapshots the current session state as `_SessionSnapshot` (session ID,
+loop, message count, loaded offset). Creates a new loop with the self-edit prompt and
+executor using `agent_id="SEF"`. Registers the self-edit session in the store.
+
+**Exiting**: restores the snapshot — the original loop and message count are put back,
+and `_replay_stream()` re-loads the transcript so the TUI can re-render it. If no
+snapshot exists (self-edit was the initial mode), a fresh normal session is created.
+
+### `resume_session(session_id) -> bool`
+
+Loads session metadata from the store. Validates that a replayable stream exists.
+Creates a new loop with the correct prompt and executor for the session's mode. Sets
+`loop.stream_id` to the stored stream ID, calls `_replay_stream()`, and updates last
+active timestamp. Returns `False` and sets `last_resume_error` on any failure.
+
+### `list_sessions() -> list[dict]`
+
+Delegates to `store.list_sessions_with_parents()`. Returns metadata dicts including
+`session_id`, `description`, `mode`, `message_count`, `created_at`, `last_active`, and
+`parent_session_id`.
+
+### `reload_extensions() -> list[str]`
+
+Hot-reloads all extensions without restarting the session:
+1. Removes extension-added tools from the registry; restores builtins.
+2. Resets policy overrides to the base config values.
+3. Clears all hooks.
+4. Unloads, re-discovers, and re-loads all extension files.
+5. Re-applies `working_dir` to new tools.
+6. Re-applies the write guard if in extensions mode.
+
+Returns the names of the newly loaded (non-builtin) extensions.
+
+### `fork(*, at_offset=None) -> Session`
+
+Creates a branched session. A new stream with `parent_id` set to the current stream is
+materialized. Events up to `at_offset` are copied. A new `AgentLoop` replays the copied
+messages. The forked `Session` shares the same provider, registry, executor, store, and
+cost tracker as the parent.
+
+### `create_sub_session(*, name, tools, system_prompt, model, max_turns) -> Session`
+
+Creates a child session (used by the sub-agent tool). The sub-stream has `parent_id`
+set to the current session's stream. If `tools` is provided, a registry subset is
+used. All overrides default to the parent's values.
+
+### `add_result_processor(fn)`
+
+Registers a post-processor `fn(tool_name, call_id, result) -> ToolResult` that runs
+after each tool execution. Processors are chained in registration order. Used for secret
+redaction, content tagging, and similar cross-cutting concerns.
+
+### `switch_self_edit_scope() -> str`
+
+Toggles `_self_edit_scope` between `"global"` and `"project"` while in self-edit mode.
+Saves the new default to `SelfEditStore`. Rebuilds the self-edit prompt and executor,
+and updates the current loop's executor and system prompt in place.
+
+### `switch_variant(name) -> bool`
+
+Applies a named agent variant from `_variant_registry`. Builds an effective tool
+registry (subset or read-only filter), creates a new `ToolExecutor`, optionally applies
+variant permission rules, and updates the loop's executor and system prompt in place.
+Returns `False` if the variant is not found.
+
+---
+
+## `_SessionSnapshot`
 
 ```python
 @dataclass
-class Config:
-    provider: str = "copilot"
-    model: str = "claude-sonnet-4.6"
-    system_prompt: str = DEFAULT_SYSTEM_PROMPT    # Fallback only
-    max_turns: int = 50
-    working_dir: Path = Path.cwd()
-    auto_approve_reads: bool = True
+class _SessionSnapshot:
+    session_id: str
+    loop: AgentLoop
+    message_count: int
+    loaded_offset: int
+    last_replay_items: list[ReplayItem]
 ```
 
-### Config Loading
-
-```python
-Config.load(**overrides)
-```
-
-Layered: defaults → `~/.config/taui/config.toml` → keyword overrides.
-
-The config file is loaded via `taui.llm_provider.config.load_config()` which reads TOML from `~/.config/taui/config.toml`. Only the `[taui]` section is used for Config fields.
-
-```toml
-# ~/.config/taui/config.toml
-[taui]
-provider = "copilot"
-model = "claude-sonnet-4.6"
-max_turns = 50
-```
-
-**Note**: `system_prompt` in Config is a fallback. In production, `Session.create()` uses `SystemPromptBuilder` which constructs a richer prompt with template variables.
+A frozen view of the main session state saved when entering self-edit mode. Stored in
+`Session._pre_self_edit_state`. Restored verbatim by `toggle_self_edit_mode()` on exit.
+The `last_replay_items` field holds the replay items at snapshot time (typically empty
+because items are only populated on resume, not on plain `send`).
 
 ---
 
-## Cost Tracking (`taui/cost.py`)
+## Config
 
-### Pricing Table
+`Config` (`taui/config.py`) is a plain dataclass holding all runtime settings.
 
-```python
-_PRICING = {
-    "claude-sonnet-4.6":           (3.00, 15.00),    # $/1M tokens (in, out)
-    "claude-opus-4-20250514":      (15.00, 75.00),
-    "gpt-4o":                      (2.50, 10.00),
-    "gpt-4o-mini":                 (0.15, 0.60),
-    ...
-    "_default":                    (3.00, 15.00),     # Fallback
-}
-```
+### Fields
 
-### CostTracker
+| Field | Type | Default | Purpose |
+|-------|------|---------|---------|
+| `provider` | `str` | `"copilot"` | LLM provider name |
+| `model` | `str` | `""` | Model ID; resolved to provider default if empty |
+| `system_prompt` | `str` | `DEFAULT_SYSTEM_PROMPT` | Fallback system prompt (tests; `Session.create` uses `SystemPromptBuilder`) |
+| `max_turns` | `int` | `50` | Maximum agent loop iterations per `send()` |
+| `session_id` | `str \| None` | `None` | When set, `TauiApp` resumes this session on startup |
+| `working_dir` | `Path` | `Path.cwd()` | Project directory; root for relative tool paths and `.taui/` storage |
+| `auto_approve_reads` | `bool` | `True` | Auto-approves `read`, `glob`, `grep` |
+| `tool_policy` | `dict[str, str]` | `{}` | Per-tool `PolicyDecision` strings (e.g. `{"bash": "ask"}`) |
+| `permission` | `dict[str, dict[str, str]]` | `{}` | Pattern-based permission ruleset |
+| `verbose_tools` | `bool` | `True` | Show full tool output (toggled by `/verbose`) |
+| `theme` | `dict` | `{}` | Style override map |
+| `keybindings` | `dict` | `{}` | Custom keybinding map |
+| `extension_dirs` | `list[str]` | `[]` | Additional extension search directories |
 
-```python
-tracker = CostTracker()
-tracker.record(model="claude-sonnet-4.6", input_tokens=1500, output_tokens=200)
+### Config Layering
 
-tracker.total_input_tokens     # 1500
-tracker.total_output_tokens    # 200
-tracker.total_cost_usd         # 0.007500
-tracker.turn_count             # 1
-tracker.summary()              # "tokens: 1,500in / 200out | cost: $0.0075 | turns: 1"
-tracker.to_dict()              # {"total_input_tokens": 1500, ...}
-```
+`Config.load(**overrides)` applies settings in priority order (later sources win):
 
-### Integration with Session
-
-After each `session.send()`, token usage from every turn is recorded:
-
-```python
-for tr in result.turn_results:
-    if tr.usage:
-        self.cost_tracker.record(
-            model=self.config.model,
-            input_tokens=tr.usage.get("input_tokens", 0),
-            output_tokens=tr.usage.get("output_tokens", 0),
-        )
-```
+1. **Defaults** — dataclass field defaults above.
+2. **TOML config file** — loaded by `taui.llm_provider.config.load_config()`, which
+   reads `~/.taui/config.toml` and/or a project `.taui/config.toml`. Fields under the
+   `[taui]` section are mapped directly to config fields.
+3. **CLI / environment overrides** — passed as keyword arguments to `load()`. Only
+   non-`None` values override. These come from `taui/main.py` argparse parsing.
+4. **Model default** — if `model` is still empty after all layers, `get_default_model(provider)`
+   selects the best available model for the provider.
 
 ---
 
-## Extension Points for Self-Edit
+## CostTracker
 
-Extensions can hook into Session at these points:
+`CostTracker` (`taui/cost.py`) accumulates token usage and estimated USD cost for all
+LLM turns within a session.
 
-1. **Registry access**: `session._registry` — register/unregister tools
-2. **Policy access**: `session._executor._policy` — set tool policies
-3. **Prompt modification**: Build a new `SystemPromptBuilder` and update `session._loop._system_prompt`
-4. **Config overrides**: `Config.load(model="gpt-4o")` to change models
+### `_PRICING` Table
 
-Extensions should NOT touch:
-- `session._provider` (authentication is internal)
-- `session._store` / `session._stream` (event log is infrastructure)
-- `session._loop._messages` (conversation state is managed by the loop)
+A module-level `dict[str, tuple[float, float]]` mapping model ID to
+`(input_$/1M, output_$/1M)`:
 
----
+| Model | Input $/1M | Output $/1M |
+|-------|-----------|-------------|
+| `claude-sonnet-4.6` | 3.00 | 15.00 |
+| `claude-sonnet-4-20250514` | 3.00 | 15.00 |
+| `claude-opus-4-20250514` | 15.00 | 75.00 |
+| `claude-3-5-sonnet-20241022` | 3.00 | 15.00 |
+| `claude-3-5-haiku-20241022` | 0.80 | 4.00 |
+| `gpt-4o` | 2.50 | 10.00 |
+| `gpt-4o-mini` | 0.15 | 0.60 |
+| `o1` | 15.00 | 60.00 |
+| `o3-mini` | 1.10 | 4.40 |
+| `_default` | 3.00 | 15.00 |
 
-## Files
+### `estimate_cost(model, input_tokens, output_tokens) -> float`
 
-| File | Purpose |
-|------|---------|
-| `taui/session.py` | Session: composition root, create(), send(), close() |
-| `taui/config.py` | Config: layered configuration dataclass |
-| `taui/cost.py` | estimate_cost(), TurnRecord, CostTracker |
+Looks up the model in `_PRICING`. Falls back to a prefix match (e.g. `"claude-sonnet"`
+matches `"claude-sonnet-4.6"`). Uses `_default` if no match. Returns
+`(input_tokens * input_rate + output_tokens * output_rate) / 1_000_000`.
+
+### `TurnRecord`
+
+```python
+@dataclass(slots=True)
+class TurnRecord:
+    model: str
+    input_tokens: int
+    output_tokens: int
+    cost_usd: float
+    timestamp: float   # time.monotonic()
+```
+
+One entry per LLM turn.
+
+### `CostTracker`
+
+```python
+@dataclass(slots=True)
+class CostTracker:
+    turns: list[TurnRecord]
+    total_input_tokens: int
+    total_output_tokens: int
+    total_cost_usd: float
+```
+
+**`record(*, model, input_tokens, output_tokens, cost_usd=None) -> TurnRecord`**
+
+Estimates cost if not provided. Appends a `TurnRecord` and updates the running totals.
+Called by `Session.send()` for each `TurnResult` that carries usage data.
+
+**`summary() -> str`**
+
+Returns a human-readable string:
+```
+tokens: 12,345in / 678out | cost: $0.0023 | turns: 3
+```
+
+**`to_dict() -> dict`**
+
+Returns `{"total_input_tokens", "total_output_tokens", "total_cost_usd", "turn_count"}`
+with cost rounded to 6 decimal places.
+
+**`turn_count`** — property returning `len(self.turns)`.
+
+`Session.cost_tracker` is accessible to the TUI (for the InfoBar cost display and
+`/cost` command) and to `turn_summary` hooks.

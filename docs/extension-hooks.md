@@ -1,88 +1,182 @@
-# Extension Lifecycle Hooks
+# Extension Hooks
 
-Taui extensions interact with the runtime through hooks — callback functions
-registered during extension loading. This document catalogs every hook point.
+Hooks let extensions customize every aspect of taui without modifying source code.
+They are registered via the `hooks` argument in `register(ctx)` and executed by
+`HookRegistry` in `taui/hooks.py`.
 
-## Registration
+## `HookRegistry` API
 
-Hooks are registered in `register(ctx)`:
-
-```python
-def register(ctx):
-    ctx.hooks.add("system_prompt", my_transform)
-    ctx.hooks.add("before_send", my_preprocessor)
-    ctx.hooks.add("on_tool_call", my_observer)
-```
-
-Or using the convenience methods on `ctx.hooks`:
+### Registration
 
 ```python
-def register(ctx):
-    ctx.hooks.system_prompt(lambda prompt, session: prompt + "\nExtra.")
-    ctx.hooks.before_send(lambda msg, session: msg.upper())
-    ctx.hooks.on_tool_call(lambda name, args, session: print(f"Tool: {name}"))
+# Generic registration — any hook name
+hooks.add(name: str, fn: Callable) -> None
+
+# Typed convenience registrars (call hooks.add under the hood)
+hooks.prompt(fn)
+hooks.banner(fn)
+hooks.status(fn)
+hooks.turn_summary(fn)
+hooks.before_send(fn)
+hooks.after_result(fn)
+hooks.system_prompt(fn)
+hooks.on_tool_call(fn)
+hooks.on_tool_result(fn)
+hooks.on_session_start(fn)
+hooks.on_mode_change(fn)
+hooks.on_approval(fn)
 ```
+
+### Inspection
+
+```python
+hooks.has(name: str) -> bool          # True if at least one hook registered
+hooks.count(name: str) -> int         # Number of hooks under name
+hooks.hook_names -> list[str]         # Sorted list of all registered names
+hooks.clear() -> None                 # Remove all hooks (used during /reload)
+```
+
+### Execution
+
+All execution methods are `async`. Individual hook errors are logged and skipped —
+a broken extension cannot crash the agent.
+
+| Method | Semantics |
+|--------|-----------|
+| `await hooks.run(name, *args)` | Call all hooks, return list of all results |
+| `await hooks.collect(name, *args)` | Like `run`, but filter out `None` results |
+| `await hooks.transform(name, value, *args)` | Pipeline — each hook receives and returns `value` |
+| `await hooks.first(name, *args)` | Return first non-`None` result |
+
+Sync and async hook functions are both supported. `HookRegistry._call()` awaits
+coroutines automatically.
 
 ## Hook Categories
 
-### UI Hooks (sync, return `str | None`)
+### UI Hooks
+
+Sync functions returning `str | None`. Used to customize rendered text.
 
 | Hook | Signature | Purpose |
 |------|-----------|---------|
-| `prompt` | `(session) -> str` | Override the input prompt text |
-| `banner` | `(session) -> str` | Add a line to the startup banner |
-| `status` | `(session) -> str` | Add a segment to the status bar |
-| `turn_summary` | `(result, session) -> str` | Add text to the turn summary line |
+| `prompt` | `(session) -> str \| None` | Override the input prompt text |
+| `banner` | `(session) -> str \| None` | Add a line to the startup banner |
+| `status` | `(session) -> str \| None` | Add a segment to the status bar |
+| `turn_summary` | `(result, session) -> str \| None` | Add a segment to the turn summary line |
 
-### Pipeline Hooks (sync or async, transform data)
+Execution: `collect` (non-`None` results gathered and displayed).
 
-| Hook | Signature | Purpose |
-|------|-----------|---------|
-| `system_prompt` | `(prompt, session) -> prompt` | Transform the system prompt |
-| `before_send` | `(message, session) -> message` | Preprocess user input |
-| `after_result` | `(result, session) -> result` | Postprocess agent output |
+### Pipeline Hooks
 
-### Observer Hooks (sync or async, side-effects only)
+Sync or async. Each hook receives the current value and must return it (possibly
+transformed). Hooks chain in registration order via `transform`.
 
 | Hook | Signature | Purpose |
 |------|-----------|---------|
-| `on_tool_call` | `(name, args, session)` | Called before tool execution |
-| `on_tool_result` | `(name, content, is_error, session)` | Called after tool execution |
-| `on_session_start` | `(session)` | New session created |
-| `on_session_end` | `(session)` | Session closed |
-| `on_mode_change` | `(mode, session)` | Mode toggled (normal/extensions/self_edit) |
-| `on_compaction` | `(removed, before_tokens, after_tokens, session)` | Context compacted |
+| `system_prompt` | `(prompt: str, session) -> str` | Modify the system prompt after assembly |
+| `before_send` | `(message: str, session) -> str` | Transform user input before sending to LLM |
+| `after_result` | `(result: RunResult, session) -> RunResult` | Transform the agent's result after each run |
 
-### Override Hooks (sync or async, first non-None wins)
+`system_prompt` runs once during `Session.create()` after the `SystemPromptBuilder`
+renders the prompt.
 
-| Hook | Signature | Purpose |
-|------|-----------|---------|
-| `on_approval` | `(name, args, session) -> bool` | Auto-approve or deny tool calls |
+`before_send` and `after_result` run on every `session.send()` call.
+
+### Observer Hooks
+
+Sync or async. Return value is ignored. Used for side-effects: logging, metrics,
+notifications.
+
+| Hook | Signature | When fired |
+|------|-----------|-----------|
+| `on_tool_call` | `(name, args, session)` | Before each tool execution |
+| `on_tool_result` | `(name, content, is_error, session)` | After each tool execution |
+| `on_session_start` | `(session)` | After a new session is created or resumed |
+| `on_mode_change` | `(mode: str, session)` | When the session mode changes (normal/extensions/self_edit) |
+| `on_compaction` | `(removed, before_tokens, after_tokens, session)` | After context compaction (if registered) |
+
+`on_tool_call` and `on_tool_result` fire from within `AgentLoop._execute_tool()`.
+`on_session_start` fires from `session.new_session()`.
+`on_mode_change` fires from `session.toggle_extensions_mode()`.
+
+### Override Hooks
+
+Sync or async. First non-`None` return value wins via `first`.
+
+| Hook | Signature | Return | Purpose |
+|------|-----------|--------|---------|
+| `on_approval` | `(name: str, args: dict, session) -> bool \| None` | `True` = approve, `False` = deny, `None` = defer | Auto-approve or auto-deny tool calls |
+
+`on_approval` is consulted by `AgentLoop._execute_tool()` when a tool returns
+`NeedsApproval`. If no hook returns a non-`None` value, the TUI's approval prompt is
+shown to the user.
 
 ## Result Post-Processors
 
-Separate from hooks, `Session.add_result_processor(fn)` registers a function
-that transforms every `ToolResult` before it enters the stream:
+Post-processors run after each tool execution, before the result is written to the
+stream. They are separate from hooks but serve a similar purpose.
 
 ```python
-from taui.tools.base import ToolResult
-
-def redact_secrets(tool_name: str, call_id: str, result: ToolResult) -> ToolResult:
-    content = result.content.replace(os.environ.get("API_KEY", ""), "[REDACTED]")
-    return ToolResult.ok(content) if not result.error else ToolResult.fail(content)
-
-session.add_result_processor(redact_secrets)
+session.add_result_processor(fn)
+# fn signature: (tool_name: str, call_id: str, result: ToolResult) -> ToolResult
 ```
 
-## Execution Order
+Use cases: secret redaction, content tagging, output normalization.
 
-1. `system_prompt` — runs once when building the prompt
-2. `before_send` — runs before each user message is sent
-3. `on_tool_call` — runs before each tool execution
-4. `on_tool_result` — runs after each tool execution
-5. Result post-processors — run after tool execution, before stream
-6. `after_result` — runs after the full agent run completes
+Processors run in registration order. They are wired into `AgentLoop._on_result_process`
+by `session._refresh_loop_integrations()`.
 
-Multiple hooks of the same type run in registration order. Pipeline hooks
-chain — each receives the previous hook's output. Observer hooks run
-independently; exceptions are logged and swallowed.
+## Registering Hooks in Extensions
+
+```python
+# .taui/extensions/my_hooks.py
+
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+def register(ctx):
+    # UI: custom prompt symbol
+    ctx.hooks.prompt(lambda session: "➜ ")
+
+    # UI: show message count in status bar
+    ctx.hooks.status(lambda session: f"msgs:{session._message_count}")
+
+    # Pipeline: prepend context to every user message
+    def add_context(message, session):
+        return f"[project: my-app]\n{message}"
+
+    ctx.hooks.before_send(add_context)
+
+    # Pipeline: append instructions to the system prompt
+    ctx.hooks.system_prompt(
+        lambda prompt, session: prompt + "\n\nAlways cite file:line references."
+    )
+
+    # Observer: log all tool calls
+    async def log_tool_call(name, args, session):
+        logger.info("tool_call name=%s", name)
+
+    ctx.hooks.on_tool_call(log_tool_call)
+
+    # Override: auto-approve all read operations
+    def auto_approve_reads(name, args, session):
+        if name in ("read", "glob", "grep"):
+            return True
+        return None
+
+    ctx.hooks.on_approval(auto_approve_reads)
+```
+
+## Custom Hook Names
+
+You can define arbitrary hooks for inter-extension communication:
+
+```python
+# Fire a custom hook
+await session.hooks.run("my_custom_event", payload, session)
+
+# Register a handler
+ctx.hooks.add("my_custom_event", my_handler)
+```

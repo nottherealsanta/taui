@@ -1,6 +1,8 @@
 # Extension System
 
-Extensions are Python files that register additional tools, commands, or behaviors. They follow a convention-based loader — each `.py` file in an extensions directory defines a `register()` function.
+Extensions are Python files that register additional tools, commands, hooks, skills, and
+other behaviors. Each `.py` file in an extensions directory exposes a `register(ctx)`
+entry point that the loader calls at startup.
 
 ---
 
@@ -9,18 +11,30 @@ Extensions are Python files that register additional tools, commands, or behavio
 ```
 ExtensionRegistry.discover()
   │
-  ├── Scan ~/.taui/extensions/*.py (global)
-  ├── Scan .taui/extensions/*.py (project, overrides global)
-  └── Filter: .py files only, skip _-prefixed files
+  ├── Scan ~/.taui/extensions/*.py       (global)
+  ├── Scan .taui/extensions/*.py         (project, overrides global)
+  └── Filter: .py only, skip _-prefixed, builtin names reserved
           │
           ▼
-ExtensionRegistry.load_all(tools, commands, hooks)
+ExtensionRegistry.load_all(tools, commands, hooks, policy, agents, context, providers)
   │
-  ├── Import each extension module via importlib
-  ├── Call register(ctx) or a legacy register(...) signature
-  ├── Catch exceptions per-extension (isolation)
-  └── Log results (loaded / failed / missing register())
+  ├── importlib.util.spec_from_file_location() — module named taui_ext_{name}
+  ├── Call register(ctx: ExtensionContext)
+  ├── Catch all exceptions per-extension (isolation)
+  └── Collect skill_paths from ctx.skills after register() returns
 ```
+
+---
+
+## Discovery Paths
+
+| Scope | Path | Precedence |
+|-------|------|------------|
+| Global | `~/.taui/extensions/*.py` | Loaded first |
+| Project | `.taui/extensions/*.py` | Overrides global (same name) |
+
+Files beginning with `_` are ignored. Non-`.py` files are ignored. Builtin extension
+names are reserved — a file with a conflicting name is skipped with a warning.
 
 ---
 
@@ -33,26 +47,57 @@ ExtensionRegistry.load_all(tools, commands, hooks)
 └── _helpers.py       # Skipped (_-prefixed)
 ```
 
-Each file must define:
+---
+
+## register(ctx) Entry Point
+
+Every extension must define:
 
 ```python
 def register(ctx):
-    """Called by the extension loader at startup."""
-    ctx.tools.register(MyCustomTool())
+    ctx.tools.add(my_tool)
     if ctx.commands:
-        ctx.commands.register(MyCommand())
+        ctx.commands.add(my_cmd)
+    ctx.hooks.banner(lambda session: "hello")
+    ctx.skills.add_path("skills/my-skill.md")
 ```
+
+`ctx` is an `ExtensionContext` instance. All fields are optional at call sites — check
+before using when the capability may be absent.
 
 ---
 
-## Discovery Paths
+## ExtensionContext
 
-| Scope | Path | Precedence |
-|-------|------|------------|
-| Global | `~/.taui/extensions/*.py` | Loaded first |
-| Project | `.taui/extensions/*.py` | Overrides global (same name) |
+```python
+@dataclass
+class ExtensionContext:
+    tools: Any                  # ToolRegistry | None
+    commands: Any               # CommandRegistry | None
+    hooks: Any                  # HookRegistry | None
+    policy: Any = None          # ToolPolicy | None
+    skills: SkillContribution = field(default_factory=SkillContribution)
+    agents: Any = None          # AgentVariantRegistry | None
+    context: Any = None         # ContextStrategyRegistry | None  (future)
+    providers: Any = None       # ProviderRegistrationProxy | None
+```
 
-Files prefixed with `_` are ignored (helpers, utilities). Non-`.py` files are ignored.
+`skills` is always present. Relative paths passed to `ctx.skills.add_path()` are
+resolved against the extension file's own directory.
+
+---
+
+## SkillContribution
+
+```python
+class SkillContribution:
+    def add_path(self, path: str | Path) -> None: ...
+    @property
+    def paths(self) -> list[Path]: ...
+```
+
+Accumulates skill paths contributed during `register()`. After the call returns,
+`ExtensionRegistry` stores the collected paths on the `Extension` dataclass.
 
 ---
 
@@ -61,73 +106,83 @@ Files prefixed with `_` are ignored (helpers, utilities). Non-`.py` files are ig
 ```python
 @dataclass(slots=True)
 class Extension:
-    name: str           # Filename stem (without .py)
-    path: Path          # Full path to the .py file
-    scope: str          # "global" or "project"
-    enabled: bool       # Whether to load (default True)
-    loaded: bool        # Whether register() succeeded
-    error: str | None   # Error message if loading failed
+    name: str                   # Filename stem (without .py); None path for builtins
+    path: Path | None           # Full path to the .py file; None for builtins
+    scope: str                  # "global", "project", or "builtin"
+    description: str = ""
+    enabled: bool = True
+    loaded: bool = False        # True after register() succeeds
+    error: str | None = None    # Error message if loading failed
+    skill_paths: list[Path] = field(default_factory=list)
 ```
 
 ---
 
-## Loading Behavior
+## ExtensionRegistry API
 
-1. **Import**: `importlib.util.spec_from_file_location()` loads the module
-2. **Call**: `register(tools=..., commands=...)` is called
-3. **Isolation**: Exceptions are caught per-extension — a broken extension doesn't prevent others from loading
-4. **Idempotent**: `load_all()` skips already-loaded extensions
-
-### Module Naming
-
-Extension modules are loaded as `taui_ext_{name}` in `sys.modules` to avoid collisions with core modules.
-
----
-
-## Wiring (Session.create)
+| Method / Property | Description |
+|-------------------|-------------|
+| `discover()` | Scans extension directories, resets the registry |
+| `load_all(tools, commands, hooks, policy, agents, context, providers)` | Loads all enabled extensions; returns names of those that loaded |
+| `get(name)` | Returns a single `Extension` or `None` |
+| `list_all()` | Returns all `Extension` objects in sorted name order |
+| `loaded_extensions()` | Returns only extensions where `loaded=True` |
+| `unload_all()` | Marks all extensions unloaded and removes modules from `sys.modules` |
+| `names` | Sorted list of extension names |
 
 ```python
-ext_registry = ExtensionRegistry(config.working_dir, include_builtins=True)
-ext_registry.discover()
-ext_registry.load_all(tools=registry, commands=None, hooks=hooks)
+registry = ExtensionRegistry(working_dir, include_builtins=True)
+registry.discover()
+registry.load_all(tools=tool_registry, commands=cmd_registry, hooks=hook_registry)
 ```
 
-Extensions are loaded after all builtin tools are registered and wired, so they can use `tools.register_or_replace()` to override builtins if needed.
+---
 
-The TUI command registry is not currently passed through `Session.create()`, so `commands` is `None` during session creation. The `/extensions` command provides runtime visibility for discovered and loaded extensions.
+## Module Naming
+
+Extension modules are loaded under the name `taui_ext_{name}` in `sys.modules`. This
+prevents collisions with first-party packages. On `unload_all()` these entries are
+removed so a subsequent `load_all()` re-executes the module code cleanly.
+
+---
+
+## Error Isolation
+
+- Exceptions inside `register()` are caught per-extension.
+- A broken extension sets `ext.error` and logs a warning; other extensions and the core
+  agent loop are unaffected.
+- Missing `register()` function sets `ext.error = "Missing register() function"`.
+- `taui --no-extensions` skips all extension loading for recovery.
+
+---
+
+## /reload Hot-Reload
+
+`/reload` calls `unload_all()` followed by `discover()` and `load_all()` on the live
+registry. This picks up new, modified, or deleted extension files without restarting
+the session.
 
 ---
 
 ## /extensions Command
 
-The `/extensions` slash command lists all discovered extensions and their status:
+`/extensions` lists every discovered extension and its status:
 
 ```
 Extensions (3):
   deploy [project] — loaded
   todo_counter [project] — loaded
-  broken_ext [global] — error
-    error: SyntaxError: invalid syntax
+  broken_ext [global] — error: SyntaxError: invalid syntax
 ```
 
 ---
 
 ## Self-Edit Mode (/i)
 
-The `/i` command enters self-edit mode where the agent can create extensions. See [self-edit.md](self-edit.md) for the full design.
-
-When in `/i` mode, the agent:
-1. Generates a `.py` file implementing the extension
-2. Writes it to `.taui/extensions/` (project) or `~/.taui/extensions/` (global)
-3. The extension is available on next session start
-
----
-
-## Recovery
-
-- A recovery launch flag should skip all extension loading
-- Broken extensions are logged and skipped — core always starts
-- `/extensions` shows which extensions failed and why
+`/i` enters a specialist loop that writes extension files as its only output. See
+[self-edit.md](self-edit.md) for the full design. Created files appear under
+`.taui/extensions/` (project scope) or `~/.taui/extensions/` (global scope) and are
+available after the next `/reload` or session restart.
 
 ---
 
@@ -148,45 +203,25 @@ class TodoCounter:
     schema: dict[str, Any] = field(default_factory=lambda: {
         "type": "object",
         "properties": {
-            "pattern": {
-                "type": "string",
-                "description": "Pattern to search for (default: TODO)",
-            }
+            "pattern": {"type": "string", "description": "Pattern to search for"},
         },
     })
 
     async def execute(self, arguments: dict[str, Any]) -> ToolResult:
         import subprocess
         pattern = arguments.get("pattern", "TODO")
-        result = subprocess.run(
-            ["grep", "-r", "--count", pattern, "."],
-            capture_output=True, text=True
-        )
+        result = subprocess.run(["grep", "-r", "--count", pattern, "."],
+                                capture_output=True, text=True)
         return ToolResult.ok(result.stdout or "No matches found.")
 
-def register(tools, commands):
-    tools.register(TodoCounter())
+def register(ctx):
+    ctx.tools.add(TodoCounter())
 ```
 
-## Example: Custom Command Extension
+## Example: Bundled Skill Extension
 
 ```python
-# .taui/extensions/deploy.py
-from dataclasses import dataclass
-from taui.commands.registry import CommandContext, CommandResult
-
-@dataclass(slots=True)
-class DeployCommand:
-    name: str = "deploy"
-    description: str = "Run project deploy script"
-
-    async def execute(self, ctx: CommandContext) -> CommandResult:
-        import subprocess
-        result = subprocess.run(["./deploy.sh"], capture_output=True, text=True)
-        if result.returncode == 0:
-            return CommandResult.ok(result.stdout)
-        return CommandResult.fail(result.stderr)
-
-def register(tools, commands):
-    commands.register(DeployCommand())
+# ~/.taui/extensions/testing_skill.py
+def register(ctx):
+    ctx.skills.add_path("skills/testing.md")  # resolved relative to this file
 ```

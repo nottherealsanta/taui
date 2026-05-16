@@ -278,12 +278,45 @@ project directory so `.taui/store.db` writes are intentional.
 
 ## Documentation
 
-Update docs when behavior changes:
+Update docs when behavior changes. If this file conflicts with implementation, either
+fix the implementation or update this file in the same change.
 
-- User-facing basics: `README.md`
-- High-level architecture: `docs/architecture.md`
-- Component details: `docs/architecture_docs/*.md`
-- Agent-facing workflow: this `AGENTS.md`
+### Documentation Index
 
-If this file conflicts with implementation, either fix the implementation or update this
-file in the same change.
+| Document | Path | Covers |
+| --- | --- | --- |
+| **User-facing README** | `README.md` | Install, getting started, providers, key bindings, slash commands, config, extensions, skills |
+| **Project overview** | `docs/taui.md` | Philosophy, core capabilities, design goals |
+| **Agent-facing guide** | this `AGENTS.md` | Quick start, architecture, source map, conventions, testing, pitfalls |
+
+### Architecture Deep-Dives (`docs/architecture_docs/`)
+
+| Document | Path | Covers |
+| --- | --- | --- |
+| Agent loop | `docs/architecture_docs/agent-loop.md` | State machine, message types, turn lifecycle, callbacks, compaction, steering, variants |
+| Store & streams | `docs/architecture_docs/store-streams.md` | SQLite schema, EventType enum, Store/StreamClient API, live-tail, sessions |
+| Tool system overview | `docs/architecture_docs/tools/overview.md` | Tool protocol, ToolResult, ToolRegistry, ToolExecutor, policy, truncation |
+| Built-in tools | `docs/architecture_docs/tools/builtins.md` | All 20 built-in tools with parameters and behavior |
+| TUI | `docs/architecture_docs/tui.md` | TauiApp layout, messages, ToolController, widgets, screens, streaming |
+| Session & config | `docs/architecture_docs/session-config.md` | Session composition root, Config dataclass, CostTracker |
+| Prompt builder | `docs/architecture_docs/prompt-builder.md` | Template system, variables, adaptive guidelines, instruction discovery |
+| Extensions | `docs/architecture_docs/extensions.md` | Discovery, loading, ExtensionContext, ExtensionRegistry API |
+| Skills | `docs/architecture_docs/skills.md` | Discovery paths, Skill dataclass, SkillRegistry, SkillsTool |
+| Self-edit mode | `docs/architecture_docs/self-edit.md` | /i mode, scoped tools, extension-only output, SelfEditInventory |
+| Sub-agents | `docs/architecture_docs/sub-agents.md` | Sub-agent architecture, task tool, recursion prevention |
+| LLM provider | `docs/architecture_docs/llm-provider.md` | Provider abstraction, wire types, Copilot/Codex implementations |
+| Auth | `docs/architecture_docs/auth.md` | Copilot device flow, Codex PKCE OAuth, config persistence |
+| MCP | `docs/architecture_docs/mcp.md` | MCP protocol bridge, JSON-RPC, server configuration |
+| LSP | `docs/architecture_docs/lsp.md` | LSP client, language servers, wire protocol (experimental) |
+| Symbols | `docs/architecture_docs/symbols.md` | AST-based symbol indexer (experimental) |
+
+### Guides & References (`docs/`)
+
+| Document | Path | Covers |
+| --- | --- | --- |
+| Agent variants | `docs/agents.md` | AgentVariant dataclass, built-in/custom variants, TOML format |
+| Extension hooks | `docs/extension-hooks.md` | HookRegistry API, all hook categories, execution semantics |
+| Permission DSL | `docs/permission-dsl.md` | PermissionRule, 3-layer cascade, TOML format, pattern matching |
+| System prompt | `docs/system-prompt.md` | Template, variables, adaptive guidelines, overrides, assembly pipeline |
+| Context strategies | `docs/context-strategies.md` | Compaction algorithm, soft/hard phases, manual compact, recovery |
+| Build your harness | `docs/build-your-harness.md` | How-to: register tools, variants, hooks, commands, providers, skills |

@@ -1,201 +1,145 @@
 # Agent Variants
 
-**Section 10.3** | See also: [Permission DSL](permission-dsl.md), `taui/agent/variants.py`
+Agent variants are named configuration bundles that change the agent's tool access,
+system prompt, model, turn limit, and permission rules without creating a new session.
 
-## Overview
+Source: `taui/agent/variants.py`
 
-Agent variants are named bundles that group together a model selection, system prompt,
-tool subset, permission overrides, and a read-only flag. A variant lets you switch the
-agent's personality and capability envelope without changing global configuration.
+## `AgentVariant` Dataclass
 
-Each variant carries:
+```python
+@dataclass(slots=True)
+class AgentVariant:
+    name: str
+    description: str = ""
+    model: str | None = None          # None = use session default
+    system_prompt: str | None = None  # None = use session default
+    tool_names: list[str] | None = None  # None = use all tools
+    read_only: bool = False           # True = exclude FILE_WRITE/SHELL/GIT tools
+    max_turns: int | None = None      # None = use session default
+    permission: dict[str, dict[str, str]] = field(default_factory=dict)
+```
 
-| Field | Type | Description |
-| --- | --- | --- |
-| `name` | `str` | Unique identifier used in `/agent <name>` |
-| `description` | `str` | Human-readable label shown in the picker |
-| `model` | `str \| None` | Override the active model; `None` inherits the session default |
-| `system_prompt` | `str \| None` | Replaces the default system prompt when set |
-| `tool_subset` | `list[str] \| None` | Restrict available tools by name; `None` means all tools |
-| `permission` | `dict \| None` | Per-variant permission rules layered over project/global rules |
-| `read_only` | `bool` | Convenience flag; when `True`, write/edit/bash tools are blocked |
+All fields are optional except `name`. `None` values fall back to the session default.
 
-The `AgentVariant` dataclass is defined in `taui/agent/variants.py`.
+## Built-In Variants
 
----
+Two variants are registered at startup:
 
-## Built-in Variants
+### `build`
 
-Two variants ship with Taui:
+```python
+AgentVariant(
+    name="build",
+    description="Default agent with full tool access.",
+)
+```
 
-### `build` (default)
-
-Full access. This is the variant that is active when Taui starts.
-
-- No tool restrictions
-- No read-only constraint
-- Uses the session model and default system prompt
+Full tool access. No restrictions. This is the default operating mode.
 
 ### `plan`
 
-Read-only planning assistant.
+```python
+AgentVariant(
+    name="plan",
+    description="Read-only agent for planning. Cannot modify files.",
+    read_only=True,
+    system_prompt=(
+        "You are a planning assistant. You can read files and search "
+        "the codebase, but you CANNOT modify any files. Your job is to "
+        "analyze the codebase and create a detailed plan for the task. "
+        "Write the plan as a structured response."
+    ),
+)
+```
 
-- `read_only = True`
-- Write, edit, and shell tools are unavailable
-- Suitable for exploration and design tasks where accidental file modification is
-  undesirable
+`read_only=True` excludes all tools in the `FILE_WRITE`, `SHELL`, and `GIT` categories
+from the executor. The agent can read and search but cannot write, edit, run bash, or
+use git commands.
 
----
+## TOML-Based Custom Variants
 
-## Defining a Custom Variant
-
-Create a TOML file at `.taui/agents/<name>.toml` inside your project. The file is
-discovered automatically when the session starts.
+Place `.toml` files in `.taui/agents/` to define project-local variants. They are
+discovered by `AgentVariantRegistry.discover_from_dir()` during `Session.create()`.
 
 ```toml
-name = "review"
-description = "Code review agent — read-only"
+# .taui/agents/reviewer.toml
+name = "reviewer"
+description = "Code reviewer — reads files and annotates."
 read_only = true
 system_prompt = """
-You are a code reviewer. Analyze the codebase and provide feedback.
-You cannot modify any files.
+You are a code reviewer. Read files and provide inline feedback.
+Do not modify files. Focus on correctness, clarity, and test coverage.
 """
+max_turns = 20
 
 [permission]
 read = { "*" = "allow" }
-bash = { "git log *" = "allow", "git diff *" = "allow", "*" = "deny" }
+grep = { "*" = "allow" }
 ```
 
-The `[permission]` table uses the same DSL as the project-level permission configuration.
-See [Permission DSL](permission-dsl.md) for pattern syntax and evaluation order.
+Supported TOML keys:
 
-Global variants live at `~/.taui/agents/<name>.toml`. Project variants with the same
-name override global variants.
+| Key | Type | Description |
+|-----|------|-------------|
+| `name` | string | Variant name (defaults to file stem) |
+| `description` | string | Human-readable description |
+| `model` | string | Override model identifier |
+| `system_prompt` | string | Override system prompt |
+| `tools` | list of strings | Explicit tool whitelist |
+| `read_only` | bool | Exclude write/shell/git tools |
+| `max_turns` | int | Maximum agent turns |
+| `[permission]` | table | Tool permission rules (same format as `permission-dsl.md`) |
 
----
+## Extension Registration
 
-## Registering a Variant via Extension
-
-Extensions can register variants programmatically through the extension context:
+Extensions can register variants via `ctx.agents.register()`:
 
 ```python
 from taui.agent.variants import AgentVariant
 
 def register(ctx):
-    ctx.agents.register(
-        AgentVariant(
-            name="commit",
-            description="Git commit assistant — focused on staged changes",
-            system_prompt=(
-                "You help the user write clear, scoped git commit messages. "
-                "Inspect staged changes and propose a commit message. "
-                "Do not modify source files."
-            ),
-            tool_subset=["bash", "read", "glob", "grep"],
-            permission={
-                "bash": {
-                    "git diff --staged": "allow",
-                    "git log *": "allow",
-                    "git commit *": "allow",
-                    "*": "ask",
-                },
-            },
-        )
-    )
+    ctx.agents.register(AgentVariant(
+        name="security",
+        description="Security-focused reviewer. Read-only.",
+        read_only=True,
+        system_prompt=(
+            "You are a security auditor. Identify vulnerabilities, "
+            "hardcoded secrets, and unsafe dependencies. Never modify files."
+        ),
+    ))
 ```
 
-Place this file in `.taui/extensions/commit_variant.py` or
-`~/.taui/extensions/commit_variant.py`. See the Extensions section of `AGENTS.md` for
-loading rules.
-
----
+`ctx.agents` is an `AgentVariantRegistry` instance. Call `register()` with any
+`AgentVariant`. The variant is immediately available after `/reload`.
 
 ## Switching Variants
 
-### Slash command
+`session.switch_variant(name)` applies a variant to the current loop:
 
-```
-/agent review
-```
-
-Switches the active variant to `review` immediately. The session model and tool registry
-are updated in place; the conversation history is preserved.
-
-### Keyboard picker
-
-`Ctrl+A` opens the variant picker. Use arrow keys to select and Enter to confirm.
-
-The current variant name is shown in the info bar at the bottom of the TUI.
-
----
-
-## Recipe Variants
-
-These are ready-to-use variant definitions for common workflows. Copy and adjust as
-needed.
-
-### `review` — read-only code review
-
-```toml
-name = "review"
-description = "Read-only code reviewer"
-read_only = true
-system_prompt = """
-You are a senior code reviewer. Read the codebase and provide structured feedback
-covering correctness, clarity, test coverage, and potential edge cases. Do not
-modify any files.
-"""
-
-[permission]
-read  = { "*" = "allow" }
-glob  = { "*" = "allow" }
-grep  = { "*" = "allow" }
-bash  = { "git log *" = "allow", "git diff *" = "allow", "*" = "deny" }
+```python
+ok = session.switch_variant("plan")
+# ok is False if the variant name is unknown
 ```
 
-### `commit` — git-focused commit helper
+What `switch_variant` does:
 
-```toml
-name = "commit"
-description = "Writes commit messages from staged changes"
-system_prompt = """
-You help the user write clear, atomic git commit messages. Inspect the staged diff,
-summarize the intent, and propose a conventional-commit message. Ask for confirmation
-before running git commit.
-"""
-tool_subset = ["bash", "read", "glob", "grep"]
+1. Looks up the variant in `_variant_registry`.
+2. Builds an effective `ToolRegistry` — either an explicit `tool_names` subset, a
+   category-filtered read-only subset, or the full registry.
+3. Creates a new `ToolExecutor` from the effective registry and current policy.
+4. If the variant has a `permission` table, wraps the policy with a variant-layer
+   `PermissionRuleset`.
+5. Updates the loop's executor and system prompt in place (no new `AgentLoop` created).
 
-[permission]
-bash = { "git diff *" = "allow", "git log *" = "allow", "git commit *" = "ask", "*" = "deny" }
-read = { "*" = "allow" }
-glob = { "*" = "allow" }
-grep = { "*" = "allow" }
+The switch is live immediately — the next message the user sends uses the new variant's
+tools and prompt.
+
+## Inspecting Available Variants
+
+```python
+registry = session._variant_registry
+names = registry.names()        # sorted list of names
+all_v = registry.all()          # list[AgentVariant]
+v = registry.get("plan")        # AgentVariant | None
 ```
-
-### `pair` — interactive planning partner
-
-```toml
-name = "pair"
-description = "Interactive planning — asks before acting"
-system_prompt = """
-You are a pair programming partner. Think out loud, propose a plan, and ask for
-confirmation at each step before making changes. Prefer small, reversible edits.
-"""
-
-[permission]
-bash  = { "*" = "ask" }
-write = { "*" = "ask" }
-edit  = { "*" = "ask" }
-read  = { "*" = "allow" }
-glob  = { "*" = "allow" }
-grep  = { "*" = "allow" }
-```
-
----
-
-## Reference
-
-- `taui/agent/variants.py` — `AgentVariant` dataclass and variant registry
-- `taui/session.py` — variant activation during session composition
-- [Permission DSL](permission-dsl.md) — full syntax for the `[permission]` table
-- `AGENTS.md` — extensions loading and registration conventions
