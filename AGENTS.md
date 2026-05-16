@@ -263,6 +263,44 @@ When modifying Textual UI behavior, add or update unit tests first when practica
 manual TUI check is needed, run `uv run taui` from a throwaway workspace or with a test
 project directory so `.taui/store.db` writes are intentional.
 
+### Visual & provider-scenario harness
+
+For changes that affect what the user sees or how taui reacts to LLM responses,
+use the harness in `tests/scenarios/`:
+
+- `tests/scenarios/scripted_provider.py` — `ScriptedProvider` plays back a list of
+  `Turn` definitions (text deltas, reasoning deltas, tool calls, usage, raised
+  errors). It satisfies the same duck-type contract as the real providers, so
+  the entire `AgentLoop` runs unmodified.
+- `tests/scenarios/scenarios.py` — named factories: `happy_path`,
+  `streamed_reply`, `with_reasoning`, `with_tool_call`, `parallel_tool_calls`,
+  `rate_limit_then_recover`, `context_overflow_then_recover`, `auth_expired`,
+  `quota_exceeded`, `empty_response`. Add new factories here when a shape
+  recurs in more than one test.
+- `tests/test_provider_scenarios.py` — runs each scenario through a real
+  `Session` and asserts on the observable behavior. This is the contract
+  between the scripted provider and the rest of taui — if it regresses, the
+  visual snapshots become unreliable too.
+- `tests/test_tui_visual.py` — captures SVG snapshots of `TauiApp` in
+  representative states (driven by `ScriptedProvider`). Snapshots live under
+  `tests/__snapshots__/test_tui_visual/`.
+
+Running and updating snapshots:
+
+```bash
+uv run python -m pytest tests/test_tui_visual.py          # verify
+uv run python -m pytest tests/test_tui_visual.py --snapshot-update  # accept new baseline
+```
+
+When a snapshot test fails, pytest-textual-snapshot writes an HTML diff report
+at `snapshot_report.html`. A coding agent updating the TUI should open that
+report, confirm the visual change matches intent, then re-run with
+`--snapshot-update`. Adding a new snapshot point is usually one extra block in
+`tests/test_tui_visual.py` plus a scenario.
+
+The harness patches `taui.session._create_provider`, so no network/auth is
+needed — tests run offline and deterministically.
+
 ## Common Pitfalls
 
 - Do not duplicate state outside the SQLite store for sessions, stream replay, approvals,

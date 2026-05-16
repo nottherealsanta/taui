@@ -222,3 +222,5 @@ archive/
 .DS_Store
 
 example/
+
+__snapshots__/
