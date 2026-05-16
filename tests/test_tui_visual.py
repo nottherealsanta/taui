@@ -233,6 +233,40 @@ def test_tool_call_visible(snap_compare, tmp_path, monkeypatch):
     assert snap_compare(app, run_before=setup, terminal_size=(100, 30))
 
 
+def test_error_rendered_on_provider_failure(snap_compare, tmp_path, monkeypatch):
+    """When the provider raises (e.g., auth expired), the chat should show the error."""
+    provider = scenarios.auth_expired()
+    app = use_scripted_provider(monkeypatch, tmp_path, provider)
+
+    async def setup(pilot: Pilot) -> None:
+        await _wait_until_ready(pilot)
+        await _type_and_send(pilot, "hi")
+        await _wait_idle(pilot)
+        await _close_cleanly(pilot)
+
+    assert snap_compare(app, run_before=setup, terminal_size=(100, 30))
+
+
+def test_help_command_help_visible(snap_compare, tmp_path, monkeypatch):
+    """Typing `/` should reveal the slash-command completion dropdown."""
+    provider = scenarios.happy_path("(unused)")
+    app = use_scripted_provider(monkeypatch, tmp_path, provider)
+
+    async def setup(pilot: Pilot) -> None:
+        from taui.tui.widgets.chat_input import ChatInput
+
+        await _wait_until_ready(pilot)
+        chat_input = pilot.app.query_one("#chat-input", ChatInput)
+        chat_input.text = "/"
+        chat_input.focus()
+        # Nudge the dropdown via the same text-changed path the user would trigger.
+        chat_input.on_text_area_changed(object())
+        await pilot.pause()
+        await _close_cleanly(pilot)
+
+    assert snap_compare(app, run_before=setup, terminal_size=(100, 30))
+
+
 def test_long_markdown_reply(snap_compare, tmp_path, monkeypatch):
     """Markdown reply with a code block and list — exercises richer rendering."""
     reply = (
