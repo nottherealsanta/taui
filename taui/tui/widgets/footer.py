@@ -35,6 +35,8 @@ class CustomFooter(Static):
         t.append(" new  ", style="#8b949e")
         t.append("ctrl+b", style="#e6edf3")
         t.append(" sidebar  ", style="#8b949e")
+        t.append("ctrl+r", style="#e6edf3")
+        t.append(" info  ", style="#8b949e")
         t.append("ctrl+x", style="#e6edf3")
         t.append(" context  ", style="#8b949e")
         if self._busy:

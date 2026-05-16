@@ -8,6 +8,12 @@ from textual.app import ComposeResult
 from textual.widget import Widget
 from textual.widgets import Static
 
+# Unified tool colors: everything tool-related (including errors) is gray.
+_TOOL_NAME_COLOR = "#8b949e"
+_TOOL_DETAIL_COLOR = "#6e7681"
+_TOOL_ERROR_COLOR = "#6e7681"
+_TOOL_ICON_COLOR = "#6e7681"
+
 
 class ToolStatusWidget(Widget):
     """Status display for a single tool execution."""
@@ -36,14 +42,14 @@ class ToolStatusWidget(Widget):
 
     def compose(self) -> ComposeResult:
         yield Static(
-            Text.from_markup("[bold ]✦[/bold ] "),
+            Text.from_markup(f"[{_TOOL_ICON_COLOR}]✦[/{_TOOL_ICON_COLOR}] "),
             classes="tool-icon",
             id="icon",
         )
         yield Static(
             Text.from_markup(
-                f"[#6BB6FF]{escape(self.tool_name)}[/#6BB6FF]"
-                f" [dim #8b949e]{escape(self.args_str)}[/dim #8b949e]"
+                f"[{_TOOL_NAME_COLOR}]{escape(self.tool_name)}[/{_TOOL_NAME_COLOR}]"
+                f" [{_TOOL_DETAIL_COLOR}]{escape(self.args_str)}[/{_TOOL_DETAIL_COLOR}]"
             ),
             classes="tool-info",
             id="info",
@@ -57,10 +63,10 @@ class ToolStatusWidget(Widget):
             line = " ".join(output.strip().split())[:150]
             if len(" ".join(output.strip().split())) > 150:
                 line += "..."
-            preview = f" [dim #8b949e]{escape(line)}[/dim #8b949e]"
+            preview = f" [{_TOOL_DETAIL_COLOR}]{escape(line)}[/{_TOOL_DETAIL_COLOR}]"
         self.query_one("#info", Static).update(
             Text.from_markup(
-                f"[#6BB6FF]{escape(self.tool_name)}[/#6BB6FF]"
+                f"[{_TOOL_NAME_COLOR}]{escape(self.tool_name)}[/{_TOOL_NAME_COLOR}]"
                 f"{preview}"
             )
         )
@@ -73,10 +79,10 @@ class ToolStatusWidget(Widget):
             line = " ".join(error.strip().split())[:200]
             if len(" ".join(error.strip().split())) > 200:
                 line += "..."
-            err_msg = f" [#f97583]{escape(line)}[/#f97583]"
+            err_msg = f" [{_TOOL_ERROR_COLOR}]{escape(line)}[/{_TOOL_ERROR_COLOR}]"
         self.query_one("#info", Static).update(
             Text.from_markup(
-                f"[#6BB6FF]{escape(self.tool_name)}[/#6BB6FF]"
-                f" [#f97583]Failed[/#f97583]{err_msg}"
+                f"[{_TOOL_NAME_COLOR}]{escape(self.tool_name)}[/{_TOOL_NAME_COLOR}]"
+                f" [{_TOOL_ERROR_COLOR}]Failed[/{_TOOL_ERROR_COLOR}]{err_msg}"
             )
         )

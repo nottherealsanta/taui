@@ -172,6 +172,7 @@ class TauiApp(App[None]):
         ("ctrl+c", "cancel_request", "Cancel"),
         ("ctrl+d", "ctrl_d", ""),
         ("ctrl+b", "toggle_sidebar", "Sidebar"),
+        ("ctrl+r", "toggle_info_sidebar", "Info"),
         ("ctrl+e", "enter_self_edit", "Self-edit"),
         ("ctrl+x", "show_context", "Context"),
         ("escape", "escape", ""),
@@ -206,6 +207,9 @@ class TauiApp(App[None]):
         self._history_file = Path.home() / ".cache" / "taui" / "prompt_history"
         self._history: list[str] = []
 
+        # Per-session edit tracking for the right sidebar.
+        self._edited_files: dict[str, dict[str, int]] = {}
+
     @property
     def session_id(self) -> str | None:
         """Current active session id, if a session exists."""
@@ -230,6 +234,8 @@ class TauiApp(App[None]):
     LAYERS = ("default", "overlay")
 
     def compose(self) -> ComposeResult:
+        from taui.tui.widgets.session_info_sidebar import SessionInfoSidebar
+
         with Horizontal(id="main-layout"):
             yield Sidebar(self._config.working_dir)
             with Vertical(id="chat-area"):
@@ -247,6 +253,7 @@ class TauiApp(App[None]):
                     yield chat_input
                     yield InfoBar()
                 yield ActivityProgress(id="activity-progress")
+            yield SessionInfoSidebar()
 
     async def on_mount(self) -> None:
         self._commands = self._build_commands()
@@ -603,6 +610,27 @@ class TauiApp(App[None]):
         except Exception:
             pass
         self._refresh_command_completions()
+        self._refresh_sidebars_if_visible()
+
+    def _refresh_sidebars_if_visible(self) -> None:
+        from taui.tui.widgets.session_info_sidebar import SessionInfoSidebar
+
+        try:
+            info_sidebar = self.query_one(SessionInfoSidebar)
+            if info_sidebar.has_class("visible"):
+                self._refresh_info_sidebar()
+        except NoMatches:
+            pass
+        try:
+            sidebar = self.query_one(Sidebar)
+            if sidebar.has_class("visible"):
+                self.run_worker(
+                    self._refresh_sidebar_sessions(),
+                    name="refresh_sidebar_sessions",
+                    exclusive=True,
+                )
+        except NoMatches:
+            pass
 
     # ── Agent callbacks ───────────────────────────────────────────────
 
@@ -692,16 +720,6 @@ class TauiApp(App[None]):
     @on(InfoBar.ContextBadgeClicked)
     def handle_context_badge_clicked(self, event: InfoBar.ContextBadgeClicked) -> None:
         self._open_context_tree()
-
-    @on(InfoBar.SessionBadgeClicked)
-    def handle_session_badge_clicked(
-        self, event: InfoBar.SessionBadgeClicked
-    ) -> None:
-        if self._session is None:
-            return
-        self.run_worker(
-            self._load_and_show_sessions(), name="load_sessions", exclusive=True
-        )
 
     async def _load_and_show_sessions(self) -> None:
         if self._session is None:
@@ -1283,6 +1301,7 @@ class TauiApp(App[None]):
             return False
         ok = await self._session.resume_session(session_id)
         if ok:
+            self._edited_files.clear()
             self._apply_default_agent_profile_id()
             self._wire_callbacks()
             self._update_status()
@@ -1426,6 +1445,7 @@ class TauiApp(App[None]):
             chat_log = self.query_one("#chat-log", VerticalScroll)
             await chat_log.remove_children()
             await self._session.new_session()
+            self._edited_files.clear()
             if prior_agent_id:
                 self._reapply_agent_profile(prior_agent_id)
             self._wire_callbacks()
@@ -1457,7 +1477,108 @@ class TauiApp(App[None]):
         self._last_ctrl_d_time = now
 
     def action_toggle_sidebar(self) -> None:
-        self.query_one(Sidebar).toggle()
+        sidebar = self.query_one(Sidebar)
+        sidebar.toggle()
+        if sidebar.has_class("visible"):
+            self.run_worker(
+                self._refresh_sidebar_sessions(),
+                name="refresh_sidebar_sessions",
+                exclusive=True,
+            )
+
+    def action_toggle_info_sidebar(self) -> None:
+        from taui.tui.widgets.session_info_sidebar import SessionInfoSidebar
+
+        info_sidebar = self.query_one(SessionInfoSidebar)
+        info_sidebar.toggle()
+        if info_sidebar.has_class("visible"):
+            self._refresh_info_sidebar()
+
+    async def _refresh_sidebar_sessions(self) -> None:
+        if self._session is None:
+            return
+        try:
+            sessions = await self._session.list_sessions()
+        except Exception:
+            sessions = []
+        try:
+            sidebar = self.query_one(Sidebar)
+        except NoMatches:
+            return
+        sidebar.set_sessions(sessions, self._session.session_id or "")
+
+    def _refresh_info_sidebar(self) -> None:
+        from taui.tui.widgets.session_info_sidebar import SessionInfoSidebar
+
+        try:
+            info_sidebar = self.query_one(SessionInfoSidebar)
+        except NoMatches:
+            return
+        if self._session is None:
+            info_sidebar.update_info()
+            return
+        loop = self._session._loop
+        agent_id = str(getattr(loop, "agent_id", "") or "")
+        agent_name = ""
+        agent_prompt = ""
+        try:
+            profile = SelfEditStore(self._config.working_dir).load_agents().get(
+                agent_id.upper()
+            )
+            if profile is not None:
+                agent_name = profile.name
+                agent_prompt = profile.prompt or ""
+        except Exception:
+            pass
+        edited_files = [
+            {"path": path, "added": data["added"], "removed": data["removed"]}
+            for path, data in sorted(self._edited_files.items())
+        ]
+        mcp_servers: list[tuple[str, bool]] = []
+        mcp_manager = getattr(self._session, "_mcp_manager", None)
+        if mcp_manager is not None:
+            connected = set(getattr(mcp_manager, "connected_servers", []) or [])
+            for name in getattr(mcp_manager, "server_names", []) or []:
+                mcp_servers.append((name, name in connected))
+        tools: list[str] = []
+        registry = getattr(self._session, "_registry", None)
+        if registry is not None:
+            tools = list(getattr(registry, "names", []) or [])
+        info_sidebar.update_info(
+            session_id=self._session.session_id or "",
+            model=self._session.model_name or "",
+            provider=self._session.provider_name or "",
+            agent_id=agent_id,
+            agent_name=agent_name,
+            agent_prompt_preview=agent_prompt,
+            edited_files=edited_files,
+            lsp_status="not connected",
+            mcp_servers=mcp_servers,
+            tools=tools,
+        )
+
+    def _record_edit(self, name: str, arguments: dict) -> None:
+        """Track edit/write calls so the info sidebar can show +/- line counts."""
+        path: str = ""
+        added = 0
+        removed = 0
+        if name == "edit":
+            path = str(arguments.get("file_path", ""))
+            old_s = str(arguments.get("old_string", "") or "")
+            new_s = str(arguments.get("new_string", "") or "")
+            removed = old_s.count("\n") + (1 if old_s else 0)
+            added = new_s.count("\n") + (1 if new_s else 0)
+        elif name == "write":
+            path = str(arguments.get("file_path", ""))
+            content = str(arguments.get("content", "") or "")
+            added = content.count("\n") + (1 if content else 0)
+        else:
+            return
+        if not path:
+            return
+        entry = self._edited_files.setdefault(path, {"added": 0, "removed": 0})
+        entry["added"] += added
+        entry["removed"] += removed
 
     async def action_show_context(self) -> None:
         if not self._session:
@@ -1664,6 +1785,20 @@ class TauiApp(App[None]):
     @on(Sidebar.Dismiss)
     def handle_sidebar_dismiss(self, event: Sidebar.Dismiss) -> None:
         self.query_one("#chat-input", ChatInput).focus()
+
+    @on(Sidebar.SessionSelected)
+    def handle_sidebar_session_selected(
+        self, event: Sidebar.SessionSelected
+    ) -> None:
+        if not event.session_id or self._session is None:
+            return
+        if event.session_id == self._session.session_id:
+            return
+        self.run_worker(
+            self._resume_session(event.session_id),
+            name="session_resume",
+            exclusive=True,
+        )
 
 
 def _trunc(s: str, n: int = 40) -> str:

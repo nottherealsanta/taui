@@ -181,8 +181,39 @@ def test_sidebar_visible(snap_compare, tmp_path, monkeypatch):
 
     async def setup(pilot: Pilot) -> None:
         await _wait_until_ready(pilot)
+        # Replace the runtime session list with a deterministic fixture so the
+        # snapshot does not change every run (real session IDs are uuid-random
+        # and last_active is wall-clock time).
+        from taui.tui.widgets.sidebar import Sidebar
+
+        async def _stub_list():
+            return [
+                {
+                    "session_id": "sess-aaaa",
+                    "description": "first session",
+                    "message_count": 12,
+                    "last_active": 0.0,
+                    "created_at": 0.0,
+                    "mode": "normal",
+                },
+                {
+                    "session_id": "sess-bbbb",
+                    "description": "older work",
+                    "message_count": 3,
+                    "last_active": 0.0,
+                    "created_at": 0.0,
+                    "mode": "normal",
+                },
+            ]
+
+        if app._session is not None:
+            app._session.list_sessions = _stub_list  # type: ignore[assignment]
+            app._session.session_id = "sess-aaaa"
         await pilot.press("ctrl+b")
         await pilot.pause()
+        # Workers run asynchronously; pause again so refresh has settled.
+        for _ in range(3):
+            await pilot.pause()
         await _close_cleanly(pilot)
 
     assert snap_compare(app, run_before=setup, terminal_size=(100, 30))

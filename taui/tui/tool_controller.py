@@ -48,6 +48,13 @@ class ToolController:
         )
         self._app.post_message(ToolStarted(tool_key, name, args_short))
 
+        record_edit = getattr(self._app, "_record_edit", None)
+        if record_edit is not None:
+            try:
+                record_edit(name, arguments)
+            except Exception:
+                pass
+
         session = self._app._session
         if session:
             await session.hooks.run("on_tool_call", name, arguments, session)

@@ -435,14 +435,18 @@ class ChatInput(TextArea):
             self._dismiss_completion()
         return None
 
-    def _submit_selected_completion_if_no_args(self) -> bool:
-        """Submit selected no-argument command; return whether handled."""
+    def _submit_selected_completion(self) -> bool:
+        """Fill the selected completion into the buffer and submit it.
+
+        Used by Enter when the completion dropdown is open — pressing Enter
+        runs the highlighted command directly instead of merely filling it.
+        """
         from taui.tui.widgets.info2 import Info2
 
         try:
             info2 = self.app.query_one(Info2)
             value = info2.current_value
-            if value and not info2.current_accepts_args:
+            if value:
                 arg_prefix = self._command_arg_prefix()
                 if arg_prefix is not None:
                     self._replace_command_arg_from_completion(
@@ -519,8 +523,7 @@ class ChatInput(TextArea):
             if event.key == "enter":
                 event.prevent_default()
                 event.stop()
-                if not self._submit_selected_completion_if_no_args():
-                    self._accept_completion()
+                self._submit_selected_completion()
                 return
 
             if event.key == "tab":
@@ -531,8 +534,7 @@ class ChatInput(TextArea):
                 try:
                     info2 = self.app.query_one(Info2)
                     if info2.mode == Info2Mode.COMPLETIONS:
-                        if not self._submit_selected_completion_if_no_args():
-                            self._accept_completion()
+                        self._accept_completion()
                     else:
                         info2.accept()
                 except Exception:
