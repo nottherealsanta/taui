@@ -24,7 +24,7 @@ import asyncio
 import pytest
 from textual.pilot import Pilot
 
-from tests.scenarios import scenarios
+from tests.scenarios import ScriptedProvider, ScriptedToolCall, Turn, scenarios
 from tests.scenarios.tui_harness import use_scripted_provider
 
 
@@ -147,6 +147,109 @@ def test_response_variants(snap_compare, tmp_path, monkeypatch, scenario_factory
     async def setup(pilot: Pilot) -> None:
         await _wait_until_ready(pilot)
         await _type_and_send(pilot, prompt)
+        await _wait_idle(pilot)
+        await _close_cleanly(pilot)
+
+    assert snap_compare(app, run_before=setup, terminal_size=(100, 30))
+
+
+# ── Richer UI states ────────────────────────────────────────────────────
+
+
+def test_input_drafted_not_sent(snap_compare, tmp_path, monkeypatch):
+    """Text typed into the input but not submitted — verifies draft rendering."""
+    provider = scenarios.happy_path("(unused)")
+    app = use_scripted_provider(monkeypatch, tmp_path, provider)
+
+    async def setup(pilot: Pilot) -> None:
+        from taui.tui.widgets.chat_input import ChatInput
+
+        await _wait_until_ready(pilot)
+        chat_input = pilot.app.query_one("#chat-input", ChatInput)
+        chat_input.text = "this is a drafted message"
+        chat_input.focus()
+        await pilot.pause()
+        await _close_cleanly(pilot)
+
+    assert snap_compare(app, run_before=setup, terminal_size=(100, 30))
+
+
+def test_sidebar_visible(snap_compare, tmp_path, monkeypatch):
+    """Ctrl+B should toggle the sidebar into view."""
+    provider = scenarios.happy_path("(unused)")
+    app = use_scripted_provider(monkeypatch, tmp_path, provider)
+
+    async def setup(pilot: Pilot) -> None:
+        await _wait_until_ready(pilot)
+        await pilot.press("ctrl+b")
+        await pilot.pause()
+        await _close_cleanly(pilot)
+
+    assert snap_compare(app, run_before=setup, terminal_size=(100, 30))
+
+
+def test_multi_turn_conversation(snap_compare, tmp_path, monkeypatch):
+    """Two user/assistant exchanges should both appear in the chat log."""
+    provider = ScriptedProvider(
+        [
+            Turn(text="First reply.", text_deltas=["First reply."]),
+            Turn(text="Second reply.", text_deltas=["Second reply."]),
+        ]
+    )
+    app = use_scripted_provider(monkeypatch, tmp_path, provider)
+
+    async def setup(pilot: Pilot) -> None:
+        await _wait_until_ready(pilot)
+        await _type_and_send(pilot, "first message")
+        await _wait_idle(pilot)
+        await _type_and_send(pilot, "second message")
+        await _wait_idle(pilot)
+        await _close_cleanly(pilot)
+
+    assert snap_compare(app, run_before=setup, terminal_size=(100, 30))
+
+
+def test_tool_call_visible(snap_compare, tmp_path, monkeypatch):
+    """A scripted `read` tool call should show a tool-status widget in the chat log."""
+    target = tmp_path / "note.txt"
+    target.write_text("read me")
+    provider = ScriptedProvider(
+        [
+            Turn(
+                tool_calls=[ScriptedToolCall(name="read", arguments={"path": "note.txt"})],
+                stop_reason="tool_use",
+            ),
+            Turn(text="Read it.", text_deltas=["Read it."]),
+        ]
+    )
+    app = use_scripted_provider(monkeypatch, tmp_path, provider)
+
+    async def setup(pilot: Pilot) -> None:
+        await _wait_until_ready(pilot)
+        await _type_and_send(pilot, "read note.txt")
+        await _wait_idle(pilot, timeout=4.0)
+        await _close_cleanly(pilot)
+
+    assert snap_compare(app, run_before=setup, terminal_size=(100, 30))
+
+
+def test_long_markdown_reply(snap_compare, tmp_path, monkeypatch):
+    """Markdown reply with a code block and list — exercises richer rendering."""
+    reply = (
+        "Here's a summary:\n\n"
+        "- alpha\n"
+        "- beta\n\n"
+        "```python\n"
+        "def hello() -> str:\n"
+        "    return 'world'\n"
+        "```\n"
+    )
+    provider = scenarios.streamed_reply(reply, chunk_size=24)
+    app = use_scripted_provider(monkeypatch, tmp_path, provider)
+
+    async def setup(pilot: Pilot) -> None:
+        await _wait_until_ready(pilot)
+        await _type_and_send(pilot, "show markdown")
         await _wait_idle(pilot)
         await _close_cleanly(pilot)
 

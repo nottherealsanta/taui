@@ -224,3 +224,4 @@ archive/
 example/
 
 __snapshots__/
+!tests/__snapshots__/
