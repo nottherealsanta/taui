@@ -15,7 +15,7 @@ import asyncio
 from textual.containers import VerticalScroll
 from textual.widgets import Static
 
-from tests.scenarios import ScriptedProvider, Turn, scenarios
+from tests.scenarios import ScriptedProvider, ScriptedToolCall, Turn, scenarios
 from tests.scenarios.tui_harness import use_scripted_provider
 
 
@@ -126,6 +126,52 @@ class TestQueueWhileBusy:
             assert "queued message" in queued_texts
 
             app._is_processing = False
+            await app._session.close()
+
+
+class TestApprovalFlow:
+    async def test_bash_call_triggers_approval_prompt(self, tmp_path, monkeypatch):
+        """A `bash` tool call should pause execution and open Info2 in APPROVAL mode."""
+        from taui.tui.widgets.info2 import Info2, Info2Mode
+
+        # bash defaults to CONFIRM, so this exercises the approval path without
+        # any custom policy plumbing in the test.
+        provider = ScriptedProvider(
+            [
+                Turn(
+                    tool_calls=[
+                        ScriptedToolCall(name="bash", arguments={"command": "echo hi"}),
+                    ],
+                    stop_reason="tool_use",
+                ),
+                Turn(text="done"),
+            ]
+        )
+        app = use_scripted_provider(monkeypatch, tmp_path, provider)
+        async with app.run_test() as pilot:
+            await _ready(app)
+            from taui.tui.widgets.chat_input import ChatInput
+
+            chat_input = app.query_one("#chat-input", ChatInput)
+            chat_input.text = "run echo"
+            chat_input.focus()
+            await pilot.press("enter")
+
+            # Wait until Info2 is in APPROVAL mode.
+            info2 = app.query_one("#info2", Info2)
+            deadline = asyncio.get_event_loop().time() + 3.0
+            while asyncio.get_event_loop().time() < deadline:
+                if info2.mode == Info2Mode.APPROVAL:
+                    break
+                await pilot.pause()
+            assert info2.mode == Info2Mode.APPROVAL
+
+            # Reject — the agent loop should resume and finish with the second turn.
+            info2.dismiss()
+            await _wait_idle(app, timeout=3.0)
+            # Either we got a final "done" or the cancellation path ran; either is
+            # acceptable. What matters is the app didn't hang.
+            assert not app._is_processing
             await app._session.close()
 
 

@@ -233,6 +233,47 @@ def test_tool_call_visible(snap_compare, tmp_path, monkeypatch):
     assert snap_compare(app, run_before=setup, terminal_size=(100, 30))
 
 
+def test_approval_prompt_visible(snap_compare, tmp_path, monkeypatch):
+    """A bash tool call should pause at the approval prompt; capture that state."""
+    from taui.tui.widgets.info2 import Info2, Info2Mode
+
+    provider = ScriptedProvider(
+        [
+            Turn(
+                tool_calls=[ScriptedToolCall(name="bash", arguments={"command": "echo hi"})],
+                stop_reason="tool_use",
+            ),
+            Turn(text="done"),
+        ]
+    )
+    app = use_scripted_provider(monkeypatch, tmp_path, provider)
+
+    async def setup(pilot: Pilot) -> None:
+        from taui.tui.widgets.spinner import ActivityProgress
+
+        await _wait_until_ready(pilot)
+        await _type_and_send(pilot, "run a bash command")
+        info2 = pilot.app.query_one("#info2", Info2)
+        deadline = asyncio.get_event_loop().time() + 3.0
+        while asyncio.get_event_loop().time() < deadline:
+            if info2.mode == Info2Mode.APPROVAL:
+                break
+            await pilot.pause()
+        # Freeze the breathing-progress timer so the snapshot is byte-stable
+        # across runs — the bar's animated offset is wall-clock-dependent.
+        for progress in pilot.app.query(ActivityProgress):
+            progress.stop()
+        # Leave Info2 in APPROVAL mode for the snapshot, then close the session
+        # so pytest exits cleanly (the pending future is cancelled by close).
+        try:
+            await pilot.app._session.close()
+        except Exception:
+            pass
+        pilot.app._session = None
+
+    assert snap_compare(app, run_before=setup, terminal_size=(100, 30))
+
+
 def test_error_rendered_on_provider_failure(snap_compare, tmp_path, monkeypatch):
     """When the provider raises (e.g., auth expired), the chat should show the error."""
     provider = scenarios.auth_expired()
