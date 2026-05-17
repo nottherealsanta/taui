@@ -1,4 +1,4 @@
-"""Info bar widget — shows provider, model, tokens, and cost."""
+"""Info bar widget — shows provider, model, and tokens."""
 
 from __future__ import annotations
 
@@ -119,22 +119,18 @@ class InfoBar(Horizontal):
         margin-right: 2;
     }
     InfoBar #info-model {
-        color: #e6edf3;
+        color: $foreground;
         margin-right: 2;
     }
     InfoBar #info-provider {
-        color: #8b949e;
+        color: $text-muted;
         text-style: italic;
         margin-right: 2;
     }
     InfoBar #info-tokens {
-        color: #c9d1d9;
+        color: $foreground-darken-1;
         text-style: italic;
         margin-right: 2;
-    }
-    InfoBar #info-cost {
-        color: #c9d1d9;
-        text-style: italic;
     }
     """
 
@@ -144,7 +140,6 @@ class InfoBar(Horizontal):
         self._model = ""
         self._tokens = 0
         self._max_tokens = 0
-        self._cost = 0.0
         self._extensions_mode = False
         self._agent_id = ""
         self._plan_mode = False
@@ -155,7 +150,6 @@ class InfoBar(Horizontal):
         yield ModelBadge("", id="info-model")
         yield ProviderBadge("", id="info-provider")
         yield ContextBadge("", id="info-tokens")
-        yield Static("", id="info-cost")
 
     def update_info(
         self,
@@ -164,7 +158,6 @@ class InfoBar(Horizontal):
         model: str = "",
         tokens: int = 0,
         max_tokens: int = 0,
-        cost: float = 0.0,
         extensions_mode: bool = False,
         agent_id: str = "",
         plan_mode: bool = False,
@@ -173,7 +166,6 @@ class InfoBar(Horizontal):
         self._model = model
         self._tokens = tokens
         self._max_tokens = max_tokens
-        self._cost = cost
         self._extensions_mode = extensions_mode
         self._agent_id = agent_id
         self._plan_mode = plan_mode
@@ -215,9 +207,6 @@ class InfoBar(Horizontal):
         )
         tokens.display = bool(self._max_tokens)
 
-        cost = self.query_one("#info-cost", Static)
-        cost.update(f"${self._cost:.4f}" if self._cost > 0 else "")
-        cost.display = self._cost > 0
 
     def on_mount(self) -> None:
         self._sync_children()

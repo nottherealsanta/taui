@@ -349,6 +349,7 @@ _CORE_GUIDELINES = [
     "If an approach fails, diagnose before switching tactics",
     "Be concise in your responses",
     "Show file paths clearly when working with files",
+    "IMPORTANT: Call `session_name` with a 2-6 word label after the user's first message",
 ]
 
 # Safety guidelines always present

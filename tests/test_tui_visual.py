@@ -423,3 +423,38 @@ def test_long_markdown_reply(snap_compare, tmp_path, monkeypatch):
         await _close_cleanly(pilot)
 
     assert snap_compare(app, run_before=setup, terminal_size=(100, 30))
+
+
+# ── Parallel sessions ──────────────────────────────────────────────────
+
+
+def test_parallel_sessions_two_tabs(snap_compare, tmp_path, monkeypatch):
+    """Two session tabs visible — first has a reply, second is new."""
+    provider = ScriptedProvider(
+        [
+            Turn(text="Reply in tab one.", text_deltas=["Reply in tab one."]),
+            Turn(text="Reply in tab two.", text_deltas=["Reply in tab two."]),
+        ]
+    )
+    app = use_scripted_provider(monkeypatch, tmp_path, provider)
+
+    async def setup(pilot: Pilot) -> None:
+        await _wait_until_ready(pilot)
+        # Send a message in the first session
+        await _type_and_send(pilot, "hello from tab one")
+        await _wait_idle(pilot)
+        # Open a second session tab
+        await pilot.app.action_new_chat()
+        await _wait_until_ready(pilot)
+        # Send a message in the second tab
+        await _type_and_send(pilot, "hello from tab two")
+        await _wait_idle(pilot)
+        # Close all sessions cleanly
+        for state in list(pilot.app._sessions._states.values()):
+            try:
+                await state.session.close()
+            except Exception:
+                pass
+        pilot.app._session = None
+
+    assert snap_compare(app, run_before=setup, terminal_size=(100, 30))

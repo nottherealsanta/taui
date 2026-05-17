@@ -454,7 +454,10 @@ def _time_ago(ts: float) -> str:
 
 
 def _fallback_session_name(session: dict) -> str:
-    """Label for sessions that never called session_name — their created time."""
+    """Label for sessions without a description — first user message or created time."""
+    first = (session.get("first_message") or "").strip()
+    if first:
+        return first
     from datetime import datetime
     ts = float(session.get("created_at", 0) or 0)
     if ts <= 0:
@@ -859,11 +862,11 @@ def register_builtins(
     if get_apply_profile:
         agents_cmd._get_apply_profile = get_apply_profile
 
-    if get_tracker:
-        cost_cmd._get_tracker = get_tracker
-
     if get_extensions:
         ext_list_cmd._get_extensions = get_extensions
+
+    if get_tracker:
+        cost_cmd._get_tracker = get_tracker
 
     registry.register(help_cmd)
     registry.register(cost_cmd)

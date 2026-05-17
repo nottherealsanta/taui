@@ -39,6 +39,8 @@ class CustomFooter(Static):
         t.append(" info  ", style="#8b949e")
         t.append("ctrl+x", style="#e6edf3")
         t.append(" context  ", style="#8b949e")
+        t.append("alt+←/→", style="#e6edf3")
+        t.append(" focus pane  ", style="#8b949e")
         if self._busy:
             t.append("enter", style="#e6edf3")
             t.append(" steer  ", style="#8b949e")

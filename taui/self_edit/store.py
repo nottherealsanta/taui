@@ -30,6 +30,7 @@ class AgentProfile:
     allowed_tools: list[str]
     prompt_path: Path | None = None
     tool_config: dict[str, ToolConfig] = field(default_factory=dict)
+    auto_approve_all: bool = False
 
 
 @dataclass(slots=True)
@@ -56,6 +57,7 @@ _DEFAULT_AGENTS = [
         provider="",
         model="",
         allowed_tools=[],
+        auto_approve_all=True,
     ),
     AgentProfile(
         id="PLN",
@@ -215,6 +217,7 @@ class SelfEditStore:
             allowed_tools=list(profile.allowed_tools),
             prompt_path=prompt_path,
             tool_config={},
+            auto_approve_all=profile.auto_approve_all,
         )
 
     def _agent_from_row(self, row: Any, scope: str) -> tuple[AgentProfile | None, bool]:
@@ -270,6 +273,7 @@ class SelfEditStore:
                     allowed_tools=[str(x) for x in row.get("allowed_tools", [])],
                     prompt_path=prompt_path,
                     tool_config=tool_config,
+                    auto_approve_all=bool(row.get("auto_approve_all", False)),
                 ),
                 migrated,
             )
@@ -289,4 +293,5 @@ class SelfEditStore:
                 name: {"policy": tc.policy, "param_restrictions": tc.param_restrictions}
                 for name, tc in profile.tool_config.items()
             },
+            "auto_approve_all": profile.auto_approve_all,
         }

@@ -25,7 +25,7 @@ class ModelPickerScreen(ModalScreen[str | None]):
         height: auto;
         max-height: 80%;
         background: $surface;
-        border: thick #586069;
+        border: thick $surface-lighten-1;
         padding: 1 2;
     }
     #model-picker-dialog .dialog-title {

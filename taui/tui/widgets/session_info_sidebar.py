@@ -55,9 +55,9 @@ class SessionInfoSidebar(VerticalScroll):
         padding: 0 1;
         scrollbar-size-vertical: 1;
         scrollbar-size-horizontal: 1;
-        scrollbar-color: #30363d $surface;
-        scrollbar-color-hover: #484f58 $surface;
-        scrollbar-color-active: #6e7681 $surface;
+        scrollbar-color: $scrollbar-color $surface;
+        scrollbar-color-hover: $scrollbar-color-hover $surface;
+        scrollbar-color-active: $scrollbar-color-active $surface;
         scrollbar-background: $surface;
         scrollbar-background-hover: $surface;
         scrollbar-background-active: $surface;
@@ -65,11 +65,16 @@ class SessionInfoSidebar(VerticalScroll):
     SessionInfoSidebar.visible {
         display: block;
     }
+    SessionInfoSidebar:focus,
+    SessionInfoSidebar:focus-within {
+        border-left: solid $secondary;
+        background: $surface-lighten-1;
+    }
     SessionInfoSidebar _SectionHeader {
         height: 1;
         margin: 1 0 0 0;
         text-style: bold;
-        color: #e6edf3;
+        color: $foreground;
     }
     SessionInfoSidebar _SectionRow {
         height: auto;
@@ -77,7 +82,7 @@ class SessionInfoSidebar(VerticalScroll):
         padding: 0 0 0 1;
     }
     SessionInfoSidebar .section-empty {
-        color: #6e7681;
+        color: $text-muted;
         padding: 0 0 0 1;
     }
     """

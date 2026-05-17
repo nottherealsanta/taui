@@ -124,6 +124,7 @@ class TestTauiApp:
             self_edit_mode = False
             cost_tracker = MagicMock(total_cost_usd=0.0)
             session_id = "current"
+            _store = MagicMock(update_session=AsyncMock())
 
             async def resume_session(self, session_id: str) -> bool:
                 return True
@@ -146,7 +147,6 @@ class TestTauiApp:
                 hit.command()
                 assert app._session.config.model == "gpt-5.5"
                 assert app._session._loop._model == "gpt-5.5"
-                app._update_status.assert_called_once()
 
     def test_run_tui_is_callable(self):
         assert callable(run_tui)

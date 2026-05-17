@@ -27,6 +27,10 @@ def _time_ago(ts: float) -> str:
 
 
 def _fallback_name(session: dict) -> str:
+    """Label for sessions without a description — first user message or created time."""
+    first = (session.get("first_message") or "").strip()
+    if first:
+        return first
     ts = float(session.get("created_at", 0) or 0)
     if ts <= 0:
         return "(unnamed)"
@@ -146,6 +150,15 @@ class Sidebar(Vertical):
     Sidebar.visible {
         display: block;
     }
+    Sidebar:focus-within {
+        border-right: solid $secondary;
+    }
+    Sidebar:focus-within .sidebar-tabs {
+        background: $surface-lighten-1;
+    }
+    Sidebar:focus-within .tab.active {
+        color: $secondary;
+    }
     Sidebar .sidebar-tabs {
         height: 1;
         padding: 0 1;
@@ -158,7 +171,7 @@ class Sidebar(Vertical):
         color: $text-muted;
     }
     Sidebar .tab.active {
-        color: #e6edf3;
+        color: $foreground;
         text-style: bold;
         background: $surface;
     }
@@ -176,9 +189,9 @@ class Sidebar(Vertical):
         background: $surface;
         scrollbar-size-vertical: 1;
         scrollbar-size-horizontal: 1;
-        scrollbar-color: #30363d $surface;
-        scrollbar-color-hover: #484f58 $surface;
-        scrollbar-color-active: #6e7681 $surface;
+        scrollbar-color: $scrollbar-color $surface;
+        scrollbar-color-hover: $scrollbar-color-hover $surface;
+        scrollbar-color-active: $scrollbar-color-active $surface;
         scrollbar-background: $surface;
         scrollbar-background-hover: $surface;
         scrollbar-background-active: $surface;
@@ -189,9 +202,9 @@ class Sidebar(Vertical):
         padding: 0;
         scrollbar-size-vertical: 1;
         scrollbar-size-horizontal: 1;
-        scrollbar-color: #30363d $surface;
-        scrollbar-color-hover: #484f58 $surface;
-        scrollbar-color-active: #6e7681 $surface;
+        scrollbar-color: $scrollbar-color $surface;
+        scrollbar-color-hover: $scrollbar-color-hover $surface;
+        scrollbar-color-active: $scrollbar-color-active $surface;
         scrollbar-background: $surface;
         scrollbar-background-hover: $surface;
         scrollbar-background-active: $surface;
@@ -202,6 +215,14 @@ class Sidebar(Vertical):
     }
     Sidebar ListView > ListItem.--highlight {
         background: $surface-lighten-1;
+    }
+    Sidebar ListView:focus > ListItem.--highlight {
+        background: $secondary-darken-1;
+        color: $foreground;
+    }
+    Sidebar DirectoryTree:focus > .tree--cursor {
+        background: $secondary-darken-1;
+        color: $foreground;
     }
     """
 

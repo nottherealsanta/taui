@@ -107,6 +107,7 @@ class Session:
         self._self_edit_executor: ToolExecutor | None = None
         self._self_edit_scope: str = ""
         self._message_count = 0
+        self._session_persisted = False
         self._loaded_offset = 0
         self._last_replay_items: list[ReplayItem] = []
         self.last_resume_error: str = ""
@@ -298,11 +299,12 @@ class Session:
                     for p in ext.skill_paths:
                         skill_reg.add_from_path(p, scope=ext.scope)
 
-        # Register session in store and materialize the stream so resume works
-        # even if the user quits before sending a message.
-        await store.create_session(session.session_id, stream_id=session._loop.stream_id)
+        # Materialize the stream so the agent loop can emit events, but defer
+        # creating the session record until the first message is actually sent
+        # (avoids cluttering the session list with empty sessions).
         await stream.ensure_stream(session._loop.stream_id)
         session._loaded_offset = await stream.get_length(session._loop.stream_id)
+        session._session_persisted = False
 
         return session
 
@@ -318,11 +320,22 @@ class Session:
         """
         await self._sync_replay_from_store()
 
+        # Lazily persist the session record on first message
+        if not self._session_persisted:
+            await self._store.create_session(
+                self.session_id,
+                stream_id=self._loop.stream_id,
+                model=self.config.model,
+            )
+            self._session_persisted = True
+
         # Pipeline hook: let extensions preprocess the message
         message = await self.hooks.transform("before_send", message, self)
 
         result = await self._loop.run(message, images=images)
         self._message_count += 1
+        if self._message_count == 1:
+            self.first_message = message.strip().split("\n", 1)[0][:60]
         self._loaded_offset = await self._stream.get_length(self._loop.stream_id)
 
         # Pipeline hook: let extensions postprocess the result
@@ -336,12 +349,15 @@ class Session:
                     output_tokens=tr.usage.get("output_tokens", 0),
                 )
         # Update session metadata. Descriptions come from the session_name tool;
-        # if the agent didn't call it, /sessions falls back to created time.
+        # if the agent didn't call it, /sessions falls back to first_message.
         try:
-            await self._store.update_session(
-                self.session_id,
-                message_count=self._message_count,
-            )
+            kwargs: dict[str, Any] = {"message_count": self._message_count}
+            # Persist the first user message for display in session lists
+            if self._message_count == 1:
+                # Clip to first 60 chars of the first line
+                snippet = message.strip().split("\n", 1)[0][:60]
+                kwargs["first_message"] = snippet
+            await self._store.update_session(self.session_id, **kwargs)
         except Exception:
             logger.debug("Failed to update session metadata", exc_info=True)
         return result
@@ -351,6 +367,7 @@ class Session:
         self.session_id = uuid4().hex[:12]
         self.description = ""
         self._message_count = 0
+        self.first_message = ""
         self._last_replay_items = []
 
         if self.self_edit_mode:
@@ -379,7 +396,9 @@ class Session:
             self.session_id,
             mode=mode,
             stream_id=self._loop.stream_id,
+            model=self.config.model,
         )
+        self._session_persisted = True
         await self._stream.ensure_stream(self._loop.stream_id)
         self._loaded_offset = await self._stream.get_length(self._loop.stream_id)
 
@@ -398,6 +417,7 @@ class Session:
         # Create a new loop with the appropriate prompt
         self.session_id = uuid4().hex[:12]
         self._message_count = 0
+        self.first_message = ""
         self._last_replay_items = []
 
         loop = AgentLoop(
@@ -416,7 +436,9 @@ class Session:
             self.session_id,
             mode="extensions" if self.extensions_mode else "normal",
             stream_id=self._loop.stream_id,
+            model=self.config.model,
         )
+        self._session_persisted = True
         await self._stream.ensure_stream(self._loop.stream_id)
         self._loaded_offset = await self._stream.get_length(self._loop.stream_id)
 
@@ -469,6 +491,7 @@ class Session:
 
             self.session_id = uuid4().hex[:12]
             self._message_count = 0
+            self.first_message = ""
             self._last_replay_items = []
 
             loop = AgentLoop(
@@ -482,14 +505,16 @@ class Session:
             )
             self._replace_loop(loop)
 
-            await self._store.create_session(
-                self.session_id,
-                mode="self_edit",
-                stream_id=self._loop.stream_id,
-            )
-            await self._stream.ensure_stream(self._loop.stream_id)
-            self._loaded_offset = await self._stream.get_length(self._loop.stream_id)
-            return self.self_edit_mode
+        await self._store.create_session(
+            self.session_id,
+            mode="extensions" if self.extensions_mode else "normal",
+            stream_id=self._loop.stream_id,
+            model=self.config.model,
+        )
+        self._session_persisted = True
+        await self._stream.ensure_stream(self._loop.stream_id)
+        self._loaded_offset = await self._stream.get_length(self._loop.stream_id)
+        return self.self_edit_mode
 
         # Exiting self-edit — restore the prior main session if we have one.
         self._self_edit_scope = ""
@@ -512,6 +537,7 @@ class Session:
 
         self.session_id = uuid4().hex[:12]
         self._message_count = 0
+        self.first_message = ""
         self._last_replay_items = []
 
         loop = AgentLoop(
@@ -530,7 +556,9 @@ class Session:
             self.session_id,
             mode=mode,
             stream_id=self._loop.stream_id,
+            model=self.config.model,
         )
+        self._session_persisted = True
         await self._stream.ensure_stream(self._loop.stream_id)
         self._loaded_offset = await self._stream.get_length(self._loop.stream_id)
         return self.self_edit_mode
@@ -556,6 +584,13 @@ class Session:
         self.extensions_mode = meta.get("mode") == "extensions"
         self.self_edit_mode = meta.get("mode") == "self_edit"
         self._message_count = meta.get("message_count", 0)
+        self.first_message = str(meta.get("first_message") or "")
+        self._session_persisted = True
+
+        # Restore model from session metadata
+        saved_model = str(meta.get("model") or "")
+        if saved_model:
+            self.config.model = saved_model
 
         if self.self_edit_mode:
             from taui.self_edit.factory import build_self_edit_executor
@@ -704,7 +739,7 @@ class Session:
         forked._system_prompt = self._system_prompt
         forked._extensions_prompt = self._extensions_prompt
 
-        await self._store.create_session(fork_id, stream_id=fork_stream)
+        await self._store.create_session(fork_id, stream_id=fork_stream, model=self.config.model)
         forked._loaded_offset = await self._stream.get_length(fork_stream)
 
         return forked
@@ -769,7 +804,7 @@ class Session:
         )
         sub._system_prompt = prompt
 
-        await self._store.create_session(sub_id, stream_id=sub_stream)
+        await self._store.create_session(sub_id, stream_id=sub_stream, model=self.config.model)
         sub._loaded_offset = 0
 
         return sub

@@ -72,7 +72,7 @@ class ActivityProgress(Static):
         self._mode = "bounce"
         self._offset = 0
         self._direction = 1
-        self._restart_timer(0.02, self._advance_bounce)
+        self._restart_timer(0.05, self._advance_bounce)
         self.refresh()
 
     def start_breathing(self) -> None:

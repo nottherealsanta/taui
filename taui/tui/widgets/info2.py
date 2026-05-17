@@ -73,12 +73,14 @@ class Info2(ScrollableContainer):
 
     DEFAULT_CSS = """
     Info2 {
+        layer: overlay;
+        dock: bottom;
         height: auto;
         max-height: 8;
         display: none;
         scrollbar-size: 1 1;
         padding: 0 0 0 1;
-        margin: 0 1;
+        margin: 0 1 5 1;
         background: $surface;
         border: tall $surface-darken-1;
         border-top: none;
@@ -481,7 +483,9 @@ class Info2(ScrollableContainer):
 
     def _rebuild_approval(self) -> None:
         self.remove_children()
-        header = Static(f"Allow {self._approval_tool}({self._approval_args})?")
+        header = Static(
+            f"Allow {self._approval_tool}({self._approval_args})?", markup=False
+        )
         self.mount(header)
         options = [
             "  Allow",
@@ -512,7 +516,10 @@ class Info2(ScrollableContainer):
 
 
 def _fallback_session_name(session: dict) -> str:
-    """Label for sessions that never called session_name — their created time."""
+    """Label for sessions without a description — first user message or created time."""
+    first = (session.get("first_message") or "").strip()
+    if first:
+        return first
     ts = float(session.get("created_at", 0) or 0)
     if ts <= 0:
         return "(unnamed)"

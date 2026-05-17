@@ -46,7 +46,17 @@ class ToolController:
         args_short = ", ".join(
             f"{k}={_trunc(str(v))}" for k, v in arguments.items()
         )
-        self._app.post_message(ToolStarted(tool_key, name, args_short))
+        # Determine session_id for routing
+        sid = ""
+        sessions = getattr(self._app, "_sessions", None)
+        if sessions:
+            for s_id, st in sessions.all_states.items():
+                if st.tool_ctrl is self:
+                    sid = s_id
+                    break
+        self._app.post_message(
+            ToolStarted(tool_key, name, args_short, session_id=sid)
+        )
 
         record_edit = getattr(self._app, "_record_edit", None)
         if record_edit is not None:
@@ -70,7 +80,9 @@ class ToolController:
                 (k for k in self._active_tool_widgets if k.startswith(name)),
                 f"{name}_unknown",
             )
-        self._app.post_message(ToolEnded(tool_key, name, content, is_error))
+        self._app.post_message(
+            ToolEnded(tool_key, name, content, is_error)
+        )
 
         session = self._app._session
         if session:
@@ -79,11 +91,24 @@ class ToolController:
             )
 
     async def handle_tool_started(self, event: ToolStarted) -> None:
-        await self._app._finalize_response()
+        # Find the session state this tool belongs to
+        from taui.tui.session_state import SessionState
+
+        st: SessionState | None = None
+        if hasattr(event, "session_id") and event.session_id:
+            sessions = getattr(self._app, "_sessions", None)
+            if sessions:
+                st = sessions.get(event.session_id)
+        if st is None:
+            st = getattr(self._app, "_sessions", None)
+            if st is not None:
+                st = st.active
+
+        await self._app._finalize_response(st)
 
         if self._current_tool_section is None:
             self._current_tool_section = Vertical(classes="tool-section")
-            await self._app._mount_in_reply(self._current_tool_section)
+            await self._app._mount_in_reply(self._current_tool_section, state=st)
 
         widget = ToolStatusWidget(event.tool_name, event.args_str)
         await self._current_tool_section.mount(widget)

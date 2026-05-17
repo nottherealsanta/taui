@@ -28,7 +28,7 @@ class SessionPickerScreen(ModalScreen[str | None]):
         height: auto;
         max-height: 80%;
         background: $surface;
-        border: thick #586069;
+        border: thick $surface-lighten-1;
         padding: 1 2;
     }
     #session-picker-dialog .dialog-title {
@@ -147,7 +147,10 @@ def _session_prompt(session: dict, depth: int = 0) -> Text:
 
 
 def _fallback_name(session: dict) -> str:
-    """Label for sessions that never called session_name — their created time."""
+    """Label for sessions without a description — first user message or created time."""
+    first = (session.get("first_message") or "").strip()
+    if first:
+        return first
     ts = float(session.get("created_at", 0) or 0)
     if ts <= 0:
         return "(unnamed)"

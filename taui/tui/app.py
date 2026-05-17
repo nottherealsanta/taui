@@ -36,6 +36,8 @@ from taui.tui.messages import (
 )
 from taui.tui.screens.context_breakdown import ContextBreakdownScreen
 from taui.tui.screens.git_diff import GitDiffScreen
+from taui.tui.session_state import SessionManager, SessionState
+from taui.tui.theme import ALL_THEMES, TAUI_DARK
 from taui.tui.tool_controller import ToolController
 from taui.tui.widgets.agent_response import AgentResponse
 from taui.tui.widgets.attachments_bar import AttachmentsBar
@@ -43,6 +45,7 @@ from taui.tui.widgets.chat_input import ChatInput
 from taui.tui.widgets.info2 import Info2
 from taui.tui.widgets.info_bar import InfoBar, _agent_color
 from taui.tui.widgets.reply_footer import ReplyFooter
+
 from taui.tui.widgets.sidebar import Sidebar
 from taui.tui.widgets.spinner import ActivityProgress
 from taui.tui.widgets.tool_status import ToolStatusWidget
@@ -209,7 +212,7 @@ class TauiApp(App[None]):
 
     CSS = """
     Screen {
-        background: $surface-darken-1;
+        background: $background;
     }
     #main-layout {
         layout: horizontal;
@@ -221,15 +224,34 @@ class TauiApp(App[None]):
     }
     #chat-container {
         height: auto;
-        border: tall $surface-darken-1;
+        border: tall $background;
         background: $surface;
         margin: 0 1;
         padding: 0;
+    }
+    /* Chat panel dims when keyboard focus has moved into a sidebar so the
+       user can see at a glance that typing won't land in the input. */
+    #chat-container.chat-unfocused ChatInput {
+        color: $text-muted;
+    }
+    #chat-container.chat-unfocused InfoBar {
+        color: $text-muted;
     }
     #chat-log {
         height: 1fr;
         padding: 1 0 1 2;
         scrollbar-size: 0 0;
+    }
+    #chat-log-container {
+        height: 1fr;
+    }
+    #chat-log-container > VerticalScroll {
+        height: 1fr;
+        padding: 1 0 1 2;
+        scrollbar-size: 0 0;
+    }
+    #chat-log-container > .hidden-chat-log {
+        display: none;
     }
     #activity-progress {
         dock: bottom;
@@ -244,12 +266,17 @@ class TauiApp(App[None]):
         padding: 0;
         margin: 1 0;
     }
+    .context-banner {
+        color: $text-muted;
+        padding: 0 2;
+        margin: 0 0 0 0;
+    }
     .steer-indicator {
         color: $text-muted;
         padding: 0 2;
     }
     .queue-indicator {
-        color: yellow;
+        color: $warning;
         padding: 0 2;
     }
     .reasoning-text {
@@ -264,7 +291,7 @@ class TauiApp(App[None]):
     Markdown {
         padding: 0 2;
         margin: 0 0 1 0;
-        color: white;
+        color: $foreground;
     }
     AgentResponse {
         margin: 0;
@@ -273,57 +300,57 @@ class TauiApp(App[None]):
         margin-bottom: 0;
     }
     MarkdownBlock > .code_inline {
-        background: #243244;
-        color: #fbbf24;
+        background: $surface-darken-1;
+        color: $primary;
     }
     MarkdownBlock > .strong {
-        color: #f8fafc;
+        color: $foreground;
         text-style: bold;
     }
     MarkdownBlock > .em {
-        color: #c4b5fd;
+        color: $accent;
         text-style: italic;
     }
     MarkdownH1 {
-        color: #7dd3fc;
+        color: $primary;
         text-style: bold;
     }
     MarkdownH2 {
-        color: #67e8f9;
+        color: $primary-lighten-1;
         text-style: bold;
     }
     MarkdownH3 {
-        color: #a7f3d0;
+        color: $primary-lighten-2;
         text-style: bold;
     }
     MarkdownH4, MarkdownH5 {
-        color: #e2e8f0;
+        color: $foreground-darken-1;
         text-style: bold;
     }
     MarkdownH6 {
-        color: #94a3b8;
+        color: $text-muted;
         text-style: bold;
     }
     MarkdownBullet {
-        color: #67e8f9;
+        color: $primary;
     }
     MarkdownBlockQuote {
-        background: #1f2937 45%;
-        border-left: outer #5eead4;
-        color: #cbd5e1;
+        background: $panel 45%;
+        border-left: outer $primary;
+        color: $foreground-darken-1;
     }
     MarkdownFence {
-        background: #111827;
-        color: #e5e7eb;
+        background: $background;
+        color: $foreground-darken-1;
     }
     MarkdownTableContent {
-        keyline: thin #334155;
+        keyline: thin $surface-lighten-1;
     }
     MarkdownTableContent > .header {
-        color: #7dd3fc;
+        color: $primary;
     }
     CommandPalette {
-        background: #0d1117 75%;
+        background: $background 75%;
     }
     CommandPalette > Vertical {
         width: 82;
@@ -331,36 +358,36 @@ class TauiApp(App[None]):
         height: auto;
         max-height: 74%;
         margin-top: 2;
-        background: #161b22;
-        border: tall #30363d;
+        background: $surface;
+        border: tall $surface-lighten-1;
     }
     CommandPalette #--input {
-        background: #0d1117;
-        border: tall #58a6ff;
+        background: $background;
+        border: tall $secondary;
         padding: 0 1;
     }
     CommandPalette #--input.--list-visible {
-        border-bottom: tall #30363d;
+        border-bottom: tall $surface-lighten-1;
     }
     CommandPalette #--results {
         overlay: none;
         height: auto;
         max-height: 18;
-        background: #161b22;
+        background: $surface;
     }
     CommandPalette CommandList {
         height: auto;
         max-height: 16;
-        background: #161b22;
+        background: $surface;
     }
     CommandPalette LoadingIndicator {
-        border-bottom: tall #30363d;
+        border-bottom: tall $surface-lighten-1;
     }
     CommandPalette > .command-palette--help-text {
-        color: #8b949e;
+        color: $text-muted;
     }
     CommandPalette > .command-palette--highlight {
-        color: #79c0ff;
+        color: $secondary-lighten-1;
         text-style: bold;
     }
     """
@@ -374,46 +401,214 @@ class TauiApp(App[None]):
         ("ctrl+r", "toggle_info_sidebar", "Info"),
         ("ctrl+e", "enter_self_edit", "Self-edit"),
         ("ctrl+x", "show_context", "Context"),
+        ("alt+left", "focus_pane_left", "Focus left pane"),
+        ("alt+right", "focus_pane_right", "Focus right pane"),
+        ("ctrl+pagedown", "next_tab", "Next tab"),
+        ("ctrl+pageup", "prev_tab", "Prev tab"),
         ("escape", "escape", ""),
     ]
 
     def __init__(self, config: Config | None = None) -> None:
         super().__init__()
+        # Register taui themes before anything else touches styling.
+        for theme in ALL_THEMES:
+            self.register_theme(theme)
+        self.theme = TAUI_DARK.name
         self._config = config or Config.load()
-        self._session: Session | None = None
+        self._sessions = SessionManager()
         self._session_initializing = False
-        self._is_processing = False
-
-        self._tool_ctrl = ToolController(self)
-        self._approval_ctrl = ApprovalController(self)
 
         # Double-press quit tracking
         self._last_ctrl_c_time: float = 0.0
         self._last_ctrl_d_time: float = 0.0
 
-        # Streaming / chat-turn state
-        self._current_response: AgentResponse | None = None
-        self._current_reasoning: Static | None = None
-        self._reasoning_buf: str = ""
-        self._streamed_text: bool = False
-        self._reply_footer: ReplyFooter | None = None
-
-        # Queue for follow-up messages
-        self._queued: list[tuple[str, list[str] | None]] = []
-        self._pending_indicators: list[tuple[str, str]] = []
-
         # History persistence
         self._history_file = Path.home() / ".cache" / "taui" / "prompt_history"
         self._history: list[str] = []
-
-        # Per-session edit tracking for the right sidebar.
-        self._edited_files: dict[str, dict[str, int]] = {}
 
         # Files attached via the left sidebar's Files tab. Their contents are
         # inlined into the prompt on submit, then this list is cleared.
         self._pending_files: list[Path] = []
         # Folders attached the same way — expanded as a tree listing.
         self._pending_folders: list[Path] = []
+
+    # ── Backward-compatible property accessors ────────────────────────
+    # These delegate to the active SessionState so the rest of the code
+    # (which was written for single-session) keeps working unchanged.
+
+    @property
+    def _session(self) -> Session | None:
+        state = self._sessions.active
+        return state.session if state else None
+
+    @_session.setter
+    def _session(self, value: Session | None) -> None:
+        # Used during init, tests, and close
+        if value is None:
+            # Clearing — used by _close_cleanly in tests
+            if self._sessions.active_id:
+                self._sessions.remove(self._sessions.active_id)
+            return
+        state = self._sessions.active
+        if state is not None:
+            state.session = value
+            # Update session_id if changed
+            sid = getattr(value, "session_id", None) or state.session_id
+            if sid != state.session_id:
+                old_id = state.session_id
+                state.session_id = sid
+                self._sessions._states.pop(old_id, None)
+                if old_id in self._sessions._order:
+                    idx = self._sessions._order.index(old_id)
+                    self._sessions._order[idx] = sid
+                self._sessions._states[sid] = state
+                self._sessions.active_id = sid
+        else:
+            # No active state yet — create one (e.g. test setup)
+            sid = getattr(value, "session_id", None) or "default"
+            new_state = SessionState(
+                session=value,
+                session_id=sid,
+                tool_ctrl=ToolController(self),
+                approval_ctrl=ApprovalController(self),
+            )
+            self._sessions.add(new_state)
+            self._sessions.active_id = sid
+
+    @property
+    def _is_processing(self) -> bool:
+        state = self._sessions.active
+        return state.is_processing if state else False
+
+    @_is_processing.setter
+    def _is_processing(self, value: bool) -> None:
+        state = self._sessions.active
+        if state is not None:
+            state.is_processing = value
+
+    @property
+    def _tool_ctrl(self) -> ToolController:
+        state = self._sessions.active
+        if state is not None and state.tool_ctrl is not None:
+            return state.tool_ctrl
+        # Fallback: create a default state so mutations persist (test compat)
+        if not self._sessions.order:
+            default_state = SessionState(
+                session=None,  # type: ignore[arg-type]
+                session_id="__fallback__",
+                tool_ctrl=ToolController(self),
+                approval_ctrl=ApprovalController(self),
+            )
+            self._sessions.add(default_state)
+            self._sessions.active_id = "__fallback__"
+            return default_state.tool_ctrl
+        return ToolController(self)
+
+    @property
+    def _approval_ctrl(self) -> ApprovalController:
+        state = self._sessions.active
+        if state is not None and state.approval_ctrl is not None:
+            return state.approval_ctrl
+        return ApprovalController(self)
+
+    @property
+    def _current_response(self) -> AgentResponse | None:
+        state = self._sessions.active
+        return state.current_response if state else None
+
+    @_current_response.setter
+    def _current_response(self, value: AgentResponse | None) -> None:
+        state = self._sessions.active
+        if state is not None:
+            state.current_response = value
+
+    @property
+    def _current_reasoning(self) -> Static | None:
+        state = self._sessions.active
+        return state.current_reasoning if state else None
+
+    @_current_reasoning.setter
+    def _current_reasoning(self, value: Static | None) -> None:
+        state = self._sessions.active
+        if state is not None:
+            state.current_reasoning = value
+
+    @property
+    def _reasoning_buf(self) -> str:
+        state = self._sessions.active
+        return state.reasoning_buf if state else ""
+
+    @_reasoning_buf.setter
+    def _reasoning_buf(self, value: str) -> None:
+        state = self._sessions.active
+        if state is not None:
+            state.reasoning_buf = value
+
+    @property
+    def _streamed_text(self) -> bool:
+        state = self._sessions.active
+        return state.streamed_text if state else False
+
+    @_streamed_text.setter
+    def _streamed_text(self, value: bool) -> None:
+        state = self._sessions.active
+        if state is not None:
+            state.streamed_text = value
+
+    @property
+    def _reply_footer(self) -> ReplyFooter | None:
+        state = self._sessions.active
+        return state.reply_footer if state else None
+
+    @_reply_footer.setter
+    def _reply_footer(self, value: ReplyFooter | None) -> None:
+        state = self._sessions.active
+        if state is not None:
+            state.reply_footer = value
+
+    @property
+    def _queued(self) -> list[tuple[str, list[str] | None]]:
+        state = self._sessions.active
+        return state.queued if state else []
+
+    @_queued.setter
+    def _queued(self, value: list) -> None:
+        state = self._sessions.active
+        if state is not None:
+            state.queued = value
+
+    @property
+    def _pending_indicators(self) -> list[tuple[str, str]]:
+        state = self._sessions.active
+        return state.pending_indicators if state else []
+
+    @_pending_indicators.setter
+    def _pending_indicators(self, value: list) -> None:
+        state = self._sessions.active
+        if state is not None:
+            state.pending_indicators = value
+
+    @property
+    def _edited_files(self) -> dict[str, dict[str, int]]:
+        state = self._sessions.active
+        return state.edited_files if state else {}
+
+    @_edited_files.setter
+    def _edited_files(self, value: dict) -> None:
+        state = self._sessions.active
+        if state is not None:
+            state.edited_files = value
+
+    @property
+    def _context_banner_shown(self) -> bool:
+        state = self._sessions.active
+        return state.context_banner_shown if state else False
+
+    @_context_banner_shown.setter
+    def _context_banner_shown(self, value: bool) -> None:
+        state = self._sessions.active
+        if state is not None:
+            state.context_banner_shown = value
 
     def get_system_commands(self, screen: Screen) -> Iterable[SystemCommand]:
         """Extend Textual's command palette with Taui commands."""
@@ -425,67 +620,7 @@ class TauiApp(App[None]):
 
     def _taui_palette_commands(self) -> Iterable[SystemCommand]:
         """Build command-palette entries backed by existing Taui actions."""
-        yield SystemCommand(
-            "Taui: Select model",
-            "Open the model picker",
-            self._open_model_picker,
-        )
-        yield SystemCommand(
-            "Taui: List models",
-            "Print available models for the current provider",
-            lambda: self._run_palette_command("/model list"),
-        )
-        yield SystemCommand(
-            "Taui: Select agent",
-            "Open the agent picker",
-            lambda: self.handle_agent_badge_clicked(None),
-        )
-        yield SystemCommand(
-            "Taui: Sessions",
-            "Open the sidebar to browse and resume sessions",
-            self._open_sessions_sidebar,
-        )
-        yield SystemCommand(
-            "Taui: Context breakdown",
-            "Show current context usage",
-            self._open_context_tree,
-        )
-        yield SystemCommand(
-            "Taui: New session",
-            "Start a fresh session",
-            lambda: self.run_worker(
-                self.action_new_chat(),
-                name="palette_new_session",
-                group="palette",
-                exclusive=True,
-            ),
-        )
-        yield SystemCommand(
-            "Taui: Toggle sidebar",
-            "Show or hide the project sidebar",
-            self.action_toggle_sidebar,
-        )
-        yield SystemCommand(
-            "Taui: Toggle info sidebar",
-            "Show or hide session details",
-            self.action_toggle_info_sidebar,
-        )
-        yield SystemCommand(
-            "Taui: Self-edit",
-            "Show self-edit usage",
-            lambda: self.run_worker(
-                self.action_enter_self_edit(),
-                name="palette_self_edit",
-                group="palette",
-                exclusive=True,
-            ),
-        )
-        yield SystemCommand(
-            "Taui: Git diff",
-            "Open the git diff viewer",
-            lambda: self._run_palette_command("/diff"),
-        )
-
+        # Slash commands are the primary palette entries (discoverable).
         commands = getattr(self, "_commands", None)
         if commands is not None:
             for name in commands.names:
@@ -496,8 +631,79 @@ class TauiApp(App[None]):
                     f"/{name}",
                     command.description,
                     lambda name=name: self._run_palette_command(f"/{name}"),
-                    discover=False,
                 )
+
+        # Convenience actions are searchable but not shown by default.
+        yield SystemCommand(
+            "Taui: Select model",
+            "Open the model picker",
+            self._open_model_picker,
+            discover=False,
+        )
+        yield SystemCommand(
+            "Taui: List models",
+            "Print available models for the current provider",
+            lambda: self._run_palette_command("/model list"),
+            discover=False,
+        )
+        yield SystemCommand(
+            "Taui: Select agent",
+            "Open the agent picker",
+            lambda: self.handle_agent_badge_clicked(None),
+            discover=False,
+        )
+        yield SystemCommand(
+            "Taui: Sessions",
+            "Open the sidebar to browse and resume sessions",
+            self._open_sessions_sidebar,
+            discover=False,
+        )
+        yield SystemCommand(
+            "Taui: Context breakdown",
+            "Show current context usage",
+            self._open_context_tree,
+            discover=False,
+        )
+        yield SystemCommand(
+            "Taui: New session",
+            "Start a fresh session",
+            lambda: self.run_worker(
+                self.action_new_chat(),
+                name="palette_new_session",
+                group="palette",
+                exclusive=True,
+            ),
+            discover=False,
+        )
+        yield SystemCommand(
+            "Taui: Toggle sidebar",
+            "Show or hide the project sidebar",
+            self.action_toggle_sidebar,
+            discover=False,
+        )
+        yield SystemCommand(
+            "Taui: Toggle info sidebar",
+            "Show or hide session details",
+            self.action_toggle_info_sidebar,
+            discover=False,
+        )
+        yield SystemCommand(
+            "Taui: Self-edit",
+            "Show self-edit usage",
+            lambda: self.run_worker(
+                self.action_enter_self_edit(),
+                name="palette_self_edit",
+                group="palette",
+                exclusive=True,
+            ),
+            discover=False,
+        )
+        yield SystemCommand(
+            "Taui: Git diff",
+            "Open the git diff viewer",
+            lambda: self._run_palette_command("/diff"),
+            discover=False,
+        )
 
     def _run_palette_command(self, command: str) -> None:
         """Run a slash command selected from the command palette."""
@@ -538,7 +744,7 @@ class TauiApp(App[None]):
         with Horizontal(id="main-layout"):
             yield Sidebar(self._config.working_dir)
             with Vertical(id="chat-area"):
-                with VerticalScroll(id="chat-log"):
+                with Vertical(id="chat-log-container"):
                     pass
                 yield Info2(id="info2")
                 with Vertical(id="chat-container"):
@@ -566,9 +772,6 @@ class TauiApp(App[None]):
         self._set_chat_panel_visible(False)
         self.query_one(ActivityProgress).start_breathing()
 
-        chat_log = self.query_one("#chat-log", VerticalScroll)
-        chat_log.anchor()
-
         self.run_worker(
             self._initialize_session(),
             name="session_init",
@@ -579,7 +782,7 @@ class TauiApp(App[None]):
 
     def _set_chat_panel_visible(self, visible: bool) -> None:
         """Show/hide the chat panel contents while keeping the bottom bar."""
-        for selector in ("#chat-log", "#info2", "#chat-container"):
+        for selector in ("#chat-log-container", "#info2", "#chat-container"):
             try:
                 self.query_one(selector).display = visible
             except Exception:
@@ -587,7 +790,7 @@ class TauiApp(App[None]):
 
     async def _initialize_session(self) -> None:
         try:
-            self._session = await Session.create(self._config)
+            session = await Session.create(self._config)
         except Exception as exc:
             logger.exception("Failed to create session")
             self._session_initializing = False
@@ -595,6 +798,8 @@ class TauiApp(App[None]):
             self._set_chat_panel_visible(True)
             await self._show_startup_error(exc)
             return
+
+        await self._add_session(session)
 
         if not self._config.session_id:
             self._apply_default_agent_profile()
@@ -610,6 +815,51 @@ class TauiApp(App[None]):
 
         if self._config.session_id:
             await self._resume_session(self._config.session_id)
+
+    async def _add_session(self, session: Session) -> SessionState:
+        """Create a SessionState for *session*, mount its chat log, and activate it."""
+        sid = session.session_id or "init"
+        state = SessionState(
+            session=session,
+            session_id=sid,
+            tool_ctrl=ToolController(self),
+            approval_ctrl=ApprovalController(self),
+        )
+
+        # Create a per-session chat log widget
+        chat_log = VerticalScroll(id=f"chat-log-{sid}")
+        state.chat_log = chat_log
+
+        # Hide all existing chat logs
+        container = self.query_one("#chat-log-container", Vertical)
+        for child in container.children:
+            if isinstance(child, VerticalScroll):
+                child.add_class("hidden-chat-log")
+
+        await container.mount(chat_log)
+        chat_log.anchor()
+
+        self._sessions.add(state)
+        self._sessions.active_id = sid
+        self._refresh_tab_bar()
+        return state
+
+    def _refresh_tab_bar(self) -> None:
+        """No-op — session tab bar has been removed."""
+        return
+
+    def _get_active_chat_log(self) -> VerticalScroll:
+        """Return the active session's chat log widget."""
+        state = self._sessions.active
+        if state is not None and state.chat_log is not None:
+            return state.chat_log
+        # Fallback: find any chat log in the container
+        container = self.query_one("#chat-log-container", Vertical)
+        for child in container.children:
+            if isinstance(child, VerticalScroll):
+                return child
+        # Last resort: create one
+        raise NoMatches("No chat log found")
 
     def _configure_chat_input(self) -> None:
         """Load input history and command completions."""
@@ -650,7 +900,10 @@ class TauiApp(App[None]):
 
     async def _show_startup_error(self, exc: Exception) -> None:
         """Render a startup failure without letting Textual print a traceback."""
-        chat_log = self.query_one("#chat-log", VerticalScroll)
+        # No session exists yet — mount a temporary chat log in the container
+        container = self.query_one("#chat-log-container", Vertical)
+        chat_log = VerticalScroll(id="chat-log-error")
+        await container.mount(chat_log)
         provider = self._config.provider
         message = str(exc) or exc.__class__.__name__
         await chat_log.mount(
@@ -867,15 +1120,17 @@ class TauiApp(App[None]):
             self._apply_self_edit_profile(profile)
 
     async def _begin_new_session(self) -> None:
-        """Tear down any in-flight agent turn so the next session starts clean.
+        """Tear down any in-flight agent turn for the active session.
         Silences the current loop's callbacks first, then cancels the worker
         and resets TUI streaming state — without this, a mid-turn /new can
         leak streaming text, tool widgets, and 'Request cancelled.' notices
         into the fresh chat log."""
-        if self._session is None:
+        state = self._sessions.active
+        if state is None:
             return
+        session = state.session
 
-        old_loop = self._session._loop
+        old_loop = session._loop
         old_loop._on_tool_call = None
         old_loop._on_tool_result = None
         old_loop._on_approval = None
@@ -889,31 +1144,34 @@ class TauiApp(App[None]):
             llm.on_text_delta = None
             llm.on_reasoning_delta = None
 
-        if self._approval_ctrl.has_active_panel():
-            self._approval_ctrl.cancel_active_panel()
-        self._approval_ctrl.cancel_active_approval()
+        if state.approval_ctrl.has_active_panel():
+            state.approval_ctrl.cancel_active_panel()
+        state.approval_ctrl.cancel_active_approval()
 
-        if self._is_processing:
-            self._queued.clear()
+        if state.is_processing:
+            state.queued.clear()
             old_loop._steering_queue.clear()
-            self.workers.cancel_all()
-            # wait_for_complete swallows CancelledError but re-raises
-            # WorkerCancelled, which is exactly what our own cancel_all
-            # produces. Drain individually so cancellation is the success path.
+            # Cancel only this session's workers
+            sid = state.session_id
             for worker in list(self.workers):
-                try:
-                    await worker.wait()
-                except Exception:
-                    pass
-            self._set_busy(False)
+                if worker.group == f"send-{sid}":
+                    worker.cancel()
+            for worker in list(self.workers):
+                if worker.group == f"send-{sid}":
+                    try:
+                        await worker.wait()
+                    except Exception:
+                        pass
+            self._set_busy(False, state)
 
-        self._current_response = None
-        self._current_reasoning = None
-        self._reasoning_buf = ""
-        self._streamed_text = False
-        self._reply_footer = None
-        self._pending_indicators.clear()
-        self._tool_ctrl.reset()
+        state.current_response = None
+        state.current_reasoning = None
+        state.reasoning_buf = ""
+        state.streamed_text = False
+        state.reply_footer = None
+        state.pending_indicators.clear()
+        state.context_banner_shown = False
+        state.tool_ctrl.reset()
 
         try:
             self.query_one(ActivityProgress).stop()
@@ -935,7 +1193,6 @@ class TauiApp(App[None]):
         )
         next_profile = profiles[(active_index + 1) % len(profiles)]
         self._apply_self_edit_profile(next_profile)
-        self._update_status()
 
     # ── Info bar ──────────────────────────────────────────────────────
 
@@ -944,13 +1201,11 @@ class TauiApp(App[None]):
             return
         info_bar = self.query_one(InfoBar)
         tokens = estimate_total_tokens(self._session._loop._messages)
-        tracker = self._session.cost_tracker
         info_bar.update_info(
             provider=self._session.provider_name,
             model=self._session.model_name,
             tokens=tokens,
             max_tokens=DEFAULT_MAX_INPUT_TOKENS,
-            cost=tracker.total_cost_usd,
             extensions_mode=self._session.extensions_mode,
             agent_id=str(getattr(self._session._loop, "agent_id", "") or ""),
         )
@@ -985,53 +1240,69 @@ class TauiApp(App[None]):
     # ── Agent callbacks ───────────────────────────────────────────────
 
     def _wire_callbacks(self) -> None:
-        assert self._session is not None
-        loop = self._session._loop
-        loop._on_tool_call = self._tool_ctrl.on_tool_call
-        loop._on_tool_result = self._tool_ctrl.on_tool_result
+        state = self._sessions.active
+        assert state is not None
+        session = state.session
+        assert session is not None
+        loop = session._loop
+        sid = state.session_id
+
+        loop._on_tool_call = state.tool_ctrl.on_tool_call
+        loop._on_tool_result = state.tool_ctrl.on_tool_result
         loop._on_text = self._on_text
-        loop._on_text_delta = self._on_text_delta_sync
-        loop._on_reasoning_delta = self._on_reasoning_delta_sync
-        loop._on_approval = self._approval_ctrl.on_approval
-        loop._on_questions_batch = self._approval_ctrl.on_questions_batch
-        loop._on_compact = self._on_compact_sync
+        loop._on_text_delta = lambda frag: self._on_text_delta_sync(frag, session_id=sid)
+        loop._on_reasoning_delta = (
+            lambda frag: self._on_reasoning_delta_sync(frag, session_id=sid)
+        )
+        loop._on_approval = state.approval_ctrl.on_approval
+        loop._on_questions_batch = state.approval_ctrl.on_questions_batch
+        loop._on_compact = lambda r, b, a: self._on_compact_sync(r, b, a, session_id=sid)
 
         # Wire sub-agent callbacks so child tool calls are visible in the TUI
         try:
             from taui.tools.builtins.sub_agent import SubAgentTool
 
-            registry = getattr(self._session, "_registry", None)
+            registry = getattr(session, "_registry", None)
             if registry is not None:
                 sub_agent = registry.get("sub_agent")
                 if isinstance(sub_agent, SubAgentTool):
-                    sub_agent._on_tool_call = self._tool_ctrl.on_tool_call
-                    sub_agent._on_tool_result = self._tool_ctrl.on_tool_result
+                    sub_agent._on_tool_call = state.tool_ctrl.on_tool_call
+                    sub_agent._on_tool_result = state.tool_ctrl.on_tool_result
         except (ValueError, ImportError):
             pass
 
-    def _on_text_delta_sync(self, fragment: str) -> None:
+    def _on_text_delta_sync(self, fragment: str, *, session_id: str = "") -> None:
         """Handle real-time streaming token from the LLM provider."""
-        self._streamed_text = True
-        self.post_message(StreamTextDelta(fragment))
+        state = self._sessions.get(session_id) if session_id else self._sessions.active
+        if state is not None:
+            state.streamed_text = True
+        self.post_message(StreamTextDelta(fragment, session_id=session_id))
 
-    def _on_reasoning_delta_sync(self, fragment: str) -> None:
+    def _on_reasoning_delta_sync(
+        self, fragment: str, *, session_id: str = "",
+    ) -> None:
         """Handle real-time streaming reasoning token from the LLM provider."""
-        self.post_message(StreamReasoningDelta(fragment))
+        self.post_message(StreamReasoningDelta(fragment, session_id=session_id))
 
     async def _on_text(self, text: str) -> None:
         """Handle full text after turn — only used if no streaming occurred."""
-        if not self._streamed_text:
+        state = self._sessions.active
+        if state is None or not state.streamed_text:
             self.post_message(StreamTextDelta(text))
 
-    def _on_compact_sync(self, removed: int, before: int, after: int) -> None:
+    def _on_compact_sync(
+        self, removed: int, before: int, after: int, *, session_id: str = "",
+    ) -> None:
         """Handle auto-compaction notification from the agent loop."""
-        self.post_message(CompactionOccurred(removed, before, after))
+        self.post_message(
+            CompactionOccurred(removed, before, after, session_id=session_id)
+        )
 
     # ── Tool event handlers ───────────────────────────────────────────
 
     @on(CompactionOccurred)
     async def handle_compaction(self, event: CompactionOccurred) -> None:
-        chat_log = self.query_one("#chat-log", VerticalScroll)
+        chat_log = self._get_active_chat_log()
         msg = (
             f"Context auto-compacted: {event.removed} messages removed, "
             f"tokens {event.before_tokens:,} → {event.after_tokens:,}"
@@ -1041,11 +1312,23 @@ class TauiApp(App[None]):
 
     @on(ToolStarted)
     async def handle_tool_started(self, event: ToolStarted) -> None:
-        await self._tool_ctrl.handle_tool_started(event)
+        st = (
+            self._sessions.get(event.session_id)
+            if event.session_id
+            else self._sessions.active
+        )
+        if st is not None and st.tool_ctrl is not None:
+            await st.tool_ctrl.handle_tool_started(event)
 
     @on(ToolEnded)
     async def handle_tool_ended(self, event: ToolEnded) -> None:
-        await self._tool_ctrl.handle_tool_ended(event)
+        st = (
+            self._sessions.get(event.session_id)
+            if event.session_id
+            else self._sessions.active
+        )
+        if st is not None and st.tool_ctrl is not None:
+            await st.tool_ctrl.handle_tool_ended(event)
 
     @on(InfoBar.AgentBadgeClicked)
     def handle_agent_badge_clicked(
@@ -1136,6 +1419,15 @@ class TauiApp(App[None]):
             self._session.config.model = selected
             self._session._loop._model = selected
             self._update_status()
+            # Persist model choice to session metadata
+            async def _persist() -> None:
+                await self._session._store.update_session(
+                    self._session.session_id, model=selected
+                )
+            try:
+                self.run_worker(_persist(), exclusive=False)
+            except Exception:
+                pass
 
     @on(Info2.ModelSelected)
     def handle_info2_model_selected(self, event: Info2.ModelSelected) -> None:
@@ -1158,33 +1450,58 @@ class TauiApp(App[None]):
     @on(StreamTextDelta)
     async def handle_stream_text(self, event: StreamTextDelta) -> None:
         """Handle incoming text deltas — stream into AgentResponse widget."""
+        st = (
+            self._sessions.get(event.session_id)
+            if event.session_id
+            else self._sessions.active
+        )
+        if st is None:
+            return
         # Finalize reasoning block when regular text starts arriving
-        if self._current_reasoning is not None:
-            self._current_reasoning = None
-        if self._current_response is None:
-            self._current_response = AgentResponse()
-            await self._mount_in_reply(self._current_response)
-        await self._current_response.append_text(event.text)
+        if st.current_reasoning is not None:
+            st.current_reasoning = None
+        if st.current_response is None:
+            st.current_response = AgentResponse()
+            await self._mount_in_reply(st.current_response, state=st)
+        await st.current_response.append_text(event.text)
         self._smart_scroll()
 
     @on(StreamReasoningDelta)
     async def handle_stream_reasoning(self, event: StreamReasoningDelta) -> None:
         """Handle incoming reasoning deltas — stream into a dimmed Static widget."""
-        self._reasoning_buf += event.text
-        display = self._reasoning_buf
-        if len(display) > 300:
-            display = display[:300] + "..."
-        if self._current_reasoning is None:
-            self._current_reasoning = Static(
+        st = (
+            self._sessions.get(event.session_id)
+            if event.session_id
+            else self._sessions.active
+        )
+        if st is None:
+            return
+        st.reasoning_buf += event.text
+        if st.current_reasoning is None:
+            display = st.reasoning_buf
+            if len(display) > 300:
+                display = display[:300] + "..."
+            st.current_reasoning = Static(
                 f"[dim italic]{escape(display)}[/dim italic]",
                 classes="reasoning-text",
                 markup=True,
             )
-            await self._mount_in_reply(self._current_reasoning)
-        else:
-            self._current_reasoning.update(
-                f"[dim italic]{escape(display)}[/dim italic]"
-            )
+            await self._mount_in_reply(st.current_reasoning, state=st)
+            st._reasoning_render_pending = False
+        elif not st._reasoning_render_pending:
+            st._reasoning_render_pending = True
+
+            def _flush_reasoning() -> None:
+                st._reasoning_render_pending = False
+                if st.current_reasoning is not None:
+                    display = st.reasoning_buf
+                    if len(display) > 300:
+                        display = display[:300] + "..."
+                    st.current_reasoning.update(
+                        f"[dim italic]{escape(display)}[/dim italic]"
+                    )
+
+            self.call_after_refresh(_flush_reasoning)
         self._smart_scroll()
 
     # ── Input handling ────────────────────────────────────────────────
@@ -1199,7 +1516,7 @@ class TauiApp(App[None]):
             return
 
         if self._session is None:
-            chat_log = self.query_one("#chat-log", VerticalScroll)
+            chat_log = self._get_active_chat_log()
             await chat_log.mount(
                 Static(
                     "[yellow]No session is active. Fix auth/network access "
@@ -1235,7 +1552,11 @@ class TauiApp(App[None]):
             return
 
         # Normal send
-        chat_log = self.query_one("#chat-log", VerticalScroll)
+        chat_log = self._get_active_chat_log()
+
+        # Show context banner before the very first message
+        await self._maybe_show_context_banner(chat_log)
+
         display_text = escape(text)
         if images:
             labels = " ".join(f"\\[Image {i + 1}]" for i in range(len(images)))
@@ -1265,12 +1586,12 @@ class TauiApp(App[None]):
     ) -> None:
         """Submit a prompt produced by a slash command as a normal user turn."""
         if self._session is None:
-            chat_log = self.query_one("#chat-log", VerticalScroll)
+            chat_log = self._get_active_chat_log()
             await chat_log.mount(Static("[yellow]No session is active.[/yellow]", markup=True))
             self._smart_scroll()
             return
         self._save_to_history(text)
-        chat_log = self.query_one("#chat-log", VerticalScroll)
+        chat_log = self._get_active_chat_log()
         await chat_log.mount(
             Static(
                 f"[bold #e6edf3]{escape(text)}[/bold #e6edf3]",
@@ -1296,7 +1617,7 @@ class TauiApp(App[None]):
         if self._session is None or not self._session.self_edit_mode:
             return
         new_scope = await self._session.switch_self_edit_scope()
-        chat_log = self.query_one("#chat-log", VerticalScroll)
+        chat_log = self._get_active_chat_log()
         await chat_log.mount(
             Static(self._self_edit_scope_line(new_scope), markup=True)
         )
@@ -1424,25 +1745,95 @@ class TauiApp(App[None]):
         self._smart_scroll()
 
 
+    # ── Context banner ─────────────────────────────────────────────────
+
+    async def _maybe_show_context_banner(self, chat_log) -> None:
+        """Show system prompt + tool list once, before the first user message."""
+        if self._context_banner_shown or self._session is None:
+            return
+        self._context_banner_shown = True
+
+        parts: list[str] = []
+
+        # System prompt: first 3 lines, then ...
+        sp = getattr(self._session, "_system_prompt", "") or ""
+        if sp:
+            lines = sp.splitlines()
+            preview = lines[:3]
+            if len(lines) > 3:
+                preview.append("...")
+            sp_text = "\n".join(preview)
+            # Aggressively escape all square brackets — Textual's `escape()`
+            # only handles a subset of bracket patterns and the system prompt
+            # can contain paths like ``(taui/tui/app.py)?`` that confuse the
+            # markup parser.
+            safe_sp = sp_text.replace("[", "\\[")
+            parts.append(f"[dim bold]System prompt:[/dim bold]\n[dim]{safe_sp}[/dim]")
+
+        # blank line between sections
+        if parts:
+            parts.append("")
+
+        # Tool list: brief comma-separated
+        tool_names: list[str] = []
+        if hasattr(self._session, "_registry"):
+            tool_names = list(getattr(self._session._registry, "names", []) or [])
+        if tool_names:
+            safe_tools = ', '.join(tool_names).replace("[", "\\[")
+            parts.append(f"[dim bold]Tools:[/dim bold] [dim]{safe_tools}[/dim]")
+
+        # Model
+        model = getattr(self._session, "model_name", "") or ""
+        if model:
+            parts.append(f"[dim bold]Model:[/dim bold] [dim]{model}[/dim]")
+
+        if parts:
+            banner = "\n".join(parts)
+            await chat_log.mount(
+                Static(banner, classes="context-banner", markup=True)
+            )
+
     # ── Send message and drain queue ──────────────────────────────────
 
-    @work(exclusive=True)
-    async def _send_and_drain(
+    def _send_and_drain(
         self,
         text: str,
         images: list[str] | None = None,
         tool_names: list[str] | None = None,
     ) -> None:
-        assert self._session is not None
-        self._set_busy(True)
+        """Launch the send worker for the active session.
+
+        Each session gets its own exclusive worker group so parallel sessions
+        don't cancel each other's workers.
+        """
+        state = self._sessions.active
+        assert state is not None
+        sid = state.session_id
+        self.run_worker(
+            self._do_send_and_drain(state, text, images, tool_names),
+            name=f"send-{sid}",
+            group=f"send-{sid}",
+            exclusive=True,
+        )
+
+    async def _do_send_and_drain(
+        self,
+        state: SessionState,
+        text: str,
+        images: list[str] | None = None,
+        tool_names: list[str] | None = None,
+    ) -> None:
+        state.is_processing = True
+        self._set_busy(True, state)
 
         try:
-            await self._do_send(text, images=images, tool_names=tool_names)
+            await self._do_send(text, images=images, tool_names=tool_names,
+                                state=state)
 
             # Drain queued messages
-            while self._queued:
-                msg, queued_images = self._queued.pop(0)
-                chat_log = self.query_one("#chat-log", VerticalScroll)
+            while state.queued:
+                msg, queued_images = state.queued.pop(0)
+                chat_log = state.chat_log or self._get_active_chat_log()
                 await chat_log.mount(
                     Static(
                         "[dim]  → processing follow-up[/dim]",
@@ -1456,9 +1847,11 @@ class TauiApp(App[None]):
                         markup=True,
                     )
                 )
-                await self._do_send(msg, images=queued_images)
+                await self._do_send(msg, images=queued_images, state=state)
         finally:
-            self._set_busy(False)
+            state.is_processing = False
+            self._set_busy(False, state)
+            self._refresh_tab_bar()
 
     async def _do_send(
         self,
@@ -1466,22 +1859,26 @@ class TauiApp(App[None]):
         *,
         images: list[str] | None = None,
         tool_names: list[str] | None = None,
+        state: SessionState | None = None,
     ) -> None:
         """Send a single message and display the result."""
-        assert self._session is not None
+        # Use provided state or fall back to active
+        st = state or self._sessions.active
+        assert st is not None
+        session = st.session
 
         progress = self.query_one(ActivityProgress)
-        agent_id = str(getattr(self._session._loop, "agent_id", "") or "")
+        agent_id = str(getattr(session._loop, "agent_id", "") or "")
         progress.set_active_style(_agent_color(agent_id) if agent_id else "#3fb950")
         progress.start()
 
-        self._tool_ctrl.reset_section()
-        self._current_response = None
-        self._current_reasoning = None
-        self._reasoning_buf = ""
-        self._streamed_text = False
-        self._reply_footer = None
-        await self._begin_reply_footer()
+        st.tool_ctrl.reset_section()
+        st.current_response = None
+        st.current_reasoning = None
+        st.reasoning_buf = ""
+        st.streamed_text = False
+        st.reply_footer = None
+        await self._begin_reply_footer(st)
 
         old_session_executor = None
         old_loop_executor = None
@@ -1489,11 +1886,11 @@ class TauiApp(App[None]):
             if tool_names is not None:
                 from taui.tools.executor import ToolExecutor
 
-                old_session_executor = self._session._executor
-                old_loop_executor = self._session._loop._executor
-                available = [name for name in tool_names if name in self._session._registry]
+                old_session_executor = session._executor
+                old_loop_executor = session._loop._executor
+                available = [name for name in tool_names if name in session._registry]
                 effective = ToolExecutor(
-                    registry=self._session._registry.subset(available),
+                    registry=session._registry.subset(available),
                     policy=old_loop_executor.policy,
                 )
                 effective._truncation_store = getattr(
@@ -1501,25 +1898,22 @@ class TauiApp(App[None]):
                     "_truncation_store",
                     None,
                 )
-                self._session._executor = effective
-                self._session._loop._executor = effective
-            result = await self._session.send(text, images=images)
+                session._executor = effective
+                session._loop._executor = effective
+            result = await session.send(text, images=images)
 
             # Finalize any streaming response
-            await self._finalize_response()
+            await self._finalize_response(st)
 
             # If no streaming happened (fallback), show response as markdown
-            if result.text and not self._streamed_text:
-                await self._mount_in_reply(Markdown(result.text))
+            if result.text and not st.streamed_text:
+                await self._mount_in_reply(Markdown(result.text), state=st)
 
             # Turn summary
             summary_parts: list[str] = []
-            tracker = self._session.cost_tracker
-            if tracker.total_cost_usd > 0:
-                summary_parts.append(f"${tracker.total_cost_usd:.4f}")
-            for fn in self._session.hooks._hooks.get("turn_summary", []):
+            for fn in session.hooks._hooks.get("turn_summary", []):
                 try:
-                    extra = fn(result, self._session)
+                    extra = fn(result, session)
                     if extra:
                         summary_parts.append(str(extra))
                 except Exception:
@@ -1527,26 +1921,29 @@ class TauiApp(App[None]):
             if summary_parts:
                 summary = f"[dim]{' · '.join(summary_parts)}[/dim]"
                 await self._mount_in_reply(
-                    Static(summary, classes="turn-summary", markup=True)
+                    Static(summary, classes="turn-summary", markup=True),
+                    state=st,
                 )
 
             self._update_status()
             self._smart_scroll()
         except asyncio.CancelledError:
             await self._mount_in_reply(
-                Static("[dim]Request cancelled.[/dim]", markup=True)
+                Static("[dim]Request cancelled.[/dim]", markup=True),
+                state=st,
             )
         except Exception as exc:
             await self._mount_in_reply(
-                Static(f"[red]Error: {exc}[/red]", markup=True)
+                Static(f"[red]Error: {exc}[/red]", markup=True),
+                state=st,
             )
         finally:
             if old_loop_executor is not None:
-                self._session._loop._executor = old_loop_executor
+                session._loop._executor = old_loop_executor
             if old_session_executor is not None:
-                self._session._executor = old_session_executor
+                session._executor = old_session_executor
             progress.stop()
-            self._tool_ctrl.reset_section()
+            st.tool_ctrl.reset_section()
             # Intentionally do NOT clear `self._reply_footer` here. Stream
             # deltas are dispatched off Textual's message queue and a few
             # can still be pending after `_session.send()` returns. Nulling
@@ -1556,27 +1953,33 @@ class TauiApp(App[None]):
             # (and `_begin_reply_footer` rebuilds a fresh one) once we're
             # safely past any in-flight callbacks from the prior turn.
 
-    async def _finalize_response(self) -> None:
+    async def _finalize_response(self, state: SessionState | None = None) -> None:
         """Finalize the current streaming response if any."""
-        if self._current_response:
-            await self._current_response.finalize()
-            self._current_response = None
-            # Reset tool section so the next tool group starts below the new text.
-            self._tool_ctrl.reset_section()
-        # Reset reasoning state for the next turn
-        if self._current_reasoning is not None:
-            self._current_reasoning = None
-            self._reasoning_buf = ""
+        st = state or self._sessions.active
+        if st is None:
+            return
+        if st.current_response:
+            await st.current_response.finalize()
+            st.current_response = None
+            st.tool_ctrl.reset_section()
+        if st.current_reasoning is not None:
+            st.current_reasoning = None
+            st.reasoning_buf = ""
 
     # ── Busy state management ─────────────────────────────────────────
 
-    def _set_busy(self, busy: bool) -> None:
-        self._is_processing = busy
+    def _set_busy(self, busy: bool, state: SessionState | None = None) -> None:
+        st = state or self._sessions.active
+        if st is not None:
+            st.is_processing = busy
         chat_input = self.query_one("#chat-input", ChatInput)
-        chat_input.agent_busy = busy
+        # Agent is busy if *any* session is processing
+        chat_input.agent_busy = self._sessions.any_processing
         if not busy:
-            self._pending_indicators.clear()
+            if st is not None:
+                st.pending_indicators.clear()
             chat_input.focus()
+        self._refresh_tab_bar()
 
     # ── Mouse auto-copy ───────────────────────────────────────────────
 
@@ -1592,28 +1995,39 @@ class TauiApp(App[None]):
 
     # ── Per-reply footer ──────────────────────────────────────────────
 
-    async def _begin_reply_footer(self) -> None:
+    async def _begin_reply_footer(self, state: SessionState | None = None) -> None:
         """Eagerly mount the per-turn footer at the start of `_do_send`.
 
         Doing this once, before any callbacks can fire, guarantees a single
         ReplyFooter per turn — no race window where two streaming callbacks
         both think they need to create one."""
-        if self._reply_footer is not None:
+        st = state or self._sessions.active
+        if st is None:
             return
-        chat_log = self.query_one("#chat-log", VerticalScroll)
+        if st.reply_footer is not None:
+            return
+        chat_log = st.chat_log or self._get_active_chat_log()
         agent_id = ""
         model = ""
-        if self._session is not None:
-            agent_id = str(getattr(self._session._loop, "agent_id", "") or "")
-            model = self._session.model_name or ""
+        session = st.session
+        if session is not None:
+            agent_id = str(getattr(session._loop, "agent_id", "") or "")
+            model = session.model_name or ""
         footer = ReplyFooter(agent_id, model)
-        self._reply_footer = footer
+        st.reply_footer = footer
         await chat_log.mount(footer)
 
-    async def _mount_in_reply(self, widget) -> None:
+    async def _mount_in_reply(
+        self, widget, *, state: SessionState | None = None,
+    ) -> None:
         """Mount a widget into the chat log above the current turn's footer."""
-        chat_log = self.query_one("#chat-log", VerticalScroll)
-        footer = self._reply_footer
+        st = state or self._sessions.active
+        if st is not None:
+            chat_log = st.chat_log or self._get_active_chat_log()
+            footer = st.reply_footer
+        else:
+            chat_log = self._get_active_chat_log()
+            footer = None
         if footer is not None:
             await chat_log.mount(widget, before=footer)
         else:
@@ -1633,7 +2047,7 @@ class TauiApp(App[None]):
         (submitting a message, running a command) so the user immediately
         sees the result even if they had scrolled up."""
         try:
-            chat_log = self.query_one("#chat-log", VerticalScroll)
+            chat_log = self._get_active_chat_log()
         except NoMatches:
             return
         chat_log.anchor()
@@ -1641,7 +2055,7 @@ class TauiApp(App[None]):
     # ── Slash commands ────────────────────────────────────────────────
 
     async def _handle_command(self, cmd: str) -> None:
-        chat_log = self.query_one("#chat-log", VerticalScroll)
+        chat_log = self._get_active_chat_log()
         parts = cmd.strip().split(maxsplit=1)
         command = parts[0].lower()
         msg_arg = parts[1].strip() if len(parts) > 1 else ""
@@ -1697,8 +2111,10 @@ class TauiApp(App[None]):
             prior_agent_id = str(
                 getattr(self._session._loop, "agent_id", "") or ""
             )
-            await self._begin_new_session()
-            await chat_log.remove_children()
+            # Create a new parallel session tab
+            await self.action_new_chat()
+            # The command result below will handle the "new_session" action
+            return
 
         result = await self._commands.execute(cmd)
         action = result.metadata.get("action") if result.metadata else None
@@ -1820,23 +2236,42 @@ class TauiApp(App[None]):
         self._show_session_picker(sessions)
 
     async def _resume_session(self, session_id: str) -> bool:
-        """Resume a session, render its transcript, and report failures inline."""
+        """Resume a session into a new tab (or switch to it if already open)."""
+        # If this session is already open as a tab, just switch to it
+        if session_id in self._sessions:
+            self._switch_to_session(session_id)
+            return True
+
         if self._session is None:
             return False
         ok = await self._session.resume_session(session_id)
         if ok:
+            # The active session has been mutated to point at the resumed session.
+            # Update the SessionState's session_id to match.
+            state = self._sessions.active
+            if state is not None:
+                old_id = state.session_id
+                state.session_id = session_id
+                # Re-register under the new ID
+                self._sessions._states.pop(old_id, None)
+                if old_id in self._sessions._order:
+                    idx = self._sessions._order.index(old_id)
+                    self._sessions._order[idx] = session_id
+                self._sessions._states[session_id] = state
+                self._sessions.active_id = session_id
             self._edited_files.clear()
             self._apply_default_agent_profile_id()
             self._wire_callbacks()
             self._update_status()
             await self._render_replay()
+            self._refresh_tab_bar()
             return True
 
         error = (
             getattr(self._session, "last_resume_error", "")
             or f"Failed to resume session: {session_id}"
         )
-        chat_log = self.query_one("#chat-log", VerticalScroll)
+        chat_log = self._get_active_chat_log()
         await chat_log.mount(Static(f"[red]{escape(error)}[/red]", markup=True))
         self._smart_scroll()
         return False
@@ -1845,8 +2280,13 @@ class TauiApp(App[None]):
         """Clear the chat log and render the resumed session transcript."""
         if self._session is None:
             return
-        chat_log = self.query_one("#chat-log", VerticalScroll)
+        chat_log = self._get_active_chat_log()
         await chat_log.remove_children()
+
+        # Show context banner at the top of replayed sessions
+        self._context_banner_shown = False
+        await self._maybe_show_context_banner(chat_log)
+
         tool_section: Vertical | None = None
         pending_widgets: dict[str, ToolStatusWidget] = {}
         pending_order: list[str] = []
@@ -1941,7 +2381,7 @@ class TauiApp(App[None]):
     @work(exclusive=True, group="replay_scroll")
     async def _pin_replay_to_end(self) -> None:
         try:
-            chat_log = self.query_one("#chat-log", VerticalScroll)
+            chat_log = self._get_active_chat_log()
         except NoMatches:
             return
         # Re-engage anchor so any subsequent content growth also sticks.
@@ -1966,36 +2406,52 @@ class TauiApp(App[None]):
     # ── Actions ───────────────────────────────────────────────────────
 
     async def action_quit_app(self) -> None:
-        if self._session:
-            await self._session.close()
+        # Close all sessions
+        for sid in list(self._sessions.order):
+            state = self._sessions.get(sid)
+            if state is not None:
+                try:
+                    await state.session.close()
+                except Exception:
+                    pass
         self.exit()
 
     async def action_new_chat(self) -> None:
+        """Create a new parallel session tab (does NOT cancel existing sessions)."""
+        prior_agent_id = ""
         if self._session:
             prior_agent_id = str(
                 getattr(self._session._loop, "agent_id", "") or ""
             )
-            await self._begin_new_session()
-            chat_log = self.query_one("#chat-log", VerticalScroll)
-            await chat_log.remove_children()
-            await self._session.new_session()
-            self._edited_files.clear()
-            if prior_agent_id:
-                self._reapply_agent_profile(prior_agent_id)
-            self._wire_callbacks()
-            self._update_status()
+
+        # Create a brand-new session. Do NOT call new_session() on the old
+        # session — that would reset the old session's loop/messages.
+        new_session = await Session.create(self._config)
+        await self._add_session(new_session)
+
+        if prior_agent_id:
+            self._reapply_agent_profile(prior_agent_id)
+        else:
+            self._apply_default_agent_profile()
+        self._wire_callbacks()
+        self._update_status()
 
     async def action_cancel_request(self) -> None:
-        if self._approval_ctrl.has_active_panel():
-            self._approval_ctrl.cancel_active_panel()
-        self._approval_ctrl.cancel_active_approval()
-        if self._is_processing:
-            # Clear queues
-            self._queued.clear()
-            if self._session:
-                self._session._loop._steering_queue.clear()
-            # Cancel the worker
-            self.workers.cancel_all()
+        state = self._sessions.active
+        if state is not None and state.approval_ctrl.has_active_panel():
+            state.approval_ctrl.cancel_active_panel()
+        if state is not None:
+            state.approval_ctrl.cancel_active_approval()
+        if state is not None and state.is_processing:
+            # Clear queues for the active session only
+            state.queued.clear()
+            if state.session:
+                state.session._loop._steering_queue.clear()
+            # Cancel only this session's workers
+            sid = state.session_id
+            for worker in list(self.workers):
+                if worker.group == f"send-{sid}":
+                    worker.cancel()
         # Double-press quit check
         now = time.monotonic()
         if now - self._last_ctrl_c_time < 0.5:
@@ -2009,6 +2465,37 @@ class TauiApp(App[None]):
             await self.action_quit_app()
             return
         self._last_ctrl_d_time = now
+
+    async def action_close_tab(self) -> None:
+        """Close the current session tab (Ctrl+W)."""
+        if len(self._sessions) <= 1:
+            # Last tab — don't close, just clear
+            return
+        state = self._sessions.active
+        if state is None:
+            return
+        # Cancel any in-flight work for this session
+        sid = state.session_id
+        for worker in list(self.workers):
+            if worker.group == f"send-{sid}":
+                worker.cancel()
+        # Close the session
+        try:
+            await state.session.close()
+        except Exception:
+            pass
+        # Remove the chat log widget
+        if state.chat_log is not None:
+            await state.chat_log.remove()
+        # Remove from manager (switches active to next tab)
+        self._sessions.remove(sid)
+        # Show the new active session's chat log
+        new_state = self._sessions.active
+        if new_state is not None and new_state.chat_log is not None:
+            new_state.chat_log.remove_class("hidden-chat-log")
+        self._wire_callbacks()
+        self._update_status()
+        self._refresh_tab_bar()
 
     def action_toggle_sidebar(self) -> None:
         sidebar = self.query_one(Sidebar)
@@ -2027,6 +2514,120 @@ class TauiApp(App[None]):
         info_sidebar.toggle()
         if info_sidebar.has_class("visible"):
             self._refresh_info_sidebar()
+            info_sidebar.focus()
+
+    # ── Cross-pane focus navigation ──────────────────────────────────
+    # Three focus zones, left → right: [Sidebar] [ChatInput] [InfoSidebar].
+    # alt+left / alt+right cycle focus across the visible zones so the TUI
+    # is fully keyboard-navigable. Hidden sidebars are skipped.
+
+    def _focus_zones(self) -> list[str]:
+        from taui.tui.widgets.session_info_sidebar import SessionInfoSidebar
+
+        zones: list[str] = []
+        try:
+            if self.query_one(Sidebar).has_class("visible"):
+                zones.append("sidebar")
+        except NoMatches:
+            pass
+        zones.append("chat-input")
+        try:
+            if self.query_one(SessionInfoSidebar).has_class("visible"):
+                zones.append("info-sidebar")
+        except NoMatches:
+            pass
+        return zones
+
+    def _current_focus_zone(self) -> str:
+        """Return the zone currently containing focus, or 'chat-input' as default."""
+        from taui.tui.widgets.session_info_sidebar import SessionInfoSidebar
+
+        focused = self.focused
+        if focused is None:
+            return "chat-input"
+        node = focused
+        while node is not None:
+            if isinstance(node, Sidebar):
+                return "sidebar"
+            if isinstance(node, SessionInfoSidebar):
+                return "info-sidebar"
+            node = node.parent
+        return "chat-input"
+
+    def _focus_zone(self, zone: str) -> None:
+        from taui.tui.widgets.session_info_sidebar import SessionInfoSidebar
+
+        if zone == "sidebar":
+            try:
+                sidebar = self.query_one(Sidebar)
+                sidebar._focus_active()
+            except NoMatches:
+                pass
+        elif zone == "info-sidebar":
+            try:
+                self.query_one(SessionInfoSidebar).focus()
+            except NoMatches:
+                pass
+        else:
+            try:
+                self.query_one("#chat-input", ChatInput).focus()
+            except NoMatches:
+                pass
+
+    def action_focus_pane_left(self) -> None:
+        zones = self._focus_zones()
+        cur = self._current_focus_zone()
+        if cur not in zones:
+            cur = "chat-input"
+        idx = zones.index(cur)
+        if idx > 0:
+            self._focus_zone(zones[idx - 1])
+
+    def action_focus_pane_right(self) -> None:
+        zones = self._focus_zones()
+        cur = self._current_focus_zone()
+        if cur not in zones:
+            cur = "chat-input"
+        idx = zones.index(cur)
+        if idx < len(zones) - 1:
+            self._focus_zone(zones[idx + 1])
+
+    async def action_next_tab(self) -> None:
+        order = list(self._sessions.order)
+        if len(order) < 2:
+            return
+        cur = self._sessions.active_id
+        if cur not in order:
+            return
+        nxt = order[(order.index(cur) + 1) % len(order)]
+        self._switch_to_session(nxt)
+
+    async def action_prev_tab(self) -> None:
+        order = list(self._sessions.order)
+        if len(order) < 2:
+            return
+        cur = self._sessions.active_id
+        if cur not in order:
+            return
+        prv = order[(order.index(cur) - 1) % len(order)]
+        self._switch_to_session(prv)
+
+    def on_descendant_focus(self, event) -> None:
+        """Track which pane has focus and dim the chat panel when focus is in a sidebar.
+
+        Visual cue: when the user moves focus into the left or right sidebar
+        (via alt+left / alt+right / ctrl+b / ctrl+r), the chat input + info
+        bar render in muted gray so it's obvious that typing won't land there.
+        """
+        zone = self._current_focus_zone()
+        try:
+            container = self.query_one("#chat-container")
+        except NoMatches:
+            return
+        if zone == "chat-input":
+            container.remove_class("chat-unfocused")
+        else:
+            container.add_class("chat-unfocused")
 
     async def _refresh_sidebar_sessions(self) -> None:
         if self._session is None:
@@ -2131,7 +2732,7 @@ class TauiApp(App[None]):
 
     async def action_enter_self_edit(self) -> None:
         """Ctrl+E: show usage hint — actual entry is via /i <msg>."""
-        chat_log = self.query_one("#chat-log", VerticalScroll)
+        chat_log = self._get_active_chat_log()
         await chat_log.mount(
             Static(
                 "[dim]Use /i <message> to start a self-edit session.[/dim]",
@@ -2195,7 +2796,7 @@ class TauiApp(App[None]):
 
     async def _enter_self_edit_with_message(self, msg: str) -> None:
         """Enter self-edit mode and submit the first message."""
-        chat_log = self.query_one("#chat-log", VerticalScroll)
+        chat_log = self._get_active_chat_log()
         if self._session is None:
             await chat_log.mount(
                 Static("[yellow]No active session.[/yellow]", markup=True)
@@ -2233,13 +2834,27 @@ class TauiApp(App[None]):
         if self._session is None:
             return
         from taui.agent.loop import AgentLoop
-        from taui.tools.executor import ToolExecutor
+        from taui.agent.types import Message
+        from taui.tools.executor import PolicyDecision, ToolExecutor
 
         registry = self._session._registry
         if profile.allowed_tools:
             available = [name for name in profile.allowed_tools if name in registry.names]
             registry = registry.subset(available) if available else registry
         executor = ToolExecutor(registry=registry, policy=self._session._executor._policy)
+
+        # Apply per-tool policies from tool_config
+        for tool_name, tc in profile.tool_config.items():
+            try:
+                decision = PolicyDecision(tc.policy)
+            except ValueError:
+                continue
+            executor._policy.set(tool_name, decision)
+
+        # Auto-approve all tools when the profile requests it
+        if profile.auto_approve_all:
+            for tool_name in registry.names:
+                executor._policy.set(tool_name, PolicyDecision.AUTO)
         if profile.provider:
             self._config.provider = profile.provider
         if profile.model:
@@ -2248,7 +2863,9 @@ class TauiApp(App[None]):
         self._session.config = self._config
         self._session._system_prompt = profile.prompt
 
-        stream_id = self._session._loop.stream_id
+        old_loop = self._session._loop
+        stream_id = old_loop.stream_id
+        messages = old_loop._messages
         loop = AgentLoop(
             agent_id=profile.id,
             llm=self._session._provider,
@@ -2259,9 +2876,14 @@ class TauiApp(App[None]):
             max_turns=self._config.max_turns,
         )
         loop.stream_id = stream_id
+        # Preserve conversation context: carry over messages, updating the
+        # system prompt to the new profile's prompt.
+        if messages:
+            messages[0] = Message(role="system", content=profile.prompt)
+            loop._messages = messages
         self._session._replace_loop(loop)
         self._wire_callbacks()
-
+        self._update_status()
 
     def on_key(self, event: Key) -> None:
         """Intercept keys when Info2 is in model/agent mode."""
@@ -2337,11 +2959,36 @@ class TauiApp(App[None]):
             return
         if event.session_id == self._session.session_id:
             return
-        self.run_worker(
-            self._resume_session(event.session_id),
-            name="session_resume",
-            exclusive=True,
-        )
+        # Check if this session is already open as a tab
+        if event.session_id in self._sessions:
+            self._switch_to_session(event.session_id)
+        else:
+            self.run_worker(
+                self._resume_session(event.session_id),
+                name="session_resume",
+                exclusive=True,
+            )
+
+    def _switch_to_session(self, session_id: str) -> None:
+        """Switch the visible session to `session_id` without cancelling anything."""
+        state = self._sessions.get(session_id)
+        if state is None:
+            return
+
+        # Hide current chat log
+        old_state = self._sessions.active
+        if old_state is not None and old_state.chat_log is not None:
+            old_state.chat_log.add_class("hidden-chat-log")
+
+        # Show new chat log
+        self._sessions.active_id = session_id
+        if state.chat_log is not None:
+            state.chat_log.remove_class("hidden-chat-log")
+
+        self._wire_callbacks()
+        self._update_status()
+        self._refresh_tab_bar()
+        self.query_one("#chat-input", ChatInput).focus()
 
 
 def _relpath_or_basename(path: str, root: Path) -> str:

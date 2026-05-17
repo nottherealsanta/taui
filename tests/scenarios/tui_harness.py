@@ -38,10 +38,15 @@ def use_scripted_provider(
     The patch is scoped to the test (via monkeypatch), so the moment the
     test function returns it's lifted automatically.
     """
-    config = config or Config(working_dir=working_dir)
+    config = config or Config(
+        working_dir=working_dir,
+        model="<model_id>",
+        provider="<provider_id>",
+    )
 
     async def _fake_create_provider(_config):
         return provider
 
     monkeypatch.setattr("taui.session._create_provider", _fake_create_provider)
+    monkeypatch.setattr("taui.tui.app.DEFAULT_MAX_INPUT_TOKENS", 128_000)
     return TauiApp(config)

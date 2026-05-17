@@ -56,7 +56,9 @@ CREATE TABLE IF NOT EXISTS sessions (
     mode         TEXT NOT NULL DEFAULT 'normal',
     created_at   REAL NOT NULL,
     last_active  REAL NOT NULL,
-    message_count INTEGER NOT NULL DEFAULT 0
+    message_count INTEGER NOT NULL DEFAULT 0,
+    model        TEXT NOT NULL DEFAULT '',
+    first_message TEXT NOT NULL DEFAULT ''
 );
 """
 
@@ -162,6 +164,25 @@ class Store:
             await self.db.execute(
                 "ALTER TABLE sessions ADD COLUMN stream_id TEXT NOT NULL DEFAULT ''"
             )
+        if "model" not in columns:
+            await self.db.execute(
+                "ALTER TABLE sessions ADD COLUMN model TEXT NOT NULL DEFAULT ''"
+            )
+        if "first_message" not in columns:
+            await self.db.execute(
+                "ALTER TABLE sessions ADD COLUMN first_message TEXT NOT NULL DEFAULT ''"
+            )
+        # Backfill first_message for sessions that don't have one yet
+        await self.db.execute(
+            "UPDATE sessions SET first_message = COALESCE(("
+            "  SELECT SUBSTR(json_extract(e.data, '$.text'), 1, 60)"
+            "  FROM events e"
+            "  WHERE e.stream_id = sessions.stream_id"
+            "    AND e.type = 'user_message'"
+            "  ORDER BY e.offset ASC LIMIT 1"
+            "), '') WHERE (first_message = '' OR first_message IS NULL)"
+            "  AND stream_id != '' AND description = ''"
+        )
 
     # ── Stream CRUD ───────────────────────────────────────────────────────
 
@@ -373,15 +394,16 @@ class Store:
         *,
         mode: str = "normal",
         stream_id: str | None = None,
+        model: str | None = None,
     ) -> None:
         """Create a session metadata record."""
         now = time.time()
         await self.db.execute(
             "INSERT OR IGNORE INTO sessions"
             "(session_id, stream_id, description, mode, created_at, last_active, "
-            "message_count)"
-            " VALUES (?, ?, '', ?, ?, ?, 0)",
-            (session_id, stream_id or "", mode, now, now),
+            "message_count, model)"
+            " VALUES (?, ?, '', ?, ?, ?, 0, ?)",
+            (session_id, stream_id or "", mode, now, now, model or ""),
         )
         if stream_id:
             await self.db.execute(
@@ -398,6 +420,8 @@ class Store:
         message_count: int | None = None,
         mode: str | None = None,
         stream_id: str | None = None,
+        model: str | None = None,
+        first_message: str | None = None,
     ) -> None:
         """Update session metadata fields."""
         sets: list[str] = ["last_active = ?"]
@@ -414,6 +438,12 @@ class Store:
         if stream_id is not None:
             sets.append("stream_id = ?")
             params.append(stream_id)
+        if model is not None:
+            sets.append("model = ?")
+            params.append(model)
+        if first_message is not None:
+            sets.append("first_message = ?")
+            params.append(first_message)
         params.append(session_id)
         await self.db.execute(
             f"UPDATE sessions SET {', '.join(sets)} WHERE session_id = ?",

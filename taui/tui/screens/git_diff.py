@@ -102,7 +102,7 @@ class GitDiffScreen(ModalScreen[None]):
         width: 96%;
         height: 92%;
         background: $surface;
-        border: thick #586069;
+        border: thick $surface-lighten-1;
         padding: 1;
     }
     #git-diff-dialog .dialog-title {
@@ -140,21 +140,21 @@ class GitDiffScreen(ModalScreen[None]):
         text-style: bold;
     }
     #git-diff-dialog .file-row:hover {
-        background: #263241;
+        background: $surface-lighten-1;
     }
     #git-diff-dialog .file-row:focus {
-        background: #1f6feb 35%;
+        background: $secondary 35%;
     }
     #git-diff-dialog .file-row.expanded {
-        background: #263241;
+        background: $surface-lighten-1;
     }
     #git-diff-dialog .diff-body {
         height: auto;
-        border-left: solid #586069;
+        border-left: solid $surface-lighten-1;
         margin: 0 0 0 1;
     }
     #git-diff-dialog Markdown {
-        background: #111827;
+        background: $background;
         padding: 1;
     }
     """
