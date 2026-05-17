@@ -387,6 +387,8 @@ async def test_files_tab_click_adds_pill(tmp_path, monkeypatch):
         assert bar.count == 1, "first toggle did not add a pill"
         assert bar.items[0].kind == "file"
         assert bar.items[0].data == str(sample.resolve())
+        # Pill label is just the basename, not the full path.
+        assert bar.items[0].label == "hello.txt"
         assert Path(str(sample.resolve())) in pilot.app._pending_files
 
         # Second toggle removes
@@ -429,6 +431,74 @@ async def test_pill_x_removes_file_attachment(tmp_path, monkeypatch):
             "pill-clear did not sync _pending_files"
         )
         await _close_cleanly(pilot)
+
+
+@pytest.mark.asyncio
+async def test_folder_toggle_adds_folder_pill(tmp_path, monkeypatch):
+    """Sidebar.FolderToggleRequested should add a folder pill and re-firing
+    should remove it. Pill label is the folder's basename (no path)."""
+    from taui.tui.widgets.attachments_bar import AttachmentsBar
+    from taui.tui.widgets.sidebar import Sidebar
+
+    folder = tmp_path / "src"
+    folder.mkdir()
+    (folder / "main.py").write_text("x = 1\n")
+
+    app = _make_app(monkeypatch, tmp_path)
+    async with app.run_test() as pilot:
+        await _wait_until_ready(pilot)
+        sidebar = pilot.app.query_one(Sidebar)
+        sidebar.post_message(Sidebar.FolderToggleRequested(folder))
+        for _ in range(3):
+            await pilot.pause()
+
+        bar = pilot.app.query_one(AttachmentsBar)
+        assert bar.count == 1
+        assert bar.items[0].kind == "folder"
+        assert bar.items[0].label == "src"
+        assert folder.resolve() in pilot.app._pending_folders
+
+        # Second toggle removes
+        sidebar.post_message(Sidebar.FolderToggleRequested(folder))
+        for _ in range(3):
+            await pilot.pause()
+        assert bar.count == 0
+        assert pilot.app._pending_folders == []
+        await _close_cleanly(pilot)
+
+
+def test_files_tree_uses_chevron_icons():
+    """The custom DirectoryTree subclass should use ▶/▼ chevrons and aligned
+    spaces in place of the stock 📁/📂/📄 emojis, and auto_expand off so
+    clicking a folder label doesn't open it."""
+    from taui.tui.widgets.sidebar import _FilesTree
+
+    assert _FilesTree.ICON_NODE == "▶ "
+    assert _FilesTree.ICON_NODE_EXPANDED == "▼ "
+    # File icon is whitespace-only so file names align with the folder name
+    # that sits under the chevron.
+    assert _FilesTree.ICON_FILE.strip() == ""
+    assert _FilesTree.auto_expand is False
+
+
+def test_render_folder_listing_prunes_cruft(tmp_path):
+    """Folder listings should skip hidden dirs and common build/cache dirs."""
+    from taui.tui.app import _render_folder_listing
+
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.py").write_text("x")
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".git" / "HEAD").write_text("ref")
+    (tmp_path / "__pycache__").mkdir()
+    (tmp_path / "__pycache__" / "x.cpython.pyc").write_text("")
+    (tmp_path / "README.md").write_text("# hi")
+
+    listing = _render_folder_listing(tmp_path)
+    assert "src/" in listing
+    assert "app.py" in listing
+    assert "README.md" in listing
+    assert ".git" not in listing
+    assert "__pycache__" not in listing
 
 
 def test_expand_pending_files_inlines_text_content(tmp_path, monkeypatch):

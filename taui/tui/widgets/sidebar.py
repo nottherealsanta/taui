@@ -11,6 +11,8 @@ from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.message import Message
 from textual.widgets import DirectoryTree, ListItem, ListView, Static
+from textual.widgets._directory_tree import DirEntry
+from textual.widgets._tree import TreeNode
 
 
 def _time_ago(ts: float) -> str:
@@ -55,6 +57,24 @@ def _build_session_row_text(session: dict, *, is_current: bool) -> Text:
     text.append(sid, style="#6e7681")
     text.append(f"   {msgs}m · {ago}", style="dim #6e7681")
     return text
+
+
+class _FilesTree(DirectoryTree):
+    """Folder/file tree where the chevron toggles and the label selects.
+
+    Why a subclass: the stock DirectoryTree (1) decorates folders/files with
+    emoji icons we want to replace with chevrons, and (2) auto-expands a
+    folder when its label is clicked. Here, the chevron alone toggles
+    open/close; clicking a folder/file name posts NodeSelected (with
+    auto-expand off), which the sidebar then turns into an "add to context"
+    message.
+    """
+
+    ICON_NODE = "▶ "
+    ICON_NODE_EXPANDED = "▼ "
+    ICON_FILE = "  "  # two spaces so file names align under the chevron
+
+    auto_expand = False
 
 
 class _TabLabel(Static):
@@ -185,6 +205,17 @@ class Sidebar(Vertical):
             super().__init__()
             self.path = path
 
+    class FolderToggleRequested(Message):
+        """Posted when the user picks a folder label (not its chevron).
+
+        Toggle semantics mirror FileToggleRequested — second click on the
+        same folder removes it from context.
+        """
+
+        def __init__(self, path: Path) -> None:
+            super().__init__()
+            self.path = path
+
     def __init__(self, working_dir: Path | None = None) -> None:
         super().__init__()
         self._working_dir = working_dir or Path.cwd()
@@ -208,7 +239,7 @@ class Sidebar(Vertical):
             )
         with Vertical(classes="sidebar-body", id="sidebar-body"):
             yield ListView(id="sessions-list")
-            tree = DirectoryTree(str(self._working_dir), id="dir-tree")
+            tree = _FilesTree(str(self._working_dir), id="dir-tree")
             tree.display = False
             yield tree
 
@@ -303,10 +334,23 @@ class Sidebar(Vertical):
         if sid:
             self.post_message(self.SessionSelected(sid))
 
-    def on_directory_tree_file_selected(
-        self, event: DirectoryTree.FileSelected
+    def on_tree_node_selected(
+        self, event: DirectoryTree.NodeSelected
     ) -> None:
-        """Forward DirectoryTree picks up to the app as toggle requests."""
+        """Forward tree picks up to the app as toggle requests.
+
+        Files emit FileToggleRequested; folders emit FolderToggleRequested.
+        The chevron click toggles open/close inside the tree directly — it
+        doesn't reach this handler — so a NodeSelected here always means
+        the user clicked the *label*.
+        """
         event.stop()
-        path = Path(str(event.path))
-        self.post_message(self.FileToggleRequested(path))
+        node: TreeNode[DirEntry] = event.node
+        data = node.data
+        if data is None:
+            return
+        path = Path(str(data.path))
+        if path.is_dir():
+            self.post_message(self.FolderToggleRequested(path))
+        else:
+            self.post_message(self.FileToggleRequested(path))

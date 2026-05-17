@@ -141,6 +141,8 @@ class AttachmentsBar(Widget):
     def _pill_label(self, item: Attachment) -> str:
         if item.kind == "file":
             return f"📄 {item.label}"
+        if item.kind == "folder":
+            return f"📁 {item.label}/"
         return item.label
 
     def _rebuild(self) -> None:

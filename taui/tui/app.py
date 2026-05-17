@@ -214,6 +214,8 @@ class TauiApp(App[None]):
         # Files attached via the left sidebar's Files tab. Their contents are
         # inlined into the prompt on submit, then this list is cleared.
         self._pending_files: list[Path] = []
+        # Folders attached the same way — expanded as a tree listing.
+        self._pending_folders: list[Path] = []
 
     @property
     def session_id(self) -> str | None:
@@ -403,18 +405,19 @@ class TauiApp(App[None]):
     def _expand_pending_files(
         self, text: str, images: list[str] | None
     ) -> tuple[str, list[str] | None]:
-        """Fold sidebar-attached files into the outgoing prompt.
+        """Fold sidebar-attached files and folders into the outgoing prompt.
 
-        Text files are appended as fenced code blocks so the model sees
-        them as ``@path`` references would have produced. Image files
-        become image attachments (the same data-URL channel the user uses
-        for pasted images)."""
+        Text files become fenced code blocks (same shape as `@path` expansion).
+        Image files join the image-attachment channel. Folders are inlined as
+        a `tree`-style listing so the model knows the structure; it can read
+        specific files via tools if needed.
+        """
         from taui.tui.widgets.chat_input import (
             _IMAGE_EXTENSIONS,
             _encode_image_file,
         )
 
-        if not self._pending_files:
+        if not self._pending_files and not self._pending_folders:
             return text, images
 
         text_blocks: list[str] = []
@@ -434,6 +437,17 @@ class TauiApp(App[None]):
             except ValueError:
                 display = path
             text_blocks.append(f"\n```{display}\n{content}\n```\n")
+
+        for folder in self._pending_folders:
+            listing = _render_folder_listing(folder)
+            if listing:
+                try:
+                    display = folder.relative_to(self._config.working_dir)
+                except ValueError:
+                    display = folder
+                text_blocks.append(
+                    f"\n```text {display}/\n{listing}\n```\n"
+                )
 
         if text_blocks:
             text = (text.rstrip() + "\n" + "".join(text_blocks)).strip()
@@ -922,9 +936,10 @@ class TauiApp(App[None]):
                 markup=True,
             )
         )
-        # Clear the attachments bar (and pending file list) after submit
+        # Clear the attachments bar (and pending file/folder lists) after submit
         self.query_one(AttachmentsBar).clear_all()
         self._pending_files.clear()
+        self._pending_folders.clear()
         # Submitting is an explicit intent to see the result — re-arm anchor.
         self._snap_to_bottom()
         self._send_and_drain(text, images)
@@ -1000,6 +1015,12 @@ class TauiApp(App[None]):
             except ValueError:
                 pass
             return
+        if event.kind == "folder":
+            try:
+                self._pending_folders.remove(Path(event.data))
+            except ValueError:
+                pass
+            return
         # Default: image kind. Older code keyed by index, but we now have the
         # data URL, so we can find the exact entry even after re-ordering.
         chat_input = self.query_one(ChatInput)
@@ -1023,27 +1044,47 @@ class TauiApp(App[None]):
         path_str = str(path)
         existing = bar.find_index(kind="file", data=path_str)
         if existing >= 0:
-            removed = bar.remove(existing)
-            if removed is not None:
-                try:
-                    self._pending_files.remove(path)
-                except ValueError:
-                    pass
+            bar.remove(existing)
+            try:
+                self._pending_files.remove(path)
+            except ValueError:
+                pass
             return
         if not path.is_file():
             return
-        try:
-            display = path.relative_to(self._config.working_dir)
-        except ValueError:
-            display = path
-        bar.add(str(display), path_str, kind="file")
+        # Pill shows just the filename — the full path is preserved as the
+        # attachment's `data` and used at submit time when we expand it.
+        bar.add(path.name, path_str, kind="file")
         self._pending_files.append(path)
+
+    @on(Sidebar.FolderToggleRequested)
+    async def handle_sidebar_folder_toggle(
+        self,
+        event: Sidebar.FolderToggleRequested,
+    ) -> None:
+        """Toggle a folder picked in the sidebar's Files tab as an attachment."""
+        path = event.path.resolve()
+        bar = self.query_one(AttachmentsBar)
+        path_str = str(path)
+        existing = bar.find_index(kind="folder", data=path_str)
+        if existing >= 0:
+            bar.remove(existing)
+            try:
+                self._pending_folders.remove(path)
+            except ValueError:
+                pass
+            return
+        if not path.is_dir():
+            return
+        bar.add(path.name, path_str, kind="folder")
+        self._pending_folders.append(path)
 
     @on(ChatInput.InputCleared)
     async def handle_input_cleared(self, event: ChatInput.InputCleared) -> None:
         """Clear attachments bar when user double-presses Escape."""
         self.query_one(AttachmentsBar).clear_all()
         self._pending_files.clear()
+        self._pending_folders.clear()
 
     @on(ChatInput.CancelRequested)
     async def handle_cancel_requested(
@@ -1371,6 +1412,18 @@ class TauiApp(App[None]):
         if action == "open_context_tree":
             self._open_context_tree()
             return
+        if action == "open_diff_view":
+            title = str(result.metadata.get("title") or "Git Diff")
+            diff = str(result.metadata.get("diff") or "")
+            files = result.metadata.get("files")
+            self.push_screen(
+                GitDiffScreen(
+                    title,
+                    files if isinstance(files, list) else [],
+                    diff,
+                )
+            )
+            return
 
         if action not in ("model_changed", "new_session"):
             style = "yellow" if (result.error or (
@@ -1379,13 +1432,6 @@ class TauiApp(App[None]):
             await chat_log.mount(
                 Static(f"[{style}]{result.output}[/{style}]", markup=True)
             )
-
-        if action == "open_diff_view":
-            title = str(result.metadata.get("title") or "Git Diff")
-            diff = str(result.metadata.get("diff") or "")
-            files = result.metadata.get("files")
-            self.push_screen(GitDiffScreen(title, files if isinstance(files, list) else [], diff))
-            return
 
         if action == "compact_requested":
             await self._handle_compact(chat_log)
@@ -1956,6 +2002,68 @@ class TauiApp(App[None]):
             name="session_resume",
             exclusive=True,
         )
+
+
+_FOLDER_LISTING_MAX_ENTRIES = 200
+_FOLDER_LISTING_SKIP_DIRS = frozenset(
+    {
+        "__pycache__",
+        ".git",
+        ".venv",
+        "node_modules",
+        ".pytest_cache",
+        ".mypy_cache",
+        ".ruff_cache",
+        ".cache",
+        "dist",
+        "build",
+    }
+)
+
+
+def _render_folder_listing(root: Path) -> str:
+    """Render a tree-style listing of *root* (capped, with cruft filtered).
+
+    Used when a folder is attached via the sidebar: we want the model to see
+    the folder structure without dragging in every binary, lockfile, or
+    `.git` blob. Hidden directories and common build/cache dirs are pruned.
+    """
+
+    if not root.is_dir():
+        return ""
+
+    lines: list[str] = [f"{root.name}/"]
+    count = [0]  # mutable so the recursive helper can bump it
+
+    def _walk(directory: Path, prefix: str) -> None:
+        try:
+            entries = sorted(
+                directory.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower())
+            )
+        except (OSError, PermissionError):
+            return
+        # Pre-filter so the connector glyph matches the real "last" entry.
+        visible = [
+            entry
+            for entry in entries
+            if not entry.name.startswith(".")
+            and entry.name not in _FOLDER_LISTING_SKIP_DIRS
+        ]
+        for index, entry in enumerate(visible):
+            if count[0] >= _FOLDER_LISTING_MAX_ENTRIES:
+                lines.append(f"{prefix}…")
+                return
+            is_last = index == len(visible) - 1
+            connector = "└─ " if is_last else "├─ "
+            suffix = "/" if entry.is_dir() else ""
+            lines.append(f"{prefix}{connector}{entry.name}{suffix}")
+            count[0] += 1
+            if entry.is_dir():
+                extension = "   " if is_last else "│  "
+                _walk(entry, prefix + extension)
+
+    _walk(root, "")
+    return "\n".join(lines)
 
 
 def _trunc(s: str, n: int = 40) -> str:
