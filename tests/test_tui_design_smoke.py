@@ -406,6 +406,185 @@ def test_info_bar_no_longer_has_session_badge():
 # ── Tool status: unified gray palette ───────────────────────────────────
 
 
+# ── Right info sidebar: end-to-end ─────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_info_sidebar_all_sections_mount(tmp_path, monkeypatch):
+    """All six section headers + bodies should be present in the DOM
+    regardless of whether they have content yet."""
+    from taui.tui.widgets.session_info_sidebar import SessionInfoSidebar
+
+    app = _make_app(monkeypatch, tmp_path)
+    async with app.run_test() as pilot:
+        await _wait_until_ready(pilot)
+        await pilot.press("ctrl+r")
+        for _ in range(5):
+            await pilot.pause()
+        info_sidebar = pilot.app.query_one(SessionInfoSidebar)
+        for key, label in (
+            ("session", "Session"),
+            ("agent", "Agent"),
+            ("files", "Files edited"),
+            ("lsp", "LSP"),
+            ("mcp", "MCP"),
+            ("tools", "Tools"),
+        ):
+            header = info_sidebar.query_one(f"#hdr-{key}")
+            section = info_sidebar.query_one(f"#sec-{key}")
+            assert header.is_mounted, f"#hdr-{key} missing"
+            assert section.is_mounted, f"#sec-{key} missing"
+        await _close_cleanly(pilot)
+
+
+@pytest.mark.asyncio
+async def test_info_sidebar_files_section_shows_edits(tmp_path, monkeypatch):
+    """After a tool call that edits a file, the Files edited section
+    should list it with +/- line counts. Verify the rendered path is
+    legible (basename, not a 28-char-truncated absolute path)."""
+    from taui.tui.widgets.session_info_sidebar import SessionInfoSidebar
+
+    app = _make_app(monkeypatch, tmp_path)
+    async with app.run_test() as pilot:
+        await _wait_until_ready(pilot)
+        # Simulate an edit call landing through the tool pipeline.
+        pilot.app._record_edit(
+            "write",
+            {
+                "file_path": str(tmp_path / "src" / "main.py"),
+                "content": "print('hi')\nprint('bye')\n",
+            },
+        )
+        # Open the sidebar — _refresh_info_sidebar is called on toggle.
+        await pilot.press("ctrl+r")
+        for _ in range(5):
+            await pilot.pause()
+
+        info_sidebar = pilot.app.query_one(SessionInfoSidebar)
+        files_section = info_sidebar.query_one("#sec-files")
+        rendered = " ".join(
+            _widget_text(child) for child in files_section.children
+        )
+        assert "main.py" in rendered, (
+            f"expected basename 'main.py' to appear in Files section, got "
+            f"{rendered!r}"
+        )
+        assert "+3" in rendered, f"expected '+3' line count in {rendered!r}"
+        await _close_cleanly(pilot)
+
+
+@pytest.mark.asyncio
+async def test_info_sidebar_tools_section_lists_tools(tmp_path, monkeypatch):
+    """The Tools section should list the registered tool names."""
+    from taui.tui.widgets.session_info_sidebar import SessionInfoSidebar
+
+    app = _make_app(monkeypatch, tmp_path)
+    async with app.run_test() as pilot:
+        await _wait_until_ready(pilot)
+        await pilot.press("ctrl+r")
+        for _ in range(5):
+            await pilot.pause()
+        info_sidebar = pilot.app.query_one(SessionInfoSidebar)
+        tools_section = info_sidebar.query_one("#sec-tools")
+        rendered = " ".join(
+            _widget_text(child) for child in tools_section.children
+        )
+        # A real session has at least the core builtins — we don't pin to a
+        # specific set; just assert the row isn't the empty placeholder.
+        assert rendered.strip() not in ("", "—"), (
+            f"Tools section should not be empty, got {rendered!r}"
+        )
+        await _close_cleanly(pilot)
+
+
+@pytest.mark.asyncio
+async def test_info_sidebar_mcp_section_with_servers(tmp_path, monkeypatch):
+    """If the session has an MCP manager with servers, MCP section should
+    render one row per server with an online/offline indicator."""
+    from taui.tui.widgets.session_info_sidebar import SessionInfoSidebar
+
+    class FakeManager:
+        server_names = ["filesystem", "github"]
+        connected_servers = ["filesystem"]
+
+    app = _make_app(monkeypatch, tmp_path)
+    async with app.run_test() as pilot:
+        await _wait_until_ready(pilot)
+        pilot.app._session._mcp_manager = FakeManager()
+        await pilot.press("ctrl+r")
+        for _ in range(5):
+            await pilot.pause()
+        info_sidebar = pilot.app.query_one(SessionInfoSidebar)
+        mcp_section = info_sidebar.query_one("#sec-mcp")
+        rendered = " ".join(
+            _widget_text(child) for child in mcp_section.children
+        )
+        assert "filesystem" in rendered
+        assert "github" in rendered
+        # filesystem is connected (●), github isn't (○) — both glyphs present.
+        assert "●" in rendered, f"expected connected glyph in {rendered!r}"
+        assert "○" in rendered, f"expected disconnected glyph in {rendered!r}"
+        await _close_cleanly(pilot)
+
+
+@pytest.mark.asyncio
+async def test_info_sidebar_refreshes_on_turn_complete(tmp_path, monkeypatch):
+    """When the info sidebar is open and a turn completes (which calls
+    _update_status), the file edits accumulated during that turn should
+    show up without the user toggling the sidebar again."""
+    from taui.tui.widgets.session_info_sidebar import SessionInfoSidebar
+
+    app = _make_app(monkeypatch, tmp_path)
+    async with app.run_test() as pilot:
+        await _wait_until_ready(pilot)
+        await pilot.press("ctrl+r")
+        for _ in range(5):
+            await pilot.pause()
+
+        info_sidebar = pilot.app.query_one(SessionInfoSidebar)
+        files_section = info_sidebar.query_one("#sec-files")
+        # Initially empty (or the "—" placeholder).
+        before = " ".join(_widget_text(c) for c in files_section.children)
+        assert "newfile.py" not in before
+
+        # Edit happens mid-turn — the bookkeeping is on the app, not the
+        # sidebar — and then _update_status triggers a refresh.
+        pilot.app._record_edit(
+            "write",
+            {
+                "file_path": str(tmp_path / "newfile.py"),
+                "content": "x = 1\n",
+            },
+        )
+        pilot.app._update_status()
+        for _ in range(5):
+            await pilot.pause()
+
+        after = " ".join(_widget_text(c) for c in files_section.children)
+        assert "newfile.py" in after, (
+            f"file should appear after _update_status refresh; got {after!r}"
+        )
+        await _close_cleanly(pilot)
+
+
+@pytest.mark.asyncio
+async def test_info_sidebar_escape_dismisses(tmp_path, monkeypatch):
+    """The right sidebar should support Escape to dismiss when focused."""
+    from taui.tui.widgets.session_info_sidebar import SessionInfoSidebar
+
+    app = _make_app(monkeypatch, tmp_path)
+    async with app.run_test() as pilot:
+        await _wait_until_ready(pilot)
+        await pilot.press("ctrl+r")
+        await pilot.pause()
+        info_sidebar = pilot.app.query_one(SessionInfoSidebar)
+        assert info_sidebar.has_class("visible")
+        info_sidebar.action_dismiss()
+        await pilot.pause()
+        assert not info_sidebar.has_class("visible")
+        await _close_cleanly(pilot)
+
+
 # ── Files tab: click-to-attach ─────────────────────────────────────────
 
 

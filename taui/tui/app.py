@@ -1734,7 +1734,12 @@ class TauiApp(App[None]):
         except Exception:
             pass
         edited_files = [
-            {"path": path, "added": data["added"], "removed": data["removed"]}
+            {
+                "path": path,
+                "display": _relpath_or_basename(path, self._config.working_dir),
+                "added": data["added"],
+                "removed": data["removed"],
+            }
             for path, data in sorted(self._edited_files.items())
         ]
         mcp_servers: list[tuple[str, bool]] = []
@@ -2002,6 +2007,14 @@ class TauiApp(App[None]):
             name="session_resume",
             exclusive=True,
         )
+
+
+def _relpath_or_basename(path: str, root: Path) -> str:
+    """Return *path* relative to *root* when possible, else its basename."""
+    try:
+        return str(Path(path).resolve().relative_to(Path(root).resolve()))
+    except (ValueError, OSError):
+        return Path(path).name or path
 
 
 _FOLDER_LISTING_MAX_ENTRIES = 200

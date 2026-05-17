@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 from rich.text import Text
 from textual.app import ComposeResult
 from textual.containers import Vertical, VerticalScroll
@@ -9,10 +11,27 @@ from textual.message import Message
 from textual.widgets import Static
 
 
+def _basename(path: str) -> str:
+    """Return the trailing component of a path, or the path itself."""
+    return os.path.basename(path) or path
+
+
 def _truncate(text: str, n: int) -> str:
     if len(text) <= n:
         return text
     return text[: max(0, n - 1)] + "…"
+
+
+def _truncate_path(text: str, n: int) -> str:
+    """Truncate a path-like string from the left so the filename stays visible.
+
+    Plain `_truncate` strips the tail of the string, which is the opposite of
+    what we want for paths: the model/user wants to read the file name, not
+    the leading directories.
+    """
+    if len(text) <= n:
+        return text
+    return "…" + text[-(n - 1) :]
 
 
 class _SectionHeader(Static):
@@ -163,13 +182,18 @@ class SessionInfoSidebar(VerticalScroll):
         self._replace_children("agent", rows)
 
     def _render_files(self, edited: list[dict]) -> None:
+        """Render edited files. Each entry may carry a `display` string for
+        the path label (preferred — usually a working-dir-relative path);
+        otherwise we fall back to the basename so we never lose the filename
+        behind truncation."""
         rows: list[Static] = []
         for entry in edited:
             path = str(entry.get("path", ""))
+            display = str(entry.get("display") or "") or _basename(path)
             added = int(entry.get("added", 0))
             removed = int(entry.get("removed", 0))
             text = Text()
-            text.append(_truncate(path, 28), style="#c9d1d9")
+            text.append(_truncate_path(display, 28), style="#c9d1d9")
             text.append(f"  +{added}", style="#3fb950")
             text.append(f" -{removed}", style="#f97583")
             rows.append(_SectionRow(text))
