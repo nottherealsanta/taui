@@ -20,6 +20,7 @@ hidden behind the activity progress bar.
 from __future__ import annotations
 
 import asyncio
+import subprocess
 
 import pytest
 from textual.pilot import Pilot
@@ -82,6 +83,30 @@ async def _close_cleanly(pilot: Pilot) -> None:
         except Exception:
             pass
         app._session = None
+
+
+def _init_git_repo(path) -> None:
+    subprocess.run(["git", "init", "-b", "main"], cwd=path, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=path,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Tester"],
+        cwd=path,
+        check=True,
+        capture_output=True,
+    )
+    (path / "hello.py").write_text("print('hello')\n")
+    subprocess.run(["git", "add", "hello.py"], cwd=path, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "commit", "-m", "init"],
+        cwd=path,
+        check=True,
+        capture_output=True,
+    )
 
 
 # ── Snapshot scenarios ──────────────────────────────────────────────────
@@ -184,8 +209,6 @@ def test_sidebar_visible(snap_compare, tmp_path, monkeypatch):
         # Replace the runtime session list with a deterministic fixture so the
         # snapshot does not change every run (real session IDs are uuid-random
         # and last_active is wall-clock time).
-        from taui.tui.widgets.sidebar import Sidebar
-
         async def _stub_list():
             return [
                 {
@@ -212,6 +235,23 @@ def test_sidebar_visible(snap_compare, tmp_path, monkeypatch):
         await pilot.press("ctrl+b")
         await pilot.pause()
         # Workers run asynchronously; pause again so refresh has settled.
+        for _ in range(3):
+            await pilot.pause()
+        await _close_cleanly(pilot)
+
+    assert snap_compare(app, run_before=setup, terminal_size=(100, 30))
+
+
+def test_diff_command_modal_visible(snap_compare, tmp_path, monkeypatch):
+    """The /diff command should open the git diff modal."""
+    _init_git_repo(tmp_path)
+    (tmp_path / "hello.py").write_text("print('hello')\nprint('taui')\n")
+    provider = scenarios.happy_path("(unused)")
+    app = use_scripted_provider(monkeypatch, tmp_path, provider)
+
+    async def setup(pilot: Pilot) -> None:
+        await _wait_until_ready(pilot)
+        await _type_and_send(pilot, "/diff")
         for _ in range(3):
             await pilot.pause()
         await _close_cleanly(pilot)

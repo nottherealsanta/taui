@@ -39,6 +39,11 @@ def _make_pattern(tool_name: str, arguments: dict) -> str:
             parent = os.path.dirname(path)
             return os.path.join(parent, "*") if parent else "*"
         return "*"
+    if tool_name == "git":
+        operation = arguments.get("operation", "")
+        if isinstance(operation, str) and operation:
+            return operation + " *"
+        return "*"
     return "*"
 
 

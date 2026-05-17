@@ -85,6 +85,44 @@ async def test_ctrl_b_toggles_left_sidebar(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_clicking_tab_label_switches_tab(tmp_path, monkeypatch):
+    """Clicking the Files / Sessions header should switch tabs the same way
+    the Tab key does — the header is a real button, not just decoration."""
+    from textual.widgets import DirectoryTree, ListView
+
+    from taui.tui.widgets.sidebar import Sidebar, _TabLabel
+
+    app = _make_app(monkeypatch, tmp_path)
+    async with app.run_test() as pilot:
+        await _wait_until_ready(pilot)
+        await pilot.press("ctrl+b")
+        await pilot.pause()
+        sidebar = pilot.app.query_one(Sidebar)
+        sessions_list = sidebar.query_one("#sessions-list", ListView)
+        dir_tree = sidebar.query_one("#dir-tree", DirectoryTree)
+
+        # Initial state: Sessions active.
+        assert sessions_list.display is True
+
+        # Click the Files header → switches to Files tab.
+        files_tab = sidebar.query_one("#tab-files", _TabLabel)
+        files_tab.on_click()
+        await pilot.pause()
+        assert dir_tree.display is True
+        assert sessions_list.display is False
+        assert files_tab.has_class("active")
+
+        # Click Sessions header → back to Sessions.
+        sessions_tab = sidebar.query_one("#tab-sessions", _TabLabel)
+        sessions_tab.on_click()
+        await pilot.pause()
+        assert sessions_list.display is True
+        assert dir_tree.display is False
+        assert sessions_tab.has_class("active")
+        await _close_cleanly(pilot)
+
+
+@pytest.mark.asyncio
 async def test_sidebar_has_sessions_and_files_tabs(tmp_path, monkeypatch):
     """Sidebar should expose Sessions + Files tabs and cycle between them."""
     from textual.widgets import DirectoryTree, ListView, Static

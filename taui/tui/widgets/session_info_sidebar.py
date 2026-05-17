@@ -34,7 +34,14 @@ class SessionInfoSidebar(VerticalScroll):
         background: $surface;
         border-left: solid $surface-lighten-1;
         padding: 0 1;
-        scrollbar-size: 0 0;
+        scrollbar-size-vertical: 1;
+        scrollbar-size-horizontal: 1;
+        scrollbar-color: #30363d $surface;
+        scrollbar-color-hover: #484f58 $surface;
+        scrollbar-color-active: #6e7681 $surface;
+        scrollbar-background: $surface;
+        scrollbar-background-hover: $surface;
+        scrollbar-background-active: $surface;
     }
     SessionInfoSidebar.visible {
         display: block;

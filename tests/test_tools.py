@@ -257,6 +257,17 @@ class TestToolPolicy:
         policy.set("bash", PolicyDecision.DENY)
         assert policy.decide("bash") == PolicyDecision.DENY
 
+    def test_git_read_only_ops_auto_approve(self):
+        policy = ToolPolicy()
+        assert policy.decide("git", {"operation": "status"}) == PolicyDecision.AUTO
+        assert policy.decide("git", {"operation": "diff"}) == PolicyDecision.AUTO
+        assert policy.decide("git", {"operation": "show"}) == PolicyDecision.AUTO
+
+    def test_git_mutating_ops_require_confirmation(self):
+        policy = ToolPolicy()
+        assert policy.decide("git", {"operation": "commit"}) == PolicyDecision.CONFIRM
+        assert policy.decide("git", {"operation": "checkout"}) == PolicyDecision.CONFIRM
+
 
 # ═══ ToolExecutor ═════════════════════════════════════════════════════════════
 

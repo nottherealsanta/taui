@@ -2,6 +2,7 @@
 
 import json
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -26,6 +27,30 @@ class FailingCommand:
 
     async def execute(self, ctx: CommandContext) -> CommandResult:
         raise RuntimeError("kaboom")
+
+
+def _init_git_repo(path: Path) -> None:
+    subprocess.run(["git", "init", "-b", "main"], cwd=path, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=path,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Tester"],
+        cwd=path,
+        check=True,
+        capture_output=True,
+    )
+    (path / "hello.py").write_text("print('hello')\n")
+    subprocess.run(["git", "add", "hello.py"], cwd=path, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "commit", "-m", "init"],
+        cwd=path,
+        check=True,
+        capture_output=True,
+    )
 
 
 # ── Registry ────────────────────────────────────────────────────────────────────
@@ -126,6 +151,89 @@ class TestBuiltinCommands:
 
         assert not result.error
         assert result.metadata["action"] == "open_context_tree"
+
+    async def test_diff_command_opens_diff_view(self, tmp_path):
+        from taui.commands.builtins import register_builtins
+
+        _init_git_repo(tmp_path)
+        (tmp_path / "hello.py").write_text("print('hello')\nprint('taui')\n")
+
+        class FakeSession:
+            working_dir = tmp_path
+
+        reg = CommandRegistry()
+        register_builtins(reg, get_session=lambda: FakeSession())
+        result = await reg.execute("/diff")
+
+        assert not result.error
+        assert result.metadata["action"] == "open_diff_view"
+        assert result.metadata["files"][0]["path"] == "hello.py"
+        assert "print('taui')" in result.metadata["files"][0]["new_text"]
+
+    async def test_diff_command_supports_staged_changes(self, tmp_path):
+        from taui.commands.builtins import register_builtins
+
+        _init_git_repo(tmp_path)
+        (tmp_path / "hello.py").write_text("print('hello')\nprint('staged')\n")
+        subprocess.run(
+            ["git", "add", "hello.py"],
+            cwd=tmp_path,
+            check=True,
+            capture_output=True,
+        )
+
+        class FakeSession:
+            working_dir = tmp_path
+
+        reg = CommandRegistry()
+        register_builtins(reg, get_session=lambda: FakeSession())
+        result = await reg.execute("/diff --staged")
+
+        assert not result.error
+        assert result.metadata["title"] == "Staged Diff"
+        assert "print('staged')" in result.metadata["files"][0]["new_text"]
+
+    async def test_diff_command_supports_ref_changes(self, tmp_path):
+        from taui.commands.builtins import register_builtins
+
+        _init_git_repo(tmp_path)
+        (tmp_path / "hello.py").write_text("print('hello')\nprint('ref')\n")
+
+        class FakeSession:
+            working_dir = tmp_path
+
+        reg = CommandRegistry()
+        register_builtins(reg, get_session=lambda: FakeSession())
+        result = await reg.execute("/diff --ref HEAD")
+
+        assert not result.error
+        assert result.metadata["title"] == "Diff Against HEAD"
+        assert "print('ref')" in result.metadata["files"][0]["new_text"]
+
+    async def test_review_command_sends_read_only_prompt(self):
+        from taui.commands.builtins import register_builtins
+
+        reg = CommandRegistry()
+        register_builtins(reg)
+        result = await reg.execute("/review --staged --security")
+
+        assert not result.error
+        assert result.metadata["action"] == "send_prompt"
+        assert result.metadata["tool_names"] == ["read", "grep", "glob", "git", "peek"]
+        assert "security review" in result.metadata["prompt"]
+        assert "staged changes" in result.metadata["prompt"]
+
+    async def test_commit_command_sends_confirmation_prompt(self):
+        from taui.commands.builtins import register_builtins
+
+        reg = CommandRegistry()
+        register_builtins(reg)
+        result = await reg.execute("/commit fix widget state")
+
+        assert not result.error
+        assert result.metadata["action"] == "send_prompt"
+        assert "ask me to confirm" in result.metadata["prompt"]
+        assert "fix widget state" in result.metadata["prompt"]
 
     async def test_cost_no_tracker(self):
         from taui.commands.builtins import register_builtins

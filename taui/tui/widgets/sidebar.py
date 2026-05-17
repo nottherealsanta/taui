@@ -57,6 +57,22 @@ def _build_session_row_text(session: dict, *, is_current: bool) -> Text:
     return text
 
 
+class _TabLabel(Static):
+    """Clickable tab header — clicking it switches its sidebar to that tab."""
+
+    def __init__(self, label: str, *, tab: str, **kwargs) -> None:
+        super().__init__(label, **kwargs)
+        self.tab_name = tab
+
+    def on_click(self) -> None:
+        # Walk up to the owning Sidebar (defined below in this module).
+        parent = self.parent
+        while parent is not None and not isinstance(parent, Sidebar):
+            parent = parent.parent
+        if parent is not None:
+            parent.action_show_tab(self.tab_name)
+
+
 class _SessionRow(ListItem):
     """One row in the sessions list — see _build_session_row_text for layout."""
 
@@ -110,11 +126,27 @@ class Sidebar(Vertical):
         height: 1fr;
         padding: 0 1;
         background: $surface;
+        scrollbar-size-vertical: 1;
+        scrollbar-size-horizontal: 1;
+        scrollbar-color: #30363d $surface;
+        scrollbar-color-hover: #484f58 $surface;
+        scrollbar-color-active: #6e7681 $surface;
+        scrollbar-background: $surface;
+        scrollbar-background-hover: $surface;
+        scrollbar-background-active: $surface;
     }
     Sidebar ListView {
         height: 1fr;
         background: $surface;
         padding: 0;
+        scrollbar-size-vertical: 1;
+        scrollbar-size-horizontal: 1;
+        scrollbar-color: #30363d $surface;
+        scrollbar-color-hover: #484f58 $surface;
+        scrollbar-color-active: #6e7681 $surface;
+        scrollbar-background: $surface;
+        scrollbar-background-hover: $surface;
+        scrollbar-background-active: $surface;
     }
     Sidebar ListView > ListItem {
         background: $surface;
@@ -162,8 +194,18 @@ class Sidebar(Vertical):
 
     def compose(self) -> ComposeResult:
         with Horizontal(classes="sidebar-tabs", id="sidebar-tabs-row"):
-            yield Static("Sessions", classes="tab active", id="tab-sessions")
-            yield Static("Files", classes="tab", id="tab-files")
+            yield _TabLabel(
+                "Sessions",
+                tab="sessions",
+                classes="tab active",
+                id="tab-sessions",
+            )
+            yield _TabLabel(
+                "Files",
+                tab="files",
+                classes="tab",
+                id="tab-files",
+            )
         with Vertical(classes="sidebar-body", id="sidebar-body"):
             yield ListView(id="sessions-list")
             tree = DirectoryTree(str(self._working_dir), id="dir-tree")

@@ -131,6 +131,10 @@ async def _diff(args: dict, cwd: Path) -> ToolResult:
     cmd = ["diff", "--stat"]
     if args.get("staged"):
         cmd.append("--staged")
+    else:
+        ref = args.get("ref")
+        if isinstance(ref, str) and ref:
+            cmd.append(ref)
     path = args.get("file")
     if isinstance(path, str):
         cmd += ["--", path]
@@ -140,6 +144,10 @@ async def _diff(args: dict, cwd: Path) -> ToolResult:
     full_cmd = ["diff"]
     if args.get("staged"):
         full_cmd.append("--staged")
+    else:
+        ref = args.get("ref")
+        if isinstance(ref, str) and ref:
+            full_cmd.append(ref)
     if isinstance(path, str):
         full_cmd += ["--", path]
     full_output, _ = await _run_git(full_cmd, cwd)

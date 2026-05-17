@@ -30,6 +30,7 @@ from taui.tui.messages import (
     ToolStarted,
 )
 from taui.tui.screens.context_breakdown import ContextBreakdownScreen
+from taui.tui.screens.git_diff import GitDiffScreen
 from taui.tui.tool_controller import ToolController
 from taui.tui.widgets.agent_response import AgentResponse
 from taui.tui.widgets.attachments_bar import AttachmentsBar
@@ -928,6 +929,30 @@ class TauiApp(App[None]):
         self._snap_to_bottom()
         self._send_and_drain(text, images)
 
+    async def _submit_generated_prompt(
+        self,
+        text: str,
+        *,
+        tool_names: list[str] | None = None,
+    ) -> None:
+        """Submit a prompt produced by a slash command as a normal user turn."""
+        if self._session is None:
+            chat_log = self.query_one("#chat-log", VerticalScroll)
+            await chat_log.mount(Static("[yellow]No session is active.[/yellow]", markup=True))
+            self._smart_scroll()
+            return
+        self._save_to_history(text)
+        chat_log = self.query_one("#chat-log", VerticalScroll)
+        await chat_log.mount(
+            Static(
+                f"[bold #e6edf3]{escape(text)}[/bold #e6edf3]",
+                classes="user-message",
+                markup=True,
+            )
+        )
+        self._snap_to_bottom()
+        self._send_and_drain(text, tool_names=tool_names)
+
     @on(ChatInput.AgentCycleRequested)
     async def handle_agent_cycle_requested(
         self,
@@ -1049,13 +1074,16 @@ class TauiApp(App[None]):
 
     @work(exclusive=True)
     async def _send_and_drain(
-        self, text: str, images: list[str] | None = None
+        self,
+        text: str,
+        images: list[str] | None = None,
+        tool_names: list[str] | None = None,
     ) -> None:
         assert self._session is not None
         self._set_busy(True)
 
         try:
-            await self._do_send(text, images=images)
+            await self._do_send(text, images=images, tool_names=tool_names)
 
             # Drain queued messages
             while self._queued:
@@ -1079,7 +1107,11 @@ class TauiApp(App[None]):
             self._set_busy(False)
 
     async def _do_send(
-        self, text: str, *, images: list[str] | None = None
+        self,
+        text: str,
+        *,
+        images: list[str] | None = None,
+        tool_names: list[str] | None = None,
     ) -> None:
         """Send a single message and display the result."""
         assert self._session is not None
@@ -1097,7 +1129,26 @@ class TauiApp(App[None]):
         self._reply_footer = None
         await self._begin_reply_footer()
 
+        old_session_executor = None
+        old_loop_executor = None
         try:
+            if tool_names is not None:
+                from taui.tools.executor import ToolExecutor
+
+                old_session_executor = self._session._executor
+                old_loop_executor = self._session._loop._executor
+                available = [name for name in tool_names if name in self._session._registry]
+                effective = ToolExecutor(
+                    registry=self._session._registry.subset(available),
+                    policy=old_loop_executor.policy,
+                )
+                effective._truncation_store = getattr(
+                    old_loop_executor,
+                    "_truncation_store",
+                    None,
+                )
+                self._session._executor = effective
+                self._session._loop._executor = effective
             result = await self._session.send(text, images=images)
 
             # Finalize any streaming response
@@ -1136,6 +1187,10 @@ class TauiApp(App[None]):
                 Static(f"[red]Error: {exc}[/red]", markup=True)
             )
         finally:
+            if old_loop_executor is not None:
+                self._session._loop._executor = old_loop_executor
+            if old_session_executor is not None:
+                self._session._executor = old_session_executor
             progress.stop()
             self._tool_ctrl.reset_section()
             # Intentionally do NOT clear `self._reply_footer` here. Stream
@@ -1293,6 +1348,14 @@ class TauiApp(App[None]):
 
         result = await self._commands.execute(cmd)
         action = result.metadata.get("action") if result.metadata else None
+        if action == "send_prompt":
+            prompt = str(result.metadata.get("prompt") or result.output)
+            tool_names = result.metadata.get("tool_names")
+            if not isinstance(tool_names, list):
+                tool_names = None
+            await self._submit_generated_prompt(prompt, tool_names=tool_names)
+            return
+
         if action == "session_picker":
             sessions = result.metadata.get("sessions", [])
             if sessions:
@@ -1316,6 +1379,13 @@ class TauiApp(App[None]):
             await chat_log.mount(
                 Static(f"[{style}]{result.output}[/{style}]", markup=True)
             )
+
+        if action == "open_diff_view":
+            title = str(result.metadata.get("title") or "Git Diff")
+            diff = str(result.metadata.get("diff") or "")
+            files = result.metadata.get("files")
+            self.push_screen(GitDiffScreen(title, files if isinstance(files, list) else [], diff))
+            return
 
         if action == "compact_requested":
             await self._handle_compact(chat_log)

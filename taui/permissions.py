@@ -111,6 +111,19 @@ class PermissionRuleset:
             return arguments.get("pattern", "")
         if tool_name == "grep":
             return arguments.get("pattern", "")
+        if tool_name == "git":
+            operation = arguments.get("operation", "")
+            if not isinstance(operation, str):
+                return ""
+            args = arguments.get("args", {})
+            if not isinstance(args, dict) or not args:
+                return operation
+            parts = [operation]
+            for key in sorted(args):
+                value = args[key]
+                if isinstance(value, str | int | bool):
+                    parts.append(f"{key}={value}")
+            return " ".join(parts)
         return ""
 
     @property

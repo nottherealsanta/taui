@@ -115,6 +115,14 @@ class TestSubjectExtraction:
         subject = rs.extract_subject("unknown_tool", {"x": "y"})
         assert subject == ""
 
+    def test_git_uses_operation_and_args(self):
+        rs = PermissionRuleset()
+        subject = rs.extract_subject(
+            "git",
+            {"operation": "commit", "args": {"message": "Fix bug"}},
+        )
+        assert subject == "commit message=Fix bug"
+
 
 class TestClearLayer:
     def test_clear_project(self):

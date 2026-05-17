@@ -24,6 +24,10 @@ _RETRY_CATEGORIES: frozenset[ToolCategory] = frozenset(
 )
 _RETRY_DELAYS: tuple[float, ...] = (0.25, 1.0, 4.0)
 
+_READ_ONLY_GIT_OPS: frozenset[str] = frozenset(
+    {"status", "diff", "log", "show", "blame", "branch_list", "branch_current", "stash_list"}
+)
+
 # ── Policy ────────────────────────────────────────────────────────────────────
 
 
@@ -67,6 +71,11 @@ class ToolPolicy:
                 return decision
         if tool_name in self._overrides:
             return self._overrides[tool_name]
+        if tool_name == "git":
+            operation = (arguments or {}).get("operation")
+            if operation in _READ_ONLY_GIT_OPS:
+                return PolicyDecision.AUTO
+            return PolicyDecision.CONFIRM
         if tool_name in self._DEFAULTS:
             return self._DEFAULTS[tool_name]
         return PolicyDecision.AUTO
@@ -104,11 +113,28 @@ class ToolPolicy:
                 subject = arguments.get("command", "")
             elif tool_name in ("write", "edit"):
                 subject = arguments.get("file_path", "") or arguments.get("filePath", "")
+            elif tool_name == "git":
+                subject = _git_subject(arguments)
             else:
                 subject = ""
             if fnmatch.fnmatch(subject, pat_glob):
                 return True
         return False
+
+
+def _git_subject(arguments: dict[str, Any]) -> str:
+    operation = arguments.get("operation", "")
+    args = arguments.get("args", {})
+    if not isinstance(operation, str):
+        return ""
+    if not isinstance(args, dict) or not args:
+        return operation
+    parts = [operation]
+    for key in sorted(args):
+        value = args[key]
+        if isinstance(value, str | int | bool):
+            parts.append(f"{key}={value}")
+    return " ".join(parts)
 
 
 # Late-binding import to avoid a circular dependency: permissions imports from
@@ -238,7 +264,10 @@ class ToolExecutor:
         # SEARCH categories and surface as a cryptic "Tool 'x' failed: 'path'".
         missing = _missing_required_args(tool, arguments)
         if missing:
-            msg = f"Tool {tool_name!r} called with missing required argument(s): " + ", ".join(missing)
+            msg = (
+                f"Tool {tool_name!r} called with missing required argument(s): "
+                + ", ".join(missing)
+            )
             return Completed(result=ToolResult.fail(msg))
 
         # Execute with optional retry for idempotent categories
