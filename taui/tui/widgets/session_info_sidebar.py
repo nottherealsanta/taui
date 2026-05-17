@@ -61,23 +61,20 @@ class SessionInfoSidebar(VerticalScroll):
     class Dismiss(Message):
         pass
 
-    def __init__(self) -> None:
-        super().__init__()
-        self._sections: dict[str, Vertical] = {}
+    _SECTION_KEYS: tuple[tuple[str, str], ...] = (
+        ("session", "Session"),
+        ("agent", "Agent"),
+        ("files", "Files edited"),
+        ("lsp", "LSP"),
+        ("mcp", "MCP"),
+        ("tools", "Tools"),
+    )
 
     def compose(self) -> ComposeResult:
-        for key, label in [
-            ("session", "Session"),
-            ("agent", "Agent"),
-            ("files", "Files edited"),
-            ("lsp", "LSP"),
-            ("mcp", "MCP"),
-            ("tools", "Tools"),
-        ]:
+        for key, label in self._SECTION_KEYS:
             yield _SectionHeader(label, id=f"hdr-{key}")
             container = Vertical(id=f"sec-{key}")
             container.styles.height = "auto"
-            self._sections[key] = container
             yield container
 
     # ── public API ───────────────────────────────────────────────────
@@ -103,18 +100,24 @@ class SessionInfoSidebar(VerticalScroll):
         tools: list[str] | None = None,
     ) -> None:
         """Refresh all sections."""
+        if not self.is_mounted:
+            return
         self._render_session(session_id, model, provider)
         self._render_agent(agent_id, agent_name, agent_prompt_preview)
         self._render_files(edited_files or [])
         self._render_lsp(lsp_status)
         self._render_mcp(mcp_servers or [])
         self._render_tools(tools or [])
+        self.refresh()
 
     # ── rendering ────────────────────────────────────────────────────
 
     def _replace_children(self, key: str, rows: list[Static]) -> None:
-        section = self._sections.get(key)
-        if section is None or not section.is_mounted:
+        if not self.is_mounted:
+            return
+        try:
+            section = self.query_one(f"#sec-{key}", Vertical)
+        except Exception:
             return
         section.remove_children()
         if not rows:
