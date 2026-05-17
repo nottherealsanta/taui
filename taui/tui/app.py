@@ -5,14 +5,16 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections.abc import Iterable
 from pathlib import Path
 
 from rich.markup import escape
 from textual import on, work
-from textual.app import App, ComposeResult
+from textual.app import App, ComposeResult, SystemCommand
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.css.query import NoMatches
 from textual.events import Key
+from textual.screen import Screen
 from textual.widgets import Markdown, Static, Tree
 
 from taui.agent.context import DEFAULT_MAX_INPUT_TOKENS, estimate_total_tokens
@@ -165,6 +167,47 @@ class TauiApp(App[None]):
     MarkdownTableContent > .header {
         color: #7dd3fc;
     }
+    CommandPalette {
+        background: #0d1117 75%;
+    }
+    CommandPalette > Vertical {
+        width: 82;
+        max-width: 92%;
+        height: auto;
+        max-height: 74%;
+        margin-top: 2;
+        background: #161b22;
+        border: tall #30363d;
+    }
+    CommandPalette #--input {
+        background: #0d1117;
+        border: tall #58a6ff;
+        padding: 0 1;
+    }
+    CommandPalette #--input.--list-visible {
+        border-bottom: tall #30363d;
+    }
+    CommandPalette #--results {
+        overlay: none;
+        height: auto;
+        max-height: 18;
+        background: #161b22;
+    }
+    CommandPalette CommandList {
+        height: auto;
+        max-height: 16;
+        background: #161b22;
+    }
+    CommandPalette LoadingIndicator {
+        border-bottom: tall #30363d;
+    }
+    CommandPalette > .command-palette--help-text {
+        color: #8b949e;
+    }
+    CommandPalette > .command-palette--highlight {
+        color: #79c0ff;
+        text-style: bold;
+    }
     """
 
     BINDINGS = [
@@ -216,6 +259,133 @@ class TauiApp(App[None]):
         self._pending_files: list[Path] = []
         # Folders attached the same way — expanded as a tree listing.
         self._pending_folders: list[Path] = []
+
+    def get_system_commands(self, screen: Screen) -> Iterable[SystemCommand]:
+        """Extend Textual's command palette with Taui commands."""
+        yield from super().get_system_commands(screen)
+        yield from self._taui_palette_commands()
+
+    def _taui_palette_commands(self) -> Iterable[SystemCommand]:
+        """Build command-palette entries backed by existing Taui actions."""
+        yield SystemCommand(
+            "Taui: Select model",
+            "Open the inline model picker",
+            self._open_model_picker,
+        )
+        yield SystemCommand(
+            "Taui: List models",
+            "Print available models for the current provider",
+            lambda: self._run_palette_command("/model list"),
+        )
+        yield SystemCommand(
+            "Taui: Select agent",
+            "Open the inline agent picker",
+            lambda: self.handle_agent_badge_clicked(None),
+        )
+        yield SystemCommand(
+            "Taui: Sessions",
+            "Browse and resume previous sessions",
+            lambda: self._run_palette_command("/sessions"),
+        )
+        yield SystemCommand(
+            "Taui: Context breakdown",
+            "Show current context usage",
+            self._open_context_tree,
+        )
+        yield SystemCommand(
+            "Taui: New session",
+            "Start a fresh session",
+            lambda: self.run_worker(
+                self.action_new_chat(),
+                name="palette_new_session",
+                group="palette",
+                exclusive=True,
+            ),
+        )
+        yield SystemCommand(
+            "Taui: Toggle sidebar",
+            "Show or hide the project sidebar",
+            self.action_toggle_sidebar,
+        )
+        yield SystemCommand(
+            "Taui: Toggle info sidebar",
+            "Show or hide session details",
+            self.action_toggle_info_sidebar,
+        )
+        yield SystemCommand(
+            "Taui: Self-edit",
+            "Show self-edit usage",
+            lambda: self.run_worker(
+                self.action_enter_self_edit(),
+                name="palette_self_edit",
+                group="palette",
+                exclusive=True,
+            ),
+        )
+        yield SystemCommand(
+            "Taui: Git diff",
+            "Open the git diff viewer",
+            lambda: self._run_palette_command("/diff"),
+        )
+
+        commands = getattr(self, "_commands", None)
+        if commands is not None:
+            for name in commands.names:
+                command = commands.get(name)
+                if command is None:
+                    continue
+                yield SystemCommand(
+                    f"/{name}",
+                    command.description,
+                    lambda name=name: self._run_palette_command(f"/{name}"),
+                    discover=False,
+                )
+
+        yield from self._model_palette_commands()
+
+    def _model_palette_commands(self) -> Iterable[SystemCommand]:
+        """Expose direct model switches in the command palette."""
+        if self._session is None:
+            return
+        from taui.llm_provider.models import list_models
+
+        config = getattr(self._session, "config", None)
+        provider = str(
+            getattr(config, "provider", "")
+            or getattr(self._session, "provider_name", "")
+            or ""
+        )
+        if not provider:
+            return
+        current = str(getattr(self._session, "model_name", "") or "")
+        try:
+            models = list_models(provider)
+        except Exception:
+            models = []
+        for model in models[:30]:
+            model_id = str(model.get("id", ""))
+            if not model_id:
+                continue
+            context = int(model.get("context", 0) or 0)
+            ctx = f"{context // 1000}k" if context else "?"
+            reasoning = ", reasoning" if model.get("reasoning") else ""
+            marker = "current, " if model_id == current else ""
+            yield SystemCommand(
+                f"Model: {model_id}",
+                f"Switch to {provider}/{model_id} ({marker}{ctx} ctx{reasoning})",
+                lambda model_id=model_id: self._apply_selected_model(model_id),
+                discover=False,
+            )
+
+    def _run_palette_command(self, command: str) -> None:
+        """Run a slash command selected from the command palette."""
+        worker_name = "palette_" + command.lstrip("/").split(maxsplit=1)[0]
+        self.run_worker(
+            self._handle_command(command),
+            name=worker_name,
+            group="palette",
+            exclusive=False,
+        )
 
     @property
     def session_id(self) -> str | None:
@@ -1733,6 +1903,10 @@ class TauiApp(App[None]):
                 agent_prompt = profile.prompt or ""
         except Exception:
             pass
+        session_name = ""
+        description = getattr(self._session, "description", None)
+        if description:
+            session_name = str(description)
         edited_files = [
             {
                 "path": path,
@@ -1754,9 +1928,9 @@ class TauiApp(App[None]):
             tools = list(getattr(registry, "names", []) or [])
         info_sidebar.update_info(
             session_id=self._session.session_id or "",
-            model=self._session.model_name or "",
-            provider=self._session.provider_name or "",
+            session_name=session_name,
             agent_id=agent_id,
+            agent_id_color=_agent_color(agent_id) if agent_id else "",
             agent_name=agent_name,
             agent_prompt_preview=agent_prompt,
             edited_files=edited_files,

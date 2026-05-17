@@ -96,6 +96,9 @@ class Session:
         self._ext_registry = ext_registry
         self.hooks = hooks or HookRegistry()
         self.session_id = session_id or uuid4().hex[:12]
+        # Human-readable session label. Populated by the `session_name`
+        # tool when it runs, and refreshed on resume from the store.
+        self.description: str = ""
         self.extensions_mode = False
         self.self_edit_mode = False
         self._system_prompt: str = ""
@@ -346,6 +349,7 @@ class Session:
     async def new_session(self) -> None:
         """Start a fresh session — new loop, new agent, same store."""
         self.session_id = uuid4().hex[:12]
+        self.description = ""
         self._message_count = 0
         self._last_replay_items = []
 
@@ -548,6 +552,7 @@ class Session:
             return False
 
         self.session_id = session_id
+        self.description = str(meta.get("description") or "")
         self.extensions_mode = meta.get("mode") == "extensions"
         self.self_edit_mode = meta.get("mode") == "self_edit"
         self._message_count = meta.get("message_count", 0)
@@ -932,6 +937,7 @@ class Session:
             return
 
         async def set_name(name: str) -> None:
+            self.description = name
             try:
                 await self._store.update_session(
                     self.session_id, description=name,

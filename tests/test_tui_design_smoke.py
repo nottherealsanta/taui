@@ -568,6 +568,119 @@ async def test_info_sidebar_refreshes_on_turn_complete(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_info_sidebar_session_shows_name_and_gray_id(
+    tmp_path, monkeypatch
+):
+    """Session section should show the description as the headline and the
+    id below it rendered in gray. Model row was dropped entirely."""
+    from rich.text import Text
+
+    from taui.tui.widgets.session_info_sidebar import SessionInfoSidebar
+
+    app = _make_app(monkeypatch, tmp_path)
+    async with app.run_test() as pilot:
+        await _wait_until_ready(pilot)
+        # Give the session a human description.
+        pilot.app._session.description = "Refactor login flow"
+        await pilot.press("ctrl+r")
+        for _ in range(5):
+            await pilot.pause()
+        info_sidebar = pilot.app.query_one(SessionInfoSidebar)
+        section = info_sidebar.query_one("#sec-session")
+        children = list(section.children)
+        # Expect exactly two rows: name then id. No model row.
+        assert len(children) == 2, (
+            f"expected 2 rows (name, id), got {len(children)}: "
+            f"{[_widget_text(c) for c in children]!r}"
+        )
+        name_row = children[0]
+        id_row = children[1]
+        name_text = name_row.render()
+        id_text = id_row.render()
+        assert "Refactor login flow" in name_text.plain
+        sid = pilot.app._session.session_id
+        assert sid in id_text.plain
+        # Id span is dim gray. Accept either "#6e7681" or "rgb(110,118,129)".
+        gray_spans = [
+            sp for sp in id_text.spans
+            if "rgb(110,118,129)" in str(sp.style) or "#6e7681" in str(sp.style)
+        ]
+        assert gray_spans, (
+            f"id row should style the id in #6e7681 gray; spans: "
+            f"{[str(sp.style) for sp in id_text.spans]!r}"
+        )
+        # And there should be no row containing the literal "model " label.
+        rendered_all = " ".join(_widget_text(c) for c in children)
+        assert "model " not in rendered_all
+        await _close_cleanly(pilot)
+
+
+@pytest.mark.asyncio
+async def test_info_sidebar_agent_uses_agent_color_and_100_char_prompt(
+    tmp_path, monkeypatch
+):
+    """Agent id should render in the per-agent color (same family the info
+    bar uses), and the prompt preview should be the first 100 chars of the
+    raw prompt — not just the first line."""
+    from rich.text import Text
+
+    from taui.tui.widgets.info_bar import _agent_color
+    from taui.tui.widgets.session_info_sidebar import SessionInfoSidebar
+
+    app = _make_app(monkeypatch, tmp_path)
+    async with app.run_test() as pilot:
+        await _wait_until_ready(pilot)
+        info_sidebar = pilot.app.query_one(SessionInfoSidebar)
+        long_prompt = (
+            "First line of system prompt is short.\n"
+            "Then comes more text that should keep flowing past the line\n"
+            "break into the preview when we truncate at 100 chars total."
+        )
+        expected_color = _agent_color("FOO")
+        info_sidebar.update_info(
+            session_id="abc",
+            agent_id="FOO",
+            agent_id_color=expected_color,
+            agent_name="Tester",
+            agent_prompt_preview=long_prompt,
+        )
+        for _ in range(3):
+            await pilot.pause()
+        section = info_sidebar.query_one("#sec-agent")
+        children = list(section.children)
+        assert len(children) == 2, "agent section should have id-row + prompt-row"
+        id_row, prompt_row = children
+        id_text = id_row.render()
+        assert "FOO" in id_text.plain
+        # Style repr can be either "#d2a8ff" or "rgb(210,168,255)" depending
+        # on how Textual normalises it; accept both.
+        r, g, b = (
+            int(expected_color[1:3], 16),
+            int(expected_color[3:5], 16),
+            int(expected_color[5:7], 16),
+        )
+        rgb_repr = f"rgb({r},{g},{b})"
+        agent_styles = " ".join(str(sp.style) for sp in id_text.spans)
+        assert expected_color in agent_styles or rgb_repr in agent_styles, (
+            f"agent id should render in its assigned color {expected_color} "
+            f"(or {rgb_repr}); styles: {agent_styles!r}"
+        )
+        prompt_text = prompt_row.render()
+        plain = prompt_text.plain
+        # First-line slicing would have left only "First line of system prompt
+        # is short." here. We want first 100 chars verbatim, so the second
+        # line's content should be present.
+        assert "Then comes more text" in plain, (
+            f"prompt preview should span past the first newline; got {plain!r}"
+        )
+        # Total length capped to 100 (plus the truncation ellipsis).
+        assert len(plain) <= 101, (
+            f"prompt preview should be at most 100 chars (+ellipsis); got {len(plain)}: {plain!r}"
+        )
+        await _close_cleanly(pilot)
+
+
+@pytest.mark.asyncio
 async def test_info_sidebar_escape_dismisses(tmp_path, monkeypatch):
     """The right sidebar should support Escape to dismiss when focused."""
     from taui.tui.widgets.session_info_sidebar import SessionInfoSidebar

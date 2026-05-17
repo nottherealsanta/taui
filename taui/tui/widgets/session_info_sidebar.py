@@ -115,9 +115,9 @@ class SessionInfoSidebar(VerticalScroll):
         self,
         *,
         session_id: str = "",
-        model: str = "",
-        provider: str = "",
+        session_name: str = "",
         agent_id: str = "",
+        agent_id_color: str = "",
         agent_name: str = "",
         agent_prompt_preview: str = "",
         edited_files: list[dict] | None = None,
@@ -128,8 +128,10 @@ class SessionInfoSidebar(VerticalScroll):
         """Refresh all sections."""
         if not self.is_mounted:
             return
-        self._render_session(session_id, model, provider)
-        self._render_agent(agent_id, agent_name, agent_prompt_preview)
+        self._render_session(session_id, session_name)
+        self._render_agent(
+            agent_id, agent_id_color, agent_name, agent_prompt_preview
+        )
         self._render_files(edited_files or [])
         self._render_lsp(lsp_status)
         self._render_mcp(mcp_servers or [])
@@ -152,32 +154,35 @@ class SessionInfoSidebar(VerticalScroll):
         for row in rows:
             section.mount(row)
 
-    def _render_session(self, session_id: str, model: str, provider: str) -> None:
+    def _render_session(self, session_id: str, session_name: str) -> None:
+        """Show the session's human name as the headline; render the id in
+        muted gray on a second line so it's available but not noisy."""
         rows: list[Static] = []
+        if session_name:
+            rows.append(_SectionRow(Text(session_name, style="#e6edf3")))
         if session_id:
-            text = Text()
-            text.append("id ", style="dim")
-            text.append(session_id, style="bold #58a6ff")
-            rows.append(_SectionRow(text))
-        if model:
-            text = Text()
-            text.append("model ", style="dim")
-            text.append(model, style="#e6edf3")
-            if provider:
-                text.append(f"  ({provider})", style="dim italic")
-            rows.append(_SectionRow(text))
+            rows.append(_SectionRow(Text(session_id, style="#6e7681")))
         self._replace_children("session", rows)
 
-    def _render_agent(self, agent_id: str, agent_name: str, prompt: str) -> None:
+    def _render_agent(
+        self,
+        agent_id: str,
+        agent_id_color: str,
+        agent_name: str,
+        prompt: str,
+    ) -> None:
+        """Show the agent id in its assigned color (matching the info bar
+        badge), then the agent name, then the first 100 chars of its prompt."""
         rows: list[Static] = []
         if agent_id:
             text = Text()
-            text.append(agent_id, style="bold #d2a8ff")
+            color = agent_id_color or "#d2a8ff"
+            text.append(agent_id, style=f"bold {color}")
             if agent_name:
                 text.append(f"  {agent_name}", style="#e6edf3")
             rows.append(_SectionRow(text))
         if prompt:
-            preview = _truncate(prompt.strip().splitlines()[0] if prompt.strip() else "", 80)
+            preview = _truncate(prompt.strip(), 100)
             rows.append(_SectionRow(Text(preview, style="dim italic")))
         self._replace_children("agent", rows)
 
