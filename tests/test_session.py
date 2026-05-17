@@ -145,6 +145,39 @@ class TestSessionWiring:
 
         await session.close()
 
+    async def test_replay_items_preserve_footer_model(self, tmp_path):
+        from taui.store.store import Store
+        from taui.store.stream import StreamClient
+
+        store = Store(tmp_path)
+        await store.connect()
+        stream = StreamClient(store)
+
+        await store.create_stream("agents/ses-1")
+        await store.append(
+            "agents/ses-1",
+            EventType.STREAM_START,
+            {"agent_id": "DEF", "model": "old-model"},
+        )
+        await store.append("agents/ses-1", EventType.USER_MESSAGE, {"text": "hi"})
+        await store.append(
+            "agents/ses-1",
+            EventType.ASSISTANT_MESSAGE,
+            {
+                "text": "done",
+                "agent_id": "DEF",
+                "model": "old-model",
+                "tool_calls": [],
+            },
+        )
+
+        transcript = await stream.load_conversation("agents/ses-1")
+        assistant = next(item for item in transcript.items if item.kind == "assistant")
+        assert assistant.agent_id == "DEF"
+        assert assistant.model == "old-model"
+
+        await store.close()
+
     async def test_resume_without_stream_mapping_fails_clearly(self, tmp_path):
         from taui.agent.loop import AgentLoop
         from taui.store.store import Store

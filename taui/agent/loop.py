@@ -187,7 +187,10 @@ class AgentLoop:
         # Set up stream
         if self._stream:
             await self._stream.ensure_stream(self.stream_id)
-            await self._emit(EventType.STREAM_START, {"agent_id": self.agent_id})
+            await self._emit(
+                EventType.STREAM_START,
+                {"agent_id": self.agent_id, "model": self._model},
+            )
 
         # Initialize conversation if empty
         if not self._messages:
@@ -311,6 +314,8 @@ class AgentLoop:
                 EventType.ASSISTANT_MESSAGE,
                 {
                     "text": llm_result.text,
+                    "agent_id": self.agent_id,
+                    "model": self._model,
                     "tool_calls": [
                         _serialize_tool_call(tc) for tc in llm_result.tool_calls
                     ],

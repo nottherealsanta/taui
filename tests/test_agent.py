@@ -201,6 +201,7 @@ class TestAgentLoopWithStore:
             executor=_make_executor(),
             stream=stream,
             agent_id="test-agent",
+            model="test-model",
         )
         result = await loop.run("Hi")
         assert result.text == "Hello from agent!"
@@ -212,6 +213,12 @@ class TestAgentLoopWithStore:
         assert EventType.USER_MESSAGE in event_types
         assert EventType.ASSISTANT_MESSAGE in event_types
         assert EventType.STREAM_END in event_types
+        stream_start = next(e for e in events if e.type == EventType.STREAM_START)
+        assistant_message = next(
+            e for e in events if e.type == EventType.ASSISTANT_MESSAGE
+        )
+        assert stream_start.data["model"] == "test-model"
+        assert assistant_message.data["model"] == "test-model"
 
         await store.close()
 

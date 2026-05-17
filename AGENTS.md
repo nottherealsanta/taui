@@ -137,6 +137,7 @@ before documenting a shortcut. Important app-level bindings include:
 - `Ctrl+N`: new session
 - `Ctrl+C`: cancel active request or approval
 - `Ctrl+B`: toggle sidebar
+- `Ctrl+P`: command palette
 - `Ctrl+X`: context breakdown
 - `Escape`: leave self-edit mode when active
 

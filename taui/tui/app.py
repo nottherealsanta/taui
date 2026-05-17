@@ -9,12 +9,15 @@ from collections.abc import Iterable
 from pathlib import Path
 
 from rich.markup import escape
+from rich.text import Text
 from textual import on, work
 from textual.app import App, ComposeResult, SystemCommand
+from textual.command import CommandInput, CommandPalette, Hit, Hits, Provider
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.css.query import NoMatches
 from textual.events import Key
 from textual.screen import Screen
+from textual.system_commands import SystemCommandsProvider
 from textual.widgets import Markdown, Static, Tree
 
 from taui.agent.context import DEFAULT_MAX_INPUT_TOKENS, estimate_total_tokens
@@ -47,10 +50,162 @@ from taui.tui.widgets.tool_status import ToolStatusWidget
 logger = logging.getLogger(__name__)
 
 
+class _ModelPaletteProvider(Provider):
+    """Command palette provider for model switches — one-line rows."""
+
+    async def search(self, query: str) -> Hits:
+        async for hit in self._iter_hits(query):
+            yield hit
+
+    async def discover(self) -> Hits:
+        async for hit in self._iter_hits(""):
+            yield hit
+
+    async def _iter_hits(self, query: str) -> Hits:
+        app = self.app
+        session = getattr(app, "_session", None)
+        if session is None:
+            return
+        from taui.llm_provider.models import list_models
+
+        config = getattr(session, "config", None)
+        provider_name = str(
+            getattr(config, "provider", "")
+            or getattr(session, "provider_name", "")
+            or ""
+        )
+        if not provider_name:
+            return
+        current = str(getattr(session, "model_name", "") or "")
+        try:
+            models = list_models(provider_name)
+        except Exception:
+            models = []
+
+        matcher = self.matcher(query) if query else None
+        for model in models[:30]:
+            model_id = str(model.get("id", ""))
+            if not model_id:
+                continue
+            if matcher is not None:
+                score = matcher.match(model_id)
+                if score <= 0:
+                    continue
+            else:
+                score = 1.0
+            context = int(model.get("context", 0) or 0)
+            ctx = f"{context // 1000}k" if context else "?"
+            reasoning = bool(model.get("reasoning"))
+            is_current = model_id == current
+            yield Hit(
+                score,
+                _format_model_row(
+                    model_id, provider_name, ctx, reasoning, is_current
+                ),
+                lambda model_id=model_id: app._apply_selected_model(model_id),
+                text=model_id,
+                help=None,
+            )
+
+
+class _AgentPaletteProvider(Provider):
+    """Command palette provider for agent switches — one-line rows."""
+
+    async def search(self, query: str) -> Hits:
+        async for hit in self._iter_hits(query):
+            yield hit
+
+    async def discover(self) -> Hits:
+        async for hit in self._iter_hits(""):
+            yield hit
+
+    async def _iter_hits(self, query: str) -> Hits:
+        app = self.app
+        session = getattr(app, "_session", None)
+        if session is None:
+            return
+        try:
+            agents = sorted(
+                SelfEditStore(app._config.working_dir).load_agents().values(),
+                key=lambda item: item.id,
+            )
+        except Exception:
+            agents = []
+        active_id = str(getattr(session._loop, "agent_id", "") or "").upper()
+
+        matcher = self.matcher(query) if query else None
+        for profile in agents:
+            agent_id = str(getattr(profile, "id", "") or "")
+            if not agent_id:
+                continue
+            name = str(getattr(profile, "name", "") or "")
+            provider = str(getattr(profile, "provider", "") or "")
+            model = str(getattr(profile, "model", "") or "")
+            provider_model = "/".join(p for p in (provider, model) if p) or "-"
+            is_current = agent_id.upper() == active_id
+            haystack = f"{agent_id} {name}".strip()
+            if matcher is not None:
+                score = matcher.match(haystack)
+                if score <= 0:
+                    continue
+            else:
+                score = 1.0
+            yield Hit(
+                score,
+                _format_agent_row(agent_id, name, provider_model, is_current),
+                lambda profile=profile: app._apply_self_edit_profile(profile),
+                text=haystack,
+                help=None,
+            )
+
+
+def _format_model_row(
+    model_id: str,
+    provider: str,
+    ctx: str,
+    reasoning: bool,
+    is_current: bool,
+) -> Text:
+    """One-line model row: id (bold)  provider  ctx  [R]  [◀]."""
+    row = Text()
+    row.append(model_id, style="bold")
+    row.append("  ")
+    row.append(provider, style="dim")
+    row.append("  ")
+    row.append(ctx, style="dim")
+    if reasoning:
+        row.append("  R", style="dim")
+    if is_current:
+        row.append("  ◀", style="dim")
+    return row
+
+
+def _format_agent_row(
+    agent_id: str, name: str, provider_model: str, is_current: bool
+) -> Text:
+    """One-line agent row: id (bold)  name  provider/model  [◀]."""
+    row = Text()
+    row.append(agent_id, style="bold")
+    if name:
+        row.append("  ")
+        row.append(name, style="dim")
+    row.append("  ")
+    row.append(provider_model, style="dim")
+    if is_current:
+        row.append("  ◀", style="dim")
+    return row
+
+
 class TauiApp(App[None]):
     """Textual TUI for taui."""
 
     TITLE = "taui"
+
+    COMMANDS = {
+        SystemCommandsProvider,
+        _ModelPaletteProvider,
+        _AgentPaletteProvider,
+    }
 
     CSS = """
     Screen {
@@ -262,14 +417,17 @@ class TauiApp(App[None]):
 
     def get_system_commands(self, screen: Screen) -> Iterable[SystemCommand]:
         """Extend Textual's command palette with Taui commands."""
-        yield from super().get_system_commands(screen)
+        for cmd in super().get_system_commands(screen):
+            if cmd.title == "Maximize":
+                continue
+            yield cmd
         yield from self._taui_palette_commands()
 
     def _taui_palette_commands(self) -> Iterable[SystemCommand]:
         """Build command-palette entries backed by existing Taui actions."""
         yield SystemCommand(
             "Taui: Select model",
-            "Open the inline model picker",
+            "Open the model picker",
             self._open_model_picker,
         )
         yield SystemCommand(
@@ -279,13 +437,13 @@ class TauiApp(App[None]):
         )
         yield SystemCommand(
             "Taui: Select agent",
-            "Open the inline agent picker",
+            "Open the agent picker",
             lambda: self.handle_agent_badge_clicked(None),
         )
         yield SystemCommand(
             "Taui: Sessions",
-            "Browse and resume previous sessions",
-            lambda: self._run_palette_command("/sessions"),
+            "Open the sidebar to browse and resume sessions",
+            self._open_sessions_sidebar,
         )
         yield SystemCommand(
             "Taui: Context breakdown",
@@ -340,42 +498,6 @@ class TauiApp(App[None]):
                     lambda name=name: self._run_palette_command(f"/{name}"),
                     discover=False,
                 )
-
-        yield from self._model_palette_commands()
-
-    def _model_palette_commands(self) -> Iterable[SystemCommand]:
-        """Expose direct model switches in the command palette."""
-        if self._session is None:
-            return
-        from taui.llm_provider.models import list_models
-
-        config = getattr(self._session, "config", None)
-        provider = str(
-            getattr(config, "provider", "")
-            or getattr(self._session, "provider_name", "")
-            or ""
-        )
-        if not provider:
-            return
-        current = str(getattr(self._session, "model_name", "") or "")
-        try:
-            models = list_models(provider)
-        except Exception:
-            models = []
-        for model in models[:30]:
-            model_id = str(model.get("id", ""))
-            if not model_id:
-                continue
-            context = int(model.get("context", 0) or 0)
-            ctx = f"{context // 1000}k" if context else "?"
-            reasoning = ", reasoning" if model.get("reasoning") else ""
-            marker = "current, " if model_id == current else ""
-            yield SystemCommand(
-                f"Model: {model_id}",
-                f"Switch to {provider}/{model_id} ({marker}{ctx} ctx{reasoning})",
-                lambda model_id=model_id: self._apply_selected_model(model_id),
-                discover=False,
-            )
 
     def _run_palette_command(self, command: str) -> None:
         """Run a slash command selected from the command palette."""
@@ -929,17 +1051,7 @@ class TauiApp(App[None]):
     def handle_agent_badge_clicked(
         self, event: InfoBar.AgentBadgeClicked | None = None
     ) -> None:
-        if self._session is None:
-            return
-        agents = sorted(
-            SelfEditStore(self._config.working_dir).load_agents().values(),
-            key=lambda item: item.id,
-        )
-        if not agents:
-            return
-        active_id = str(getattr(self._session._loop, "agent_id", "") or "")
-        info2 = self.query_one("#info2", Info2)
-        info2.show_agents(agents, current=active_id)
+        self._open_palette(providers=(_AgentPaletteProvider,))
 
     @on(InfoBar.ModelBadgeClicked)
     def handle_model_badge_clicked(self, event: InfoBar.ModelBadgeClicked) -> None:
@@ -950,29 +1062,60 @@ class TauiApp(App[None]):
         self._open_context_tree()
 
     async def _load_and_show_sessions(self) -> None:
-        if self._session is None:
+        self._open_sessions_sidebar()
+
+    def _open_palette(
+        self,
+        prefilter: str = "",
+        providers: tuple[type[Provider], ...] | None = None,
+    ) -> None:
+        """Open the command palette, optionally narrowed to specific providers.
+
+        If `providers` is given, the palette will only consult those providers
+        (skipping the default system commands), so users see just that list.
+        `prefilter` pre-fills the search input.
+        """
+        if CommandPalette.is_open(self):
             return
-        sessions = await self._session.list_sessions()
-        if sessions:
-            self._show_session_picker(sessions)
+        palette = CommandPalette(
+            providers=providers,
+            id="--command-palette",
+        )
+        self.push_screen(palette)
+        if not prefilter:
+            return
+
+        def _fill() -> None:
+            try:
+                inp = self.screen.query_one(CommandInput)
+            except NoMatches:
+                return
+            inp.value = prefilter
+            inp.cursor_position = len(prefilter)
+
+        self.call_after_refresh(_fill)
 
     def _open_model_picker(self) -> None:
-        if self._session is None:
-            return
-        from taui.llm_provider.models import list_models
-
-        provider = self._session.config.provider
-        models = list_models(provider)
-        info2 = self.query_one("#info2", Info2)
-        info2.show_models(models, current=self._session.model_name)
+        self._open_palette(providers=(_ModelPaletteProvider,))
 
     def _open_context_tree(self) -> None:
         if self._session is None:
             return
-        info2 = self.query_one("#info2", Info2)
-        info2.show_context_tree(
-            self._session._loop._messages,
-            DEFAULT_MAX_INPUT_TOKENS,
+        self.push_screen(ContextBreakdownScreen(self._session._loop._messages))
+
+    def _open_sessions_sidebar(self) -> None:
+        """Open the left sidebar on the sessions tab."""
+        try:
+            sidebar = self.query_one(Sidebar)
+        except NoMatches:
+            return
+        if not sidebar.has_class("visible"):
+            sidebar.toggle()
+        sidebar.action_show_tab("sessions")
+        self.run_worker(
+            self._refresh_sidebar_sessions(),
+            name="refresh_sidebar_sessions",
+            exclusive=True,
         )
 
     def _apply_selected_agent(self, selected: str | None) -> None:
@@ -1660,12 +1803,20 @@ class TauiApp(App[None]):
         chat_log.scroll_end()
 
     def _show_session_picker(self, sessions: list[dict]) -> None:
-        """Show the inline session picker in Info2."""
-        info2 = self.query_one("#info2", Info2)
-        info2.show_sessions(sessions)
+        """Open the sidebar on the sessions tab pre-populated with `sessions`."""
+        try:
+            sidebar = self.query_one(Sidebar)
+        except NoMatches:
+            return
+        sidebar.set_sessions(
+            sessions, self._session.session_id if self._session else ""
+        )
+        if not sidebar.has_class("visible"):
+            sidebar.toggle()
+        sidebar.action_show_tab("sessions")
 
     async def _open_session_picker(self, sessions: list[dict]) -> None:
-        """Open the inline session picker (legacy entry point)."""
+        """Open the sessions sidebar (legacy entry point)."""
         self._show_session_picker(sessions)
 
     async def _resume_session(self, session_id: str) -> bool:
@@ -1700,17 +1851,24 @@ class TauiApp(App[None]):
         pending_widgets: dict[str, ToolStatusWidget] = {}
         pending_order: list[str] = []
         turn_has_content = False
+        turn_footer_agent_id = ""
+        turn_footer_model = ""
 
         async def _flush_turn_footer() -> None:
             """Cap the just-replayed turn with a footer like a live turn."""
-            agent_id = ""
-            model = ""
-            if self._session is not None:
-                agent_id = str(
-                    getattr(self._session._loop, "agent_id", "") or ""
-                )
-                model = self._session.model_name or ""
+            nonlocal turn_footer_agent_id, turn_footer_model
+            agent_id = turn_footer_agent_id
+            model = turn_footer_model
             await chat_log.mount(ReplyFooter(agent_id, model))
+            turn_footer_agent_id = ""
+            turn_footer_model = ""
+
+        def _remember_turn_footer(item) -> None:
+            nonlocal turn_footer_agent_id, turn_footer_model
+            if not turn_footer_agent_id:
+                turn_footer_agent_id = str(getattr(item, "agent_id", "") or "")
+            if not turn_footer_model:
+                turn_footer_model = str(getattr(item, "model", "") or "")
 
         for item in self._session.replay_items:
             if item.kind == "user":
@@ -1732,6 +1890,7 @@ class TauiApp(App[None]):
                 await resp.append_text(item.text)
                 await resp.finalize()
                 turn_has_content = True
+                _remember_turn_footer(item)
             elif item.kind == "tool_call":
                 if tool_section is None:
                     tool_section = Vertical(classes="tool-section")
@@ -1746,6 +1905,7 @@ class TauiApp(App[None]):
                 pending_widgets[key] = widget
                 pending_order.append(key)
                 turn_has_content = True
+                _remember_turn_footer(item)
             elif item.kind == "tool_result":
                 key = item.call_id if item.call_id in pending_widgets else (
                     pending_order[0] if pending_order else ""
@@ -1767,6 +1927,7 @@ class TauiApp(App[None]):
                     )
                 )
                 turn_has_content = True
+                _remember_turn_footer(item)
 
         if turn_has_content:
             await _flush_turn_footer()

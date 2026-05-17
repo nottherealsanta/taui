@@ -242,6 +242,29 @@ def test_sidebar_visible(snap_compare, tmp_path, monkeypatch):
     assert snap_compare(app, run_before=setup, terminal_size=(100, 30))
 
 
+def test_command_palette_model_search_visible(snap_compare, tmp_path, monkeypatch):
+    """Ctrl+P opens Taui's command palette with model actions."""
+    monkeypatch.setattr(
+        "taui.llm_provider.models.list_models",
+        lambda provider, **kwargs: [
+            {"id": "claude-haiku-4.5", "context": 200000, "reasoning": False},
+            {"id": "gpt-5.5", "context": 400000, "reasoning": True},
+        ],
+    )
+    provider = scenarios.happy_path("(unused)")
+    app = use_scripted_provider(monkeypatch, tmp_path, provider)
+
+    async def setup(pilot: Pilot) -> None:
+        await _wait_until_ready(pilot)
+        await pilot.press("ctrl+p")
+        await pilot.press("m", "o", "d", "e", "l")
+        for _ in range(4):
+            await pilot.pause()
+        await _close_cleanly(pilot)
+
+    assert snap_compare(app, run_before=setup, terminal_size=(100, 30))
+
+
 def test_diff_command_modal_visible(snap_compare, tmp_path, monkeypatch):
     """The /diff command should open the git diff modal."""
     _init_git_repo(tmp_path)

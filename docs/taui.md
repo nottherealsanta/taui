@@ -41,6 +41,7 @@ Features include:
 - Image paste via `Ctrl+V`, drag-and-drop, or `@image.png` references
 - Prompt history persisted at `~/.cache/taui/prompt_history`
 - Session picker and replay (`/sessions`)
+- Command palette for Taui actions, slash commands, and model switching (`Ctrl+P`)
 - Sidebar toggle (`Ctrl+B`)
 - Context breakdown modal (`Ctrl+X`)
 
@@ -52,6 +53,7 @@ Key bindings (verify against `TauiApp.BINDINGS` in `taui/tui/app.py`):
 | `Ctrl+N` | New session |
 | `Ctrl+C` | Cancel active request or approval |
 | `Ctrl+B` | Toggle sidebar |
+| `Ctrl+P` | Open command palette |
 | `Ctrl+X` | Context breakdown |
 | `Escape` | Exit self-edit mode |
 
@@ -139,8 +141,9 @@ and cost estimates per model. `/cost` shows the running total for the current se
 ### Slash Commands
 
 Registered in `taui/commands/builtins.py`. Relevant commands include `/help`, `/cost`,
-`/compact`, `/clear`, `/model`, `/provider`, `/extensions`, `/i`, `/sessions`, `/new`,
-`/reload`, `/copy`, `/export`, `/hotkeys`, `/verbose`, `/debug questions`.
+`/compact`, `/clear`, `/model`, `/provider`, `/extensions`, `/i`, `/sessions`, `/diff`,
+`/review`, `/commit`, `/new`, `/reload`, `/copy`, `/export`, `/hotkeys`, `/verbose`,
+`/debug questions`.
 
 ## Self-Edit Mode (`/i`)
 

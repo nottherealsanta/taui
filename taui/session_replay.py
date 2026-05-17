@@ -19,6 +19,8 @@ class ReplayItem:
 
     kind: ReplayKind
     text: str = ""
+    agent_id: str = ""
+    model: str = ""
     name: str = ""
     call_id: str = ""
     arguments: dict[str, Any] | None = None
@@ -51,10 +53,16 @@ def replay_events(events: list[Event]) -> ReplayTranscript:
     messages: list[Message] = []
     items: list[ReplayItem] = []
     represented_tool_calls: set[str] = set()
+    pending_tool_footer: dict[str, tuple[str, str]] = {}
+    current_agent_id = ""
+    current_model = ""
 
     for event in events:
         data = event.data
-        if event.type == EventType.USER_MESSAGE:
+        if event.type == EventType.STREAM_START:
+            current_agent_id = str(data.get("agent_id") or "")
+            current_model = str(data.get("model") or "")
+        elif event.type == EventType.USER_MESSAGE:
             text = str(data.get("text", ""))
             raw_images = data.get("images")
             images = raw_images if isinstance(raw_images, list) else None
@@ -62,6 +70,8 @@ def replay_events(events: list[Event]) -> ReplayTranscript:
             items.append(ReplayItem(kind="user", text=text))
         elif event.type == EventType.ASSISTANT_MESSAGE:
             text = str(data.get("text") or "")
+            agent_id = str(data.get("agent_id") or current_agent_id)
+            model = str(data.get("model") or current_model)
             tool_calls = [_tool_call_from_data(raw) for raw in data.get("tool_calls", [])]
             tool_calls = [tc for tc in tool_calls if tc is not None]
             if text or tool_calls:
@@ -74,16 +84,30 @@ def replay_events(events: list[Event]) -> ReplayTranscript:
                 )
             for tc in tool_calls:
                 represented_tool_calls.add(tc.call_id)
+                pending_tool_footer[tc.call_id] = (agent_id, model)
             if text:
-                items.append(ReplayItem(kind="assistant", text=text))
+                items.append(
+                    ReplayItem(
+                        kind="assistant",
+                        text=text,
+                        agent_id=agent_id,
+                        model=model,
+                    )
+                )
         elif event.type == EventType.TOOL_CALL:
             tc = _tool_call_from_data(data)
+            agent_id = current_agent_id
+            model = current_model
             if tc is not None and tc.call_id not in represented_tool_calls:
                 messages.append(Message(role="assistant", content=None, tool_calls=[tc]))
                 represented_tool_calls.add(tc.call_id)
+            if tc is not None and tc.call_id in pending_tool_footer:
+                agent_id, model = pending_tool_footer[tc.call_id]
             items.append(
                 ReplayItem(
                     kind="tool_call",
+                    agent_id=agent_id,
+                    model=model,
                     name=str(data.get("name", "")),
                     call_id=str(data.get("call_id", "")),
                     arguments=_dict_or_empty(data.get("arguments")),
@@ -112,7 +136,14 @@ def replay_events(events: list[Event]) -> ReplayTranscript:
                 )
             )
         elif event.type == EventType.ERROR:
-            items.append(ReplayItem(kind="error", text=str(data.get("error", ""))))
+            items.append(
+                ReplayItem(
+                    kind="error",
+                    text=str(data.get("error", "")),
+                    agent_id=current_agent_id,
+                    model=current_model,
+                )
+            )
 
     return ReplayTranscript(messages=messages, items=items)
 

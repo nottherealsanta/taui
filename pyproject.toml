@@ -20,6 +20,7 @@ dependencies = [
     "httpx>=0.28",
     "rich>=13.0",
     "textual>=3.0",
+    "textual-diff-view>=0.1.2",
 ]
 
 [project.urls]

@@ -118,6 +118,7 @@ scope is the default persistent choice.
 | `Ctrl+N` | New session |
 | `Ctrl+C` | Cancel active request or approval |
 | `Ctrl+B` | Toggle sidebar |
+| `Ctrl+P` | Open command palette |
 | `Ctrl+X` | Context breakdown |
 | `Escape` | Leave self-edit mode |
 
@@ -132,6 +133,9 @@ scope is the default persistent choice.
 | `/clear` | Clear chat |
 | `/cost` | Show session cost |
 | `/sessions` | Browse and resume sessions |
+| `/diff` | Show git diff and open the diff viewer |
+| `/review` | Review git changes with read-only tools |
+| `/commit` | Prepare a commit message and ask before committing |
 | `/new` | Start new session |
 | `/reload` | Hot-reload extensions |
 | `/extensions` | List extensions |

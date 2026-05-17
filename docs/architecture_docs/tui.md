@@ -41,6 +41,7 @@ Defined in `TauiApp.BINDINGS`:
 | `Ctrl+D` | `ctrl_d` | Quit (double-press required) |
 | `Ctrl+B` | `toggle_sidebar` | Show/hide sidebar |
 | `Ctrl+E` | `enter_self_edit` | Enter self-edit mode |
+| `Ctrl+P` | `command_palette` | Open Textual command palette |
 | `Ctrl+X` | `show_context` | Open context breakdown |
 | `Escape` | `escape` | Leave self-edit / dismiss panels |
 
@@ -373,6 +374,11 @@ only one drain worker runs at a time.
    - `new_session` / `session_resumed` / `extensions_on` / `extensions_off` /
      `model_changed` / `agent_activated` → re-wires callbacks and updates status bar
    - `session_resumed` additionally calls `_render_replay()`
+
+The Textual command palette is extended through `TauiApp.get_system_commands()` with Taui
+actions, hidden slash-command entries, and direct model-switch entries from
+`taui.llm_provider.models.list_models()`. Textual's built-in Theme command remains
+available through `super().get_system_commands()`.
 
 The `CommandRegistry` is built in `_build_commands()` with lazy references to session,
 cost tracker, extension registry, and self-edit store. Completions are pushed to

@@ -9,19 +9,19 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, Label
 
 from taui.agent.context import DEFAULT_MAX_INPUT_TOKENS, estimate_total_tokens
+from taui.tui.widgets.context_tree import build_context_tree
 
 
 class ContextBreakdownScreen(ModalScreen[None]):
-    """Modal showing token usage breakdown."""
+    """Modal showing token usage breakdown plus a per-message tree."""
 
     DEFAULT_CSS = """
     ContextBreakdownScreen {
         align: center middle;
     }
     #context-dialog {
-        width: 70;
-        height: auto;
-        max-height: 90%;
+        width: 90%;
+        height: 90%;
         background: $surface;
         border: thick #586069;
         padding: 1 2;
@@ -55,6 +55,18 @@ class ContextBreakdownScreen(ModalScreen[None]):
         width: 15;
         color: $text;
     }
+    #context-dialog #context-summary {
+        height: auto;
+        padding: 0 0 1 0;
+    }
+    #context-dialog #context-tree-scroll {
+        height: 1fr;
+        border-top: solid #30363d;
+        padding: 1 0 0 0;
+    }
+    #context-dialog Tree {
+        background: transparent;
+    }
     #context-dialog .button-container {
         width: 100%;
         height: auto;
@@ -72,7 +84,6 @@ class ContextBreakdownScreen(ModalScreen[None]):
         total_tokens = estimate_total_tokens(self._messages)
         pct = (total_tokens / self._max_tokens * 100) if self._max_tokens else 0
 
-        # Categorize messages
         system_tokens = 0
         user_tokens = 0
         assistant_tokens = 0
@@ -104,7 +115,7 @@ class ContextBreakdownScreen(ModalScreen[None]):
                 ("Tool Results", tool_tokens),
             ]
 
-            with VerticalScroll():
+            with Container(id="context-summary"):
                 for label, tokens in components:
                     if tokens == 0:
                         continue
@@ -112,7 +123,7 @@ class ContextBreakdownScreen(ModalScreen[None]):
                     bar_width = 20
                     filled = int((comp_pct / 100) * bar_width) if comp_pct > 0 else 0
                     empty = bar_width - filled
-                    bar = "\u2588" * filled + "\u2591" * empty
+                    bar = "█" * filled + "░" * empty
                     if comp_pct < 15:
                         color = "green"
                     elif comp_pct < 30:
@@ -132,8 +143,17 @@ class ContextBreakdownScreen(ModalScreen[None]):
                             classes="component-value",
                         )
 
+            with VerticalScroll(id="context-tree-scroll"):
+                yield build_context_tree(self._messages, self._max_tokens)
+
             with Horizontal(classes="button-container"):
                 yield Button("Close", variant="primary", id="close-button")
+
+    def on_mount(self) -> None:
+        try:
+            self.query_one("Tree").focus()
+        except Exception:
+            pass
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         self.dismiss(None)

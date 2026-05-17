@@ -6,6 +6,7 @@ import asyncio
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from textual.app import App
 from textual.css.query import NoMatches
 from textual.widgets import Static
 
@@ -69,6 +70,83 @@ class TestTauiApp:
         assert "ctrl+b" in keys
         assert "ctrl+x" in keys
         assert "ctrl+c" in keys
+        assert app.COMMAND_PALETTE_BINDING == "ctrl+p"
+        assert app.ENABLE_COMMAND_PALETTE is True
+
+    def test_palette_commands_include_taui_actions(self, tmp_path):
+        from taui.config import Config
+
+        class FakeConfig:
+            provider = "copilot"
+            model = "claude-haiku-4.5"
+
+        class FakeLoop:
+            _model = "claude-haiku-4.5"
+
+        class FakeSession:
+            config = FakeConfig()
+            _loop = FakeLoop()
+            model_name = "claude-haiku-4.5"
+
+        app = TauiApp(Config(working_dir=tmp_path))
+        app._session = FakeSession()
+        app._commands = app._build_commands()
+
+        commands = list(app._taui_palette_commands())
+        titles = [command.title for command in commands]
+        assert "Taui: Select model" in titles
+        assert "Taui: Select agent" in titles
+        assert "Taui: Sessions" in titles
+        assert "Taui: Git diff" in titles
+        assert "/model" in titles
+        # Model rows are produced by _ModelPaletteProvider, not here.
+        assert not any(t.startswith("Model:") for t in titles)
+
+    async def test_model_palette_provider_updates_selected_model(self, tmp_path):
+        from taui.config import Config
+        from taui.tui import app as app_module
+
+        class FakeConfig:
+            provider = "copilot"
+            model = "claude-haiku-4.5"
+
+        class FakeLoop:
+            _model = "claude-haiku-4.5"
+            _messages = []
+            agent_id = ""
+
+        class FakeSession:
+            config = FakeConfig()
+            _loop = FakeLoop()
+            model_name = "claude-haiku-4.5"
+            provider_name = "copilot"
+            extensions_mode = False
+            self_edit_mode = False
+            cost_tracker = MagicMock(total_cost_usd=0.0)
+            session_id = "current"
+
+            async def resume_session(self, session_id: str) -> bool:
+                return True
+
+        models = [{"id": "gpt-5.5", "context": 400000, "reasoning": True}]
+        app = TauiApp(Config(working_dir=tmp_path))
+        with patch.object(
+            app_module.Session, "create", AsyncMock(return_value=FakeSession())
+        ):
+            async with app.run_test():
+                app._update_status = MagicMock()
+                with patch(
+                    "taui.llm_provider.models.list_models", return_value=models
+                ):
+                    provider = app_module._ModelPaletteProvider(app.screen)
+                    hits = [hit async for hit in provider._iter_hits("gpt")]
+                assert len(hits) == 1
+                hit = hits[0]
+                assert hit.text == "gpt-5.5"
+                hit.command()
+                assert app._session.config.model == "gpt-5.5"
+                assert app._session._loop._model == "gpt-5.5"
+                app._update_status.assert_called_once()
 
     def test_run_tui_is_callable(self):
         assert callable(run_tui)
@@ -208,10 +286,10 @@ class TestTauiApp:
                 assert app.query_one("#chat-input", ChatInput).can_submit is True
                 release.set()
 
-    async def test_open_session_picker_shows_info2(self, tmp_path):
+    async def test_open_session_picker_shows_sidebar(self, tmp_path):
         from taui.config import Config
         from taui.tui import app as app_module
-        from taui.tui.widgets.info2 import Info2, Info2Mode
+        from taui.tui.widgets.sidebar import Sidebar
 
         class FakeSession:
             session_id = "current"
@@ -238,14 +316,15 @@ class TestTauiApp:
             async with app.run_test():
                 sessions = [{"session_id": "abc123"}]
                 await app._open_session_picker(sessions)
-                info2 = app.query_one("#info2", Info2)
-                assert info2._mode == Info2Mode.SESSIONS
-                assert len(info2._session_items) == 1
+                sidebar = app.query_one(Sidebar)
+                assert sidebar.has_class("visible")
+                assert sidebar._active_tab == "sessions"
+                assert len(sidebar._sessions) == 1
 
     async def test_session_picker_accept_resumes(self, tmp_path):
         from taui.config import Config
         from taui.tui import app as app_module
-        from taui.tui.widgets.info2 import Info2
+        from taui.tui.widgets.sidebar import Sidebar
 
         class FakeSession:
             session_id = "current"
@@ -274,9 +353,10 @@ class TestTauiApp:
                 app._update_status = MagicMock()
                 sessions = [{"session_id": "abc123"}]
                 await app._open_session_picker(sessions)
-                info2 = app.query_one("#info2", Info2)
-                # Accept the selected session
-                info2.accept()
+                # Pick the session from the sidebar by posting the
+                # message it would emit when a user clicks a row.
+                sidebar = app.query_one(Sidebar)
+                sidebar.post_message(Sidebar.SessionSelected("abc123"))
                 # Give the worker time to run
                 await asyncio.sleep(0.1)
                 assert fake.resumed == ["abc123"]
@@ -347,6 +427,56 @@ class TestTauiApp:
         assert app._session.config.model == "gpt-5.5"
         assert app._session._loop._model == "gpt-5.5"
         app._update_status.assert_called_once()
+
+    async def test_replay_footer_uses_recorded_model(self, tmp_path):
+        from taui.config import Config
+        from taui.session_replay import ReplayItem
+        from taui.tui import app as app_module
+        from taui.tui.widgets.reply_footer import ReplyFooter
+
+        class FakeLoop:
+            _messages = []
+            agent_id = "CURRENT"
+
+        class FakeTracker:
+            total_cost_usd = 0.0
+
+        class FakeSession:
+            session_id = "current"
+            provider_name = "copilot"
+            model_name = "current-model"
+            extensions_mode = False
+            self_edit_mode = False
+            cost_tracker = FakeTracker()
+            replay_items = [
+                ReplayItem(kind="user", text="first"),
+                ReplayItem(
+                    kind="assistant",
+                    text="old reply",
+                    agent_id="DEF",
+                    model="old-model",
+                ),
+                ReplayItem(kind="user", text="second"),
+                ReplayItem(
+                    kind="assistant",
+                    text="new reply",
+                    agent_id="DEF",
+                    model="new-model",
+                ),
+            ]
+            _loop = FakeLoop()
+            _ext_registry = None
+
+        app = TauiApp(Config(working_dir=tmp_path))
+        with patch.object(app_module.Session, "create", AsyncMock(return_value=FakeSession())):
+            async with app.run_test():
+                await app._render_replay()
+
+                footers = list(app.query(ReplyFooter))
+                assert [footer._model for footer in footers] == [
+                    "old-model",
+                    "new-model",
+                ]
 
     def test_apply_selected_agent_applies_profile(self, tmp_path):
         from taui.config import Config
@@ -462,7 +592,7 @@ class TestTauiApp:
     async def test_open_session_picker_dismiss_keeps_session(self, tmp_path):
         from taui.config import Config
         from taui.tui import app as app_module
-        from taui.tui.widgets.info2 import Info2, Info2Mode
+        from taui.tui.widgets.sidebar import Sidebar
 
         class FakeSession:
             session_id = "current"
@@ -480,10 +610,10 @@ class TestTauiApp:
         with patch.object(app_module.Session, "create", AsyncMock(return_value=FakeSession())):
             async with app.run_test():
                 await app._open_session_picker([{"session_id": "abc123"}])
-                info2 = app.query_one("#info2", Info2)
+                sidebar = app.query_one(Sidebar)
                 # Dismiss without selecting
-                info2.dismiss()
-                assert info2._mode == Info2Mode.HIDDEN
+                sidebar.action_dismiss()
+                assert not sidebar.has_class("visible")
                 assert app.session_id == "current"
 
     def test_session_picker_instantiates(self):
@@ -945,7 +1075,6 @@ class TestInfoBar:
 
 class TestInfo2:
     async def test_show_context_tree_mounts_tree(self):
-        from textual.app import App, ComposeResult
         from textual.widgets import Tree
 
         from taui.agent.types import Message
@@ -953,7 +1082,7 @@ class TestInfo2:
         from taui.tui.widgets.info2 import Info2, Info2Mode
 
         class Info2Harness(App[None]):
-            def compose(self) -> ComposeResult:
+            def compose(self):
                 yield Info2(id="info2")
 
         app = Info2Harness()
@@ -1040,12 +1169,10 @@ class TestInfo2:
             assert info2.query_one(Tree).has_class("context-tree")
 
     async def test_show_approval_focuses_info2(self):
-        from textual.app import App, ComposeResult
-
         from taui.tui.widgets.info2 import Info2, Info2Item, Info2Mode
 
         class Info2Harness(App[None]):
-            def compose(self) -> ComposeResult:
+            def compose(self):
                 yield Info2(id="info2")
 
         app = Info2Harness()
@@ -1062,12 +1189,10 @@ class TestInfo2:
             assert any("Allow all bash commands (global extension)" in lb for lb in labels)
 
     async def test_approval_can_select_project_tool_scope(self):
-        from textual.app import App, ComposeResult
-
         from taui.tui.widgets.info2 import Info2
 
         class Info2Harness(App[None]):
-            def compose(self) -> ComposeResult:
+            def compose(self):
                 yield Info2(id="info2")
 
         app = Info2Harness()
@@ -1313,6 +1438,44 @@ class TestContextBreakdownScreen:
         ]
         s = ContextBreakdownScreen(msgs)
         assert s._messages == msgs
+
+
+class TestGitDiffScreen:
+    async def test_file_panel_toggles_diff_body(self):
+        from taui.tui.screens.git_diff import _DiffFilePanel
+
+        file = {
+            "path": "hello.py",
+            "old_path": "hello.py",
+            "new_path": "hello.py",
+            "status": "M",
+            "old_text": "print('hello')\n",
+            "new_text": "print('hello')\nprint('taui')\n",
+        }
+        panel = _DiffFilePanel(file, index=0)
+
+        class PanelApp(App[None]):
+            def compose(self):
+                yield panel
+
+        app = PanelApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert panel._body.display is False
+            assert "▸" in panel._row_markup()
+
+            await panel.toggle()
+            await pilot.pause()
+
+            assert panel._body.display is True
+            assert panel._mounted_diff is True
+            assert "▾" in panel._row_markup()
+
+            await panel._header.on_click()
+            await pilot.pause()
+
+            assert panel._body.display is False
+            assert "▸" in panel._row_markup()
 
 
 # ── AgentResponse ────────────────────────────────────────────────────

@@ -761,6 +761,7 @@ class HotkeysCommand:
             "  Shift+Enter      Insert newline",
             "  Ctrl+C           Cancel agent / clear input / exit",
             "  Ctrl+D           Exit",
+            "  Ctrl+P           Open command palette",
             "  Escape           Cancel running agent",
             "  Tab              Complete slash commands / @files",
             "",
