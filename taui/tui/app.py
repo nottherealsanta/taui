@@ -45,6 +45,7 @@ from taui.tui.widgets.chat_input import ChatInput
 from taui.tui.widgets.info2 import Info2
 from taui.tui.widgets.info_bar import InfoBar, _agent_color
 from taui.tui.widgets.reply_footer import ReplyFooter
+from taui.tui.widgets.turn_container import TurnContainer
 
 from taui.tui.widgets.sidebar import Sidebar
 from taui.tui.widgets.spinner import ActivityProgress
@@ -1557,19 +1558,12 @@ class TauiApp(App[None]):
         # Show context banner before the very first message
         await self._maybe_show_context_banner(chat_log)
 
-        display_text = escape(text)
         if images:
             labels = " ".join(f"\\[Image {i + 1}]" for i in range(len(images)))
             image_note = f"  [dim]{labels}[/dim]"
         else:
             image_note = ""
-        await chat_log.mount(
-            Static(
-                f"[bold #e6edf3]{display_text}[/bold #e6edf3]{image_note}",
-                classes="user-message",
-                markup=True,
-            )
-        )
+        await self._begin_turn(text, image_note, chat_log=chat_log)
         # Clear the attachments bar (and pending file/folder lists) after submit
         self.query_one(AttachmentsBar).clear_all()
         self._pending_files.clear()
@@ -1592,13 +1586,7 @@ class TauiApp(App[None]):
             return
         self._save_to_history(text)
         chat_log = self._get_active_chat_log()
-        await chat_log.mount(
-            Static(
-                f"[bold #e6edf3]{escape(text)}[/bold #e6edf3]",
-                classes="user-message",
-                markup=True,
-            )
-        )
+        await self._begin_turn(text, "", chat_log=chat_log)
         self._snap_to_bottom()
         self._send_and_drain(text, tool_names=tool_names)
 
@@ -1909,6 +1897,27 @@ class TauiApp(App[None]):
             if result.text and not st.streamed_text:
                 await self._mount_in_reply(Markdown(result.text), state=st)
 
+            # Per-turn stats for the collapsed header (tokens + tool count)
+            if st.current_turn is not None:
+                try:
+                    usage = result.total_usage
+                    total_tokens = int(
+                        usage.get("input_tokens", 0) + usage.get("output_tokens", 0)
+                    )
+                except Exception:
+                    total_tokens = 0
+                if total_tokens == 0:
+                    # Fallback: ~4 chars/token when the provider doesn't
+                    # report usage (e.g., Copilot).
+                    total_tokens = _estimate_tokens_from_text(text, result.text)
+                try:
+                    tool_count = len(st.current_turn.body.query(ToolStatusWidget))
+                except Exception:
+                    tool_count = 0
+                st.current_turn.set_summary(
+                    total_tokens=total_tokens, tool_count=tool_count
+                )
+
             # Turn summary
             summary_parts: list[str] = []
             for fn in session.hooks._hooks.get("turn_summary", []):
@@ -1993,6 +2002,40 @@ class TauiApp(App[None]):
         except Exception:
             pass
 
+    # ── Per-turn container ────────────────────────────────────────────
+
+    async def _begin_turn(
+        self,
+        user_text: str,
+        image_note: str = "",
+        *,
+        chat_log: VerticalScroll | None = None,
+        state: SessionState | None = None,
+    ) -> TurnContainer:
+        """Create and mount a new turn container, run autocollapse, return it."""
+        st = state or self._sessions.active
+        log = chat_log or (st.chat_log if st is not None else None) or self._get_active_chat_log()
+        turn_id = len(st.turns) if st is not None else 0
+        turn = TurnContainer(user_text, image_note, turn_id=turn_id)
+        if st is not None:
+            st.turns.append(turn)
+            st.current_turn = turn
+        await log.mount(turn)
+        self._autocollapse_old_turns(st)
+        return turn
+
+    def _autocollapse_old_turns(self, state: SessionState | None) -> None:
+        """Keep the current turn and the immediately preceding turn expanded;
+        collapse anything older. A user-stickied turn stays open."""
+        if state is None or not state.turns:
+            return
+        keep = set(state.turns[-2:])
+        for t in state.turns:
+            if t in keep or t.sticky_expanded:
+                t.expand()
+            else:
+                t.collapse()
+
     # ── Per-reply footer ──────────────────────────────────────────────
 
     async def _begin_reply_footer(self, state: SessionState | None = None) -> None:
@@ -2015,13 +2058,28 @@ class TauiApp(App[None]):
             model = session.model_name or ""
         footer = ReplyFooter(agent_id, model)
         st.reply_footer = footer
-        await chat_log.mount(footer)
+        if st.current_turn is not None:
+            await st.current_turn.body.mount(footer)
+        else:
+            await chat_log.mount(footer)
 
     async def _mount_in_reply(
         self, widget, *, state: SessionState | None = None,
     ) -> None:
-        """Mount a widget into the chat log above the current turn's footer."""
+        """Mount a widget into the active turn's body (above its footer).
+
+        Falls back to the chat log when there is no active turn — that
+        path is used for system banners and out-of-turn diagnostics
+        which historically rendered as siblings of user messages."""
         st = state or self._sessions.active
+        if st is not None and st.current_turn is not None:
+            body = st.current_turn.body
+            footer = st.reply_footer
+            if footer is not None and footer.parent is body:
+                await body.mount(widget, before=footer)
+            else:
+                await body.mount(widget)
+            return
         if st is not None:
             chat_log = st.chat_log or self._get_active_chat_log()
             footer = st.reply_footer
@@ -2283,6 +2341,12 @@ class TauiApp(App[None]):
         chat_log = self._get_active_chat_log()
         await chat_log.remove_children()
 
+        st = self._sessions.active
+        if st is not None:
+            st.turns = []
+            st.current_turn = None
+            st.reply_footer = None
+
         # Show context banner at the top of replayed sessions
         self._context_banner_shown = False
         await self._maybe_show_context_banner(chat_log)
@@ -2293,15 +2357,40 @@ class TauiApp(App[None]):
         turn_has_content = False
         turn_footer_agent_id = ""
         turn_footer_model = ""
+        turn_input_tokens = 0
+        turn_output_tokens = 0
+        turn_tool_count = 0
+        turn_user_text = ""
+        turn_assistant_text = ""
 
         async def _flush_turn_footer() -> None:
-            """Cap the just-replayed turn with a footer like a live turn."""
+            """Cap the just-replayed turn with a footer + per-turn summary."""
             nonlocal turn_footer_agent_id, turn_footer_model
+            nonlocal turn_input_tokens, turn_output_tokens, turn_tool_count
+            nonlocal turn_user_text, turn_assistant_text
             agent_id = turn_footer_agent_id
             model = turn_footer_model
-            await chat_log.mount(ReplyFooter(agent_id, model))
+            footer = ReplyFooter(agent_id, model)
+            if st is not None and st.current_turn is not None:
+                await st.current_turn.body.mount(footer)
+                total = turn_input_tokens + turn_output_tokens
+                if total == 0:
+                    total = _estimate_tokens_from_text(
+                        turn_user_text, turn_assistant_text
+                    )
+                st.current_turn.set_summary(
+                    total_tokens=total,
+                    tool_count=turn_tool_count,
+                )
+            else:
+                await chat_log.mount(footer)
             turn_footer_agent_id = ""
             turn_footer_model = ""
+            turn_input_tokens = 0
+            turn_output_tokens = 0
+            turn_tool_count = 0
+            turn_user_text = ""
+            turn_assistant_text = ""
 
         def _remember_turn_footer(item) -> None:
             nonlocal turn_footer_agent_id, turn_footer_model
@@ -2316,25 +2405,21 @@ class TauiApp(App[None]):
                     await _flush_turn_footer()
                     turn_has_content = False
                 tool_section = None
-                await chat_log.mount(
-                    Static(
-                        f"[bold #e6edf3]{escape(item.text)}[/bold #e6edf3]",
-                        classes="user-message",
-                        markup=True,
-                    )
-                )
+                await self._begin_turn(item.text, "", chat_log=chat_log, state=st)
+                turn_user_text = item.text
             elif item.kind == "assistant":
                 tool_section = None
                 resp = AgentResponse()
-                await chat_log.mount(resp)
+                await self._mount_in_reply(resp, state=st)
                 await resp.append_text(item.text)
                 await resp.finalize()
                 turn_has_content = True
+                turn_assistant_text += item.text
                 _remember_turn_footer(item)
             elif item.kind == "tool_call":
                 if tool_section is None:
                     tool_section = Vertical(classes="tool-section")
-                    await chat_log.mount(tool_section)
+                    await self._mount_in_reply(tool_section, state=st)
                 args_str = ", ".join(
                     f"{key}={_trunc(str(value))}"
                     for key, value in (item.arguments or {}).items()
@@ -2345,6 +2430,7 @@ class TauiApp(App[None]):
                 pending_widgets[key] = widget
                 pending_order.append(key)
                 turn_has_content = True
+                turn_tool_count += 1
                 _remember_turn_footer(item)
             elif item.kind == "tool_result":
                 key = item.call_id if item.call_id in pending_widgets else (
@@ -2358,19 +2444,23 @@ class TauiApp(App[None]):
                         await widget.fail(item.text)
                     else:
                         await widget.complete(item.text)
+            elif item.kind == "usage":
+                turn_input_tokens += item.input_tokens
+                turn_output_tokens += item.output_tokens
             elif item.kind == "error":
                 tool_section = None
-                await chat_log.mount(
-                    Static(
-                        f"[red]Error: {escape(item.text)}[/red]",
-                        markup=True,
-                    )
+                err = Static(
+                    f"[red]Error: {escape(item.text)}[/red]",
+                    markup=True,
                 )
+                await self._mount_in_reply(err, state=st)
                 turn_has_content = True
                 _remember_turn_footer(item)
 
         if turn_has_content:
             await _flush_turn_footer()
+        if st is not None:
+            self._autocollapse_old_turns(st)
         # AgentResponse (Markdown) widgets render asynchronously, so the
         # chat-log's virtual size keeps growing for several refresh cycles
         # after the last mount returns. Poll scroll_end on a short worker
@@ -3059,6 +3149,14 @@ def _render_folder_listing(root: Path) -> str:
 
     _walk(root, "")
     return "\n".join(lines)
+
+
+def _estimate_tokens_from_text(*texts: str) -> int:
+    """Rough 1-token-per-4-chars fallback for providers that don't report usage."""
+    total_chars = sum(len(t or "") for t in texts)
+    if total_chars == 0:
+        return 0
+    return max(1, total_chars // 4 + 1)
 
 
 def _trunc(s: str, n: int = 40) -> str:

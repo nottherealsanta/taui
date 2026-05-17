@@ -10,7 +10,7 @@ from taui.agent.types import Message
 from taui.llm_provider.types import ProviderToolCall
 from taui.store.events import Event, EventType
 
-ReplayKind = Literal["user", "assistant", "tool_call", "tool_result", "error"]
+ReplayKind = Literal["user", "assistant", "tool_call", "tool_result", "error", "usage"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,6 +25,8 @@ class ReplayItem:
     call_id: str = ""
     arguments: dict[str, Any] | None = None
     is_error: bool = False
+    input_tokens: int = 0
+    output_tokens: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,6 +135,14 @@ def replay_events(events: list[Event]) -> ReplayTranscript:
                     name=name,
                     call_id=call_id,
                     is_error=is_error,
+                )
+            )
+        elif event.type == EventType.USAGE:
+            items.append(
+                ReplayItem(
+                    kind="usage",
+                    input_tokens=int(data.get("input_tokens", 0) or 0),
+                    output_tokens=int(data.get("output_tokens", 0) or 0),
                 )
             )
         elif event.type == EventType.ERROR:

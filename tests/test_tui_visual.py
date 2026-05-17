@@ -425,6 +425,146 @@ def test_long_markdown_reply(snap_compare, tmp_path, monkeypatch):
     assert snap_compare(app, run_before=setup, terminal_size=(100, 30))
 
 
+# ── Turn folding ───────────────────────────────────────────────────────
+
+
+def test_three_turns_oldest_collapsed(snap_compare, tmp_path, monkeypatch):
+    """With three sequential exchanges, the oldest should auto-collapse."""
+    provider = ScriptedProvider(
+        [
+            Turn(text="First reply.", text_deltas=["First reply."]),
+            Turn(text="Second reply.", text_deltas=["Second reply."]),
+            Turn(text="Third reply.", text_deltas=["Third reply."]),
+        ]
+    )
+    app = use_scripted_provider(monkeypatch, tmp_path, provider)
+
+    async def setup(pilot: Pilot) -> None:
+        await _wait_until_ready(pilot)
+        await _type_and_send(pilot, "first message")
+        await _wait_idle(pilot)
+        await _type_and_send(pilot, "second message")
+        await _wait_idle(pilot)
+        await _type_and_send(pilot, "third message")
+        await _wait_idle(pilot)
+        await _close_cleanly(pilot)
+
+    # Larger terminal so all three turn headers fit on screen and we can
+    # actually verify the collapsed/expanded state visually.
+    assert snap_compare(app, run_before=setup, terminal_size=(140, 50))
+
+
+# ── Session resume ──────────────────────────────────────────────────────
+
+
+def test_resumed_session_uses_turn_widgets(snap_compare, tmp_path, monkeypatch):
+    """After a session is resumed, the chat log should render with the
+    new TurnContainer widget — old turns collapse with a gray summary."""
+    from taui.session_replay import ReplayItem
+
+    provider = scenarios.happy_path("(unused)")
+    app = use_scripted_provider(monkeypatch, tmp_path, provider)
+
+    fake_items = [
+        ReplayItem(kind="user", text="first message"),
+        ReplayItem(kind="assistant", text="First reply.", agent_id="DEF", model="m"),
+        ReplayItem(kind="usage", input_tokens=20, output_tokens=10),
+        ReplayItem(kind="user", text="second message"),
+        ReplayItem(
+            kind="tool_call",
+            name="read",
+            call_id="t1",
+            arguments={"path": "x.py"},
+            agent_id="DEF",
+            model="m",
+        ),
+        ReplayItem(kind="tool_result", call_id="t1", text="ok", name="read"),
+        ReplayItem(kind="assistant", text="Second reply.", agent_id="DEF", model="m"),
+        ReplayItem(kind="usage", input_tokens=40, output_tokens=15),
+        ReplayItem(kind="user", text="third message"),
+        ReplayItem(kind="assistant", text="Third reply.", agent_id="DEF", model="m"),
+        ReplayItem(kind="usage", input_tokens=80, output_tokens=20),
+    ]
+
+    async def setup(pilot: Pilot) -> None:
+        await _wait_until_ready(pilot)
+        # Inject fake replay items at the instance level (avoid mutating the class).
+        pilot.app._session._last_replay_items = fake_items
+        await pilot.app._render_replay()
+        for _ in range(8):
+            await pilot.pause()
+        await _close_cleanly(pilot)
+
+    assert snap_compare(app, run_before=setup, terminal_size=(140, 50))
+
+
+def test_resumed_session_real_store(snap_compare, tmp_path, monkeypatch):
+    """End-to-end: write events (incl. USAGE) to a real store, then resume.
+
+    This exercises the full pipeline: `replay_events` over real persisted
+    events → `Session.replay_items` → `_render_replay` → TurnContainer with
+    summary populated from the actual store.
+    """
+    import asyncio
+
+    from taui.store import Store
+    from taui.store.events import EventType
+    from taui.store.stream import StreamClient
+
+    stream_id = "stream-resume-test"
+    session_id = "sess-resume-test"
+
+    async def _seed_store() -> None:
+        store = Store(tmp_path)
+        await store.connect()
+        try:
+            stream = StreamClient(store)
+            await stream.ensure_stream(stream_id)
+            await store.create_session(session_id, stream_id=stream_id)
+            # Turn 1
+            await store.append(stream_id, EventType.STREAM_START, {"agent_id": "DEF", "model": "m"})
+            await store.append(stream_id, EventType.USER_MESSAGE, {"text": "first message"})
+            await store.append(
+                stream_id, EventType.ASSISTANT_MESSAGE, {"text": "First reply.", "agent_id": "DEF", "model": "m"},
+            )
+            await store.append(
+                stream_id, EventType.USAGE, {"input_tokens": 20, "output_tokens": 10},
+            )
+            # Turn 2
+            await store.append(stream_id, EventType.USER_MESSAGE, {"text": "second message"})
+            await store.append(
+                stream_id, EventType.ASSISTANT_MESSAGE, {"text": "Second reply.", "agent_id": "DEF", "model": "m"},
+            )
+            await store.append(
+                stream_id, EventType.USAGE, {"input_tokens": 40, "output_tokens": 15},
+            )
+            # Turn 3
+            await store.append(stream_id, EventType.USER_MESSAGE, {"text": "third message"})
+            await store.append(
+                stream_id, EventType.ASSISTANT_MESSAGE, {"text": "Third reply.", "agent_id": "DEF", "model": "m"},
+            )
+            await store.append(
+                stream_id, EventType.USAGE, {"input_tokens": 80, "output_tokens": 20},
+            )
+        finally:
+            await store.close()
+
+    asyncio.run(_seed_store())
+
+    provider = scenarios.happy_path("(unused)")
+    app = use_scripted_provider(monkeypatch, tmp_path, provider)
+
+    async def setup(pilot: Pilot) -> None:
+        await _wait_until_ready(pilot)
+        ok = await pilot.app._resume_session(session_id)
+        assert ok, f"resume failed: {getattr(pilot.app._session, 'last_resume_error', '')}"
+        for _ in range(8):
+            await pilot.pause()
+        await _close_cleanly(pilot)
+
+    assert snap_compare(app, run_before=setup, terminal_size=(140, 50))
+
+
 # ── Parallel sessions ──────────────────────────────────────────────────
 
 

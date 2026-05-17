@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from taui.session import Session
     from taui.tui.widgets.agent_response import AgentResponse
     from taui.tui.widgets.reply_footer import ReplyFooter
+    from taui.tui.widgets.turn_container import TurnContainer
 
 
 @dataclass
@@ -46,6 +47,13 @@ class SessionState:
 
     # Per-session chat log widget (created when session is added)
     chat_log: VerticalScroll | None = None
+
+    # Active turn container — assistant content for the current turn is
+    # mounted into its body (instead of directly into chat_log). All past
+    # turn containers (including the active one) are kept here so the
+    # auto-collapse policy can walk them on each new turn.
+    turns: list[TurnContainer] = field(default_factory=list)
+    current_turn: TurnContainer | None = None
 
     # Controllers (created lazily, one per session)
     tool_ctrl: ToolController | None = None
