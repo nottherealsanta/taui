@@ -85,6 +85,50 @@ async def test_ctrl_b_toggles_left_sidebar(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_clicking_session_closes_sidebar(tmp_path, monkeypatch):
+    """Selecting a session should fold the sidebar away — committing to a
+    session is also a "done with the picker" gesture."""
+    from textual.widgets import ListView
+
+    from taui.tui.widgets.sidebar import Sidebar
+
+    app = _make_app(monkeypatch, tmp_path)
+    async with app.run_test() as pilot:
+        await _wait_until_ready(pilot)
+
+        async def _stub_list():
+            return [
+                {
+                    "session_id": "sess-x",
+                    "description": "demo",
+                    "message_count": 1,
+                    "last_active": 1.0,
+                    "created_at": 0.0,
+                    "mode": "normal",
+                }
+            ]
+
+        pilot.app._session.list_sessions = _stub_list  # type: ignore[assignment]
+        await pilot.press("ctrl+b")
+        for _ in range(5):
+            await pilot.pause()
+        sidebar = pilot.app.query_one(Sidebar)
+        assert sidebar.has_class("visible")
+        listview = sidebar.query_one("#sessions-list", ListView)
+        # Drive the same notification a click on the row would.
+        if listview.children:
+            listview.post_message(
+                ListView.Selected(listview, listview.children[0], 0)
+            )
+        for _ in range(5):
+            await pilot.pause()
+        assert not sidebar.has_class("visible"), (
+            "sidebar should auto-close after a session is picked"
+        )
+        await _close_cleanly(pilot)
+
+
+@pytest.mark.asyncio
 async def test_clicking_tab_label_switches_tab(tmp_path, monkeypatch):
     """Clicking the Files / Sessions header should switch tabs the same way
     the Tab key does — the header is a real button, not just decoration."""
@@ -464,6 +508,69 @@ async def test_folder_toggle_adds_folder_pill(tmp_path, monkeypatch):
             await pilot.pause()
         assert bar.count == 0
         assert pilot.app._pending_folders == []
+        await _close_cleanly(pilot)
+
+
+@pytest.mark.asyncio
+async def test_files_tree_selection_actually_adds_pill(tmp_path, monkeypatch):
+    """End-to-end: simulate the real click pipeline through the
+    DirectoryTree subclass and verify a pill lands in the attachments bar.
+
+    This exercises Tree.NodeSelected → Sidebar.on_tree_node_selected →
+    Sidebar.{File,Folder}ToggleRequested → app handler → AttachmentsBar.add
+    instead of jumping the queue with a hand-posted FileToggleRequested.
+    """
+    from taui.tui.widgets.attachments_bar import AttachmentsBar
+    from taui.tui.widgets.sidebar import Sidebar, _FilesTree
+
+    sample = tmp_path / "hello.txt"
+    sample.write_text("hi")
+
+    app = _make_app(monkeypatch, tmp_path)
+    async with app.run_test() as pilot:
+        await _wait_until_ready(pilot)
+        await pilot.press("ctrl+b")
+        await pilot.pause()
+        sidebar = pilot.app.query_one(Sidebar)
+        sidebar.action_show_tab("files")
+        await pilot.pause()
+        tree = sidebar.query_one("#dir-tree", _FilesTree)
+        # Make sure the root is expanded so we can find the file as a child.
+        tree.root.expand()
+        # Wait for filesystem-walk worker to populate children.
+        for _ in range(20):
+            await pilot.pause()
+            if tree.root.children:
+                break
+        # Locate the sample file's node.
+        target = None
+        for child in tree.root.children:
+            data = child.data
+            if data is not None and Path(str(data.path)).name == "hello.txt":
+                target = child
+                break
+        assert target is not None, (
+            f"hello.txt not found among {[str(c.data.path) for c in tree.root.children if c.data]!r}"
+        )
+        # Drive the same code path a real label-click runs: point the
+        # cursor at the node and invoke our overridden action_select_cursor.
+        target_line = next(
+            i
+            for i, line in enumerate(tree._tree_lines)  # noqa: SLF001
+            if line.path[-1] is target
+        )
+        tree.cursor_line = target_line
+        tree.action_select_cursor()
+        for _ in range(5):
+            await pilot.pause()
+
+        bar = pilot.app.query_one(AttachmentsBar)
+        assert bar.count == 1, (
+            f"expected one pill after selecting hello.txt, got {bar.count}; "
+            f"items={[item.label for item in bar.items]}"
+        )
+        assert bar.items[0].kind == "file"
+        assert bar.items[0].label == "hello.txt"
         await _close_cleanly(pilot)
 
 

@@ -11,8 +11,6 @@ from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.message import Message
 from textual.widgets import DirectoryTree, ListItem, ListView, Static
-from textual.widgets._directory_tree import DirEntry
-from textual.widgets._tree import TreeNode
 
 
 def _time_ago(ts: float) -> str:
@@ -59,15 +57,32 @@ def _build_session_row_text(session: dict, *, is_current: bool) -> Text:
     return text
 
 
+class FileTreeSelected(Message):
+    """Top-level message posted by the files tree when a label is clicked.
+
+    Defined at module scope (not nested) so Textual's name-based handler
+    dispatch (`on_file_tree_selected`) works cleanly when the message
+    bubbles up to the parent Sidebar.
+    """
+
+    def __init__(self, path: Path) -> None:
+        super().__init__()
+        self.path = path
+
+
 class _FilesTree(DirectoryTree):
     """Folder/file tree where the chevron toggles and the label selects.
 
     Why a subclass: the stock DirectoryTree (1) decorates folders/files with
     emoji icons we want to replace with chevrons, and (2) auto-expands a
     folder when its label is clicked. Here, the chevron alone toggles
-    open/close; clicking a folder/file name posts NodeSelected (with
-    auto-expand off), which the sidebar then turns into an "add to context"
-    message.
+    open/close; clicking a folder/file name fires FileTreeSelected so the
+    parent Sidebar can add it to context.
+
+    We override ``action_select_cursor`` rather than rely on Tree's built-in
+    ``NodeSelected`` bubbling because that message is a parametrized
+    Generic[EventTreeDataType], which Textual's name-based handler dispatch
+    on a non-Tree parent doesn't pick up reliably.
     """
 
     ICON_NODE = "▶ "
@@ -75,6 +90,19 @@ class _FilesTree(DirectoryTree):
     ICON_FILE = "  "  # two spaces so file names align under the chevron
 
     auto_expand = False
+
+    def action_select_cursor(self) -> None:  # type: ignore[override]
+        if self.cursor_line < 0:
+            return
+        try:
+            line = self._tree_lines[self.cursor_line]
+        except IndexError:
+            return
+        node = line.path[-1]
+        data = node.data
+        if data is None:
+            return
+        self.post_message(FileTreeSelected(Path(str(data.path))))
 
 
 class _TabLabel(Static):
@@ -333,23 +361,14 @@ class Sidebar(Vertical):
         sid = getattr(item, "session_id", None)
         if sid:
             self.post_message(self.SessionSelected(sid))
+            # Picking a session is a "commit and leave" gesture — fold the
+            # sidebar away so the user lands directly in the resumed session.
+            self.action_dismiss()
 
-    def on_tree_node_selected(
-        self, event: DirectoryTree.NodeSelected
-    ) -> None:
-        """Forward tree picks up to the app as toggle requests.
-
-        Files emit FileToggleRequested; folders emit FolderToggleRequested.
-        The chevron click toggles open/close inside the tree directly — it
-        doesn't reach this handler — so a NodeSelected here always means
-        the user clicked the *label*.
-        """
+    def on_file_tree_selected(self, event: FileTreeSelected) -> None:
+        """Forward the tree's label-click into the right toggle message."""
         event.stop()
-        node: TreeNode[DirEntry] = event.node
-        data = node.data
-        if data is None:
-            return
-        path = Path(str(data.path))
+        path = event.path
         if path.is_dir():
             self.post_message(self.FolderToggleRequested(path))
         else:
