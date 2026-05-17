@@ -70,7 +70,7 @@ class TauiApp(App[None]):
     }
     #chat-log {
         height: 1fr;
-        padding: 1 2;
+        padding: 1 0 1 2;
         scrollbar-size: 0 0;
     }
     #activity-progress {
@@ -209,6 +209,10 @@ class TauiApp(App[None]):
 
         # Per-session edit tracking for the right sidebar.
         self._edited_files: dict[str, dict[str, int]] = {}
+
+        # Files attached via the left sidebar's Files tab. Their contents are
+        # inlined into the prompt on submit, then this list is cleared.
+        self._pending_files: list[Path] = []
 
     @property
     def session_id(self) -> str | None:
@@ -394,6 +398,45 @@ class TauiApp(App[None]):
         self.query_one("#chat-input", ChatInput).load_history(self._history)
 
     # ── @file expansion ───────────────────────────────────────────────
+
+    def _expand_pending_files(
+        self, text: str, images: list[str] | None
+    ) -> tuple[str, list[str] | None]:
+        """Fold sidebar-attached files into the outgoing prompt.
+
+        Text files are appended as fenced code blocks so the model sees
+        them as ``@path`` references would have produced. Image files
+        become image attachments (the same data-URL channel the user uses
+        for pasted images)."""
+        from taui.tui.widgets.chat_input import (
+            _IMAGE_EXTENSIONS,
+            _encode_image_file,
+        )
+
+        if not self._pending_files:
+            return text, images
+
+        text_blocks: list[str] = []
+        new_images: list[str] = list(images or [])
+        for path in self._pending_files:
+            try:
+                if path.suffix.lower() in _IMAGE_EXTENSIONS:
+                    data_url = _encode_image_file(path)
+                    if data_url:
+                        new_images.append(data_url)
+                    continue
+                content = path.read_text()
+            except (OSError, UnicodeDecodeError):
+                continue
+            try:
+                display = path.relative_to(self._config.working_dir)
+            except ValueError:
+                display = path
+            text_blocks.append(f"\n```{display}\n{content}\n```\n")
+
+        if text_blocks:
+            text = (text.rstrip() + "\n" + "".join(text_blocks)).strip()
+        return text, (new_images or None)
 
     def _expand_file_refs(self, text: str) -> tuple[str, list[str] | None]:
         """Expand @path references to file contents or image attachments.
@@ -846,6 +889,8 @@ class TauiApp(App[None]):
         text, extra_images = self._expand_file_refs(text)
         if extra_images:
             images = (images or []) + extra_images
+        # Fold sidebar-attached files into the prompt / image list.
+        text, images = self._expand_pending_files(text, images)
 
         if self._is_processing:
             if event.queue:
@@ -876,8 +921,9 @@ class TauiApp(App[None]):
                 markup=True,
             )
         )
-        # Clear the attachments bar after submit
+        # Clear the attachments bar (and pending file list) after submit
         self.query_one(AttachmentsBar).clear_all()
+        self._pending_files.clear()
         # Submitting is an explicit intent to see the result — re-arm anchor.
         self._snap_to_bottom()
         self._send_and_drain(text, images)
@@ -922,16 +968,57 @@ class TauiApp(App[None]):
         self,
         event: AttachmentsBar.Cleared,
     ) -> None:
-        """Remove the corresponding pending image when a pill is dismissed."""
+        """Sync the chat-input image buffer / app file buffer with the bar."""
+        if event.kind == "file":
+            try:
+                self._pending_files.remove(Path(event.data))
+            except ValueError:
+                pass
+            return
+        # Default: image kind. Older code keyed by index, but we now have the
+        # data URL, so we can find the exact entry even after re-ordering.
         chat_input = self.query_one(ChatInput)
-        idx = event.index
-        if 0 <= idx < len(chat_input._pending_images):
-            chat_input._pending_images.pop(idx)
+        if event.data and event.data in chat_input._pending_images:
+            chat_input._pending_images.remove(event.data)
+        elif 0 <= event.index < len(chat_input._pending_images):
+            chat_input._pending_images.pop(event.index)
+
+    @on(Sidebar.FileToggleRequested)
+    async def handle_sidebar_file_toggle(
+        self,
+        event: Sidebar.FileToggleRequested,
+    ) -> None:
+        """Toggle a file picked in the sidebar's Files tab as an attachment.
+
+        Clicking a fresh file adds a pill; clicking the same file again
+        removes that pill (so re-clicking is a deselect, like a checkbox).
+        """
+        path = event.path.resolve()
+        bar = self.query_one(AttachmentsBar)
+        path_str = str(path)
+        existing = bar.find_index(kind="file", data=path_str)
+        if existing >= 0:
+            removed = bar.remove(existing)
+            if removed is not None:
+                try:
+                    self._pending_files.remove(path)
+                except ValueError:
+                    pass
+            return
+        if not path.is_file():
+            return
+        try:
+            display = path.relative_to(self._config.working_dir)
+        except ValueError:
+            display = path
+        bar.add(str(display), path_str, kind="file")
+        self._pending_files.append(path)
 
     @on(ChatInput.InputCleared)
     async def handle_input_cleared(self, event: ChatInput.InputCleared) -> None:
         """Clear attachments bar when user double-presses Escape."""
         self.query_one(AttachmentsBar).clear_all()
+        self._pending_files.clear()
 
     @on(ChatInput.CancelRequested)
     async def handle_cancel_requested(

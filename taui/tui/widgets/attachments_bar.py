@@ -1,4 +1,4 @@
-"""Attachments bar — displays pills for pending images and other attachments."""
+"""Attachments bar — displays pills for pending images, files, and other context."""
 
 from __future__ import annotations
 
@@ -48,8 +48,9 @@ class AttachmentPill(Static):
 class AttachmentsBar(Widget):
     """Bar of attachment pills shown above the chat input.
 
-    Hidden when empty. Designed to be extensible for future attachment
-    types (long pasted text, files, etc).
+    Hidden when empty. Tracks both image attachments (data: URLs) and file
+    attachments (absolute paths) — the `kind` field on each Attachment
+    tells the app which underlying buffer to sync with on removal.
     """
 
     DEFAULT_CSS = """
@@ -70,43 +71,64 @@ class AttachmentsBar(Widget):
     """
 
     class Cleared(Message):
-        """Posted when an attachment is removed."""
+        """Posted when an attachment is removed.
 
-        def __init__(self, index: int) -> None:
+        Carries the bar index, attachment `kind`, and the underlying `data`
+        of the removed attachment so the app can update the matching backing
+        list (images / files) by value, not by index — indices in the bar
+        shift after removal, but the underlying value is unique.
+        """
+
+        def __init__(
+            self, index: int, *, kind: str = "image", data: str = ""
+        ) -> None:
             super().__init__()
             self.index = index
+            self.kind = kind
+            self.data = data
 
     @dataclass(frozen=True, slots=True)
     class Attachment:
         label: str
-        data: str  # data URL or content reference
+        data: str  # data URL for images, absolute path for files
+        kind: str = "image"
 
     _items: list[Attachment] = []
 
     def compose(self) -> ComposeResult:
         yield Horizontal()
 
-    def add(self, label: str, data: str) -> int:
+    def add(self, label: str, data: str, *, kind: str = "image") -> int:
         """Add an attachment. Returns its index."""
-        self._items = [*self._items, self.Attachment(label=label, data=data)]
+        self._items = [
+            *self._items,
+            self.Attachment(label=label, data=data, kind=kind),
+        ]
         self._rebuild()
         return len(self._items) - 1
 
-    def remove(self, index: int) -> str | None:
-        """Remove attachment at *index*. Returns its data, or None."""
+    def remove(self, index: int) -> Attachment | None:
+        """Remove attachment at *index*. Returns the removed item, or None."""
         if 0 <= index < len(self._items):
             item = self._items[index]
             self._items = [a for i, a in enumerate(self._items) if i != index]
             self._rebuild()
-            return item.data
+            return item
         return None
 
-    def clear_all(self) -> list[str]:
-        """Remove all attachments, return their data values."""
-        data = [a.data for a in self._items]
+    def find_index(self, *, kind: str, data: str) -> int:
+        """Return the index of the first attachment matching kind+data, or -1."""
+        for i, item in enumerate(self._items):
+            if item.kind == kind and item.data == data:
+                return i
+        return -1
+
+    def clear_all(self) -> list[Attachment]:
+        """Remove all attachments, return the removed items."""
+        removed = list(self._items)
         self._items = []
         self._rebuild()
-        return data
+        return removed
 
     @property
     def items(self) -> list[Attachment]:
@@ -115,6 +137,11 @@ class AttachmentsBar(Widget):
     @property
     def count(self) -> int:
         return len(self._items)
+
+    def _pill_label(self, item: Attachment) -> str:
+        if item.kind == "file":
+            return f"📄 {item.label}"
+        return item.label
 
     def _rebuild(self) -> None:
         """Rebuild pills from current items."""
@@ -126,13 +153,15 @@ class AttachmentsBar(Widget):
             container = self.query_one(Horizontal)
             container.remove_children()
             for i, item in enumerate(self._items):
-                container.mount(AttachmentPill(item.label, i))
+                container.mount(AttachmentPill(self._pill_label(item), i))
         except Exception:
             pass
 
     def on_attachment_pill_removed(self, event: AttachmentPill.Removed) -> None:
         """Handle pill X click."""
         event.stop()
-        data = self.remove(event.index)
-        if data is not None:
-            self.post_message(self.Cleared(event.index))
+        removed = self.remove(event.index)
+        if removed is not None:
+            self.post_message(
+                self.Cleared(event.index, kind=removed.kind, data=removed.data)
+            )

@@ -33,26 +33,38 @@ def _fallback_name(session: dict) -> str:
     return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
 
 
+def _build_session_row_text(session: dict, *, is_current: bool) -> Text:
+    """Render a session row's two-line label.
+
+    Line 1: ● / ○ indicator + the session description (the "name").
+    Line 2: the session id (dim gray) followed by msg count and time-ago.
+    """
+    text = Text()
+    indicator = "●" if is_current else "○"
+    indicator_style = "#3fb950" if is_current else "#6e7681"
+    text.append(f"{indicator} ", style=indicator_style)
+    sid = str(session.get("session_id", ""))
+    desc = str(session.get("description") or _fallback_name(session))
+    if len(desc) > 26:
+        desc = desc[:25] + "…"
+    msgs = int(session.get("message_count", 0) or 0)
+    ago = _time_ago(float(session.get("last_active", 0) or 0))
+    name_style = "bold #e6edf3" if is_current else "#c9d1d9"
+    text.append(desc, style=name_style)
+    text.append("\n   ")
+    text.append(sid, style="#6e7681")
+    text.append(f"   {msgs}m · {ago}", style="dim #6e7681")
+    return text
+
+
 class _SessionRow(ListItem):
-    """One row in the sessions list."""
+    """One row in the sessions list — see _build_session_row_text for layout."""
 
     def __init__(self, session: dict, *, is_current: bool) -> None:
-        text = Text()
-        indicator = "●" if is_current else "○"
-        indicator_style = "#3fb950" if is_current else "#6e7681"
-        text.append(f"{indicator} ", style=indicator_style)
-        sid = str(session.get("session_id", ""))
-        desc = str(session.get("description") or _fallback_name(session))
-        if len(desc) > 24:
-            desc = desc[:23] + "…"
-        msgs = int(session.get("message_count", 0) or 0)
-        ago = _time_ago(float(session.get("last_active", 0) or 0))
-        text.append(sid, style="bold #58a6ff" if is_current else "bold #c9d1d9")
-        text.append(f"\n   {desc}\n   ", style="#8b949e")
-        text.append(f"{msgs}m · {ago}", style="dim #6e7681")
-        super().__init__(Static(text, markup=False))
-        self.session_id = sid
-        self.styles.height = 3
+        self.label_text = _build_session_row_text(session, is_current=is_current)
+        super().__init__(Static(self.label_text, markup=False))
+        self.session_id = str(session.get("session_id", ""))
+        self.styles.height = 2
 
 
 class Sidebar(Vertical):
@@ -128,6 +140,18 @@ class Sidebar(Vertical):
         def __init__(self, session_id: str) -> None:
             super().__init__()
             self.session_id = session_id
+
+    class FileToggleRequested(Message):
+        """Posted when the user picks a file in the directory tree.
+
+        Listeners should toggle the file's presence in the attachments
+        bar — clicking a fresh file adds it, clicking an already-attached
+        file removes it.
+        """
+
+        def __init__(self, path: Path) -> None:
+            super().__init__()
+            self.path = path
 
     def __init__(self, working_dir: Path | None = None) -> None:
         super().__init__()
@@ -236,3 +260,11 @@ class Sidebar(Vertical):
         sid = getattr(item, "session_id", None)
         if sid:
             self.post_message(self.SessionSelected(sid))
+
+    def on_directory_tree_file_selected(
+        self, event: DirectoryTree.FileSelected
+    ) -> None:
+        """Forward DirectoryTree picks up to the app as toggle requests."""
+        event.stop()
+        path = Path(str(event.path))
+        self.post_message(self.FileToggleRequested(path))

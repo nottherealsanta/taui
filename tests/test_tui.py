@@ -712,8 +712,10 @@ class TestAttachmentsBar:
         bar._items = []
         bar.add("Image 1", "data:a")
         bar.add("Image 2", "data:b")
-        data = bar.remove(0)
-        assert data == "data:a"
+        removed = bar.remove(0)
+        assert removed is not None
+        assert removed.data == "data:a"
+        assert removed.kind == "image"
         assert bar.count == 1
         assert bar.items[0].label == "Image 2"
 
@@ -723,9 +725,19 @@ class TestAttachmentsBar:
         bar._items = []
         bar.add("Image 1", "data:a")
         bar.add("Image 2", "data:b")
-        data = bar.clear_all()
-        assert data == ["data:a", "data:b"]
+        removed = bar.clear_all()
+        assert [a.data for a in removed] == ["data:a", "data:b"]
         assert bar.count == 0
+
+    def test_file_kind_and_lookup(self):
+        from taui.tui.widgets.attachments_bar import AttachmentsBar
+        bar = AttachmentsBar()
+        bar._items = []
+        bar.add("foo.py", "/tmp/foo.py", kind="file")
+        bar.add("Image 1", "data:img")
+        assert bar.find_index(kind="file", data="/tmp/foo.py") == 0
+        assert bar.find_index(kind="image", data="data:img") == 1
+        assert bar.find_index(kind="file", data="data:img") == -1
 
     def test_initial_state(self):
         ci = ChatInput()

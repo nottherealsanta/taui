@@ -17,6 +17,7 @@ its public key bindings and assert on real DOM/widget state. They cover:
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 import pytest
 
@@ -321,6 +322,129 @@ def test_info_bar_no_longer_has_session_badge():
 
 
 # ── Tool status: unified gray palette ───────────────────────────────────
+
+
+# ── Files tab: click-to-attach ─────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_files_tab_click_adds_pill(tmp_path, monkeypatch):
+    """A FileToggleRequested message should add a file pill and re-firing
+    it should remove the pill (toggle behavior)."""
+    from taui.tui.widgets.attachments_bar import AttachmentsBar
+    from taui.tui.widgets.sidebar import Sidebar
+
+    sample = tmp_path / "hello.txt"
+    sample.write_text("hi there")
+
+    app = _make_app(monkeypatch, tmp_path)
+    async with app.run_test() as pilot:
+        await _wait_until_ready(pilot)
+        sidebar = pilot.app.query_one(Sidebar)
+        sidebar.post_message(Sidebar.FileToggleRequested(sample))
+        await pilot.pause()
+        await pilot.pause()
+
+        bar = pilot.app.query_one(AttachmentsBar)
+        assert bar.count == 1, "first toggle did not add a pill"
+        assert bar.items[0].kind == "file"
+        assert bar.items[0].data == str(sample.resolve())
+        assert Path(str(sample.resolve())) in pilot.app._pending_files
+
+        # Second toggle removes
+        sidebar.post_message(Sidebar.FileToggleRequested(sample))
+        await pilot.pause()
+        await pilot.pause()
+        assert bar.count == 0, "second toggle did not remove the pill"
+        assert pilot.app._pending_files == []
+        await _close_cleanly(pilot)
+
+
+@pytest.mark.asyncio
+async def test_pill_x_removes_file_attachment(tmp_path, monkeypatch):
+    """Removing a file pill via X should also drop it from _pending_files."""
+    from taui.tui.widgets.attachments_bar import AttachmentsBar
+    from taui.tui.widgets.sidebar import Sidebar
+
+    sample = tmp_path / "doc.md"
+    sample.write_text("# doc")
+
+    app = _make_app(monkeypatch, tmp_path)
+    async with app.run_test() as pilot:
+        await _wait_until_ready(pilot)
+        sidebar = pilot.app.query_one(Sidebar)
+        sidebar.post_message(Sidebar.FileToggleRequested(sample))
+        await pilot.pause()
+        await pilot.pause()
+
+        bar = pilot.app.query_one(AttachmentsBar)
+        assert bar.count == 1
+        # Simulate the user clicking the pill's X.
+        removed = bar.remove(0)
+        assert removed is not None
+        bar.post_message(
+            AttachmentsBar.Cleared(0, kind=removed.kind, data=removed.data)
+        )
+        await pilot.pause()
+        await pilot.pause()
+        assert pilot.app._pending_files == [], (
+            "pill-clear did not sync _pending_files"
+        )
+        await _close_cleanly(pilot)
+
+
+def test_expand_pending_files_inlines_text_content(tmp_path, monkeypatch):
+    """Text files in _pending_files should be folded into the prompt as
+    fenced code blocks; image files become image data URLs."""
+    sample = tmp_path / "snippet.py"
+    sample.write_text("print('hi')\n")
+    app = _make_app(monkeypatch, tmp_path)
+    app._pending_files = [sample]
+    text, images = app._expand_pending_files("explain this", None)
+    assert "explain this" in text
+    assert "snippet.py" in text
+    assert "print('hi')" in text
+    assert images is None
+
+
+# ── Session row: name primary, id in gray ──────────────────────────────
+
+
+def test_session_row_renders_name_then_id(tmp_path):
+    """The session description should be the primary row label; the id
+    should appear as dim gray context, not the headline."""
+    from rich.text import Text
+
+    from taui.tui.widgets.sidebar import _SessionRow
+
+    row = _SessionRow(
+        {
+            "session_id": "abc123def456",
+            "description": "Refactor login flow",
+            "message_count": 7,
+            "last_active": 0.0,
+            "created_at": 0.0,
+        },
+        is_current=True,
+    )
+    rendered = row.label_text
+    plain = rendered.plain
+    # Name appears before the id (and id is below it in the second line).
+    name_pos = plain.find("Refactor login flow")
+    id_pos = plain.find("abc123def456")
+    assert name_pos != -1 and id_pos != -1
+    assert name_pos < id_pos, (
+        f"name should come before id, got name@{name_pos} id@{id_pos}"
+    )
+
+    # The id span should be styled with a gray color (#6e7681 in our palette).
+    spans_at_id = [
+        sp for sp in rendered.spans if sp.start <= id_pos < sp.end
+    ]
+    styles = " ".join(str(sp.style) for sp in spans_at_id)
+    assert "#6e7681" in styles, (
+        f"id span should be dim gray, styles seen: {styles!r}"
+    )
 
 
 def test_tool_status_uses_unified_gray_palette():
