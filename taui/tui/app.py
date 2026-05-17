@@ -28,6 +28,7 @@ from taui.self_edit.store import AgentProfile, SelfEditStore
 from taui.session import Session
 from taui.tui.approval_controller import ApprovalController
 from taui.tui.messages import (
+    AgentConfigChanged,
     CompactionOccurred,
     StreamReasoningDelta,
     StreamTextDelta,
@@ -1258,6 +1259,16 @@ class TauiApp(App[None]):
         loop._on_questions_batch = state.approval_ctrl.on_questions_batch
         loop._on_compact = lambda r, b, a: self._on_compact_sync(r, b, a, session_id=sid)
 
+        # Notify the TUI when the agent's prompt/tools/policy change so the
+        # rendered context banner can be re-rendered. Idempotent per session —
+        # the session keeps a callback list, and re-wiring after a loop swap
+        # would otherwise stack duplicates.
+        if not state.config_listener_wired:
+            session.add_config_change_listener(
+                lambda: self.post_message(AgentConfigChanged(session_id=sid))
+            )
+            state.config_listener_wired = True
+
         # Wire sub-agent callbacks so child tool calls are visible in the TUI
         try:
             from taui.tools.builtins.sub_agent import SubAgentTool
@@ -1747,51 +1758,84 @@ class TauiApp(App[None]):
 
     # ── Context banner ─────────────────────────────────────────────────
 
+    def _build_context_banner_markup(self) -> str:
+        """Render the system prompt + tool list block for the active session.
+
+        Tools are shown as a 3-column table: active tools (in the loop's
+        effective registry) are light gray; tools that are available but not
+        active for the current variant are dark gray.
+        """
+        if self._session is None:
+            return ""
+
+        parts: list[str] = []
+
+        sp = getattr(self._session, "_system_prompt", "") or ""
+        if self._session.self_edit_mode:
+            sp = getattr(self._session, "_self_edit_prompt", "") or sp
+        elif getattr(self._session, "extensions_mode", False):
+            sp = getattr(self._session, "_extensions_prompt", "") or sp
+        if sp:
+            lines = sp.splitlines()
+            preview = lines[:3]
+            if len(lines) > 3:
+                preview.append("...")
+            safe_sp = "\n".join(preview).replace("[", "\\[")
+            parts.append(f"[dim bold]System prompt:[/dim bold]\n[dim]{safe_sp}[/dim]")
+
+        available: list[str] = []
+        if hasattr(self._session, "_registry"):
+            available = list(getattr(self._session._registry, "names", []) or [])
+
+        active: set[str] = set()
+        try:
+            active = set(self._session._loop._executor.registry.names)
+        except AttributeError:
+            active = set(available)
+
+        if available:
+            if parts:
+                parts.append("")
+            parts.append("[dim bold]Tools:[/dim bold]")
+            parts.append(_render_tools_table(available, active, columns=3))
+
+        return "\n".join(parts)
+
     async def _maybe_show_context_banner(self, chat_log) -> None:
         """Show system prompt + tool list once, before the first user message."""
         if self._context_banner_shown or self._session is None:
             return
         self._context_banner_shown = True
 
-        parts: list[str] = []
-
-        # System prompt: first 3 lines, then ...
-        sp = getattr(self._session, "_system_prompt", "") or ""
-        if sp:
-            lines = sp.splitlines()
-            preview = lines[:3]
-            if len(lines) > 3:
-                preview.append("...")
-            sp_text = "\n".join(preview)
-            # Aggressively escape all square brackets — Textual's `escape()`
-            # only handles a subset of bracket patterns and the system prompt
-            # can contain paths like ``(taui/tui/app.py)?`` that confuse the
-            # markup parser.
-            safe_sp = sp_text.replace("[", "\\[")
-            parts.append(f"[dim bold]System prompt:[/dim bold]\n[dim]{safe_sp}[/dim]")
-
-        # blank line between sections
-        if parts:
-            parts.append("")
-
-        # Tool list: brief comma-separated
-        tool_names: list[str] = []
-        if hasattr(self._session, "_registry"):
-            tool_names = list(getattr(self._session._registry, "names", []) or [])
-        if tool_names:
-            safe_tools = ', '.join(tool_names).replace("[", "\\[")
-            parts.append(f"[dim bold]Tools:[/dim bold] [dim]{safe_tools}[/dim]")
-
-        # Model
-        model = getattr(self._session, "model_name", "") or ""
-        if model:
-            parts.append(f"[dim bold]Model:[/dim bold] [dim]{model}[/dim]")
-
-        if parts:
-            banner = "\n".join(parts)
+        banner = self._build_context_banner_markup()
+        if banner:
             await chat_log.mount(
                 Static(banner, classes="context-banner", markup=True)
             )
+
+    def _refresh_context_banner(self, session_id: str = "") -> None:
+        """Re-render the banner in place when agent config changes."""
+        state = self._sessions.get(session_id) if session_id else self._sessions.active
+        if state is None or state.session is None:
+            return
+        # Only the active session's banner is mounted in the visible chat log;
+        # for inactive sessions, clear the shown flag so it re-renders fresh
+        # the next time we switch to it.
+        if state is not self._sessions.active:
+            state.context_banner_shown = False
+            return
+        chat_log = self._get_active_chat_log()
+        try:
+            banner_widget = chat_log.query_one(".context-banner", Static)
+        except NoMatches:
+            return
+        markup = self._build_context_banner_markup()
+        if markup:
+            banner_widget.update(markup)
+
+    @on(AgentConfigChanged)
+    def handle_agent_config_changed(self, event: AgentConfigChanged) -> None:
+        self._refresh_context_banner(event.session_id)
 
     # ── Send message and drain queue ──────────────────────────────────
 
@@ -3063,6 +3107,32 @@ def _render_folder_listing(root: Path) -> str:
 
 def _trunc(s: str, n: int = 40) -> str:
     return s[: n - 3] + "..." if len(s) > n else s
+
+
+# Light gray = active (in the loop's effective registry); dark gray = available
+# but inactive (filtered out by the current variant's tool selection).
+_TOOL_ACTIVE_COLOR = "#bfbfbf"
+_TOOL_INACTIVE_COLOR = "#5a5a5a"
+
+
+def _render_tools_table(
+    available: list[str], active: set[str], *, columns: int = 3,
+) -> str:
+    """Render tool names as a fixed-column table with active/inactive coloring."""
+    if not available:
+        return ""
+    names = sorted(set(available))
+    col_width = max((len(n) for n in names), default=0) + 2
+    rows: list[str] = []
+    for i in range(0, len(names), columns):
+        chunk = names[i:i + columns]
+        cells = []
+        for j, name in enumerate(chunk):
+            color = _TOOL_ACTIVE_COLOR if name in active else _TOOL_INACTIVE_COLOR
+            padded = name if j == len(chunk) - 1 else name.ljust(col_width)
+            cells.append(f"[{color}]{padded}[/{color}]")
+        rows.append("".join(cells))
+    return "\n".join(rows)
 
 
 def _model_completion_matches(prefix: str, provider: str, model_id: str) -> bool:

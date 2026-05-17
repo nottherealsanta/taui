@@ -70,3 +70,16 @@ class CompactionOccurred(Message):
         self.before_tokens = before_tokens
         self.after_tokens = after_tokens
         self.session_id = session_id
+
+
+class AgentConfigChanged(Message):
+    """Posted when the session's system prompt, tools, or policy change.
+
+    Triggers a refresh of the in-chat context banner so the rendered system
+    prompt and tool list stay in sync with hot-reloaded extensions, variant
+    switches, and self-edit toggles.
+    """
+
+    def __init__(self, *, session_id: str = "") -> None:
+        super().__init__()
+        self.session_id = session_id

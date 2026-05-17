@@ -44,6 +44,10 @@ class SessionState:
     # Whether the context banner has been shown for this session
     context_banner_shown: bool = False
 
+    # Whether the config-change listener has been attached to the session
+    # (kept per-state so loop swaps don't stack duplicate listeners).
+    config_listener_wired: bool = False
+
     # Per-session chat log widget (created when session is added)
     chat_log: VerticalScroll | None = None
 

@@ -116,6 +116,23 @@ class Session:
         self._builtin_tools: dict[str, Any] = {}
         self._pre_self_edit_state: _SessionSnapshot | None = None
         self._variant_registry: AgentVariantRegistry = AgentVariantRegistry()
+        self._config_change_listeners: list[Callable[[], None]] = []
+
+    def add_config_change_listener(self, callback: Callable[[], None]) -> None:
+        """Register a callback fired when the agent's prompt/tools/policy change.
+
+        Used by the TUI to keep the rendered context banner (system prompt +
+        tool list) in sync with hot-reloaded extensions, variant switches, and
+        self-edit exits.
+        """
+        self._config_change_listeners.append(callback)
+
+    def _notify_config_changed(self) -> None:
+        for cb in list(getattr(self, "_config_change_listeners", ())):
+            try:
+                cb()
+            except Exception:
+                logger.exception("config-change listener raised")
 
     @classmethod
     async def create(cls, config: Config | None = None) -> Session:
@@ -514,6 +531,7 @@ class Session:
             self._session_persisted = True
             await self._stream.ensure_stream(self._loop.stream_id)
             self._loaded_offset = await self._stream.get_length(self._loop.stream_id)
+            self._notify_config_changed()
             return self.self_edit_mode
 
         # Exiting self-edit — hot-reload extensions, rebuild the system prompt,
@@ -546,6 +564,7 @@ class Session:
             # transcript. The snapshot's items are typically empty because they
             # are only populated on resume, not on plain send().
             await self._replay_stream()
+            self._notify_config_changed()
             return self.self_edit_mode
 
         # Fallback (no snapshot, e.g. self-edit was the initial mode): make a
@@ -578,6 +597,7 @@ class Session:
         self._session_persisted = True
         await self._stream.ensure_stream(self._loop.stream_id)
         self._loaded_offset = await self._stream.get_length(self._loop.stream_id)
+        self._notify_config_changed()
         return self.self_edit_mode
 
     async def _rebuild_system_prompt(self) -> None:
@@ -910,6 +930,7 @@ class Session:
         )
         self._loop._executor = self._self_edit_executor
         self._loop.update_system_prompt(self._self_edit_prompt)
+        self._notify_config_changed()
         return new_scope
 
     def switch_variant(self, name: str) -> bool:
@@ -969,6 +990,7 @@ class Session:
 
         self._loop._executor = effective_executor
         self._loop.update_system_prompt(prompt)
+        self._notify_config_changed()
         return True
 
     def _apply_write_guard(self) -> None:
