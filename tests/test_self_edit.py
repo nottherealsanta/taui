@@ -489,3 +489,96 @@ async def test_switch_self_edit_scope_noop_when_not_in_self_edit(tmp_path):
 
     result = await session.switch_self_edit_scope()
     assert result == ""
+
+
+# ── Self-edit hotreload on exit ────────────────────────────────────────
+
+
+async def test_exit_self_edit_mode_hot_reloads_and_updates_prompt(tmp_path):
+    """Exiting self-edit must reload extensions, rebuild the system prompt,
+    restore the prior loop, and apply the rebuilt prompt to that loop."""
+    from types import SimpleNamespace
+
+    from taui.agent.variants import AgentVariantRegistry
+    from taui.hooks import HookRegistry
+    from taui.session import Session, _SessionSnapshot
+
+    prior_loop = SimpleNamespace(
+        stream_id="agents/main",
+        prompt_updates=[],
+    )
+    prior_loop.update_system_prompt = prior_loop.prompt_updates.append
+
+    snap = _SessionSnapshot(
+        session_id="main-sid",
+        loop=prior_loop,
+        message_count=3,
+        loaded_offset=42,
+        last_replay_items=[],
+    )
+
+    calls: dict[str, int] = {"reload": 0, "rebuild": 0, "replay": 0}
+
+    session = Session.__new__(Session)
+    session.config = SimpleNamespace(working_dir=tmp_path)
+    session._registry = _registry_with()
+    session._executor = ToolExecutor(registry=session._registry, policy=ToolPolicy())
+    session.self_edit_mode = True
+    session.extensions_mode = False
+    session._self_edit_scope = "global"
+    session._pre_self_edit_state = snap
+    session._system_prompt = "stale prompt"
+    session._extensions_prompt = "ext prompt"
+    session._self_edit_prompt = "self-edit prompt"
+    session._result_processors = []
+    session._variant_registry = AgentVariantRegistry()
+    session.hooks = HookRegistry()
+
+    def fake_reload():
+        calls["reload"] += 1
+        return []
+
+    async def fake_rebuild():
+        calls["rebuild"] += 1
+        session._system_prompt = "REBUILT"
+
+    async def fake_replay():
+        calls["replay"] += 1
+
+    session.reload_extensions = fake_reload
+    session._rebuild_system_prompt = fake_rebuild
+    session._replay_stream = fake_replay
+
+    result = await session.toggle_self_edit_mode()
+
+    assert result is False
+    assert calls == {"reload": 1, "rebuild": 1, "replay": 1}
+    assert session._loop is prior_loop
+    assert prior_loop.prompt_updates == ["REBUILT"]
+    assert session.session_id == "main-sid"
+    assert session._message_count == 3
+    assert session._self_edit_scope == ""
+    assert session._pre_self_edit_state is None
+
+
+async def test_rebuild_system_prompt_picks_up_extension_hook(tmp_path):
+    """_rebuild_system_prompt must apply any registered `system_prompt` hook."""
+    from types import SimpleNamespace
+
+    from taui.hooks import HookRegistry
+    from taui.session import Session
+
+    session = Session.__new__(Session)
+    session.config = SimpleNamespace(working_dir=tmp_path)
+    session._registry = _registry_with()
+    session.hooks = HookRegistry()
+    session._system_prompt = ""
+
+    async def append_marker(prompt: str, _ctx) -> str:
+        return prompt + "\n[HOOKED]"
+
+    session.hooks.add("system_prompt", append_marker)
+
+    await session._rebuild_system_prompt()
+
+    assert session._system_prompt.endswith("[HOOKED]")

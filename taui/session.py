@@ -505,25 +505,43 @@ class Session:
             )
             self._replace_loop(loop)
 
-        await self._store.create_session(
-            self.session_id,
-            mode="extensions" if self.extensions_mode else "normal",
-            stream_id=self._loop.stream_id,
-            model=self.config.model,
-        )
-        self._session_persisted = True
-        await self._stream.ensure_stream(self._loop.stream_id)
-        self._loaded_offset = await self._stream.get_length(self._loop.stream_id)
-        return self.self_edit_mode
+            await self._store.create_session(
+                self.session_id,
+                mode="self_edit",
+                stream_id=self._loop.stream_id,
+                model=self.config.model,
+            )
+            self._session_persisted = True
+            await self._stream.ensure_stream(self._loop.stream_id)
+            self._loaded_offset = await self._stream.get_length(self._loop.stream_id)
+            return self.self_edit_mode
 
-        # Exiting self-edit — restore the prior main session if we have one.
+        # Exiting self-edit — hot-reload extensions, rebuild the system prompt,
+        # restore the prior main session, and apply the rebuilt prompt to its
+        # loop so user edits take effect without a new session.
         self._self_edit_scope = ""
         snap = self._pre_self_edit_state
         self._pre_self_edit_state = None
+
+        try:
+            self.reload_extensions()
+        except Exception:
+            logger.exception("reload_extensions failed during self-edit exit")
+        try:
+            self._variant_registry.discover_from_dir(
+                self.config.working_dir / ".taui" / "agents"
+            )
+        except Exception:
+            logger.exception("variant re-discovery failed during self-edit exit")
+        await self._rebuild_system_prompt()
+
+        prompt = self._extensions_prompt if self.extensions_mode else self._system_prompt
+
         if snap is not None:
             self.session_id = snap.session_id
             self._replace_loop(snap.loop)
             self._message_count = snap.message_count
+            self._loop.update_system_prompt(prompt)
             # Rebuild replay items from the stream so the TUI can re-render the
             # transcript. The snapshot's items are typically empty because they
             # are only populated on resume, not on plain send().
@@ -532,7 +550,6 @@ class Session:
 
         # Fallback (no snapshot, e.g. self-edit was the initial mode): make a
         # fresh main session.
-        prompt = self._extensions_prompt if self.extensions_mode else self._system_prompt
         executor = self._executor
 
         self.session_id = uuid4().hex[:12]
@@ -562,6 +579,24 @@ class Session:
         await self._stream.ensure_stream(self._loop.stream_id)
         self._loaded_offset = await self._stream.get_length(self._loop.stream_id)
         return self.self_edit_mode
+
+    async def _rebuild_system_prompt(self) -> None:
+        """Rebuild the main system prompt from current project + tool state.
+
+        Picks up CLAUDE.md edits, tool-registry changes, and `system_prompt`
+        hook contributions from freshly-reloaded extensions.
+        """
+        builder = SystemPromptBuilder()
+        try:
+            ctx = ProjectContext.discover_with_git(self.config.working_dir)
+        except Exception:
+            ctx = ProjectContext.discover(self.config.working_dir)
+        builder.with_project_context(ctx)
+        builder.with_tools(self._registry)
+        prompt = builder.render()
+        if self.hooks.has("system_prompt"):
+            prompt = await self.hooks.transform("system_prompt", prompt, None)
+        self._system_prompt = prompt
 
     async def resume_session(self, session_id: str) -> bool:
         """Resume a previous session by replaying its messages."""
