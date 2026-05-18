@@ -79,7 +79,12 @@ def _fmt_args_webfetch(arguments: dict[str, Any]) -> str:
 
 def _fmt_args_sub_agent(arguments: dict[str, Any]) -> str:
     agent = arguments.get("agent") or arguments.get("subagent_type") or ""
-    desc = arguments.get("description") or arguments.get("prompt") or ""
+    desc = (
+        arguments.get("task")
+        or arguments.get("description")
+        or arguments.get("prompt")
+        or ""
+    )
     pieces = [p for p in (agent, _trunc(str(desc), 80)) if p]
     return "  ".join(pieces)
 

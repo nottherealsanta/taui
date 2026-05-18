@@ -80,6 +80,13 @@ class ToolStatusWidget(Widget):
         height: auto;
         padding: 0 0 0 2;
     }
+    ToolStatusWidget #progress {
+        width: 1fr;
+        height: 1;
+        padding: 0 0 0 2;
+        color: #6e7681;
+        display: none;
+    }
     ToolStatusWidget .tool-diff-view {
         width: 1fr;
         height: auto;
@@ -126,6 +133,7 @@ class ToolStatusWidget(Widget):
                 id="info",
             )
         yield Static("", id="body")
+        yield Static("", id="progress")
 
     def on_mount(self) -> None:
         if is_slow_tool(self.tool_name):
@@ -158,6 +166,43 @@ class ToolStatusWidget(Widget):
             )
         except Exception:
             pass
+
+    def set_progress(self, text: str) -> None:
+        """Show or update a `└ <text>` sub-line under the tool row.
+
+        Used for in-flight progress like the sub-agent's latest message.
+        Truncated to a single line. Cleared on complete()/fail().
+        """
+        if not self.is_mounted:
+            return
+        try:
+            progress = self.query_one("#progress", Static)
+        except Exception:
+            return
+        collapsed = " ".join((text or "").strip().split())
+        if not collapsed:
+            progress.update("")
+            progress.styles.display = "none"
+            return
+        if len(collapsed) > 160:
+            collapsed = collapsed[:159] + "…"
+        progress.styles.display = "block"
+        progress.update(
+            Text.from_markup(
+                f"[{_TOOL_DETAIL_COLOR}]└ {escape(collapsed)}"
+                f"[/{_TOOL_DETAIL_COLOR}]"
+            )
+        )
+
+    def _clear_progress(self) -> None:
+        if not self.is_mounted:
+            return
+        try:
+            progress = self.query_one("#progress", Static)
+        except Exception:
+            return
+        progress.update("")
+        progress.styles.display = "none"
 
     def _set_body(self, lines: list[Text]) -> None:
         if not self.is_mounted:
@@ -218,6 +263,7 @@ class ToolStatusWidget(Widget):
 
     async def complete(self, output: str = "") -> None:
         self._stop_spinner()
+        self._clear_progress()
         if not self.is_mounted:
             return
         self._set_icon(_STATIC_ICON)
@@ -246,6 +292,7 @@ class ToolStatusWidget(Widget):
 
     async def fail(self, error: str = "") -> None:
         self._stop_spinner()
+        self._clear_progress()
         if not self.is_mounted:
             return
         self._set_icon(_STATIC_ICON)

@@ -18,6 +18,22 @@ class ToolStarted(Message):
         self.arguments = arguments or {}
 
 
+class ToolProgress(Message):
+    """Posted while a long-running tool is still in-flight to surface a
+    sub-status line under its row (e.g. the latest message a sub-agent
+    has produced)."""
+
+    def __init__(
+        self, tool_name: str, text: str,
+        *, session_id: str = "", tool_key: str | None = None,
+    ) -> None:
+        super().__init__()
+        self.tool_name = tool_name
+        self.text = text
+        self.session_id = session_id
+        self.tool_key = tool_key
+
+
 class ToolEnded(Message):
     """Posted when a tool finishes executing."""
 

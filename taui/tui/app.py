@@ -32,6 +32,7 @@ from taui.tui.messages import (
     StreamReasoningDelta,
     StreamTextDelta,
     ToolEnded,
+    ToolProgress,
     ToolStarted,
 )
 from taui.tui.screens.context_breakdown import ContextBreakdownScreen
@@ -1268,6 +1269,17 @@ class TauiApp(App[None]):
                 if isinstance(sub_agent, SubAgentTool):
                     sub_agent._on_tool_call = state.tool_ctrl.on_tool_call
                     sub_agent._on_tool_result = state.tool_ctrl.on_tool_result
+
+                    async def _sub_text(text: str, _sid: str = sid) -> None:
+                        self.post_message(
+                            ToolProgress(
+                                tool_name="sub_agent",
+                                text=text,
+                                session_id=_sid,
+                            )
+                        )
+
+                    sub_agent._on_text = _sub_text
         except (ValueError, ImportError):
             pass
 
@@ -1319,6 +1331,16 @@ class TauiApp(App[None]):
         )
         if st is not None and st.tool_ctrl is not None:
             await st.tool_ctrl.handle_tool_started(event)
+
+    @on(ToolProgress)
+    async def handle_tool_progress(self, event: ToolProgress) -> None:
+        st = (
+            self._sessions.get(event.session_id)
+            if event.session_id
+            else self._sessions.active
+        )
+        if st is not None and st.tool_ctrl is not None:
+            await st.tool_ctrl.handle_tool_progress(event)
 
     @on(ToolEnded)
     async def handle_tool_ended(self, event: ToolEnded) -> None:

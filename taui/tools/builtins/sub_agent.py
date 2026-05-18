@@ -7,6 +7,7 @@ completion and returns its final text response.
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -47,6 +48,10 @@ class SubAgentTool:
     _stream: Any = None
     _parent_executor: Any = None
     _system_prompt: str = ""
+
+    # UI hook — invoked with the sub-agent's latest assistant text each turn
+    # so the parent harness can surface progress on the sub_agent tool row.
+    _on_text: Callable[[str], Awaitable[None]] | None = None
 
     def __post_init__(self):
         if self.schema is None:
@@ -111,6 +116,8 @@ class SubAgentTool:
                     model=self._model or None,
                     max_turns=max_turns,
                 )
+                if self._on_text is not None:
+                    sub._loop._on_text = self._on_text
                 result = await sub.send(task)
                 return ToolResult.ok(
                     result.text,
