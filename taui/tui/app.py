@@ -1272,7 +1272,26 @@ class TauiApp(App[None]):
                     sub_agent._on_tool_call = state.tool_ctrl.on_tool_call
                     sub_agent._on_tool_result = state.tool_ctrl.on_tool_result
 
+                    # Per-sub-agent streaming buffer. Mutable list so the
+                    # closures share a single accumulator.
+                    sub_buffer: list[str] = [""]
+
+                    def _sub_text_delta(
+                        fragment: str, _sid: str = sid
+                    ) -> None:
+                        sub_buffer[0] += fragment
+                        self.post_message(
+                            ToolProgress(
+                                tool_name="sub_agent",
+                                text=sub_buffer[0],
+                                session_id=_sid,
+                            )
+                        )
+
                     async def _sub_text(text: str, _sid: str = sid) -> None:
+                        # Turn finished — keep the final text visible and
+                        # reset the buffer so the next turn starts fresh.
+                        sub_buffer[0] = ""
                         self.post_message(
                             ToolProgress(
                                 tool_name="sub_agent",
@@ -1282,6 +1301,7 @@ class TauiApp(App[None]):
                         )
 
                     sub_agent._on_text = _sub_text
+                    sub_agent._on_text_delta = _sub_text_delta
         except (ValueError, ImportError):
             pass
 

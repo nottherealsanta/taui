@@ -49,9 +49,11 @@ class SubAgentTool:
     _parent_executor: Any = None
     _system_prompt: str = ""
 
-    # UI hook — invoked with the sub-agent's latest assistant text each turn
-    # so the parent harness can surface progress on the sub_agent tool row.
+    # UI hooks — let the parent harness surface progress on the sub_agent
+    # tool row. `_on_text` fires once per turn with the full assistant
+    # text; `_on_text_delta` fires per streaming chunk for real-time updates.
     _on_text: Callable[[str], Awaitable[None]] | None = None
+    _on_text_delta: Callable[[str], None] | None = None
 
     def __post_init__(self):
         if self.schema is None:
@@ -118,6 +120,8 @@ class SubAgentTool:
                 )
                 if self._on_text is not None:
                     sub._loop._on_text = self._on_text
+                if self._on_text_delta is not None:
+                    sub._loop._on_text_delta = self._on_text_delta
                 result = await sub.send(task)
                 return ToolResult.ok(
                     result.text,
