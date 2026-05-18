@@ -13,7 +13,15 @@ from textual.widget import Widget
 from textual.widgets import Static
 
 try:
-    from textual_diff_view import DiffView  # type: ignore
+    from textual.content import Content
+    from textual_diff_view import DiffView as _BaseDiffView  # type: ignore
+
+    class DiffView(_BaseDiffView):  # type: ignore[misc, valid-type]
+        """DiffView without the built-in '📄 <path> (+N, -M)' title — we
+        already render an equivalent header in the tool row above."""
+
+        def get_title(self) -> Content:  # type: ignore[override]
+            return Content("")
 except Exception:  # pragma: no cover — optional dep
     DiffView = None  # type: ignore
 
@@ -77,6 +85,9 @@ class ToolStatusWidget(Widget):
         height: auto;
         max-height: 24;
         margin: 0 0 0 2;
+    }
+    ToolStatusWidget .tool-diff-view .title {
+        display: none;
     }
     """
 
