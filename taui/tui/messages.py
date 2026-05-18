@@ -8,13 +8,14 @@ class ToolStarted(Message):
 
     def __init__(
         self, tool_key: str, tool_name: str, args_str: str,
-        *, session_id: str = "",
+        *, session_id: str = "", arguments: dict | None = None,
     ) -> None:
         super().__init__()
         self.tool_key = tool_key
         self.tool_name = tool_name
         self.args_str = args_str
         self.session_id = session_id
+        self.arguments = arguments or {}
 
 
 class ToolEnded(Message):

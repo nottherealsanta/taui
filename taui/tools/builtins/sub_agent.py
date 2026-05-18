@@ -30,6 +30,11 @@ class SubAgentTool:
         "code analysis, or any task that benefits from a fresh context."
     )
     category: ToolCategory = ToolCategory.AGENT
+    # Sub-agents run their own multi-turn loop bounded by `max_turns`; the
+    # executor's default 120s wall-clock timeout would kill legitimately
+    # long research tasks. The parent worker's cancellation still propagates
+    # through `await sub.send(task)` if the user hits Escape / Ctrl+C.
+    timeout: float | None = None
     guidelines: str = (
         "Use `sub_agent` for focused tasks like researching a topic, "
         "analyzing a section of code, or exploring alternatives. "

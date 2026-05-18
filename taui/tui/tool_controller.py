@@ -28,6 +28,23 @@ class ToolController:
     def reset_section(self) -> None:
         self._current_tool_section = None
 
+    async def cancel_active(self, reason: str = "Cancelled") -> None:
+        """Mark every in-flight tool widget as cancelled.
+
+        Stops the spinner, clears the `└ …` progress line, and shows the
+        given reason. Called when the user cancels the current request
+        (Escape / Ctrl+C) so sub-agents and other long-running tools
+        don't keep spinning after their parent worker has been killed.
+        """
+        widgets = list(self._active_tool_widgets.items())
+        self._active_tool_widgets.clear()
+        self._pending_tool_keys.clear()
+        for _, widget in widgets:
+            try:
+                await widget.fail(reason)
+            except Exception:
+                pass
+
     def reset(self) -> None:
         """Drop all in-flight tool state. Used when a session is reset and
         the widgets pointed at by `_active_tool_widgets` are about to be
@@ -55,7 +72,9 @@ class ToolController:
                     sid = s_id
                     break
         self._app.post_message(
-            ToolStarted(tool_key, name, args_short, session_id=sid)
+            ToolStarted(
+                tool_key, name, args_short, session_id=sid, arguments=arguments,
+            )
         )
 
         record_edit = getattr(self._app, "_record_edit", None)
@@ -110,7 +129,11 @@ class ToolController:
             self._current_tool_section = Vertical(classes="tool-section")
             await self._app._mount_in_reply(self._current_tool_section, state=st)
 
-        widget = ToolStatusWidget(event.tool_name, event.args_str)
+        widget = ToolStatusWidget(
+            event.tool_name,
+            event.args_str,
+            arguments=getattr(event, "arguments", None) or None,
+        )
         await self._current_tool_section.mount(widget)
         self._active_tool_widgets[event.tool_key] = widget
 

@@ -301,13 +301,23 @@ class ToolExecutor:
         max_attempts = len(delays) + 1
         last_result: ToolResult | None = None
 
+        # Per-tool override: `tool.timeout` may be a float (custom limit) or
+        # None to disable the timeout entirely (e.g. for sub_agent, which has
+        # its own max_turns budget and can legitimately run for minutes).
+        tool_timeout = getattr(tool, "timeout", self._timeout)
+
         for attempt in range(max_attempts):
             try:
-                result = await asyncio.wait_for(tool.execute(arguments), timeout=self._timeout)
+                if tool_timeout is None:
+                    result = await tool.execute(arguments)
+                else:
+                    result = await asyncio.wait_for(
+                        tool.execute(arguments), timeout=tool_timeout
+                    )
             except TimeoutError:
-                logger.warning("Tool timed out tool=%s timeout=%.1fs", tool_name, self._timeout)
+                logger.warning("Tool timed out tool=%s timeout=%.1fs", tool_name, tool_timeout)
                 result = ToolResult.fail(
-                    f"Tool {tool_name!r} timed out after {self._timeout:.0f}s."
+                    f"Tool {tool_name!r} timed out after {tool_timeout:.0f}s."
                 )
             except Exception as exc:
                 logger.exception("Tool raised tool=%s attempt=%d", tool_name, attempt + 1)
