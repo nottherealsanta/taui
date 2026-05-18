@@ -42,7 +42,7 @@ _TOOL_ICON_COLOR = "#6e7681"
 _DIFF_ADD_COLOR = "#3fb950"
 _DIFF_DEL_COLOR = "#f85149"
 
-_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
+_SPINNER_FRAMES = ("⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷")
 _STATIC_ICON = "✦"
 
 
