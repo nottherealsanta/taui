@@ -1163,6 +1163,8 @@ class TauiApp(App[None]):
                         await worker.wait()
                     except Exception:
                         pass
+            if state.tool_ctrl is not None:
+                await state.tool_ctrl.cancel_active("Cancelled")
             self._set_busy(False, state)
 
         state.current_response = None
@@ -2474,6 +2476,9 @@ class TauiApp(App[None]):
             for worker in list(self.workers):
                 if worker.group == f"send-{sid}":
                     worker.cancel()
+            # Halt any in-flight tool widgets (sub-agent spinners, etc.)
+            if state.tool_ctrl is not None:
+                await state.tool_ctrl.cancel_active("Cancelled")
         # Double-press quit check
         now = time.monotonic()
         if now - self._last_ctrl_c_time < 0.5:
