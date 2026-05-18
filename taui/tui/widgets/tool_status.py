@@ -12,6 +12,11 @@ from textual.timer import Timer
 from textual.widget import Widget
 from textual.widgets import Static
 
+try:
+    from textual_diff_view import DiffView  # type: ignore
+except Exception:  # pragma: no cover — optional dep
+    DiffView = None  # type: ignore
+
 from taui.tui.widgets.tool_formatters import (
     format_args,
     format_output,
@@ -66,6 +71,12 @@ class ToolStatusWidget(Widget):
         width: 1fr;
         height: auto;
         padding: 0 0 0 2;
+    }
+    ToolStatusWidget .tool-diff-view {
+        width: 1fr;
+        height: auto;
+        max-height: 24;
+        margin: 0 0 0 2;
     }
     """
 
@@ -171,6 +182,27 @@ class ToolStatusWidget(Widget):
         self._spinner_index += 1
         self._set_icon(frame)
 
+    # ── DiffView mounting ──────────────────────────────────────────────────
+
+    async def _mount_diff_view(self, data: dict) -> None:
+        if DiffView is None or not self.is_mounted:
+            return
+        path = data.get("path") or "edit"
+        before = data.get("before") or ""
+        after = data.get("after") or ""
+        try:
+            view = DiffView(
+                path, path, before, after,
+                split=False,
+                annotations=True,
+                wrap=False,
+                classes="tool-diff-view",
+            )
+            await self.mount(view)
+        except Exception:
+            # Fall back silently — the +N/-N summary is already shown.
+            pass
+
     # ── completion / failure ───────────────────────────────────────────────
 
     async def complete(self, output: str = "") -> None:
@@ -189,14 +221,6 @@ class ToolStatusWidget(Widget):
         self.query_one("#info", Static).update(self._header_markup(suffix))
 
         body_lines: list[Text] = []
-        if formatted["diff"]:
-            for kind, text in formatted["diff"]:
-                color = _DIFF_ADD_COLOR if kind == "+" else _DIFF_DEL_COLOR
-                body_lines.append(
-                    Text.from_markup(
-                        f"[{color}]{escape(kind + ' ' + text)}[/{color}]"
-                    )
-                )
         for line in formatted["body"]:
             body_lines.append(
                 Text.from_markup(
@@ -204,6 +228,10 @@ class ToolStatusWidget(Widget):
                 )
             )
         self._set_body(body_lines)
+
+        diff_view_data = formatted.get("diff_view")
+        if diff_view_data:
+            await self._mount_diff_view(diff_view_data)
 
     async def fail(self, error: str = "") -> None:
         self._stop_spinner()

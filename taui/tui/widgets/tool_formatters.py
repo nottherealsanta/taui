@@ -116,40 +116,78 @@ def format_args(tool_name: str, arguments: dict[str, Any]) -> str:
 # beneath it. Return [] for "no output preview".
 
 
-_DIFF_LINE_RE = re.compile(r"^(\+|-)(.*)$")
+_HUNK_HEADER_RE = re.compile(r"^@@\s+-\d+(?:,\d+)?\s+\+\d+(?:,\d+)?\s+@@")
+
+
+def parse_unified_diff(output: str) -> tuple[str, str, int, int]:
+    """Parse a unified-diff string into reconstructed before/after texts.
+
+    Hunks are joined with a single ``…`` separator line (matched on both
+    sides) so DiffView treats the gaps as unchanged context rather than
+    real changes. Returns ``(before, after, added, removed)``.
+    """
+    before_parts: list[list[str]] = []
+    after_parts: list[list[str]] = []
+    cur_before: list[str] = []
+    cur_after: list[str] = []
+    in_hunk = False
+    added = removed = 0
+
+    def flush() -> None:
+        nonlocal cur_before, cur_after
+        if cur_before or cur_after:
+            before_parts.append(cur_before)
+            after_parts.append(cur_after)
+            cur_before = []
+            cur_after = []
+
+    for raw in output.splitlines():
+        if raw.startswith("---") or raw.startswith("+++"):
+            continue
+        if _HUNK_HEADER_RE.match(raw):
+            flush()
+            in_hunk = True
+            continue
+        if not in_hunk:
+            continue
+        if raw.startswith("+"):
+            cur_after.append(raw[1:])
+            added += 1
+        elif raw.startswith("-"):
+            cur_before.append(raw[1:])
+            removed += 1
+        elif raw.startswith(" "):
+            cur_before.append(raw[1:])
+            cur_after.append(raw[1:])
+        elif raw == "":
+            cur_before.append("")
+            cur_after.append("")
+    flush()
+
+    sep = "…"
+    before = ("\n" + sep + "\n").join("\n".join(b) for b in before_parts)
+    after = ("\n" + sep + "\n").join("\n".join(a) for a in after_parts)
+    return before, after, added, removed
 
 
 def _fmt_out_edit(
     arguments: dict[str, Any], output: str
-) -> tuple[list[str], list[tuple[str, str]] | None]:
-    """Return (header_extra_lines, diff_lines).
+) -> tuple[list[str], dict[str, Any] | None]:
+    """Return (summary_lines, diff_data).
 
-    diff_lines is a list of (kind, text) tuples where kind is "+", "-", or " ".
-    If there's no parseable diff, returns just a +N/-N summary in header.
+    diff_data, if present, is a dict with keys: path, before, after.
+    The widget uses it to mount a DiffView.
     """
-    # Edit tool output looks like a unified diff block; pull +/- lines.
-    diff: list[tuple[str, str]] = []
-    added = removed = 0
-    for raw in output.splitlines():
-        if raw.startswith("+++") or raw.startswith("---"):
-            continue
-        if raw.startswith("+"):
-            added += 1
-            diff.append(("+", raw[1:]))
-        elif raw.startswith("-"):
-            removed += 1
-            diff.append(("-", raw[1:]))
-        elif raw.startswith("@@"):
-            continue
-
+    before, after, added, removed = parse_unified_diff(output)
     summary = []
     if added or removed:
         summary.append(f"+{added} -{removed}")
 
-    # Only show the diff if it's small enough to be useful.
-    if 0 < len(diff) <= 10:
-        return summary, diff
-    return summary, None
+    if not before and not after:
+        return summary, None
+
+    path = str(arguments.get("path") or arguments.get("file_path") or "edit")
+    return summary, {"path": path, "before": before, "after": after}
 
 
 def _fmt_out_read(arguments: dict[str, Any], output: str) -> list[str]:
@@ -224,9 +262,14 @@ def format_output(
     name = tool_name.lower()
 
     if name == "edit":
-        summary_lines, diff = _fmt_out_edit(arguments, output)
+        summary_lines, diff_data = _fmt_out_edit(arguments, output)
         summary = summary_lines[0] if summary_lines else ""
-        return {"summary": summary, "body": [], "diff": diff}
+        return {
+            "summary": summary,
+            "body": [],
+            "diff": None,
+            "diff_view": diff_data,
+        }
 
     fn = _OUT_FORMATTERS.get(name, _fmt_out_generic)
     try:
@@ -235,7 +278,7 @@ def format_output(
         lines = _fmt_out_generic(arguments, output)
     summary = lines[0] if lines else ""
     body = lines[1:] if len(lines) > 1 else []
-    return {"summary": summary, "body": body, "diff": None}
+    return {"summary": summary, "body": body, "diff": None, "diff_view": None}
 
 
 # ── Long-running tool classification ─────────────────────────────────────────
