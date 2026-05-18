@@ -136,10 +136,14 @@ before documenting a shortcut. Important app-level bindings include:
 - `Ctrl+Q`: quit
 - `Ctrl+N`: new session
 - `Ctrl+C`: cancel active request or approval
+- `Ctrl+D`: quit (double-press required)
 - `Ctrl+B`: toggle sidebar
-- `Ctrl+P`: command palette
+- `Ctrl+R`: toggle info sidebar
+- `Ctrl+E`: enter self-edit mode
 - `Ctrl+X`: context breakdown
-- `Escape`: leave self-edit mode when active
+- `Alt+Left/Right`: focus left/right pane
+- `Ctrl+PageDown/Up`: next/previous tab
+- `Escape`: leave self-edit mode / dismiss panels
 
 While the agent is busy, normal Enter input is used as steering and queued follow-ups
 are handled by `ChatInput.Submitted.queue`.
@@ -151,8 +155,10 @@ Builtins are registered in `taui/commands/builtins.py`. Current commands include
 - `/help`, `/h`, `/?`
 - `/cost`
 - `/compact`
+- `/context`
 - `/clear`
 - `/model`
+- `/agents`
 - `/provider`
 - `/extensions`
 - `/i`
@@ -167,7 +173,7 @@ Builtins are registered in `taui/commands/builtins.py`. Current commands include
 - `/export`
 - `/hotkeys`, `/keys`
 - `/verbose`, `/quiet`
-- `/debug questions`
+- `/debug`
 
 Keep command behavior in command classes where possible; TUI-specific actions can be
 signaled through `CommandResult.metadata["action"]`.

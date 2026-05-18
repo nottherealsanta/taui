@@ -40,9 +40,13 @@ Defined in `TauiApp.BINDINGS`:
 | `Ctrl+C` | `cancel_request` | Cancel active request or approval |
 | `Ctrl+D` | `ctrl_d` | Quit (double-press required) |
 | `Ctrl+B` | `toggle_sidebar` | Show/hide sidebar |
+| `Ctrl+R` | `toggle_info_sidebar` | Show/hide info sidebar |
 | `Ctrl+E` | `enter_self_edit` | Enter self-edit mode |
-| `Ctrl+P` | `command_palette` | Open Textual command palette |
 | `Ctrl+X` | `show_context` | Open context breakdown |
+| `Alt+Left` | `focus_pane_left` | Focus left pane |
+| `Alt+Right` | `focus_pane_right` | Focus right pane |
+| `Ctrl+PageDown` | `next_tab` | Next tab |
+| `Ctrl+PageUp` | `prev_tab` | Previous tab |
 | `Escape` | `escape` | Leave self-edit / dismiss panels |
 
 `Ctrl+C` and `Ctrl+D` both track a last-press timestamp; a second press within a short

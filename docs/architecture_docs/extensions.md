@@ -55,9 +55,9 @@ Every extension must define:
 
 ```python
 def register(ctx):
-    ctx.tools.add(my_tool)
+    ctx.tools.register(my_tool)
     if ctx.commands:
-        ctx.commands.add(my_cmd)
+        ctx.commands.register(my_cmd)
     ctx.hooks.banner(lambda session: "hello")
     ctx.skills.add_path("skills/my-skill.md")
 ```
@@ -152,7 +152,7 @@ removed so a subsequent `load_all()` re-executes the module code cleanly.
 - A broken extension sets `ext.error` and logs a warning; other extensions and the core
   agent loop are unaffected.
 - Missing `register()` function sets `ext.error = "Missing register() function"`.
-- `taui --no-extensions` skips all extension loading for recovery.
+- A broken extension sets `ext.error` and is skipped; the agent starts normally.
 
 ---
 
@@ -215,7 +215,7 @@ class TodoCounter:
         return ToolResult.ok(result.stdout or "No matches found.")
 
 def register(ctx):
-    ctx.tools.add(TodoCounter())
+    ctx.tools.register(TodoCounter())
 ```
 
 ## Example: Bundled Skill Extension

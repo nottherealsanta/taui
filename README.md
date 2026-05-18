@@ -117,10 +117,14 @@ scope is the default persistent choice.
 | `Ctrl+Q` | Quit |
 | `Ctrl+N` | New session |
 | `Ctrl+C` | Cancel active request or approval |
+| `Ctrl+D` | Quit (double-press required) |
 | `Ctrl+B` | Toggle sidebar |
-| `Ctrl+P` | Open command palette |
+| `Ctrl+R` | Toggle info sidebar |
+| `Ctrl+E` | Enter self-edit mode |
 | `Ctrl+X` | Context breakdown |
-| `Escape` | Leave self-edit mode |
+| `Alt+Left/Right` | Focus left/right pane |
+| `Ctrl+PageDown/Up` | Next/previous tab |
+| `Escape` | Leave self-edit mode / dismiss panels |
 
 ## Slash Commands
 
@@ -130,22 +134,24 @@ scope is the default persistent choice.
 | `/model` | Switch model |
 | `/provider` | Switch provider |
 | `/compact` | Compact conversation (shows token savings) |
+| `/context` | Show context breakdown |
 | `/clear` | Clear chat |
 | `/cost` | Show session cost |
 | `/sessions` | Browse and resume sessions |
-| `/diff` | Show git diff and open the diff viewer |
-| `/review` | Review git changes with read-only tools |
-| `/commit` | Prepare a commit message and ask before committing |
+| `/agents` | List and switch agent variants |
 | `/new` | Start new session |
 | `/reload` | Hot-reload extensions |
 | `/extensions` | List extensions |
 | `/i` | Enter self-edit mode |
+| `/ext-mode` | Enter extensions mode |
 | `/login` | Re-authenticate providers |
 | `/logout` | Clear saved credentials |
+| `/session` | Show current session info |
 | `/copy` | Copy last response |
 | `/export` | Export session |
 | `/hotkeys`, `/keys` | Show key bindings |
 | `/verbose`, `/quiet` | Toggle tool output verbosity |
+| `/debug` | Debug commands (e.g. `/debug questions`) |
 
 ## Extending Taui
 
