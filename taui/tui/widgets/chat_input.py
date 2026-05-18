@@ -25,6 +25,12 @@ _IMAGE_MIME_PREFIX = "image/"
 
 _MAX_IMAGE_SIZE = 20 * 1024 * 1024  # 20 MB
 
+# Heuristic for turning pasted text into a collapsible attachment instead of
+# inlining it. Short multi-line pastes (signatures, two-line snippets) stay
+# inline; anything bigger becomes a pill the user can open to view/edit.
+_PASTE_ATTACH_MIN_LINES = 5
+_PASTE_ATTACH_MIN_CHARS = 400
+
 
 class ChatInput(TextArea):
     """Chat input with Enter to submit, Shift+Enter/Ctrl+J for newline.
@@ -189,6 +195,10 @@ class ChatInput(TextArea):
         self._arg_completers: dict[str, Callable[[str], list[Completion]]] = {}
         # Pending images (data: URLs) attached to the next submission
         self._pending_images: list[str] = []
+        # Pending pasted-text blocks (raw text) attached to the next submission.
+        # Stored separately from images so the host can show its own pill style
+        # and an edit-modal for each entry.
+        self._pending_pastes: list[str] = []
         # Track last escape press time for double-escape detection
         self._last_escape_time: float = 0.0
         # `@` file/folder completion. The completer takes the prefix string
@@ -290,7 +300,7 @@ class ChatInput(TextArea):
         if not self.can_submit:
             return
         user_input = self.text.strip()
-        if user_input or self._pending_images:
+        if user_input or self._pending_images or self._pending_pastes:
             self._history_index = -1
             self._saved_input = ""
             images = self._pending_images.copy()
@@ -302,9 +312,16 @@ class ChatInput(TextArea):
 
             self.clear()
             self._dismiss_completion()
+            if cleaned:
+                value = cleaned
+            elif images:
+                value = "[Image]"
+            else:
+                # paste-only submit — text is expanded host-side
+                value = ""
             self.post_message(
                 self.Submitted(
-                    cleaned or "[Image]",
+                    value,
                     queue=queue,
                     images=images or None,
                 )
@@ -324,6 +341,48 @@ class ChatInput(TextArea):
     def clear_images(self) -> None:
         """Remove all pending image attachments."""
         self._pending_images.clear()
+
+    # ── Pasted-text helpers ───────────────────────────────────────────
+
+    @property
+    def pending_paste_count(self) -> int:
+        """Number of pasted-text blocks attached to the next submission."""
+        return len(self._pending_pastes)
+
+    @property
+    def pending_pastes(self) -> list[str]:
+        """Read-only snapshot of pending pasted-text blocks."""
+        return list(self._pending_pastes)
+
+    def attach_paste(self, text: str) -> int:
+        """Attach a pasted text block. Returns its index."""
+        self._pending_pastes.append(text)
+        return len(self._pending_pastes) - 1
+
+    def update_paste(self, index: int, text: str) -> bool:
+        """Replace the pasted text at *index*. Returns True on success."""
+        if 0 <= index < len(self._pending_pastes):
+            self._pending_pastes[index] = text
+            return True
+        return False
+
+    def pop_paste(self, index: int) -> str | None:
+        """Remove and return the pasted text at *index*, or None if missing."""
+        if 0 <= index < len(self._pending_pastes):
+            return self._pending_pastes.pop(index)
+        return None
+
+    def remove_paste_by_value(self, text: str) -> bool:
+        """Remove the first pasted block whose text == *text*."""
+        try:
+            self._pending_pastes.remove(text)
+            return True
+        except ValueError:
+            return False
+
+    def clear_pastes(self) -> None:
+        """Remove all pending paste attachments."""
+        self._pending_pastes.clear()
 
     async def _on_paste(self, event: Paste) -> None:
         """Intercept paste events to detect image file paths.
@@ -379,7 +438,20 @@ class ChatInput(TextArea):
             if leftover:
                 self.insert(leftover)
             self.post_message(self.ImageAttached(len(images_found)))
+            event.stop()
+            event.prevent_default()
             return
+
+        # Large multi-line text → attach as a pill instead of inlining.
+        if _should_attach_as_paste(text):
+            self._pending_pastes.append(text)
+            self.post_message(
+                self.PasteAttached(len(self._pending_pastes) - 1, text)
+            )
+            event.stop()
+            event.prevent_default()
+            return
+
         # No image file paths found — let TextArea handle the paste normally.
         await super()._on_paste(event)
 
@@ -389,6 +461,18 @@ class ChatInput(TextArea):
         def __init__(self, count: int) -> None:
             super().__init__()
             self.count = count
+
+    class PasteAttached(Message):
+        """Posted when a multi-line paste is captured as an attachment.
+
+        Carries the bar index assigned to the new paste and the text itself
+        so the host can build a pill (and later look the entry up by value).
+        """
+
+        def __init__(self, index: int, text: str) -> None:
+            super().__init__()
+            self.index = index
+            self.text = text
 
     def _get_matching_commands(self, prefix: str) -> list[Completion]:
         """Return commands matching the given prefix (without /)."""
@@ -813,7 +897,11 @@ class ChatInput(TextArea):
             import time
 
             now = time.monotonic()
-            has_content = bool(self.text.strip()) or bool(self._pending_images)
+            has_content = (
+                bool(self.text.strip())
+                or bool(self._pending_images)
+                or bool(self._pending_pastes)
+            )
             if has_content:
                 # Double-escape: clear text and attachments
                 if now - self._last_escape_time < 0.4:
@@ -821,6 +909,7 @@ class ChatInput(TextArea):
                     event.stop()
                     self.clear()
                     self._pending_images.clear()
+                    self._pending_pastes.clear()
                     self.post_message(self.InputCleared())
                     self._last_escape_time = 0.0
                     return
@@ -1060,6 +1149,21 @@ def _extract_image_paths(text: str, images: list[str]) -> str:
     if found_any:
         return "\n".join(result_lines).strip()
     return text
+
+
+def _should_attach_as_paste(text: str) -> bool:
+    """Return True when *text* is big enough to warrant a paste attachment.
+
+    Short multi-line snippets stay inline so the user can keep editing them;
+    longer pastes (5+ lines or >400 chars) get tucked away in a pill so the
+    chat input doesn't blow up.
+    """
+    if not text:
+        return False
+    if "\n" not in text:
+        return len(text) >= _PASTE_ATTACH_MIN_CHARS
+    line_count = text.count("\n") + 1
+    return line_count >= _PASTE_ATTACH_MIN_LINES or len(text) >= _PASTE_ATTACH_MIN_CHARS
 
 
 def _looks_like_clipboard_noise(text: str) -> bool:
