@@ -37,6 +37,7 @@ from taui.tui.messages import (
 )
 from taui.tui.screens.context_breakdown import ContextBreakdownScreen
 from taui.tui.screens.git_diff import GitDiffScreen
+from taui.tui.screens.pasted_content import PasteResult, PastedContentScreen
 from taui.tui.session_state import SessionManager, SessionState
 from taui.tui.theme import ALL_THEMES, TAUI_DARK
 from taui.tui.tool_controller import ToolController
@@ -1001,6 +1002,30 @@ class TauiApp(App[None]):
             text = (text.rstrip() + "\n" + "".join(text_blocks)).strip()
         return text, (new_images or None)
 
+    def _expand_pending_pastes(self, text: str) -> tuple[str, str]:
+        r"""Fold pasted-text attachments into the outgoing prompt.
+
+        Returns `(expanded_text, display_note)`:
+        - `expanded_text` has each paste appended as a fenced block so the
+          model sees the full content.
+        - `display_note` is a dim Rich-markup string ("\[Pasted N lines]")
+          to append next to the user message in the chat log so the log
+          stays compact even when large pastes are sent.
+        """
+        try:
+            chat_input = self.query_one(ChatInput)
+        except Exception:
+            return text, ""
+        pastes = chat_input.pending_pastes
+        if not pastes:
+            return text, ""
+        blocks = [f"\n```text\n{p}\n```\n" for p in pastes]
+        expanded = (text.rstrip() + "\n" + "".join(blocks)).strip()
+        markers = " ".join(
+            f"\\[Pasted {p.count(chr(10)) + 1} lines]" for p in pastes
+        )
+        return expanded, f"  [dim]{markers}[/dim]"
+
     def _expand_file_refs(self, text: str) -> tuple[str, list[str] | None]:
         """Expand @path references to file contents or image attachments.
 
@@ -1620,14 +1645,23 @@ class TauiApp(App[None]):
             image_note = f"  [dim]{labels}[/dim]"
         else:
             image_note = ""
-        await self._begin_turn(text, image_note, chat_log=chat_log)
-        # Clear the attachments bar (and pending file/folder lists) after submit
+        # Pastes: expand into the outbound text but show only a marker in the
+        # chat log so big pastes don't dominate the scroll.
+        send_text, paste_note = self._expand_pending_pastes(text)
+        await self._begin_turn(
+            text, image_note + paste_note, chat_log=chat_log
+        )
+        # Clear the attachments bar (and pending file/folder/paste lists) after submit
         self.query_one(AttachmentsBar).clear_all()
         self._pending_files.clear()
         self._pending_folders.clear()
+        try:
+            self.query_one(ChatInput).clear_pastes()
+        except Exception:
+            pass
         # Submitting is an explicit intent to see the result — re-arm anchor.
         self._snap_to_bottom()
-        self._send_and_drain(text, images)
+        self._send_and_drain(send_text, images)
 
     async def _submit_generated_prompt(
         self,
@@ -1715,6 +1749,63 @@ class TauiApp(App[None]):
             idx = i + 1
             bar.add(f"Image {idx}", chat_input._pending_images[i])
 
+    @on(ChatInput.PasteAttached)
+    async def handle_paste_attached(
+        self,
+        event: ChatInput.PasteAttached,
+    ) -> None:
+        """Add a paste pill for a captured multi-line paste."""
+        bar = self.query_one(AttachmentsBar)
+        line_count = event.text.count("\n") + 1
+        bar.add(f"Pasted ({line_count} lines)", event.text, kind="paste")
+
+    @on(AttachmentsBar.PasteOpened)
+    async def handle_paste_opened(
+        self,
+        event: AttachmentsBar.PasteOpened,
+    ) -> None:
+        """Open the editor modal for a paste pill."""
+        original = event.data
+
+        def _on_close(result: PasteResult | None) -> None:
+            if result is None:
+                return
+            chat_input = self.query_one(ChatInput)
+            bar = self.query_one(AttachmentsBar)
+            bar_idx = bar.find_index(kind="paste", data=original)
+            try:
+                input_idx = chat_input.pending_pastes.index(original)
+            except ValueError:
+                input_idx = -1
+
+            if result.action == "save":
+                if not result.text:
+                    if bar_idx >= 0:
+                        bar.remove(bar_idx)
+                    if input_idx >= 0:
+                        chat_input.pop_paste(input_idx)
+                    return
+                if input_idx >= 0:
+                    chat_input.update_paste(input_idx, result.text)
+                if bar_idx >= 0:
+                    bar.update_data(bar_idx, result.text)
+                    n = result.text.count("\n") + 1
+                    bar.update_label(bar_idx, f"Pasted ({n} lines)")
+                return
+
+            # action == "insert"
+            if input_idx >= 0:
+                chat_input.pop_paste(input_idx)
+            if bar_idx >= 0:
+                bar.remove(bar_idx)
+            if result.text:
+                chat_input.insert(result.text)
+                chat_input.focus()
+
+        self.push_screen(
+            PastedContentScreen(original, index=event.index), _on_close
+        )
+
     @on(AttachmentsBar.Cleared)
     async def handle_attachment_cleared(
         self,
@@ -1732,6 +1823,10 @@ class TauiApp(App[None]):
                 self._pending_folders.remove(Path(event.data))
             except ValueError:
                 pass
+            return
+        if event.kind == "paste":
+            chat_input = self.query_one(ChatInput)
+            chat_input.remove_paste_by_value(event.data)
             return
         # Default: image kind. Older code keyed by index, but we now have the
         # data URL, so we can find the exact entry even after re-ordering.
@@ -1797,6 +1892,10 @@ class TauiApp(App[None]):
         self.query_one(AttachmentsBar).clear_all()
         self._pending_files.clear()
         self._pending_folders.clear()
+        try:
+            self.query_one(ChatInput).clear_pastes()
+        except Exception:
+            pass
 
     @on(ChatInput.CancelRequested)
     async def handle_cancel_requested(
