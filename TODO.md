@@ -17,7 +17,7 @@ for edit tool output could be diff(up to 10 line) else just show the number of a
 
 - [x] **Change window title.** Dynamically set the terminal window/tab title to reflect current state (e.g., agent name, session info). Use ANSI escape `\e]0;title\a`.
 
-- [ ] **Pasted content as attachment.** When multi-line text is pasted into the input, treat it as a collapsible attachment (like pasted images) rather than inline text.
+- [x] **Pasted content as attachment.** When multi-line text is pasted into the input, treat it as a collapsible attachment (like pasted images) rather than inline text.
 
 - [x] **Rich text input movement.** Support VS Code-style text editing in the chat input: shift+arrow for selection, ctrl/cmd+arrow for word-jump, shift+ctrl for word-select, overwrite selected text by typing, etc. Standard editor keybindings that terminals don't provide by default.
 
@@ -37,7 +37,7 @@ for edit tool output could be diff(up to 10 line) else just show the number of a
 
 - [ ] **Faster `/new` session creation.** Reduce the time it takes to go from `/new` to a fully ready new session.
 
-- [ ] **Remove `/session` command.** Only keep `/sessions` (plural); remove the singular `/session` variant.
+- [x] **Remove `/session` command.** Only keep `/sessions` (plural); remove the singular `/session` variant.
 
 - [ ] **Preserve newlines in user messages.** When rendering user messages in the chat log, display newlines as actual line breaks instead of collapsing them.
 

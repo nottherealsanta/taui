@@ -543,33 +543,6 @@ class LogoutCommand:
 
 
 @dataclass(slots=True)
-class SessionInfoCommand:
-    """Show current session info."""
-
-    name: str = "session"
-    description: str = "Show current session info"
-    accepts_args: bool = False
-    _get_session: Any = None
-
-    async def execute(self, ctx: CommandContext) -> CommandResult:
-        if not self._get_session:
-            return CommandResult.fail("No session.")
-        session = self._get_session()
-        tracker = session.cost_tracker
-        lines = [
-            f"Session:    {session.session_id}",
-            f"Provider:   {session.provider_name}",
-            f"Model:      {session.model_name}",
-            f"Messages:   {session._message_count}",
-            f"Tokens in:  {tracker.total_input_tokens:,}",
-            f"Tokens out: {tracker.total_output_tokens:,}",
-            f"Cost:       ${tracker.total_cost_usd:.4f}",
-            f"Mode:       {'extensions' if session.extensions_mode else 'normal'}",
-        ]
-        return CommandResult.ok("\n".join(lines))
-
-
-@dataclass(slots=True)
 class CopyCommand:
     """Copy the current agent context to clipboard as JSON."""
 
@@ -860,7 +833,6 @@ def register_builtins(
     sessions_cmd = SessionsCommand()
     new_cmd = NewSessionCommand()
     reload_cmd = ReloadCommand()
-    session_info_cmd = SessionInfoCommand()
     copy_cmd = CopyCommand()
     export_cmd = ExportCommand()
     verbose_cmd = VerboseCommand()
@@ -876,7 +848,6 @@ def register_builtins(
         sessions_cmd._get_session = get_session
         new_cmd._get_session = get_session
         reload_cmd._get_session = get_session
-        session_info_cmd._get_session = get_session
         copy_cmd._get_session = get_session
         export_cmd._get_session = get_session
         verbose_cmd._get_session = get_session
@@ -909,7 +880,6 @@ def register_builtins(
     registry.register(reload_cmd)
     registry.register(LoginCommand())
     registry.register(LogoutCommand())
-    registry.register(session_info_cmd)
     registry.register(copy_cmd)
     registry.register(export_cmd)
     registry.register(diff_cmd)

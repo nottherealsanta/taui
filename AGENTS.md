@@ -168,7 +168,6 @@ Builtins are registered in `taui/commands/builtins.py`. Current commands include
 - `/reload`
 - `/login`
 - `/logout`
-- `/session`
 - `/copy`
 - `/export`
 - `/hotkeys`, `/keys`
