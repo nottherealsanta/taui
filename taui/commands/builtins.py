@@ -797,6 +797,49 @@ class VerboseCommand:
 
 
 @dataclass(slots=True)
+class UpdateProvidersModelsCommand:
+    """Force a refresh of the models.dev catalog and report what changed."""
+
+    name: str = "update-providers-models"
+    description: str = "Refresh model metadata from models.dev"
+    accepts_args: bool = False
+
+    async def execute(self, ctx: CommandContext) -> CommandResult:
+        from taui.llm_provider.models import PROVIDER_MAP, fetch_models, list_models
+
+        before: dict[str, set[str]] = {}
+        for provider in PROVIDER_MAP:
+            try:
+                before[provider] = {m["id"] for m in list_models(provider)}
+            except Exception:
+                before[provider] = set()
+
+        try:
+            data = fetch_models(force=True)
+        except Exception as exc:
+            return CommandResult.fail(f"models.dev refresh failed: {exc}")
+        if not data:
+            return CommandResult.fail(
+                "models.dev refresh returned no data (network?)."
+            )
+
+        lines = ["Refreshed models.dev catalog."]
+        for provider in PROVIDER_MAP:
+            try:
+                after = {m["id"] for m in list_models(provider)}
+            except Exception:
+                after = set()
+            added = sorted(after - before.get(provider, set()))
+            removed = sorted(before.get(provider, set()) - after)
+            lines.append(f"  {provider}: {len(after)} models")
+            if added:
+                lines.append(f"    + {', '.join(added[:5])}")
+            if removed:
+                lines.append(f"    - {', '.join(removed[:5])}")
+        return CommandResult.ok("\n".join(lines))
+
+
+@dataclass(slots=True)
 class DebugCommand:
     """Run UI debug scenarios."""
 
@@ -891,6 +934,7 @@ def register_builtins(
     registry.register(HotkeysCommand())
     registry.register(verbose_cmd)
     registry.register(debug_cmd)
+    registry.register(UpdateProvidersModelsCommand())
 
     registry.alias("h", "help")
     registry.alias("?", "help")

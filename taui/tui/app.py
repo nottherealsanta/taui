@@ -789,6 +789,18 @@ class TauiApp(App[None]):
             exit_on_error=False,
         )
 
+        # Refresh the models.dev catalog in the background if the local cache
+        # is older than the TTL. Runs out-of-band so a slow fetch never
+        # blocks startup. list_models / fetch_models handle their own cache
+        # gate; we just kick the work off.
+        self.run_worker(
+            self._refresh_models_catalog_if_stale(),
+            name="models_refresh",
+            group="startup",
+            exclusive=False,
+            exit_on_error=False,
+        )
+
     def _set_chat_panel_visible(self, visible: bool) -> None:
         """Show/hide the chat panel contents while keeping the bottom bar."""
         for selector in ("#chat-log-container", "#info2", "#chat-container"):
@@ -796,6 +808,21 @@ class TauiApp(App[None]):
                 self.query_one(selector).display = visible
             except Exception:
                 pass
+
+    async def _refresh_models_catalog_if_stale(self) -> None:
+        """Trigger a models.dev fetch off the main thread when cache is old.
+
+        fetch_models() itself decides whether to hit the network — calling
+        it without ``force=True`` is a no-op when the cache is fresh.
+        """
+        try:
+            from taui.llm_provider import models as models_mod
+
+            await asyncio.to_thread(models_mod.fetch_models)
+        except Exception:
+            # Network or disk problems shouldn't crash startup; the user can
+            # always invoke /update-providers-models manually.
+            logger.debug("Background models refresh failed", exc_info=True)
 
     async def _initialize_session(self) -> None:
         try:
