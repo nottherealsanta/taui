@@ -114,6 +114,12 @@ class CommandRegistry:
                 f"Unknown command: /{name}\nAvailable: {available}"
             )
 
+        # No-op when a command requires args and the user submitted none.
+        # Commands opt in by setting `requires_args = True`; this avoids the
+        # "Usage: …" splash for an accidental Enter from the palette.
+        if getattr(command, "requires_args", False) and not ctx.args:
+            return CommandResult.ok("")
+
         try:
             return await command.execute(ctx)
         except Exception as exc:

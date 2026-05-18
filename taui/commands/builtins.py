@@ -351,11 +351,11 @@ class SessionsCommand:
 
 @dataclass(slots=True)
 class NewSessionCommand:
-    """Start a fresh session."""
+    """Start a fresh session, optionally with an initial message."""
 
     name: str = "new"
-    description: str = "Start a new session"
-    accepts_args: bool = False
+    description: str = "Start a new session: /new [message]"
+    accepts_args: bool = True
     _get_session: Any = None
 
     async def execute(self, ctx: CommandContext) -> CommandResult:
@@ -365,10 +365,12 @@ class NewSessionCommand:
         session = self._get_session()
         await session.new_session()
         mode = "extensions" if session.extensions_mode else "normal"
+        initial_message = " ".join(ctx.args).strip()
         return CommandResult.ok(
             f"New session started ({mode}).",
             action="new_session",
             session_id=session.session_id,
+            initial_message=initial_message,
         )
 
 
@@ -801,6 +803,7 @@ class DebugCommand:
     name: str = "debug"
     description: str = "Run UI debug scenarios"
     accepts_args: bool = True
+    requires_args: bool = True
 
     async def execute(self, ctx: CommandContext) -> CommandResult:
         scenario = ctx.args[0].lower() if ctx.args else ""

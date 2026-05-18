@@ -2421,7 +2421,10 @@ class TauiApp(App[None]):
             )
             # Create a new parallel session tab
             await self.action_new_chat()
-            # The command result below will handle the "new_session" action
+            # Optional initial message: /new <message> starts the new
+            # session and immediately sends <message> as the first user turn.
+            if msg_arg:
+                await self._submit_generated_prompt(msg_arg)
             return
 
         result = await self._commands.execute(cmd)

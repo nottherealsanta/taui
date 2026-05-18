@@ -280,9 +280,9 @@ class TestBuiltinCommands:
         reg = CommandRegistry()
         register_builtins(reg)
 
-        # /i now accepts args (natural-language message required)
+        # /i and /new both accept an optional initial message.
         assert getattr(reg.get("i"), "accepts_args") is True
-        assert getattr(reg.get("new"), "accepts_args") is False
+        assert getattr(reg.get("new"), "accepts_args") is True
         assert getattr(reg.get("model"), "accepts_args") is False
 
     async def test_model_list_has_no_reasoning_icon(self, monkeypatch):
@@ -682,7 +682,13 @@ class TestBuiltinCommands:
 
         reg = CommandRegistry()
         register_builtins(reg)
+        # /debug requires an arg — empty invocation is a no-op (not an error).
         result = await reg.execute("/debug")
+        assert not result.error
+        assert result.output == ""
+
+        # An unrecognized arg still reports usage.
+        result = await reg.execute("/debug nope")
         assert result.error
         assert "/debug questions" in result.output
 
