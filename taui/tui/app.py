@@ -249,7 +249,7 @@ class TauiApp(App[None]):
     }
     #chat-log-container > VerticalScroll {
         height: 1fr;
-        padding: 1 0 1 2;
+        padding: 1 0 0 2;
         scrollbar-size: 0 0;
     }
     #chat-log-container > .hidden-chat-log {
@@ -1826,11 +1826,12 @@ class TauiApp(App[None]):
     # ── Context banner ─────────────────────────────────────────────────
 
     def _build_context_banner_markup(self) -> str:
-        """Render the system prompt + tool list block for the active session.
+        """Render the context-start block (system prompt + tool list) for the active session.
 
-        Tools are shown as a 3-column table: active tools (in the loop's
-        effective registry) are light gray; tools that are available but not
-        active for the current variant are dark gray.
+        This is referred to as the "context-start" banner. Tools are shown as
+        a 3-column table: active tools (in the loop's effective registry) are
+        light gray; tools that are available but not active for the current
+        variant are dark gray.
         """
         if self._session is None:
             return ""
@@ -1889,7 +1890,7 @@ class TauiApp(App[None]):
             )
 
     def _refresh_context_banner(self, session_id: str = "") -> None:
-        """Re-render the banner in place when agent config changes."""
+        """Re-render the context-start banner when agent config changes."""
         state = self._sessions.get(session_id) if session_id else self._sessions.active
         if state is None or state.session is None:
             return
@@ -1899,10 +1900,10 @@ class TauiApp(App[None]):
         if state is not self._sessions.active:
             state.context_banner_shown = False
             return
-        chat_log = self._get_active_chat_log()
         try:
+            chat_log = self._get_active_chat_log()
             banner_widget = chat_log.query_one(".context-banner", Static)
-        except NoMatches:
+        except (NoMatches, Exception):
             return
         markup = self._build_context_banner_markup()
         if markup:
@@ -3096,6 +3097,7 @@ class TauiApp(App[None]):
         self._config.system_prompt = profile.prompt
         self._session.config = self._config
         self._session._system_prompt = profile.prompt
+        self._session._base_system_prompt = profile.prompt
 
         old_loop = self._session._loop
         stream_id = old_loop.stream_id
@@ -3118,6 +3120,10 @@ class TauiApp(App[None]):
         self._session._replace_loop(loop)
         self._wire_callbacks()
         self._update_status()
+        # Refresh context-start banner immediately (synchronous) and also
+        # notify listeners so any other consumers react.
+        self._refresh_context_banner()
+        self._session._notify_config_changed()
 
     def on_key(self, event: Key) -> None:
         """Intercept keys when Info2 is in model/agent mode."""

@@ -384,10 +384,21 @@ class TestTauiApp:
             extensions_mode = False
             self_edit_mode = False
             cost_tracker = FakeTracker()
+            _config_change_listeners: list = []
 
             @property
             def model_name(self):
                 return self.config.model
+
+            def add_config_change_listener(self, cb):
+                self._config_change_listeners.append(cb)
+
+            def _notify_config_changed(self):
+                for cb in self._config_change_listeners:
+                    try:
+                        cb()
+                    except Exception:
+                        pass
 
         fake = FakeSession()
         with patch.object(app_module.Session, "create", AsyncMock(return_value=fake)):
@@ -572,13 +583,25 @@ class TestTauiApp:
             _stream = object()
             _loop = FakeLoop()
             _system_prompt = ""
+            _base_system_prompt = ""
             provider_name = "copilot"
             extensions_mode = False
             self_edit_mode = False
             cost_tracker = CostTracker()
+            _config_change_listeners: list = []
 
             def _replace_loop(self, loop):
                 self._loop = loop
+
+            def add_config_change_listener(self, cb):
+                self._config_change_listeners.append(cb)
+
+            def _notify_config_changed(self):
+                for cb in self._config_change_listeners:
+                    try:
+                        cb()
+                    except Exception:
+                        pass
 
         app = TauiApp(Config(working_dir=tmp_path))
         app._session = FakeSession()
@@ -1530,3 +1553,111 @@ class TestActivityProgress:
 
         assert progress._active_style == "#58a6ff"
         assert any(str(span.style) == "#58a6ff" for span in rendered.spans)
+
+
+# ── Context-start banner update on agent switch ───────────────────────
+
+
+class TestContextStartBanner:
+    def test_banner_reflects_agent_system_prompt(self, tmp_path):
+        """_build_context_banner_markup must reflect current _system_prompt and agent_id."""
+        from taui.config import Config
+        from taui.tools.executor import ToolExecutor, ToolPolicy
+        from taui.tools.registry import ToolRegistry
+
+        class FakeLoop:
+            agent_id = "DEF"
+            _executor = ToolExecutor(registry=ToolRegistry(), policy=ToolPolicy())
+
+        class FakeSession:
+            _system_prompt = "Default agent prompt."
+            _base_system_prompt = "Default agent prompt."
+            _self_edit_prompt = ""
+            _extensions_prompt = ""
+            _registry = ToolRegistry()
+            _loop = FakeLoop()
+            self_edit_mode = False
+            extensions_mode = False
+
+        app = TauiApp(Config(working_dir=tmp_path))
+        app._session = FakeSession()
+
+        banner1 = app._build_context_banner_markup()
+        assert "Default agent prompt" in banner1
+
+        # Simulate agent switch — update prompt and agent_id
+        FakeSession._system_prompt = "You are PLN, a planning agent."
+        FakeLoop.agent_id = "PLN"
+
+        banner2 = app._build_context_banner_markup()
+        assert "PLN" in banner2 or "planning agent" in banner2
+        assert banner1 != banner2, "Context-start banner did not change after agent switch"
+
+    def test_apply_profile_calls_notify_config_changed(self, tmp_path):
+        """_apply_self_edit_profile must call _notify_config_changed."""
+        from taui.config import Config
+        from taui.cost import CostTracker
+        from taui.self_edit.store import AgentProfile
+        from taui.tools.executor import ToolExecutor, ToolPolicy
+        from taui.tools.registry import ToolRegistry
+
+        class FakeConfig:
+            provider = "copilot"
+            model = "claude-haiku-4.5"
+            system_prompt = ""
+            max_turns = 50
+
+        class FakeLoop:
+            agent_id = "DEF"
+            stream_id = "stream-1"
+            _messages = []
+
+        class FakeSession:
+            config = FakeConfig()
+            _provider = object()
+            _registry = ToolRegistry()
+            _executor = ToolExecutor(registry=_registry, policy=ToolPolicy())
+            _stream = object()
+            _loop = FakeLoop()
+            _system_prompt = ""
+            _base_system_prompt = ""
+            provider_name = "copilot"
+            extensions_mode = False
+            self_edit_mode = False
+            cost_tracker = CostTracker()
+            _config_change_listeners: list = []
+            _notified = False
+
+            def _replace_loop(self, loop):
+                self._loop = loop
+
+            def add_config_change_listener(self, cb):
+                self._config_change_listeners.append(cb)
+
+            def _notify_config_changed(self):
+                self._notified = True
+                for cb in self._config_change_listeners:
+                    try:
+                        cb()
+                    except Exception:
+                        pass
+
+        app = TauiApp(Config(working_dir=tmp_path))
+        app._session = FakeSession()
+        app._update_status = MagicMock()
+
+        profile = AgentProfile(
+            id="PLN",
+            name="Planner",
+            prompt="You are PLN, a planning agent.",
+            provider="",
+            model="",
+            allowed_tools=["read", "glob", "grep"],
+        )
+        app._apply_self_edit_profile(profile)
+
+        assert app._session._notified, (
+            "_apply_self_edit_profile did not call _notify_config_changed"
+        )
+        assert app._session._system_prompt == "You are PLN, a planning agent."
+        assert app._session._loop.agent_id == "PLN"

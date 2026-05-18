@@ -102,6 +102,7 @@ class Session:
         self.extensions_mode = False
         self.self_edit_mode = False
         self._system_prompt: str = ""
+        self._base_system_prompt: str = ""  # original prompt before variant overrides
         self._extensions_prompt: str = ""
         self._self_edit_prompt: str = ""
         self._self_edit_executor: ToolExecutor | None = None
@@ -289,6 +290,7 @@ class Session:
         from taui.self_edit.factory import build_self_edit_executor, build_self_edit_system_prompt
 
         session._system_prompt = system_prompt
+        session._base_system_prompt = system_prompt
         session._extensions_prompt = _EXTENSIONS_SYSTEM_PROMPT
         session._lsp_manager = lsp_manager
         session._self_edit_prompt = build_self_edit_system_prompt(config.working_dir)
@@ -617,6 +619,7 @@ class Session:
         if self.hooks.has("system_prompt"):
             prompt = await self.hooks.transform("system_prompt", prompt, None)
         self._system_prompt = prompt
+        self._base_system_prompt = prompt
 
     async def resume_session(self, session_id: str) -> bool:
         """Resume a previous session by replaying its messages."""
@@ -792,6 +795,7 @@ class Session:
             session_id=fork_id,
         )
         forked._system_prompt = self._system_prompt
+        forked._base_system_prompt = self._base_system_prompt
         forked._extensions_prompt = self._extensions_prompt
 
         await self._store.create_session(fork_id, stream_id=fork_stream, model=self.config.model)
@@ -986,8 +990,9 @@ class Session:
         if variant.system_prompt is not None:
             prompt = variant.system_prompt
         else:
-            prompt = self._system_prompt
+            prompt = self._base_system_prompt
 
+        self._system_prompt = prompt
         self._loop._executor = effective_executor
         self._loop.update_system_prompt(prompt)
         self._notify_config_changed()
