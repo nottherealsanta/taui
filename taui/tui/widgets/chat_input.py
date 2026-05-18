@@ -10,6 +10,7 @@ from collections.abc import Callable
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
+from textual.binding import Binding
 from textual.events import Key, Paste
 from textual.message import Message
 from textual.widgets import TextArea
@@ -53,6 +54,85 @@ class ChatInput(TextArea):
         border: none;
     }
     """
+
+    BINDINGS = [
+        # ── Word movement (macOS option/alt + arrow) ─────────────────
+        Binding("alt+left", "cursor_word_left", "Cursor word left", show=False),
+        Binding("alt+right", "cursor_word_right", "Cursor word right", show=False),
+        Binding(
+            "alt+shift+left",
+            "cursor_word_left(True)",
+            "Cursor word left select",
+            show=False,
+        ),
+        Binding(
+            "alt+shift+right",
+            "cursor_word_right(True)",
+            "Cursor word right select",
+            show=False,
+        ),
+        # ── Line movement (cmd / super + arrow on macOS) ─────────────
+        Binding("super+left", "cursor_line_start", "Cursor line start", show=False),
+        Binding("super+right", "cursor_line_end", "Cursor line end", show=False),
+        Binding(
+            "super+shift+left",
+            "cursor_line_start(True)",
+            "Cursor line start select",
+            show=False,
+        ),
+        Binding(
+            "super+shift+right",
+            "cursor_line_end(True)",
+            "Cursor line end select",
+            show=False,
+        ),
+        # ── Document start/end (cmd+up/down) ─────────────────────────
+        Binding(
+            "super+up",
+            "chat_cursor_doc_start",
+            "Cursor document start",
+            show=False,
+        ),
+        Binding(
+            "super+down",
+            "chat_cursor_doc_end",
+            "Cursor document end",
+            show=False,
+        ),
+        Binding(
+            "super+shift+up",
+            "chat_cursor_doc_start_select",
+            "Cursor document start select",
+            show=False,
+        ),
+        Binding(
+            "super+shift+down",
+            "chat_cursor_doc_end_select",
+            "Cursor document end select",
+            show=False,
+        ),
+        # ── Word/line delete (alt/cmd + backspace) ───────────────────
+        Binding(
+            "alt+backspace",
+            "delete_word_left",
+            "Delete word left",
+            show=False,
+        ),
+        Binding(
+            "super+backspace",
+            "delete_to_start_of_line",
+            "Delete to line start",
+            show=False,
+        ),
+        Binding(
+            "alt+delete",
+            "delete_word_right",
+            "Delete word right",
+            show=False,
+        ),
+        # ── Select all (cmd+a — when terminal forwards it) ───────────
+        Binding("super+a", "select_all", "Select all", show=False),
+    ]
 
     class Submitted(Message):
         """Posted when user submits a message."""
@@ -842,6 +922,21 @@ class ChatInput(TextArea):
 
         # ── Default: pass to TextArea ────────────────────────────────
         await super()._on_key(event)
+
+    # ── Document start/end actions (cmd+up / cmd+down) ───────────────
+    def action_chat_cursor_doc_start(self) -> None:
+        self.move_cursor((0, 0), select=False)
+
+    def action_chat_cursor_doc_start_select(self) -> None:
+        self.move_cursor((0, 0), select=True)
+
+    def action_chat_cursor_doc_end(self) -> None:
+        last_row = self.document.line_count - 1
+        self.move_cursor((last_row, len(self.document[last_row])), select=False)
+
+    def action_chat_cursor_doc_end_select(self) -> None:
+        last_row = self.document.line_count - 1
+        self.move_cursor((last_row, len(self.document[last_row])), select=True)
 
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
         """Show or hide the completion dropdown as the text changes."""

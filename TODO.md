@@ -19,7 +19,7 @@ for edit tool output could be diff(up to 10 line) else just show the number of a
 
 - [ ] **Pasted content as attachment.** When multi-line text is pasted into the input, treat it as a collapsible attachment (like pasted images) rather than inline text.
 
-- [ ] **Rich text input movement.** Support VS Code-style text editing in the chat input: shift+arrow for selection, ctrl/cmd+arrow for word-jump, shift+ctrl for word-select, overwrite selected text by typing, etc. Standard editor keybindings that terminals don't provide by default.
+- [x] **Rich text input movement.** Support VS Code-style text editing in the chat input: shift+arrow for selection, ctrl/cmd+arrow for word-jump, shift+ctrl for word-select, overwrite selected text by typing, etc. Standard editor keybindings that terminals don't provide by default.
 
 - [ ] **Question UI: paste support.** The custom answer input field in the question tool UI doesn't support paste — fix it.
 
