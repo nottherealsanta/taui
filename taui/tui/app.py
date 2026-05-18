@@ -1763,13 +1763,20 @@ class TauiApp(App[None]):
             sp = getattr(self._session, "_self_edit_prompt", "") or sp
         elif getattr(self._session, "extensions_mode", False):
             sp = getattr(self._session, "_extensions_prompt", "") or sp
+        agent_id = str(getattr(self._session._loop, "agent_id", "") or "")
+        agent_clr = _agent_color(agent_id) if agent_id else "#58a6ff"
+        bg_clr = "#0d1117" if self.theme == TAUI_DARK.name else "#ffffff"
+        label_style = f"{bg_clr} on {agent_clr}"
+
         if sp:
             lines = sp.splitlines()
             preview = lines[:3]
             if len(lines) > 3:
                 preview.append("...")
             safe_sp = "\n".join(preview).replace("[", "\\[")
-            parts.append(f"[dim bold]System prompt:[/dim bold]\n[dim]{safe_sp}[/dim]")
+            parts.append(
+                f"[{label_style}] System prompt: [/{label_style}]\n[dim]{safe_sp}[/dim]"
+            )
 
         available: list[str] = []
         if hasattr(self._session, "_registry"):
@@ -1784,8 +1791,9 @@ class TauiApp(App[None]):
         if available:
             if parts:
                 parts.append("")
-            parts.append("[dim bold]Tools:[/dim bold]")
+            parts.append(f"[{label_style}] Tools: [/{label_style}]")
             parts.append(_render_tools_table(available, active, columns=3))
+            parts.append("")
 
         return "\n".join(parts)
 
@@ -1932,7 +1940,11 @@ class TauiApp(App[None]):
                 )
                 session._executor = effective
                 session._loop._executor = effective
+            import time as _time
+
+            _send_start = _time.monotonic()
             result = await session.send(text, images=images)
+            _send_elapsed = _time.monotonic() - _send_start
 
             # Finalize any streaming response
             await self._finalize_response(st)
@@ -1959,7 +1971,10 @@ class TauiApp(App[None]):
                 except Exception:
                     tool_count = 0
                 st.current_turn.set_summary(
-                    total_tokens=total_tokens, tool_count=tool_count
+                    total_tokens=total_tokens,
+                    tool_count=tool_count,
+                    model=getattr(session._loop, "_model", ""),
+                    duration_s=_send_elapsed,
                 )
 
             # Turn summary
@@ -2425,6 +2440,7 @@ class TauiApp(App[None]):
                 st.current_turn.set_summary(
                     total_tokens=total,
                     tool_count=turn_tool_count,
+                    model=model,
                 )
             else:
                 await chat_log.mount(footer)

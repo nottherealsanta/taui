@@ -75,24 +75,47 @@ def _preserved_indexes(messages: list[Message]) -> set[int]:
                 preserve.add(i)
                 break
 
-    # Unresolved tool calls — both the assistant message containing
-    # the call and any partial tool results
-    requested: set[str] = set()
-    resolved: set[str] = set()
-    for m in messages:
+    # Tool call integrity — assistant messages with tool_calls and their
+    # matching tool result messages must be dropped together or not at all.
+    # Build a mapping from call_id to the indexes that reference it.
+    call_id_indexes: dict[str, list[int]] = {}
+    for i, m in enumerate(messages):
         if m.tool_calls:
             for tc in m.tool_calls:
-                requested.add(tc.call_id)
+                call_id_indexes.setdefault(tc.call_id, []).append(i)
         if m.role == "tool" and m.tool_call_id:
-            resolved.add(m.tool_call_id)
+            call_id_indexes.setdefault(m.tool_call_id, []).append(i)
 
-    unresolved = requested - resolved
-    if unresolved:
-        for i, m in enumerate(messages):
-            if m.tool_calls and any(tc.call_id in unresolved for tc in m.tool_calls):
-                preserve.add(i)
-            if m.role == "tool" and m.tool_call_id in unresolved:
-                preserve.add(i)
+    # Group indexes that share an assistant message (parallel tool calls).
+    # All indexes in a group must be preserved together.
+    visited: set[int] = set()
+    groups: list[set[int]] = []
+    for i, m in enumerate(messages):
+        if i in visited:
+            continue
+        if not m.tool_calls:
+            continue
+        group = {i}
+        for tc in m.tool_calls:
+            group.update(call_id_indexes.get(tc.call_id, []))
+        groups.append(group)
+        visited.update(group)
+
+    # If any member of a group is already preserved, preserve the whole group.
+    # Also, if the group is incomplete (missing a tool result), preserve it.
+    for group in groups:
+        # Collect call_ids requested by assistant messages in this group
+        requested: set[str] = set()
+        resolved: set[str] = set()
+        for idx in group:
+            m = messages[idx]
+            if m.tool_calls:
+                for tc in m.tool_calls:
+                    requested.add(tc.call_id)
+            if m.role == "tool" and m.tool_call_id:
+                resolved.add(m.tool_call_id)
+        if requested - resolved or group & preserve:
+            preserve.update(group)
 
     return preserve
 

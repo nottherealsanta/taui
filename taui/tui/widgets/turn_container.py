@@ -65,7 +65,7 @@ class TurnContainer(Vertical):
         height: auto;
         layout: horizontal;
         background: $surface;
-        margin: 1 0 0 0;
+        margin: 0;
     }
     TurnContainer > .turn-header > .user-text {
         width: 1fr;
@@ -74,14 +74,15 @@ class TurnContainer(Vertical):
         text-style: bold;
     }
     TurnContainer > .turn-summary {
-        height: 1;
+        height: auto;
         padding: 0 2 0 4;
-        margin: 0 0 0 0;
+        margin: 0;
         color: #6e7681;
     }
     TurnContainer > .turn-body {
         height: auto;
         padding: 0;
+        margin: 1 0 0 0;
     }
     TurnContainer.collapsed > .turn-body { display: none; }
     """
@@ -94,6 +95,8 @@ class TurnContainer(Vertical):
         self.sticky_expanded = False
         self._total_tokens: int = 0
         self._tool_count: int = 0
+        self._model: str = ""
+        self._duration_s: float = 0.0
 
     def compose(self) -> ComposeResult:
         yield Vertical(classes="turn-header")
@@ -116,7 +119,9 @@ class TurnContainer(Vertical):
         except Exception:
             return
         if self.has_class("collapsed"):
-            text = _format_summary(self._total_tokens, self._tool_count)
+            text = _format_summary(
+                self._total_tokens, self._tool_count, self._model, self._duration_s
+            )
             label.display = True
         else:
             text = ""
@@ -157,16 +162,35 @@ class TurnContainer(Vertical):
             self.collapse()
             self.sticky_expanded = False
 
-    def set_summary(self, *, total_tokens: int, tool_count: int) -> None:
+    def set_summary(
+        self,
+        *,
+        total_tokens: int,
+        tool_count: int,
+        model: str = "",
+        duration_s: float = 0.0,
+    ) -> None:
         self._total_tokens = total_tokens
         self._tool_count = tool_count
+        self._model = model
+        self._duration_s = duration_s
         self._refresh_summary()
 
 
-def _format_summary(tokens: int, tools: int) -> str:
+def _format_summary(tokens: int, tools: int, model: str, duration_s: float) -> str:
     if tokens >= 1000:
         tok_str = f"{tokens / 1000:.1f}k tok"
     else:
         tok_str = f"{tokens} tok"
     tool_str = f"{tools} tool{'s' if tools != 1 else ''}"
-    return f"{tok_str} · {tool_str}"
+    parts = [tok_str, tool_str]
+    if model:
+        parts.append(model)
+    if duration_s > 0:
+        if duration_s >= 60:
+            mins = int(duration_s // 60)
+            secs = int(duration_s % 60)
+            parts.append(f"{mins}m{secs}s")
+        else:
+            parts.append(f"{duration_s:.1f}s")
+    return "└ " + " · ".join(parts)
