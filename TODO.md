@@ -4,9 +4,7 @@
 
 - [x] **Dynamic context UI refresh.** The rendered system prompt block (shown at first user message) and tool list should reactively update when agent config changes. Same for permissions and anything else tied to the agent. Currently static after session creation. `update_system_prompt()` exists on `AgentLoop` — wire it to config changes.
 
-- [ ] **Color tweaks.** Self-edit elements should be yellow. Markdown should not default to orange. System prompt and tools headings at top should match the active agent's color — signifying they change with the agent.
-
-- [ ] **Tool rendering.** Better visual styling and per-tool-type structured output: diffs for edit, line numbers for read, tables for grep, trees for repo_overview. Multi-line per tool if needed. when a tool takes a while, for example bash or sub-agent, then show a spinner instead of ✦. 
+- [x] **Tool rendering.** Better visual styling and per-tool-type structured output: diffs for edit, line numbers for read, tables for grep, trees for repo_overview. Multi-line per tool if needed. when a tool takes a while, for example bash or sub-agent, then show a spinner instead of ✦. 
 """
 <tool name> <args>
 <tool output (multi-line if needed)>
@@ -16,3 +14,17 @@ for edit tool output could be diff(up to 10 line) else just show the number of a
 - [ ] **Smart notifications.** In-app Textual toast notifications when taui is the focused window. macOS OS-level notifications when taui is backgrounded (e.g. agent task completion). Needs terminal focus detection (`\e[?1004h` focus reporting) and `osascript` or `terminal-notifier` for OS notifications. use only """ printf "\e]777;notify;Header;Your message here\a" """ for notifications on macos. raise notification when agent finishes, or when asking questions to user. this behaviour is customizable. 
 
 - [x] **research dynamic rendering with widgets** use textual widgets to render. for example, ability to toggle dropdown of the assistant message for every user message - like having a chevron to click to expand/collapse the assistant messages to a particular user message - then auto collapsing for any message older than current_message - 2. or another example is to peek more into every tool output.
+
+- [x] **Change window title.** Dynamically set the terminal window/tab title to reflect current state (e.g., agent name, session info). Use ANSI escape `\e]0;title\a`.
+
+- [ ] **Pasted content as attachment.** When multi-line text is pasted into the input, treat it as a collapsible attachment (like pasted images) rather than inline text.
+
+- [ ] **Rich text input movement.** Support VS Code-style text editing in the chat input: shift+arrow for selection, ctrl/cmd+arrow for word-jump, shift+ctrl for word-select, overwrite selected text by typing, etc. Standard editor keybindings that terminals don't provide by default.
+
+- [ ] **Question UI: paste support.** The custom answer input field in the question tool UI doesn't support paste — fix it.
+
+- [ ] **Question UI: mouse click shouldn't dismiss.** Clicking the custom answer option currently dismisses the question UI prematurely. It should select/focus the custom answer field for editing instead.
+
+- [ ] **Commands with optional args.** Slash commands should support optional arguments. E.g., `/new` starts a fresh session, `/new <message>` starts fresh with an initial message.
+
+- [ ] **Command with required args: no-op on empty enter.** If a slash command requires arguments and the user hits enter without providing them, do nothing (no-op) instead of erroring.

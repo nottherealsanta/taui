@@ -1217,6 +1217,32 @@ class TauiApp(App[None]):
 
     # ── Info bar ──────────────────────────────────────────────────────
 
+    def _set_terminal_title(self, title: str | None = None) -> None:
+        """Set the terminal window/tab title via ANSI escape.
+
+        Textual redirects stdout and uses stderr for terminal I/O, so we write
+        the escape sequence through the app driver when available, falling back
+        to ``sys.__stderr__``.
+        """
+        import sys
+
+        if title is None:
+            # Derive from session description
+            name = ""
+            if self._session:
+                name = str(getattr(self._session, "description", "") or "")
+            title = f"taui — {name}" if name else "taui"
+        escape = f"\033]0;{title}\007"
+        try:
+            driver = getattr(self, "_driver", None)
+            if driver is not None and hasattr(driver, "write"):
+                driver.write(escape)
+            elif sys.__stderr__ is not None:
+                sys.__stderr__.write(escape)
+                sys.__stderr__.flush()
+        except Exception:
+            pass
+
     def _update_status(self) -> None:
         if not self._session:
             return
@@ -1237,6 +1263,7 @@ class TauiApp(App[None]):
             pass
         self._refresh_command_completions()
         self._refresh_sidebars_if_visible()
+        self._set_terminal_title()
 
     def _refresh_sidebars_if_visible(self) -> None:
         from taui.tui.widgets.session_info_sidebar import SessionInfoSidebar
@@ -1818,7 +1845,7 @@ class TauiApp(App[None]):
         agent_id = str(getattr(self._session._loop, "agent_id", "") or "")
         agent_clr = _agent_color(agent_id) if agent_id else "#58a6ff"
         bg_clr = "#0d1117" if self.theme == TAUI_DARK.name else "#ffffff"
-        label_style = f"{bg_clr} on {agent_clr}"
+        label_style = f"bold {bg_clr} on {agent_clr}"
 
         if sp:
             lines = sp.splitlines()
@@ -1827,7 +1854,7 @@ class TauiApp(App[None]):
                 preview.append("...")
             safe_sp = "\n".join(preview).replace("[", "\\[")
             parts.append(
-                f"[{label_style}] System prompt: [/{label_style}]\n[dim]{safe_sp}[/dim]"
+                f"[{label_style}]System prompt[/{label_style}]\n[dim]{safe_sp}[/dim]"
             )
 
         available: list[str] = []
@@ -1843,7 +1870,7 @@ class TauiApp(App[None]):
         if available:
             if parts:
                 parts.append("")
-            parts.append(f"[{label_style}] Tools: [/{label_style}]")
+            parts.append(f"[{label_style}]Tools[/{label_style}]")
             parts.append(_render_tools_table(available, active, columns=3))
             parts.append("")
 
@@ -2608,6 +2635,8 @@ class TauiApp(App[None]):
     # ── Actions ───────────────────────────────────────────────────────
 
     async def action_quit_app(self) -> None:
+        # Reset terminal title
+        self._set_terminal_title("")
         # Close all sessions
         for sid in list(self._sessions.order):
             state = self._sessions.get(sid)
