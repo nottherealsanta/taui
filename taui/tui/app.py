@@ -436,6 +436,11 @@ class TauiApp(App[None]):
         # Folders attached the same way — expanded as a tree listing.
         self._pending_folders: list[Path] = []
 
+        # Window focus state — terminals send AppFocus/AppBlur via DEC
+        # mode 1004 (Textual enables this by default). Assume focused at
+        # startup; AppBlur flips it.
+        self._window_focused: bool = True
+
     # ── Backward-compatible property accessors ────────────────────────
     # These delegate to the active SessionState so the rest of the code
     # (which was written for single-session) keeps working unchanged.
@@ -2075,6 +2080,16 @@ class TauiApp(App[None]):
             state.is_processing = False
             self._set_busy(False, state)
             self._refresh_tab_bar()
+            # Agent finished — let the user know if they tabbed away.
+            try:
+                agent_id = ""
+                session = state.session
+                if session is not None:
+                    agent_id = str(getattr(session._loop, "agent_id", "") or "")
+                title = f"taui · {agent_id}" if agent_id else "taui"
+                self._notify_user(title, "Agent finished", kind="done")
+            except Exception:
+                pass
 
     async def _do_send(
         self,
@@ -2333,6 +2348,58 @@ class TauiApp(App[None]):
             await chat_log.mount(widget, before=footer)
         else:
             await chat_log.mount(widget)
+
+    # ── Notifications ─────────────────────────────────────────────────
+
+    def on_app_focus(self) -> None:
+        self._window_focused = True
+
+    def on_app_blur(self) -> None:
+        self._window_focused = False
+
+    def _notify_user(
+        self,
+        header: str,
+        message: str,
+        *,
+        kind: str = "info",
+    ) -> None:
+        """Surface an event to the user, in-app or via the OS.
+
+        - When the terminal window has focus → Textual toast (`notify`).
+        - When the terminal is backgrounded → OSC 777 escape, which iTerm2
+          / WezTerm / Kitty translate into a real system notification.
+
+        ``kind`` is one of {"info", "question", "done"} and gates which
+        events fire based on the user's config flags.
+        """
+        cfg = self._config
+        if not getattr(cfg, "notifications", True):
+            return
+        if kind == "done" and not getattr(cfg, "notify_on_turn_done", True):
+            return
+        if kind == "question" and not getattr(cfg, "notify_on_question", True):
+            return
+        # Clip the message body — system banners get truncated anyway and
+        # printing huge payloads can confuse the terminal escape parser.
+        body = message.replace("\n", " ").replace("\r", " ")
+        if len(body) > 200:
+            body = body[:197] + "…"
+        head = header.replace(";", ":")
+        if self._window_focused:
+            try:
+                self.notify(body, title=head, timeout=4.0)
+            except Exception:
+                pass
+            return
+        # Backgrounded — fall back to OSC 777 so the OS shows a banner.
+        try:
+            import sys
+
+            sys.stdout.write(f"\x1b]777;notify;{head};{body}\x07")
+            sys.stdout.flush()
+        except Exception:
+            pass
 
     # ── Smart scroll ──────────────────────────────────────────────────
 

@@ -81,6 +81,13 @@ class ApprovalController:
         self._active_questions_panel = panel
         try:
             self._app._smart_scroll()
+            # Notify the user — they need to answer before the agent can
+            # continue, so this is a "please look at me" moment.
+            try:
+                first = specs[0][0] if specs else "Question"
+                self._app._notify_user("Question", first, kind="question")
+            except Exception:
+                pass
             return await panel.wait_for_answers()
         finally:
             if self._active_questions_panel is panel:

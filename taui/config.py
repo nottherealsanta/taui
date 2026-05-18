@@ -55,6 +55,10 @@ class Config:
     theme: dict = field(default_factory=dict)  # style overrides
     keybindings: dict = field(default_factory=dict)  # custom keybindings
     extension_dirs: list[str] = field(default_factory=list)
+    # Notifications: in-app toast when focused, OS-level when backgrounded.
+    notifications: bool = True
+    notify_on_turn_done: bool = True
+    notify_on_question: bool = True
 
     @classmethod
     def load(cls, **overrides) -> Config:
@@ -82,6 +86,9 @@ class Config:
             val = taui_cfg["extension_dirs"]
             if isinstance(val, list):
                 kwargs["extension_dirs"] = val
+        for fld in ("notifications", "notify_on_turn_done", "notify_on_question"):
+            if fld in taui_cfg:
+                kwargs[fld] = bool(taui_cfg[fld])
 
         # CLI/env overrides win
         kwargs.update({k: v for k, v in overrides.items() if v is not None})
