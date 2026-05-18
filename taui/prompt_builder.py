@@ -350,6 +350,7 @@ _CORE_GUIDELINES = [
     "Be concise in your responses",
     "Show file paths clearly when working with files",
     "IMPORTANT: Call `session_name` with a 2-6 word label after the user's first message",
+    "When multiple independent lookups are needed, call tools in parallel rather than sequentially",
 ]
 
 # Safety guidelines always present

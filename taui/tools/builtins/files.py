@@ -336,8 +336,11 @@ class GrepTool:
         except ValueError as e:
             return ToolResult.fail(str(e))
 
-        if not base.is_dir():
-            return ToolResult.fail(f"Not a directory: {base}")
+        single_file = False
+        if base.is_file():
+            single_file = True
+        elif not base.is_dir():
+            return ToolResult.fail(f"Path not found: {base}")
 
         try:
             regex = re.compile(arguments["pattern"])
@@ -349,12 +352,17 @@ class GrepTool:
         files_matched: set[str] = set()
         max_matches = 500
 
-        for filepath in sorted(base.rglob("*")):
+        if single_file:
+            candidates = iter([base])
+        else:
+            candidates = sorted(base.rglob("*"))
+
+        for filepath in candidates:
             if not filepath.is_file():
                 continue
             if any(part in SKIP_DIRS for part in filepath.parts):
                 continue
-            if include and not fnmatch.fnmatch(filepath.name, include):
+            if not single_file and include and not fnmatch.fnmatch(filepath.name, include):
                 continue
             if is_binary(filepath):
                 continue
