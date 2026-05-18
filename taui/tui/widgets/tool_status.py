@@ -204,9 +204,9 @@ class ToolStatusWidget(Widget):
         try:
             view = DiffView(
                 path, path, before, after,
-                split=False,
+                split=True,
                 annotations=True,
-                wrap=False,
+                wrap=True,
                 classes="tool-diff-view",
             )
             await self.mount(view)

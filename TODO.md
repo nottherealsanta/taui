@@ -33,7 +33,7 @@ for edit tool output could be diff(up to 10 line) else just show the number of a
 
 - [x] **`@` file/folder reference should be lazy.** When `@`-mentioning a file or folder, only keep the reference (the path) in context — don't inline the entire file content. The model can then choose to use the read tool if it needs the contents.
 
-- [ ] **Enable word wrap in edit diff rendering.** Diff output for edit tools should wrap long lines instead of clipping or horizontal scrolling. Default to "split" (side-by-side) diff mode.
+- [x] **Enable word wrap in edit diff rendering.** Diff output for edit tools should wrap long lines instead of clipping or horizontal scrolling. Default to "split" (side-by-side) diff mode.
 
 - [ ] **Faster `/new` session creation.** Reduce the time it takes to go from `/new` to a fully ready new session.
 
