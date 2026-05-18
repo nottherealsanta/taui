@@ -35,7 +35,7 @@ for edit tool output could be diff(up to 10 line) else just show the number of a
 
 - [x] **Enable word wrap in edit diff rendering.** Diff output for edit tools should wrap long lines instead of clipping or horizontal scrolling. Default to "split" (side-by-side) diff mode.
 
-- [ ] **Faster `/new` session creation.** Reduce the time it takes to go from `/new` to a fully ready new session.
+- [x] **Faster `/new` session creation.** Reduce the time it takes to go from `/new` to a fully ready new session.
 
 - [x] **Remove `/session` command.** Only keep `/sessions` (plural); remove the singular `/session` variant.
 

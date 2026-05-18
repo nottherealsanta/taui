@@ -2412,8 +2412,16 @@ class TauiApp(App[None]):
             prior_agent_id = str(
                 getattr(self._session._loop, "agent_id", "") or ""
             )
-            # Create a new parallel session tab
-            await self.action_new_chat()
+            # In-place reset: keep the provider, tools, extensions and store
+            # connection alive and just rotate the session id + loop. Much
+            # faster than rebuilding a parallel session via action_new_chat,
+            # and matches what users expect from `/new` (the current chat
+            # disappears; a fresh one is ready immediately).
+            await self._reset_current_session()
+            if prior_agent_id:
+                self._reapply_agent_profile(prior_agent_id)
+            self._wire_callbacks()
+            self._update_status()
             # Optional initial message: /new <message> starts the new
             # session and immediately sends <message> as the first user turn.
             if msg_arg:
@@ -2765,6 +2773,32 @@ class TauiApp(App[None]):
                 except Exception:
                     pass
         self.exit()
+
+    async def _reset_current_session(self) -> None:
+        """Fast in-place reset of the active session.
+
+        Reuses the existing provider, tool registry, executor, extensions,
+        store, and stream — only the agent loop and session id are rotated.
+        Visually clears the chat log so the new session starts fresh.
+        """
+        if self._session is None:
+            return
+        await self._session.new_session()
+        try:
+            chat_log = self._get_active_chat_log()
+            await chat_log.remove_children()
+        except Exception:
+            pass
+        st = self._sessions.active
+        if st is not None:
+            st.turns = []
+            st.current_turn = None
+            st.reply_footer = None
+            st.session_id = self._session.session_id
+            st.queued.clear()
+        self._context_banner_shown = False
+        self._pending_files.clear()
+        self._pending_folders.clear()
 
     async def action_new_chat(self) -> None:
         """Create a new parallel session tab (does NOT cancel existing sessions)."""
