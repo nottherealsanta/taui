@@ -754,6 +754,14 @@ class ChatInput(TextArea):
                         trailing_space=True,
                     )
                     return value, accepts_args
+                # No-arg commands (e.g. /model, /agents, /sessions) act as
+                # openers — submit immediately so the picker is the only
+                # entry point. This avoids dual-triggering the inline arg
+                # completion dropdown alongside the picker.
+                if not accepts_args:
+                    self._replace_text_from_completion(value, trailing_space=False)
+                    self._do_submit()
+                    return value, accepts_args
                 self._replace_text_from_completion(value, trailing_space=True)
                 return value, accepts_args
         except Exception:

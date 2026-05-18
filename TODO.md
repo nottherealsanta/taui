@@ -29,7 +29,7 @@ for edit tool output could be diff(up to 10 line) else just show the number of a
 
 - [x] **Command with required args: no-op on empty enter.** If a slash command requires arguments and the user hits enter without providing them, do nothing (no-op) instead of erroring.
 
-- [ ] **`/agents` and `/models` dual trigger fix.** Currently typing `/agents` or `/models` fully + space shows results in the info bar, AND selecting them from the command palette also triggers. Selecting agents/models from the command palette should open the info2 panel for selection instead.
+- [x] **`/agents` and `/models` dual trigger fix.** Currently typing `/agents` or `/models` fully + space shows results in the info bar, AND selecting them from the command palette also triggers. Selecting agents/models from the command palette should open the info2 panel for selection instead.
 
 - [ ] **`@` file/folder reference should be lazy.** When `@`-mentioning a file or folder, only keep the reference (the path) in context — don't inline the entire file content. The model can then choose to use the read tool if it needs the contents.
 
