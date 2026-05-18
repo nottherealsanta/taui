@@ -219,6 +219,8 @@ __marimo__/
 
 archive/
 
+tmp/
+
 .DS_Store
 
 example/

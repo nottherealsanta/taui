@@ -78,6 +78,19 @@ class ChatInput(TextArea):
     class InputCleared(Message):
         """Posted when the user double-presses Escape to clear input."""
 
+    class AtAttachRequested(Message):
+        """Posted when the user accepts an `@` completion.
+
+        The app should attach *path* as a pill, expanding the file contents
+        or folder listing into the prompt at submit time (the same shape used
+        by sidebar-picked attachments).
+        """
+
+        def __init__(self, path: str, is_dir: bool) -> None:
+            super().__init__()
+            self.path = path
+            self.is_dir = is_dir
+
     class CancelRequested(Message):
         """Posted when user presses Escape with empty input to cancel streaming."""
 
@@ -98,6 +111,13 @@ class ChatInput(TextArea):
         self._pending_images: list[str] = []
         # Track last escape press time for double-escape detection
         self._last_escape_time: float = 0.0
+        # `@` file/folder completion. The completer takes the prefix string
+        # typed after `@` and returns (relpath, is_dir) pairs. When active,
+        # ``_at_range`` is (start, end) char offsets of the `@token` span in
+        # ``self.text`` and ``_at_is_dir`` maps relpath → is_dir for accept.
+        self._at_completer: Callable[[str], list[tuple[str, bool]]] | None = None
+        self._at_range: tuple[int, int] | None = None
+        self._at_is_dir: dict[str, bool] = {}
 
     def set_completions(self, completions: list[tuple[str, str] | Completion]) -> None:
         """Set available completions.
@@ -132,6 +152,52 @@ class ChatInput(TextArea):
             self._arg_completers.pop(name, None)
             return
         self._arg_completers[name] = completer
+
+    def set_at_completer(
+        self,
+        completer: Callable[[str], list[tuple[str, bool]]] | None,
+    ) -> None:
+        """Install completion for `@<file-or-folder>` references."""
+        self._at_completer = completer
+
+    def _cursor_text_offset(self) -> int:
+        """Return the cursor position as a character offset into ``self.text``."""
+        row, col = self.cursor_location
+        text = self.text
+        if row == 0:
+            return min(col, len(text))
+        offset = 0
+        for i, line in enumerate(text.split("\n")):
+            if i == row:
+                return offset + min(col, len(line))
+            offset += len(line) + 1
+        return min(offset, len(text))
+
+    def _at_token_at_cursor(self) -> tuple[int, int, str] | None:
+        """Return ``(start, end, prefix)`` for the `@token` containing the cursor.
+
+        The cursor must be inside (or at the right edge of) a contiguous run
+        of non-whitespace characters that begins with `@`. The `@` itself must
+        be at the start of the text or be immediately preceded by whitespace.
+        Returns ``None`` when no such token exists.
+        """
+        text = self.text
+        offset = self._cursor_text_offset()
+        # Walk backwards from cursor to find the start of the current token.
+        i = offset
+        while i > 0 and not text[i - 1].isspace():
+            i -= 1
+        # i is now the start of the token.
+        if i >= len(text) or text[i] != "@":
+            return None
+        # The `@` must be at start-of-text or preceded by whitespace.
+        if i > 0 and not text[i - 1].isspace():
+            return None
+        # Walk forward from offset to find the end of the token.
+        j = offset
+        while j < len(text) and not text[j].isspace():
+            j += 1
+        return i, j, text[i + 1: j]
 
     def load_history(self, messages: list[str]) -> None:
         """Load message history (newest first) for Up/Down navigation."""
@@ -285,6 +351,101 @@ class ChatInput(TextArea):
         if completer is None:
             return []
         return completer(prefix)
+
+    def _show_at_completion(self) -> bool:
+        """Show file/folder completions for the `@token` under the cursor.
+
+        Returns True when the dropdown was shown (and the slash-command path
+        should be skipped), False otherwise.
+        """
+        from taui.tui.widgets.info2 import Info2
+
+        if self._at_completer is None:
+            return False
+        token = self._at_token_at_cursor()
+        if token is None:
+            self._at_range = None
+            return False
+        start, end, prefix = token
+        matches = self._at_completer(prefix)
+        if not matches:
+            # Keep tracking the range so the user can keep typing without
+            # the panel re-opening from a stale state on the next keystroke.
+            self._at_range = (start, end)
+            self._at_is_dir = {}
+            self._dismiss_completion()
+            return True
+        self._at_range = (start, end)
+        self._at_is_dir = {path: is_dir for path, is_dir in matches}
+        items: list[Completion] = []
+        for path, is_dir in matches:
+            label = f"{path}/" if is_dir else path
+            desc = "folder" if is_dir else "file"
+            items.append((label, desc, is_dir))
+        try:
+            info2 = self.app.query_one(Info2)
+            info2.show_completions(items, prefix="@")
+            self._completion_active = True
+        except Exception:
+            pass
+        return True
+
+    def _accept_at_completion(self) -> bool:
+        """Accept the highlighted `@` completion: rewrite token, post attach.
+
+        Returns True when a completion was accepted.
+        """
+        from taui.tui.widgets.info2 import Info2
+
+        if self._at_range is None:
+            return False
+        try:
+            info2 = self.app.query_one(Info2)
+            value = info2.current_value
+        except Exception:
+            value = None
+        if not value:
+            return False
+
+        display = value.rstrip("/")
+        is_dir = self._at_is_dir.get(display, value.endswith("/"))
+        start, end = self._at_range
+        text = self.text
+        # Strip the `@token` (and one trailing space if present so we don't
+        # leave a double space).
+        cut_end = end
+        if cut_end < len(text) and text[cut_end] == " ":
+            cut_end += 1
+        new_text = text[:start] + text[cut_end:]
+        self._updating_completion_text = True
+        try:
+            self.clear()
+            self.insert(new_text)
+            # Place the cursor where the `@token` used to be.
+            self._move_cursor_to_offset(start)
+        finally:
+            self._updating_completion_text = False
+        self._at_range = None
+        self._at_is_dir = {}
+        self._dismiss_completion()
+        self.post_message(self.AtAttachRequested(display, is_dir))
+        return True
+
+    def _move_cursor_to_offset(self, offset: int) -> None:
+        """Move the cursor to a character offset within ``self.text``."""
+        text = self.text
+        offset = max(0, min(offset, len(text)))
+        row = 0
+        col = offset
+        for line in text.split("\n"):
+            if col <= len(line):
+                break
+            col -= len(line) + 1
+            row += 1
+        try:
+            self.move_cursor((row, col))
+        except Exception:
+            pass
 
     def _show_completion(self) -> None:
         """Show the completion dropdown with matching commands."""
@@ -505,6 +666,7 @@ class ChatInput(TextArea):
 
         # ── Completion keys ──────────────────────────────────────────
         if self._completion_active:
+            at_active = self._at_range is not None
             if event.key in ("up", "down"):
                 from taui.tui.widgets.info2 import Info2
 
@@ -523,7 +685,10 @@ class ChatInput(TextArea):
             if event.key == "enter":
                 event.prevent_default()
                 event.stop()
-                self._submit_selected_completion()
+                if at_active:
+                    self._accept_at_completion()
+                else:
+                    self._submit_selected_completion()
                 return
 
             if event.key == "tab":
@@ -531,6 +696,9 @@ class ChatInput(TextArea):
 
                 event.prevent_default()
                 event.stop()
+                if at_active:
+                    self._accept_at_completion()
+                    return
                 try:
                     info2 = self.app.query_one(Info2)
                     if info2.mode == Info2Mode.COMPLETIONS:
@@ -544,6 +712,7 @@ class ChatInput(TextArea):
             if event.key == "escape":
                 event.prevent_default()
                 event.stop()
+                self._at_range = None
                 self._dismiss_completion()
                 return
 
@@ -678,6 +847,11 @@ class ChatInput(TextArea):
         """Show or hide the completion dropdown as the text changes."""
         if self._updating_completion_text:
             return
+        # `@` completion takes priority over slash completion so users can
+        # type `@<file>` while still composing a message.
+        if self._show_at_completion():
+            return
+        self._at_range = None
         text = self.text
         if text.startswith("/") and (
             " " not in text[1:] or self._command_arg_prefix() is not None

@@ -871,6 +871,7 @@ class TauiApp(App[None]):
         chat_input.load_history(self._history)
         chat_input.set_model_completer(self._complete_model_arg)
         chat_input.set_arg_completer("agents", self._complete_agents_arg)
+        chat_input.set_at_completer(self._complete_at_attachment)
         self._refresh_command_completions()
         chat_input.can_submit = True
 
@@ -1081,6 +1082,22 @@ class TauiApp(App[None]):
                 continue
             matches.append((agent.id, agent.name, False))
         return matches
+
+    def _complete_at_attachment(self, prefix: str) -> list[tuple[str, bool]]:
+        """Complete `@<file>` references with files/folders from the project."""
+        completer = self._ensure_at_completer()
+        return completer.complete(prefix)
+
+    def _ensure_at_completer(self):
+        """Return the cached AtCompleter for the current working directory."""
+        from taui.tui.widgets.at_completer import AtCompleter
+
+        existing = getattr(self, "_at_completer_inst", None)
+        root = self._config.working_dir
+        if existing is None or existing._root != root:
+            existing = AtCompleter(root)
+            self._at_completer_inst = existing
+        return existing
 
     def _apply_default_agent_profile(self) -> None:
         """Apply DEF as the normal-mode default when starting a fresh session."""
@@ -1623,6 +1640,39 @@ class TauiApp(App[None]):
             Static(self._self_edit_scope_line(new_scope), markup=True)
         )
         self._update_status()
+
+    @on(ChatInput.AtAttachRequested)
+    async def handle_at_attach_requested(
+        self,
+        event: ChatInput.AtAttachRequested,
+    ) -> None:
+        """Add a file/folder picked via `@`-autocomplete as a pill.
+
+        The pill carries the absolute path; on submit the same expansion logic
+        used for sidebar-picked attachments folds the contents into the prompt.
+        """
+        root = self._config.working_dir
+        path = (root / event.path).resolve()
+        try:
+            path.relative_to(root)
+        except ValueError:
+            # Refuse paths that escape the project root.
+            return
+        bar = self.query_one(AttachmentsBar)
+        if event.is_dir:
+            if not path.is_dir():
+                return
+            if bar.find_index(kind="folder", data=str(path)) >= 0:
+                return
+            bar.add(path.name, str(path), kind="folder")
+            self._pending_folders.append(path)
+        else:
+            if not path.is_file():
+                return
+            if bar.find_index(kind="file", data=str(path)) >= 0:
+                return
+            bar.add(path.name, str(path), kind="file")
+            self._pending_files.append(path)
 
     @on(ChatInput.ImageAttached)
     async def handle_image_attached(
