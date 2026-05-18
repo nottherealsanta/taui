@@ -21,9 +21,9 @@ for edit tool output could be diff(up to 10 line) else just show the number of a
 
 - [x] **Rich text input movement.** Support VS Code-style text editing in the chat input: shift+arrow for selection, ctrl/cmd+arrow for word-jump, shift+ctrl for word-select, overwrite selected text by typing, etc. Standard editor keybindings that terminals don't provide by default.
 
-- [ ] **Question UI: paste support.** The custom answer input field in the question tool UI doesn't support paste — fix it.
+- [x] **Question UI: paste support.** The custom answer input field in the question tool UI doesn't support paste — fix it.
 
-- [ ] **Question UI: mouse click shouldn't dismiss.** Clicking the custom answer option currently dismisses the question UI prematurely. It should select/focus the custom answer field for editing instead.
+- [x] **Question UI: mouse click shouldn't dismiss.** Clicking the custom answer option currently dismisses the question UI prematurely. It should select/focus the custom answer field for editing instead.
 
 - [x] **Commands with optional args.** Slash commands should support optional arguments. E.g., `/new` starts a fresh session, `/new <message>` starts fresh with an initial message.
 

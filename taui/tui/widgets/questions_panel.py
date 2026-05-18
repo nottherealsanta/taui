@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from rich.text import Text
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
-from textual.events import Key
+from textual.events import Key, Paste
 from textual.message import Message
 from textual.widget import Widget
 from textual.widgets import Label, OptionList
@@ -42,11 +42,13 @@ class QuestionOptionList(OptionList):
             option_list: QuestionOptionList,
             key: str,
             character: str | None,
+            paste_text: str | None = None,
         ) -> None:
             super().__init__()
             self.option_list = option_list
             self.key = key
             self.character = character
+            self.paste_text = paste_text
 
     _custom_active: bool = False
 
@@ -79,9 +81,11 @@ class QuestionOptionList(OptionList):
                 event.prevent_default()
                 self.post_message(self.CustomEdited(self, "", None))
             else:
-                self._custom_active = False
                 event.stop()
                 event.prevent_default()
+                # Keep _custom_active=True through action_select so the
+                # panel can tell a real submission from a stray click that
+                # only highlighted the row.
                 self.action_select()
             return
         if event.character or event.key in {"backspace", "delete"}:
@@ -90,6 +94,30 @@ class QuestionOptionList(OptionList):
             event.stop()
             event.prevent_default()
             self.post_message(self.CustomEdited(self, event.key, event.character))
+
+    def activate(self) -> None:
+        """Programmatically enter typing mode for the custom row."""
+        if not self._custom_active:
+            self._custom_active = True
+            self.post_message(self.CustomEdited(self, "", None))
+
+    async def _on_paste(self, event: Paste) -> None:
+        """Append pasted text to the custom answer when the row is focused."""
+        if self.highlighted != self.custom_index:
+            return
+        text = event.text
+        if not text:
+            return
+        # Strip newlines — the custom row is a single-line field.
+        cleaned = text.replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
+        if not cleaned:
+            return
+        if not self._custom_active:
+            self._custom_active = True
+        event.stop()
+        event.prevent_default()
+        self.post_message(self.CustomEdited(self, "", None, paste_text=cleaned))
+
 
 
 class QuestionsPanel(Widget):
@@ -359,7 +387,9 @@ class QuestionsPanel(Widget):
     ) -> None:
         event.stop()
         i = self._current
-        if event.key in {"backspace", "delete"}:
+        if event.paste_text:
+            self._custom_answers[i] += event.paste_text
+        elif event.key in {"backspace", "delete"}:
             self._custom_answers[i] = self._custom_answers[i][:-1]
         elif event.character:
             self._custom_answers[i] += event.character
@@ -383,6 +413,31 @@ class QuestionsPanel(Widget):
         spec = self._specs[i]
         opts = spec.options or []
         idx = event.option_index
+        ol = getattr(event, "option_list", None)
+        # If the user clicked (or pressed Enter on) the custom row but
+        # hasn't entered typing mode yet, focus the row for editing
+        # instead of submitting an empty answer. Enter while already
+        # active falls through to the normal resolve path.
+        if (
+            idx == len(opts)
+            and isinstance(ol, QuestionOptionList)
+            and not ol.is_custom_active
+        ):
+            event.stop()
+            ol.activate()
+            ol.replace_option_prompt(
+                f"qp-custom-{i}",
+                self._custom_prompt(
+                    i,
+                    len(opts),
+                    active=True,
+                    highlighted=True,
+                ),
+            )
+            return
+        if idx == len(opts) and isinstance(ol, QuestionOptionList):
+            # Leaving editing mode for a real selection.
+            ol._custom_active = False
         self._answers[i] = (
             opts[idx]
             if idx < len(opts)

@@ -1448,6 +1448,36 @@ class TestQuestionsPanel:
 
         assert panel._answers == [None]
 
+    def test_click_on_custom_row_focuses_instead_of_resolving(self):
+        from taui.tui.widgets.questions_panel import QuestionOptionList
+
+        panel = QuestionsPanel([QuestionSpec("Pick", ["a", "b"])])
+
+        # Stand-in for the OptionList that hasn't entered typing mode.
+        class FakeOL(QuestionOptionList):
+            def __init__(self):
+                pass
+
+            def activate(self) -> None:  # type: ignore[override]
+                self._custom_active = True
+
+            def replace_option_prompt(self, *_a, **_kw):
+                return None
+
+        ol = FakeOL()
+        ol._custom_active = False
+
+        class Event:
+            option_index = 2
+            option_list = ol
+
+            def stop(self):
+                return None
+
+        panel.on_option_list_option_selected(Event())  # type: ignore[arg-type]
+        assert ol.is_custom_active
+        assert panel._answers == [None]
+
 
 # ── ContextBreakdownScreen ──────────────────────────────────────────
 
