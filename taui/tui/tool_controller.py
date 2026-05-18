@@ -55,7 +55,9 @@ class ToolController:
                     sid = s_id
                     break
         self._app.post_message(
-            ToolStarted(tool_key, name, args_short, session_id=sid)
+            ToolStarted(
+                tool_key, name, args_short, session_id=sid, arguments=arguments,
+            )
         )
 
         record_edit = getattr(self._app, "_record_edit", None)
@@ -110,7 +112,11 @@ class ToolController:
             self._current_tool_section = Vertical(classes="tool-section")
             await self._app._mount_in_reply(self._current_tool_section, state=st)
 
-        widget = ToolStatusWidget(event.tool_name, event.args_str)
+        widget = ToolStatusWidget(
+            event.tool_name,
+            event.args_str,
+            arguments=getattr(event, "arguments", None) or None,
+        )
         await self._current_tool_section.mount(widget)
         self._active_tool_widgets[event.tool_key] = widget
 
