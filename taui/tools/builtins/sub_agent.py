@@ -59,6 +59,11 @@ class SubAgentTool:
     # text; `_on_text_delta` fires per streaming chunk for real-time updates.
     _on_text: Callable[[str], Awaitable[None]] | None = None
     _on_text_delta: Callable[[str], None] | None = None
+    # Single-shot progress callback fired with a short status string each
+    # time the sub-agent does something visible (streams text, starts a
+    # tool). Set by the parent app so the TUI's '└' progress line stays
+    # up to date even when the sub-agent isn't streaming any text.
+    _on_progress: Callable[[str], None] | None = None
 
     def __post_init__(self):
         if self.schema is None:
@@ -127,6 +132,32 @@ class SubAgentTool:
                     sub._loop._on_text = self._on_text
                 if self._on_text_delta is not None:
                     sub._loop._on_text_delta = self._on_text_delta
+                if self._on_progress is not None:
+                    progress_cb = self._on_progress
+                    buf: list[str] = [""]
+
+                    async def _on_text_progress(text: str) -> None:
+                        buf[0] = ""
+                        progress_cb(text)
+
+                    def _on_delta_progress(fragment: str) -> None:
+                        buf[0] += fragment
+                        progress_cb(buf[0])
+
+                    async def _on_tool_call_progress(
+                        _cid: str, name: str, args: dict
+                    ) -> None:
+                        snippet = ""
+                        if args:
+                            snippet = " ".join(
+                                f"{k}={str(v)[:30]}" for k, v in args.items()
+                            )
+                        progress_cb(f"{name}  {snippet}".strip())
+
+                    sub._loop._on_text = _on_text_progress
+                    sub._loop._on_text_delta = _on_delta_progress
+                    sub._loop._on_tool_call = _on_tool_call_progress
+                    progress_cb("starting…")
                 result = await sub.send(task)
                 return ToolResult.ok(
                     result.text,
