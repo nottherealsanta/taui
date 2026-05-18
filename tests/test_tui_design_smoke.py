@@ -900,17 +900,17 @@ def test_render_folder_listing_prunes_cruft(tmp_path):
     assert "__pycache__" not in listing
 
 
-def test_expand_pending_files_inlines_text_content(tmp_path, monkeypatch):
-    """Text files in _pending_files should be folded into the prompt as
-    fenced code blocks; image files become image data URLs."""
+def test_expand_pending_files_appends_path_references(tmp_path, monkeypatch):
+    """Text files in _pending_files should be appended as `@path`
+    references so the model has the location but not the body."""
     sample = tmp_path / "snippet.py"
     sample.write_text("print('hi')\n")
     app = _make_app(monkeypatch, tmp_path)
     app._pending_files = [sample]
     text, images = app._expand_pending_files("explain this", None)
     assert "explain this" in text
-    assert "snippet.py" in text
-    assert "print('hi')" in text
+    assert "@snippet.py" in text
+    assert "print('hi')" not in text
     assert images is None
 
 

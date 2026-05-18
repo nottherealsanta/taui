@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from collections.abc import Iterable
 from pathlib import Path
@@ -967,10 +968,10 @@ class TauiApp(App[None]):
     ) -> tuple[str, list[str] | None]:
         """Fold sidebar-attached files and folders into the outgoing prompt.
 
-        Text files become fenced code blocks (same shape as `@path` expansion).
-        Image files join the image-attachment channel. Folders are inlined as
-        a `tree`-style listing so the model knows the structure; it can read
-        specific files via tools if needed.
+        Image files join the image-attachment channel (the model can't fetch
+        them via tools). Text files and folders are listed as `@path`
+        references appended to the prompt — the model can call read/grep/ls
+        if it needs the contents. This keeps context lean by default.
         """
         from taui.tui.widgets.chat_input import (
             _IMAGE_EXTENSIONS,
@@ -980,7 +981,7 @@ class TauiApp(App[None]):
         if not self._pending_files and not self._pending_folders:
             return text, images
 
-        text_blocks: list[str] = []
+        refs: list[str] = []
         new_images: list[str] = list(images or [])
         for path in self._pending_files:
             try:
@@ -989,28 +990,23 @@ class TauiApp(App[None]):
                     if data_url:
                         new_images.append(data_url)
                     continue
-                content = path.read_text()
-            except (OSError, UnicodeDecodeError):
+            except OSError:
                 continue
             try:
                 display = path.relative_to(self._config.working_dir)
             except ValueError:
                 display = path
-            text_blocks.append(f"\n```{display}\n{content}\n```\n")
+            refs.append(f"@{display}")
 
         for folder in self._pending_folders:
-            listing = _render_folder_listing(folder)
-            if listing:
-                try:
-                    display = folder.relative_to(self._config.working_dir)
-                except ValueError:
-                    display = folder
-                text_blocks.append(
-                    f"\n```text {display}/\n{listing}\n```\n"
-                )
+            try:
+                display = folder.relative_to(self._config.working_dir)
+            except ValueError:
+                display = folder
+            refs.append(f"@{display}/")
 
-        if text_blocks:
-            text = (text.rstrip() + "\n" + "".join(text_blocks)).strip()
+        if refs:
+            text = (text.rstrip() + "\n" + " ".join(refs)).strip()
         return text, (new_images or None)
 
     def _expand_pending_pastes(self, text: str) -> tuple[str, str]:
@@ -1038,38 +1034,35 @@ class TauiApp(App[None]):
         return expanded, f"  [dim]{markers}[/dim]"
 
     def _expand_file_refs(self, text: str) -> tuple[str, list[str] | None]:
-        """Expand @path references to file contents or image attachments.
+        """Resolve `@path` references.
 
-        Returns (expanded_text, images) where images is a list of data: URLs
-        for any referenced image files, or None if no images were found.
+        Images become inline data-URL attachments (the model can't fetch
+        them via tools). Text files and folders are left as `@path`
+        literals so the path is in context but the body is not — the
+        model can call `read`/`grep` if it needs the contents.
         """
         from taui.tui.widgets.chat_input import _IMAGE_EXTENSIONS, _encode_image_file
 
-        words = text.split()
+        # Preserve whitespace so multi-line @-refs survive intact.
+        tokens = re.split(r"(\s+)", text)
         result: list[str] = []
         images: list[str] = []
-        for word in words:
-            if word.startswith("@") and len(word) > 1:
-                fpath = Path(word[1:])
+        for token in tokens:
+            if token.startswith("@") and len(token) > 1:
+                fpath = Path(token[1:])
                 if not fpath.is_absolute():
                     fpath = self._config.working_dir / fpath
-                if fpath.is_file():
-                    # Check if it's an image file
-                    if fpath.suffix.lower() in _IMAGE_EXTENSIONS:
-                        data_url = _encode_image_file(fpath)
-                        if data_url:
-                            images.append(data_url)
-                            result.append(f"[Image {len(images)}]")
-                            continue
-                    # Text file
-                    try:
-                        content = fpath.read_text()
-                        result.append(f"\n```{fpath.name}\n{content}\n```\n")
+                if (
+                    fpath.is_file()
+                    and fpath.suffix.lower() in _IMAGE_EXTENSIONS
+                ):
+                    data_url = _encode_image_file(fpath)
+                    if data_url:
+                        images.append(data_url)
+                        result.append(f"[Image {len(images)}]")
                         continue
-                    except (OSError, UnicodeDecodeError):
-                        pass
-            result.append(word)
-        return " ".join(result), images or None
+            result.append(token)
+        return "".join(result), images or None
 
     # ── Command registry ──────────────────────────────────────────────
 

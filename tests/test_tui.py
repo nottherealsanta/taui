@@ -672,8 +672,10 @@ class TestFileExpansion:
         config = Config(working_dir=tmp_path)
         app = TauiApp(config)
         result, images = app._expand_file_refs(f"@{f.name}")
-        assert "file content here" in result
-        assert "```test.txt" in result
+        # Text files are now lazy: the path stays in the prompt, the
+        # contents do not. The model can call the read tool if needed.
+        assert result == f"@{f.name}"
+        assert "file content here" not in result
         assert images is None
 
     def test_expand_nonexistent_file(self, tmp_path):
@@ -734,8 +736,10 @@ class TestFileExpansion:
         config = Config(working_dir=tmp_path)
         app = TauiApp(config)
         result, images = app._expand_file_refs("look @notes.txt and @pic.png")
-        assert "```notes.txt" in result
+        # Text path stays as a literal reference; only the image inlines.
+        assert "@notes.txt" in result
         assert "[Image 1]" in result
+        assert "hello" not in result
         assert images is not None
         assert len(images) == 1
 
