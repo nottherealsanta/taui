@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 
 from textual.containers import Vertical
 
-from taui.tui.messages import ToolEnded, ToolProgress, ToolStarted
+from taui.tui.messages import ToolEnded, ToolStarted
 from taui.tui.widgets.tool_status import ToolStatusWidget
 
 if TYPE_CHECKING:
@@ -136,27 +136,6 @@ class ToolController:
         )
         await self._current_tool_section.mount(widget)
         self._active_tool_widgets[event.tool_key] = widget
-
-    def latest_active_widget(self, name: str) -> ToolStatusWidget | None:
-        """Return the most recently mounted still-active widget for `name`.
-
-        Used by long-running tools (e.g. sub_agent) that want to surface
-        an in-flight progress line on their tool row without knowing
-        their own tool_key.
-        """
-        for key in reversed(list(self._active_tool_widgets.keys())):
-            if key.startswith(name + "_"):
-                return self._active_tool_widgets[key]
-        return None
-
-    async def handle_tool_progress(self, event: ToolProgress) -> None:
-        widget: ToolStatusWidget | None = None
-        if event.tool_key:
-            widget = self._active_tool_widgets.get(event.tool_key)
-        if widget is None:
-            widget = self.latest_active_widget(event.tool_name)
-        if widget is not None:
-            widget.set_progress(event.text)
 
     async def handle_tool_ended(self, event: ToolEnded) -> None:
         widget = self._active_tool_widgets.pop(event.tool_key, None)
