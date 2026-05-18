@@ -930,8 +930,16 @@ class TauiApp(App[None]):
         try:
             if self._history_file.exists():
                 lines = self._history_file.read_text().strip().splitlines()
+                # Each line stores `\n` as the literal sequence `\\n`; decode
+                # back to a real newline so recalled messages keep their shape.
+                decoded = [
+                    line.replace("\\\\", "\x00")
+                        .replace("\\n", "\n")
+                        .replace("\x00", "\\")
+                    for line in lines
+                ]
                 # File stores oldest first; we want newest first
-                self._history = list(reversed(lines[-500:]))
+                self._history = list(reversed(decoded[-500:]))
         except Exception:
             self._history = []
 
@@ -943,7 +951,10 @@ class TauiApp(App[None]):
         try:
             self._history_file.parent.mkdir(parents=True, exist_ok=True)
             with self._history_file.open("a") as f:
-                f.write(text.replace("\n", "\\n") + "\n")
+                # Escape backslashes first so `\\n` literals round-trip
+                # cleanly through the newline-encoding step.
+                encoded = text.replace("\\", "\\\\").replace("\n", "\\n")
+                f.write(encoded + "\n")
         except Exception:
             pass
         # Update ChatInput's history
@@ -2154,6 +2165,7 @@ class TauiApp(App[None]):
                     tool_count=tool_count,
                     model=getattr(session._loop, "_model", ""),
                     duration_s=_send_elapsed,
+                    agent_id=str(getattr(session._loop, "agent_id", "") or ""),
                 )
 
             # Turn summary
@@ -2630,6 +2642,7 @@ class TauiApp(App[None]):
                     total_tokens=total,
                     tool_count=turn_tool_count,
                     model=model,
+                    agent_id=agent_id,
                 )
             else:
                 await chat_log.mount(footer)

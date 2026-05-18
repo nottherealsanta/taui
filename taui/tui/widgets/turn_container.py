@@ -97,6 +97,7 @@ class TurnContainer(Vertical):
         self._tool_count: int = 0
         self._model: str = ""
         self._duration_s: float = 0.0
+        self._agent_id: str = ""
 
     def compose(self) -> ComposeResult:
         yield Vertical(classes="turn-header")
@@ -120,7 +121,11 @@ class TurnContainer(Vertical):
             return
         if self.has_class("collapsed"):
             text = _format_summary(
-                self._total_tokens, self._tool_count, self._model, self._duration_s
+                self._total_tokens,
+                self._tool_count,
+                self._model,
+                self._duration_s,
+                self._agent_id,
             )
             label.display = True
         else:
@@ -169,21 +174,32 @@ class TurnContainer(Vertical):
         tool_count: int,
         model: str = "",
         duration_s: float = 0.0,
+        agent_id: str = "",
     ) -> None:
         self._total_tokens = total_tokens
         self._tool_count = tool_count
         self._model = model
         self._duration_s = duration_s
+        self._agent_id = agent_id
         self._refresh_summary()
 
 
-def _format_summary(tokens: int, tools: int, model: str, duration_s: float) -> str:
+def _format_summary(
+    tokens: int,
+    tools: int,
+    model: str,
+    duration_s: float,
+    agent_id: str = "",
+) -> str:
     if tokens >= 1000:
         tok_str = f"{tokens / 1000:.1f}k tok"
     else:
         tok_str = f"{tokens} tok"
     tool_str = f"{tools} tool{'s' if tools != 1 else ''}"
-    parts = [tok_str, tool_str]
+    parts: list[str] = []
+    if agent_id:
+        parts.append(agent_id)
+    parts.extend([tok_str, tool_str])
     if model:
         parts.append(model)
     if duration_s > 0:

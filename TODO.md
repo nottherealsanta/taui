@@ -39,8 +39,8 @@ for edit tool output could be diff(up to 10 line) else just show the number of a
 
 - [x] **Remove `/session` command.** Only keep `/sessions` (plural); remove the singular `/session` variant.
 
-- [ ] **Preserve newlines in user messages.** When rendering user messages in the chat log, display newlines as actual line breaks instead of collapsing them.
+- [x] **Preserve newlines in user messages.** When rendering user messages in the chat log, display newlines as actual line breaks instead of collapsing them.
 
-- [ ] **Show agent ID in collapsed message summary.** Include the agent identifier in the collapsed/summary view of messages.
+- [x] **Show agent ID in collapsed message summary.** Include the agent identifier in the collapsed/summary view of messages.
 
 - [ ] **Auto-update provider models from models.dev.** Pull model metadata from models.dev at least once per day (on startup if stale). Add a `/update-providers-models` slash command to trigger a manual refresh on demand. Cache results locally and update the available models list for all providers.
