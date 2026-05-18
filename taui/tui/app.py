@@ -2450,6 +2450,16 @@ class TauiApp(App[None]):
             )
             return
 
+        if action == "copy_to_clipboard":
+            content = result.metadata.get("clipboard_content", result.output)
+            self.copy_to_clipboard(content)
+            self.notify(result.output, timeout=2.0)
+            return
+
+        if action == "toast":
+            self.notify(result.output, timeout=2.0)
+            return
+
         if action not in ("model_changed", "new_session"):
             style = "yellow" if (result.error or (
                 self._session and self._session.extensions_mode

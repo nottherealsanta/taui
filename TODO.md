@@ -28,3 +28,19 @@ for edit tool output could be diff(up to 10 line) else just show the number of a
 - [ ] **Commands with optional args.** Slash commands should support optional arguments. E.g., `/new` starts a fresh session, `/new <message>` starts fresh with an initial message.
 
 - [ ] **Command with required args: no-op on empty enter.** If a slash command requires arguments and the user hits enter without providing them, do nothing (no-op) instead of erroring.
+
+- [ ] **`/agents` and `/models` dual trigger fix.** Currently typing `/agents` or `/models` fully + space shows results in the info bar, AND selecting them from the command palette also triggers. Selecting agents/models from the command palette should open the info2 panel for selection instead.
+
+- [ ] **`@` file/folder reference should be lazy.** When `@`-mentioning a file or folder, only keep the reference (the path) in context — don't inline the entire file content. The model can then choose to use the read tool if it needs the contents.
+
+- [ ] **Enable word wrap in edit diff rendering.** Diff output for edit tools should wrap long lines instead of clipping or horizontal scrolling. Default to "split" (side-by-side) diff mode.
+
+- [ ] **Faster `/new` session creation.** Reduce the time it takes to go from `/new` to a fully ready new session.
+
+- [ ] **Remove `/session` command.** Only keep `/sessions` (plural); remove the singular `/session` variant.
+
+- [ ] **Preserve newlines in user messages.** When rendering user messages in the chat log, display newlines as actual line breaks instead of collapsing them.
+
+- [ ] **Show agent ID in collapsed message summary.** Include the agent identifier in the collapsed/summary view of messages.
+
+- [ ] **Auto-update provider models from models.dev.** Pull model metadata from models.dev at least once per day (on startup if stale). Add a `/update-providers-models` slash command to trigger a manual refresh on demand. Cache results locally and update the available models list for all providers.

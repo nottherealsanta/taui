@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import subprocess
 import time
 from dataclasses import asdict, dataclass, is_dataclass
 from typing import Any
@@ -584,29 +583,25 @@ class CopyCommand:
             return CommandResult.fail("No session.")
         session = self._get_session()
 
-        context_json = _context_json(session)
         try:
-            subprocess.run(
-                ["pbcopy"], input=context_json.encode(),
-                check=True, timeout=5,
+            context_json = _context_json(session)
+        except Exception as exc:
+            return CommandResult.fail(f"Failed to serialize context: {exc}")
+
+        data = context_json.encode()
+        size_mb = len(data) / (1024 * 1024)
+        if size_mb > 64:
+            return CommandResult.fail(
+                f"Context too large for clipboard ({size_mb:.1f} MB). "
+                "Use /export instead."
             )
-        except FileNotFoundError:
-            # Fallback for non-macOS
-            try:
-                subprocess.run(
-                    ["xclip", "-selection", "clipboard"],
-                    input=context_json.encode(), check=True, timeout=5,
-                )
-            except (FileNotFoundError, subprocess.SubprocessError):
-                return CommandResult.fail(
-                    "Clipboard not available (install pbcopy or xclip)."
-                )
-        except subprocess.SubprocessError as exc:
-            return CommandResult.fail(f"Clipboard error: {exc}")
 
         message_count = len(session._loop._messages)
         return CommandResult.ok(
-            f"Copied context JSON to clipboard ({message_count} messages)."
+            f"Copied context JSON to clipboard ({message_count} messages, "
+            f"{size_mb:.1f} MB).",
+            action="copy_to_clipboard",
+            clipboard_content=context_json,
         )
 
 
@@ -617,6 +612,9 @@ def _context_json(session: Any) -> str:
     else:
         messages = [_message_to_dict(msg) for msg in loop._messages]
 
+    # Strip large base64 image data to keep output manageable
+    messages = _strip_images(messages)
+
     payload = {
         "session_id": getattr(session, "session_id", None),
         "provider": getattr(session, "provider_name", None),
@@ -624,6 +622,33 @@ def _context_json(session: Any) -> str:
         "messages": messages,
     }
     return json.dumps(payload, indent=2, ensure_ascii=False, default=str)
+
+
+def _strip_images(messages: list) -> list:
+    """Replace inline base64 image URLs with a placeholder."""
+    import copy
+
+    result = []
+    for msg in messages:
+        content = msg.get("content") if isinstance(msg, dict) else None
+        if isinstance(content, list):
+            msg = copy.copy(msg)
+            new_blocks = []
+            for block in content:
+                if (
+                    isinstance(block, dict)
+                    and block.get("type") == "image_url"
+                    and isinstance(block.get("image_url"), dict)
+                    and str(block["image_url"].get("url", "")).startswith("data:")
+                ):
+                    new_blocks.append(
+                        {"type": "image_url", "image_url": {"url": "[base64 image stripped]"}}
+                    )
+                else:
+                    new_blocks.append(block)
+            msg["content"] = new_blocks
+        result.append(msg)
+    return result
 
 
 def _message_to_dict(message: Any) -> dict[str, Any]:

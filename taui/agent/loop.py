@@ -211,11 +211,17 @@ class AgentLoop:
 
         try:
             for turn in range(self._max_turns):
+                # Inject any steering messages before calling the LLM
+                self._drain_steering()
+
                 turn_result = await self._think_and_act(turn)
                 turn_results.append(turn_result)
 
-                # If no tool calls, the agent is done
+                # If no tool calls, the agent is done — unless a steer arrived
                 if turn_result.tool_calls_count == 0:
+                    if self._steering_queue:
+                        # Steer arrived during streaming; continue to next turn
+                        continue
                     self.state = AgentState.DONE
                     await self._emit(
                         EventType.STREAM_END,
