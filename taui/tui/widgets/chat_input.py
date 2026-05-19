@@ -453,7 +453,9 @@ class ChatInput(TextArea):
             return
 
         # No image file paths found — let TextArea handle the paste normally.
-        await super()._on_paste(event)
+        # NOTE: don't call super()._on_paste(event) here. Textual's dispatcher
+        # walks the MRO and invokes the parent's _on_paste automatically, so
+        # calling super explicitly would insert the pasted text twice.
 
     class ImageAttached(Message):
         """Posted when images are attached via paste."""

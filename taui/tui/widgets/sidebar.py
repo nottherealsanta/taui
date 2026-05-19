@@ -26,6 +26,20 @@ def _time_ago(ts: float) -> str:
     return f"{int(delta / 86400)}d ago"
 
 
+def _time_ago_short(ts: float) -> str:
+    """Compact form of _time_ago — fits in the sidebar's right gutter."""
+    if ts <= 0:
+        return "—"
+    delta = time.time() - ts
+    if delta < 60:
+        return "now"
+    if delta < 3600:
+        return f"{int(delta / 60)}m"
+    if delta < 86400:
+        return f"{int(delta / 3600)}h"
+    return f"{int(delta / 86400)}d"
+
+
 def _fallback_name(session: dict) -> str:
     """Label for sessions without a description — first user message or created time."""
     first = (session.get("first_message") or "").strip()
@@ -37,27 +51,38 @@ def _fallback_name(session: dict) -> str:
     return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
 
 
+_ROW_WIDTH = 32  # usable width of a row inside the sidebar (px-ish chars)
+
+
 def _build_session_row_text(session: dict, *, is_current: bool) -> Text:
     """Render a session row's two-line label.
 
-    Line 1: ● / ○ indicator + the session description (the "name").
-    Line 2: the session id (dim gray) followed by msg count and time-ago.
+    Layout (per row, two lines):
+        ● <name truncated to one line>
+          5m · 42m
+
+    Line 1 holds the indicator + the session description. Line 2 carries the
+    compact time-ago and message count, dimmed.
     """
     text = Text()
     indicator = "●" if is_current else "○"
     indicator_style = "#3fb950" if is_current else "#6e7681"
-    text.append(f"{indicator} ", style=indicator_style)
-    sid = str(session.get("session_id", ""))
     desc = str(session.get("description") or _fallback_name(session))
-    if len(desc) > 26:
-        desc = desc[:25] + "…"
     msgs = int(session.get("message_count", 0) or 0)
-    ago = _time_ago(float(session.get("last_active", 0) or 0))
+    ago_short = _time_ago_short(float(session.get("last_active", 0) or 0))
+
     name_style = "bold #e6edf3" if is_current else "#c9d1d9"
+    meta_style = "dim #6e7681"
+
+    # Single-line name truncation. 2 cells reserved for "● ".
+    name_avail = _ROW_WIDTH - 2
+    if len(desc) > name_avail:
+        desc = desc[: name_avail - 1] + "…"
+
+    text.append(f"{indicator} ", style=indicator_style)
     text.append(desc, style=name_style)
-    text.append("\n   ")
-    text.append(sid, style="#6e7681")
-    text.append(f"   {msgs}m · {ago}", style="dim #6e7681")
+    text.append("\n  ", style=name_style)
+    text.append(f"{ago_short} · {msgs}m", style=meta_style)
     return text
 
 

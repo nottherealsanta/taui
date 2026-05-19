@@ -2190,6 +2190,9 @@ class TauiApp(App[None]):
             result = await session.send(text, images=images)
             _send_elapsed = _time.monotonic() - _send_start
 
+            if st.reply_footer is not None:
+                st.reply_footer.finalize(_send_elapsed)
+
             # Finalize any streaming response
             await self._finalize_response(st)
 
@@ -2767,7 +2770,7 @@ class TauiApp(App[None]):
             nonlocal turn_user_text, turn_assistant_text
             agent_id = turn_footer_agent_id
             model = turn_footer_model
-            footer = ReplyFooter(agent_id, model)
+            footer = ReplyFooter(agent_id, model, live=False)
             if st is not None and st.current_turn is not None:
                 await st.current_turn.body.mount(footer)
                 total = turn_input_tokens + turn_output_tokens
