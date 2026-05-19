@@ -32,8 +32,18 @@ class AttachmentPill(Static):
     }
     """
 
+    # Width of the trailing " N " / " x " cell, in terminal columns.
+    _GLYPH_WIDTH = 1
+
     class Removed(Message):
         """Posted when the user clicks the X to remove this pill."""
+
+        def __init__(self, index: int) -> None:
+            super().__init__()
+            self.index = index
+
+    class Opened(Message):
+        """Posted when the user clicks the pill's label (body), not the X."""
 
         def __init__(self, index: int) -> None:
             super().__init__()
@@ -48,8 +58,12 @@ class AttachmentPill(Static):
 
     def _refresh_render(self) -> None:
         glyph = "x" if self._hover else str(self.pill_index + 1)
-        body = f" {self.label} {glyph} " if self.label else f" {glyph} "
-        self.update(f"[bold white on #4a4a4a]{body}[/bold white on #4a4a4a]")
+        glyph_markup = f"[bold #ff8c00]{glyph}[/bold #ff8c00]"
+        if self.label:
+            body = f"{self.label} {glyph_markup}"
+        else:
+            body = glyph_markup
+        self.update(body)
 
     def on_enter(self, event: events.Enter) -> None:
         self._hover = True
@@ -60,9 +74,14 @@ class AttachmentPill(Static):
         self._refresh_render()
 
     def on_click(self, event: events.Click) -> None:
-        # Any click removes the pill — the hover state only swaps the
-        # trailing glyph between the pill number and an ``x``.
-        self.post_message(self.Removed(self.pill_index))
+        # The pill is split into a body (the label) and a trailing
+        # single-cell glyph (the number / x). Click on the glyph removes;
+        # click on the label opens (host decides what to do with it).
+        width = self.size.width
+        if not self.label or (width and event.x >= width - self._GLYPH_WIDTH):
+            self.post_message(self.Removed(self.pill_index))
+        else:
+            self.post_message(self.Opened(self.pill_index))
 
 
 class AttachmentsBar(Widget):
@@ -191,8 +210,7 @@ class AttachmentsBar(Widget):
         """
         if item.kind == "paste":
             tokens = max(1, len(item.data) // 4)
-            k = max(1, (tokens + 999) // 1000)
-            return f"pasted {k}k"
+            return f"pasted {tokens}t"
         if item.kind == "image":
             return f"Image {image_seq}"
         if item.kind == "folder":
@@ -225,3 +243,16 @@ class AttachmentsBar(Widget):
             self.post_message(
                 self.Cleared(event.index, kind=removed.kind, data=removed.data)
             )
+
+    def on_attachment_pill_opened(self, event: AttachmentPill.Opened) -> None:
+        """Handle a click on the pill's label body.
+
+        For paste pills, re-post a ``PasteOpened`` carrying the data so the
+        host can show the editor modal. Other kinds have no detail view,
+        so the body click is a no-op.
+        """
+        event.stop()
+        if 0 <= event.index < len(self._items):
+            item = self._items[event.index]
+            if item.kind == "paste":
+                self.post_message(self.PasteOpened(event.index, item.data))

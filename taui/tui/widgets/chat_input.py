@@ -4,16 +4,19 @@ from __future__ import annotations
 
 import base64
 import mimetypes
+import re
 import shutil
 import sys
 from collections.abc import Callable
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
+from rich.style import Style
 from textual.binding import Binding
 from textual.events import Key, Paste
 from textual.message import Message
 from textual.widgets import TextArea
+from textual.widgets.text_area import TextAreaTheme
 
 Completion = tuple[str, str, bool]
 
@@ -180,6 +183,9 @@ class ChatInput(TextArea):
     class CancelRequested(Message):
         """Posted when user presses Escape with empty input to cancel streaming."""
 
+    _ATTACHMENT_MARKER_RE = re.compile(r"\[\d+\]")
+    _ATTACHMENT_THEME_NAME = "taui-attachment-overlay"
+
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.can_submit: bool = False
@@ -289,6 +295,62 @@ class ChatInput(TextArea):
             j += 1
         return i, j, text[i + 1: j]
 
+    def on_mount(self) -> None:
+        """Register a theme that paints ``[N]`` attachment markers orange.
+
+        Textual's TextArea only applies "highlights" when a theme is set and
+        the highlight name appears in that theme's ``syntax_styles``. We
+        clone the default ``css`` theme (so cursor / selection / etc. keep
+        coming from CSS as before) and add the ``attachment_marker`` style.
+        """
+        try:
+            base = TextAreaTheme.get_builtin_theme("css")
+            base_styles = dict(base.syntax_styles) if base else {}
+            base_styles["attachment_marker"] = Style(
+                color="#ff8c00", bold=True
+            )
+            overlay = TextAreaTheme(
+                name=self._ATTACHMENT_THEME_NAME,
+                base_style=base.base_style if base else None,
+                gutter_style=base.gutter_style if base else None,
+                cursor_style=base.cursor_style if base else None,
+                cursor_line_style=base.cursor_line_style if base else None,
+                cursor_line_gutter_style=(
+                    base.cursor_line_gutter_style if base else None
+                ),
+                bracket_matching_style=(
+                    base.bracket_matching_style if base else None
+                ),
+                selection_style=base.selection_style if base else None,
+                syntax_styles=base_styles,
+            )
+            self.register_theme(overlay)
+            self.theme = self._ATTACHMENT_THEME_NAME
+        except Exception:
+            # Theming is purely cosmetic — never block startup on it.
+            pass
+
+    def _build_highlight_map(self) -> None:
+        """Mark every ``[N]`` token as ``attachment_marker`` for paint pass."""
+        super()._build_highlight_map()
+        try:
+            line_count = self.document.line_count
+        except Exception:
+            return
+        for line_idx in range(line_count):
+            try:
+                line = self.document.get_line(line_idx)
+            except Exception:
+                continue
+            for match in self._ATTACHMENT_MARKER_RE.finditer(line):
+                # Highlights live in byte offsets — convert from char offsets
+                # so we stay correct when the line contains non-ASCII text.
+                start_byte = len(line[: match.start()].encode("utf-8"))
+                end_byte = len(line[: match.end()].encode("utf-8"))
+                self._highlights[line_idx].append(
+                    (start_byte, end_byte, "attachment_marker")
+                )
+
     def load_history(self, messages: list[str]) -> None:
         """Load message history (newest first) for Up/Down navigation."""
         self._history_messages = messages
@@ -396,8 +458,6 @@ class ChatInput(TextArea):
         Mirrors the renumbering ``AttachmentsBar`` does when a pill is
         removed at position ``n-1`` and all later pills slide left.
         """
-        import re
-
         text = self.text
         target = f"[{n}]"
         idx = text.find(target)

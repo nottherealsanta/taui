@@ -598,3 +598,41 @@ def test_parallel_sessions_two_tabs(snap_compare, tmp_path, monkeypatch):
         pilot.app._session = None
 
     assert snap_compare(app, run_before=setup, terminal_size=(100, 30))
+
+
+def test_attachment_pills_with_paste_and_image(snap_compare, tmp_path, monkeypatch):
+    """Visual snapshot: attachments bar with a paste pill + an image pill.
+
+    The chat input also holds the matching ``[1]`` and ``[2]`` markers — the
+    snapshot captures both the pill styling (label + orange number) and the
+    in-buffer orange tokens.
+    """
+    from textual.events import Paste
+
+    from taui.tui.widgets.chat_input import ChatInput
+
+    provider = scenarios.happy_path("(unused)")
+    app = use_scripted_provider(monkeypatch, tmp_path, provider)
+
+    async def setup(pilot: Pilot) -> None:
+        await _wait_until_ready(pilot)
+        chat_input = pilot.app.query_one("#chat-input", ChatInput)
+        chat_input.focus()
+        await pilot.pause()
+        # Multi-line paste → pill
+        chat_input.post_message(Paste("\n".join(f"line {i}" for i in range(10))))
+        await pilot.pause()
+        # Pre-stage a clipboard image attachment so the bar shows two pills.
+        chat_input._pending_images.append("data:image/png;base64,iVBORw0K")
+        chat_input.post_message(
+            ChatInput.ImageAttached(1, "data:image/png;base64,iVBORw0K")
+        )
+        await pilot.pause()
+        await pilot.pause()
+        # Type some plain text between the markers so the [1] / [2] tokens
+        # appear with surrounding context.
+        chat_input.insert(" look at ", location=(0, 3))
+        await pilot.pause()
+        await _close_cleanly(pilot)
+
+    assert snap_compare(app, run_before=setup, terminal_size=(100, 30))
