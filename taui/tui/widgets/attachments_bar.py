@@ -13,13 +13,12 @@ from textual.widgets import Static
 
 
 class AttachmentPill(Static):
-    """A single removable attachment pill rendered as a number badge.
+    """A single removable attachment pill.
 
-    Shows ``[ N ]`` by default and swaps the number for an ``x`` on hover
-    so the same trailing cell doubles as the remove button. When hover
-    isn't reported by the terminal, the user can still click that cell —
-    ``on_click`` treats clicks on the trailing cell as the remove action
-    regardless of hover state.
+    Renders ``<label> <N>`` and swaps the trailing ``N`` for ``x`` on
+    hover so the same cell doubles as the remove button. When hover
+    isn't reported by the terminal, clicking anywhere on the pill still
+    removes it.
     """
 
     DEFAULT_CSS = """
@@ -40,22 +39,17 @@ class AttachmentPill(Static):
             super().__init__()
             self.index = index
 
-    class Opened(Message):
-        """Posted when the user clicks the pill body (not the X)."""
-
-        def __init__(self, index: int) -> None:
-            super().__init__()
-            self.index = index
-
-    def __init__(self, index: int, **kwargs) -> None:
+    def __init__(self, label: str, index: int, **kwargs) -> None:
         super().__init__("", markup=True, **kwargs)
+        self.label = label
         self.pill_index = index
         self._hover = False
         self._refresh_render()
 
     def _refresh_render(self) -> None:
         glyph = "x" if self._hover else str(self.pill_index + 1)
-        self.update(f"[bold white on #4a4a4a] {glyph} [/bold white on #4a4a4a]")
+        body = f" {self.label} {glyph} " if self.label else f" {glyph} "
+        self.update(f"[bold white on #4a4a4a]{body}[/bold white on #4a4a4a]")
 
     def on_enter(self, event: events.Enter) -> None:
         self._hover = True
@@ -66,10 +60,8 @@ class AttachmentPill(Static):
         self._refresh_render()
 
     def on_click(self, event: events.Click) -> None:
-        # Single-cell glyph: any click on the pill removes it. The hover
-        # state only flips the rendered character — clicking always means
-        # "remove" since that's the only thing this pill can do without
-        # cross-pill positional context.
+        # Any click removes the pill — the hover state only swaps the
+        # trailing glyph between the pill number and an ``x``.
         self.post_message(self.Removed(self.pill_index))
 
 
@@ -184,6 +176,28 @@ class AttachmentsBar(Widget):
                 else item
                 for i, item in enumerate(self._items)
             ]
+            self._rebuild()
+
+    @staticmethod
+    def _pill_label(item: "AttachmentsBar.Attachment", image_seq: int) -> str:
+        """Build the body label for a pill.
+
+        - ``paste`` → ``pasted <k>k`` where k is ceil(tokens/1000), min 1.
+          Tokens are estimated as ``nchars // 4`` (consistent with the
+          chat-log ``[Pasted <n>t]`` marker).
+        - ``image`` → ``Image <m>`` where m is the 1-based index over
+          image pills (matches the chat-log ``[Image M]`` label).
+        - ``file`` / ``folder`` → basename, with ``/`` suffix on folders.
+        """
+        if item.kind == "paste":
+            tokens = max(1, len(item.data) // 4)
+            k = max(1, (tokens + 999) // 1000)
+            return f"pasted {k}k"
+        if item.kind == "image":
+            return f"Image {image_seq}"
+        if item.kind == "folder":
+            return f"{item.name}/" if item.name else "folder/"
+        return item.name or "file"
 
     def _rebuild(self) -> None:
         """Rebuild pills from current items."""
@@ -194,8 +208,12 @@ class AttachmentsBar(Widget):
         try:
             container = self.query_one(Horizontal)
             container.remove_children()
-            for i, _item in enumerate(self._items):
-                container.mount(AttachmentPill(i))
+            image_seq = 0
+            for i, item in enumerate(self._items):
+                if item.kind == "image":
+                    image_seq += 1
+                label = self._pill_label(item, image_seq)
+                container.mount(AttachmentPill(label, i))
         except Exception:
             pass
 
@@ -207,15 +225,3 @@ class AttachmentsBar(Widget):
             self.post_message(
                 self.Cleared(event.index, kind=removed.kind, data=removed.data)
             )
-
-    def on_attachment_pill_opened(self, event: AttachmentPill.Opened) -> None:
-        """Handle pill body click — opens a modal for pasted-text pills only.
-
-        Other kinds (image / file / folder) have no detail view, so the body
-        click is a no-op.
-        """
-        event.stop()
-        if 0 <= event.index < len(self._items):
-            item = self._items[event.index]
-            if item.kind == "paste":
-                self.post_message(self.PasteOpened(event.index, item.data))
