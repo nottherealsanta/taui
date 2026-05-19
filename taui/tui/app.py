@@ -2420,11 +2420,21 @@ class TauiApp(App[None]):
                 pass
             return
         # Backgrounded — fall back to OSC 777 so the OS shows a banner.
+        # Textual owns stdout while running, so we write the escape through
+        # the active driver (or stderr as a fallback) — same pattern used by
+        # _set_terminal_title.
+        escape_seq = f"\x1b]777;notify;{head};{body}\x07"
         try:
             import sys
 
-            sys.stdout.write(f"\x1b]777;notify;{head};{body}\x07")
-            sys.stdout.flush()
+            driver = getattr(self, "_driver", None)
+            if driver is not None and hasattr(driver, "write"):
+                driver.write(escape_seq)
+                if hasattr(driver, "flush"):
+                    driver.flush()
+            elif sys.__stderr__ is not None:
+                sys.__stderr__.write(escape_seq)
+                sys.__stderr__.flush()
         except Exception:
             pass
 
