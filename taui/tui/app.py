@@ -2113,20 +2113,20 @@ class TauiApp(App[None]):
             self._set_busy(False, state)
             self._refresh_tab_bar()
             # Agent finished — let the user know if they tabbed away.
-            # The terminal prepends its own app name to the banner, so the
-            # OSC 777 "header" field should be a short context tag (the
-            # agent id) — not another "taui" prefix. The body falls back to
-            # "Agent finished" but prefers the session description when set,
-            # so the user gets a meaningful summary at a glance.
+            # macOS notifications stack three lines:
+            #   header  → OSC 777 title (small, top)
+            #   title   → terminal window title (bold, middle)
+            #   body    → OSC 777 body (regular, bottom)
+            # The window title already carries the session description, so
+            # the OSC 777 body should be a status string (not the same
+            # description again). Use the header to brand the app.
             try:
                 agent_id = ""
-                description = ""
                 session = state.session
                 if session is not None:
                     agent_id = str(getattr(session._loop, "agent_id", "") or "")
-                    description = str(getattr(session, "description", "") or "").strip()
-                title = agent_id or "Agent"
-                body = description or "Agent finished"
+                title = f"TAUI · {agent_id}" if agent_id else "TAUI"
+                body = "Agent finished"
                 # In-app toast only fires for background sessions — the
                 # user is already looking at the active tab, so a banner
                 # there would be noise.
