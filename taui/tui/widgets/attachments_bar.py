@@ -12,58 +12,65 @@ from textual.widget import Widget
 from textual.widgets import Static
 
 
-class AttachmentPill(Static):
-    """A single removable attachment pill.
+class _PillLabel(Static):
+    """Label portion of a pill (e.g. ``pasted 17t``).
 
-    Renders ``<label> <N>`` and swaps the trailing ``N`` for ``x`` on
-    hover so the same cell doubles as the remove button. When hover
-    isn't reported by the terminal, clicking anywhere on the pill still
-    removes it.
+    Clicking it posts ``AttachmentPill.Opened`` so the host can show a
+    detail view (paste editor). It carries no hover state — only the
+    trailing badge changes appearance on hover.
     """
 
     DEFAULT_CSS = """
-    AttachmentPill {
+    _PillLabel {
         height: 1;
         width: auto;
-        padding: 0;
-        margin: 0 1 0 0;
+        padding: 0 1 0 0;
         background: $background;
         color: $text;
     }
     """
 
-    # Width of the trailing " N " / " x " cell, in terminal columns.
-    _GLYPH_WIDTH = 1
+    def __init__(self, label: str, pill_index: int, **kwargs) -> None:
+        super().__init__(label, **kwargs)
+        self.pill_index = pill_index
 
-    class Removed(Message):
-        """Posted when the user clicks the X to remove this pill."""
+    def on_click(self, event: events.Click) -> None:
+        event.stop()
+        self.post_message(AttachmentPill.Opened(self.pill_index))
 
-        def __init__(self, index: int) -> None:
-            super().__init__()
-            self.index = index
 
-    class Opened(Message):
-        """Posted when the user clicks the pill's label (body), not the X."""
+class _PillBadge(Static):
+    """Number / hover-X badge — the only hover-sensitive part of a pill.
 
-        def __init__(self, index: int) -> None:
-            super().__init__()
-            self.index = index
+    Renders ``N`` on a light-gray block with horizontal padding; swaps
+    to ``x`` while the pointer is over it. Clicking always removes the
+    pill (the badge IS the remove button — the hover swap is purely a
+    visual hint).
+    """
 
-    def __init__(self, label: str, index: int, **kwargs) -> None:
+    DEFAULT_CSS = """
+    _PillBadge {
+        height: 1;
+        width: auto;
+        padding: 0 1;
+        margin: 0;
+        background: #666666;
+        color: #ff8c00;
+    }
+    _PillBadge:hover {
+        background: #7a7a7a;
+    }
+    """
+
+    def __init__(self, pill_index: int, **kwargs) -> None:
         super().__init__("", markup=True, **kwargs)
-        self.label = label
-        self.pill_index = index
+        self.pill_index = pill_index
         self._hover = False
         self._refresh_render()
 
     def _refresh_render(self) -> None:
         glyph = "x" if self._hover else str(self.pill_index + 1)
-        glyph_markup = f"[bold #ff8c00]{glyph}[/bold #ff8c00]"
-        if self.label:
-            body = f"{self.label} {glyph_markup}"
-        else:
-            body = glyph_markup
-        self.update(body)
+        self.update(f"[bold]{glyph}[/bold]")
 
     def on_enter(self, event: events.Enter) -> None:
         self._hover = True
@@ -74,14 +81,44 @@ class AttachmentPill(Static):
         self._refresh_render()
 
     def on_click(self, event: events.Click) -> None:
-        # The pill is split into a body (the label) and a trailing
-        # single-cell glyph (the number / x). Click on the glyph removes;
-        # click on the label opens (host decides what to do with it).
-        width = self.size.width
-        if not self.label or (width and event.x >= width - self._GLYPH_WIDTH):
-            self.post_message(self.Removed(self.pill_index))
-        else:
-            self.post_message(self.Opened(self.pill_index))
+        event.stop()
+        self.post_message(AttachmentPill.Removed(self.pill_index))
+
+
+class AttachmentPill(Horizontal):
+    """A composed pill: optional label + a hover-sensitive number badge."""
+
+    DEFAULT_CSS = """
+    AttachmentPill {
+        height: 1;
+        width: auto;
+        margin: 0 1 0 0;
+    }
+    """
+
+    class Removed(Message):
+        """Posted when the user clicks the badge to remove this pill."""
+
+        def __init__(self, index: int) -> None:
+            super().__init__()
+            self.index = index
+
+    class Opened(Message):
+        """Posted when the user clicks the pill's label, not the badge."""
+
+        def __init__(self, index: int) -> None:
+            super().__init__()
+            self.index = index
+
+    def __init__(self, label: str, index: int, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.label = label
+        self.pill_index = index
+
+    def compose(self) -> ComposeResult:
+        if self.label:
+            yield _PillLabel(self.label, self.pill_index)
+        yield _PillBadge(self.pill_index)
 
 
 class AttachmentsBar(Widget):
