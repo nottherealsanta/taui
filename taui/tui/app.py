@@ -1284,6 +1284,11 @@ class TauiApp(App[None]):
         Textual redirects stdout and uses stderr for terminal I/O, so we write
         the escape sequence through the app driver when available, falling back
         to ``sys.__stderr__``.
+
+        The terminal already shows its own app name (Ghostty, iTerm2, …) in
+        the tab decoration, and macOS notifications echo this title, so we
+        drop the "taui — " prefix and use the session description alone —
+        that avoids "taui · X / taui — Y" duplication in OS banners.
         """
         import sys
 
@@ -1292,7 +1297,7 @@ class TauiApp(App[None]):
             name = ""
             if self._session:
                 name = str(getattr(self._session, "description", "") or "")
-            title = f"taui — {name}" if name else "taui"
+            title = name or "taui"
         escape = f"\033]0;{title}\007"
         try:
             driver = getattr(self, "_driver", None)
