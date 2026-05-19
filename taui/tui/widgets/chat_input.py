@@ -4,16 +4,19 @@ from __future__ import annotations
 
 import base64
 import mimetypes
+import re
 import shutil
 import sys
 from collections.abc import Callable
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
+from rich.style import Style
 from textual.binding import Binding
 from textual.events import Key, Paste
 from textual.message import Message
 from textual.widgets import TextArea
+from textual.widgets.text_area import TextAreaTheme
 
 Completion = tuple[str, str, bool]
 
@@ -180,6 +183,9 @@ class ChatInput(TextArea):
     class CancelRequested(Message):
         """Posted when user presses Escape with empty input to cancel streaming."""
 
+    _ATTACHMENT_MARKER_RE = re.compile(r"\[\d+\]")
+    _ATTACHMENT_THEME_NAME = "taui-attachment-overlay"
+
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.can_submit: bool = False
@@ -289,6 +295,62 @@ class ChatInput(TextArea):
             j += 1
         return i, j, text[i + 1: j]
 
+    def on_mount(self) -> None:
+        """Register a theme that paints ``[N]`` attachment markers orange.
+
+        Textual's TextArea only applies "highlights" when a theme is set and
+        the highlight name appears in that theme's ``syntax_styles``. We
+        clone the default ``css`` theme (so cursor / selection / etc. keep
+        coming from CSS as before) and add the ``attachment_marker`` style.
+        """
+        try:
+            base = TextAreaTheme.get_builtin_theme("css")
+            base_styles = dict(base.syntax_styles) if base else {}
+            base_styles["attachment_marker"] = Style(
+                color="#ff8c00", bold=True
+            )
+            overlay = TextAreaTheme(
+                name=self._ATTACHMENT_THEME_NAME,
+                base_style=base.base_style if base else None,
+                gutter_style=base.gutter_style if base else None,
+                cursor_style=base.cursor_style if base else None,
+                cursor_line_style=base.cursor_line_style if base else None,
+                cursor_line_gutter_style=(
+                    base.cursor_line_gutter_style if base else None
+                ),
+                bracket_matching_style=(
+                    base.bracket_matching_style if base else None
+                ),
+                selection_style=base.selection_style if base else None,
+                syntax_styles=base_styles,
+            )
+            self.register_theme(overlay)
+            self.theme = self._ATTACHMENT_THEME_NAME
+        except Exception:
+            # Theming is purely cosmetic — never block startup on it.
+            pass
+
+    def _build_highlight_map(self) -> None:
+        """Mark every ``[N]`` token as ``attachment_marker`` for paint pass."""
+        super()._build_highlight_map()
+        try:
+            line_count = self.document.line_count
+        except Exception:
+            return
+        for line_idx in range(line_count):
+            try:
+                line = self.document.get_line(line_idx)
+            except Exception:
+                continue
+            for match in self._ATTACHMENT_MARKER_RE.finditer(line):
+                # Highlights live in byte offsets — convert from char offsets
+                # so we stay correct when the line contains non-ASCII text.
+                start_byte = len(line[: match.start()].encode("utf-8"))
+                end_byte = len(line[: match.end()].encode("utf-8"))
+                self._highlights[line_idx].append(
+                    (start_byte, end_byte, "attachment_marker")
+                )
+
     def load_history(self, messages: list[str]) -> None:
         """Load message history (newest first) for Up/Down navigation."""
         self._history_messages = messages
@@ -384,6 +446,44 @@ class ChatInput(TextArea):
         """Remove all pending paste attachments."""
         self._pending_pastes.clear()
 
+    # ── Attachment markers ([N] tokens in the buffer) ─────────────────
+
+    def insert_attachment_marker(self, n: int) -> None:
+        """Insert ``[n]`` at the cursor."""
+        self.insert(f"[{n}]")
+
+    def remove_attachment_marker(self, n: int) -> None:
+        """Remove ``[n]`` from the buffer and shift higher ``[m>n]`` down by one.
+
+        Mirrors the renumbering ``AttachmentsBar`` does when a pill is
+        removed at position ``n-1`` and all later pills slide left.
+        """
+        text = self.text
+        target = f"[{n}]"
+        idx = text.find(target)
+        if idx >= 0:
+            text = text[:idx] + text[idx + len(target):]
+
+        def _shift(match: re.Match[str]) -> str:
+            v = int(match.group(1))
+            return f"[{v - 1}]" if v > n else match.group(0)
+
+        new_text = re.sub(r"\[(\d+)\]", _shift, text)
+        if new_text == self.text:
+            return
+        offset = self._cursor_text_offset()
+        # Best-effort cursor preservation: shift left by the removed marker
+        # if the cursor sat after it.
+        if idx >= 0 and offset > idx:
+            offset = max(idx, offset - len(target))
+        self._updating_completion_text = True
+        try:
+            self.clear()
+            self.insert(new_text)
+            self._move_cursor_to_offset(offset)
+        finally:
+            self._updating_completion_text = False
+
     async def _on_paste(self, event: Paste) -> None:
         """Intercept paste events to detect image file paths.
 
@@ -406,7 +506,7 @@ class ChatInput(TextArea):
             data_url = await asyncio.to_thread(_read_clipboard_image)
             if data_url:
                 self._pending_images.append(data_url)
-                self.post_message(self.ImageAttached(1))
+                self.post_message(self.ImageAttached(1, data_url))
                 return
             if not text:
                 return
@@ -431,13 +531,14 @@ class ChatInput(TextArea):
             remaining_lines.append(line)
 
         if images_found:
-            for img in images_found:
-                self._pending_images.append(img)
-            # Insert remaining non-image text only
+            # Insert remaining non-image text first so attachment markers
+            # follow it at the cursor.
             leftover = "\n".join(remaining_lines).strip()
             if leftover:
                 self.insert(leftover)
-            self.post_message(self.ImageAttached(len(images_found)))
+            for img in images_found:
+                self._pending_images.append(img)
+                self.post_message(self.ImageAttached(1, img))
             event.stop()
             event.prevent_default()
             return
@@ -458,11 +559,17 @@ class ChatInput(TextArea):
         # calling super explicitly would insert the pasted text twice.
 
     class ImageAttached(Message):
-        """Posted when images are attached via paste."""
+        """Posted when an image is attached via paste/clipboard.
 
-        def __init__(self, count: int) -> None:
+        Carries the data URL of the new image so the host can locate the
+        matching pill (the chat input's pending list and the host bar stay
+        in lockstep, but identifying by value is robust to reorderings).
+        """
+
+        def __init__(self, count: int, data_url: str = "") -> None:
             super().__init__()
             self.count = count
+            self.data_url = data_url
 
     class PasteAttached(Message):
         """Posted when a multi-line paste is captured as an attachment.
@@ -899,7 +1006,7 @@ class ChatInput(TextArea):
             data_url = await asyncio.to_thread(_read_clipboard_image)
             if data_url:
                 self._pending_images.append(data_url)
-                self.post_message(self.ImageAttached(1))
+                self.post_message(self.ImageAttached(1, data_url))
             return
 
         # ── Escape ───────────────────────────────────────────────────

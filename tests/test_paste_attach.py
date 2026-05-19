@@ -38,7 +38,7 @@ async def _wait_until_ready(pilot, *, timeout: float = 2.0) -> None:
 
 @pytest.mark.asyncio
 async def test_multi_line_paste_becomes_pill_only(tmp_path, monkeypatch):
-    """Pasting 5+ lines should attach a pill and leave the input empty."""
+    """Pasting 5+ lines attaches a pill and inserts a ``[1]`` marker."""
     app = _make_app(monkeypatch, tmp_path)
     async with app.run_test() as pilot:
         await _wait_until_ready(pilot)
@@ -58,8 +58,8 @@ async def test_multi_line_paste_becomes_pill_only(tmp_path, monkeypatch):
             f"expected one pending paste, got {chat_input.pending_paste_count}"
         )
         assert bar.count == 1, f"expected one pill, got {bar.count}"
-        assert chat_input.text == "", (
-            f"text area should be empty after attach, got {chat_input.text!r}"
+        assert chat_input.text == "[1]", (
+            f"text area should hold the [1] marker, got {chat_input.text!r}"
         )
 
 

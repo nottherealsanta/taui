@@ -858,30 +858,31 @@ class TestAttachmentsBar:
         bar = AttachmentsBar()
         assert bar.count == 0
         bar._items = []  # ensure clean state
-        idx = bar.add("Image 1", "data:image/png;base64,abc")
+        idx = bar.add("data:image/png;base64,abc")
         assert idx == 0
         assert bar.count == 1
-        assert bar.items[0].label == "Image 1"
+        assert bar.items[0].kind == "image"
+        assert bar.items[0].data == "data:image/png;base64,abc"
 
     def test_remove(self):
         from taui.tui.widgets.attachments_bar import AttachmentsBar
         bar = AttachmentsBar()
         bar._items = []
-        bar.add("Image 1", "data:a")
-        bar.add("Image 2", "data:b")
+        bar.add("data:a")
+        bar.add("data:b")
         removed = bar.remove(0)
         assert removed is not None
         assert removed.data == "data:a"
         assert removed.kind == "image"
         assert bar.count == 1
-        assert bar.items[0].label == "Image 2"
+        assert bar.items[0].data == "data:b"
 
     def test_clear_all(self):
         from taui.tui.widgets.attachments_bar import AttachmentsBar
         bar = AttachmentsBar()
         bar._items = []
-        bar.add("Image 1", "data:a")
-        bar.add("Image 2", "data:b")
+        bar.add("data:a")
+        bar.add("data:b")
         removed = bar.clear_all()
         assert [a.data for a in removed] == ["data:a", "data:b"]
         assert bar.count == 0
@@ -890,8 +891,8 @@ class TestAttachmentsBar:
         from taui.tui.widgets.attachments_bar import AttachmentsBar
         bar = AttachmentsBar()
         bar._items = []
-        bar.add("foo.py", "/tmp/foo.py", kind="file")
-        bar.add("Image 1", "data:img")
+        bar.add("/tmp/foo.py", kind="file", name="foo.py")
+        bar.add("data:img")
         assert bar.find_index(kind="file", data="/tmp/foo.py") == 0
         assert bar.find_index(kind="image", data="data:img") == 1
         assert bar.find_index(kind="file", data="data:img") == -1
