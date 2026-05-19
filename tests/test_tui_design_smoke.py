@@ -723,8 +723,7 @@ async def test_files_tab_click_adds_pill(tmp_path, monkeypatch):
         assert bar.count == 1, "first toggle did not add a pill"
         assert bar.items[0].kind == "file"
         assert bar.items[0].data == str(sample.resolve())
-        # Pill label is just the basename, not the full path.
-        assert bar.items[0].label == "hello.txt"
+        assert bar.items[0].name == "hello.txt"
         assert Path(str(sample.resolve())) in pilot.app._pending_files
 
         # Second toggle removes
@@ -791,7 +790,7 @@ async def test_folder_toggle_adds_folder_pill(tmp_path, monkeypatch):
         bar = pilot.app.query_one(AttachmentsBar)
         assert bar.count == 1
         assert bar.items[0].kind == "folder"
-        assert bar.items[0].label == "src"
+        assert bar.items[0].name == "src"
         assert folder.resolve() in pilot.app._pending_folders
 
         # Second toggle removes
@@ -859,10 +858,10 @@ async def test_files_tree_selection_actually_adds_pill(tmp_path, monkeypatch):
         bar = pilot.app.query_one(AttachmentsBar)
         assert bar.count == 1, (
             f"expected one pill after selecting hello.txt, got {bar.count}; "
-            f"items={[item.label for item in bar.items]}"
+            f"items={[item.name for item in bar.items]}"
         )
         assert bar.items[0].kind == "file"
-        assert bar.items[0].label == "hello.txt"
+        assert bar.items[0].name == "hello.txt"
         await _close_cleanly(pilot)
 
 
@@ -900,18 +899,68 @@ def test_render_folder_listing_prunes_cruft(tmp_path):
     assert "__pycache__" not in listing
 
 
-def test_expand_pending_files_appends_path_references(tmp_path, monkeypatch):
-    """Text files in _pending_files should be appended as `@path`
-    references so the model has the location but not the body."""
+@pytest.mark.asyncio
+async def test_render_bar_attachments_file_substitutes_at_path(tmp_path, monkeypatch):
+    """File pills should substitute ``[N]`` with ``@<relpath>``."""
+    from taui.tui.widgets.attachments_bar import AttachmentsBar
+
     sample = tmp_path / "snippet.py"
     sample.write_text("print('hi')\n")
     app = _make_app(monkeypatch, tmp_path)
-    app._pending_files = [sample]
-    text, images = app._expand_pending_files("explain this", None)
-    assert "explain this" in text
-    assert "@snippet.py" in text
-    assert "print('hi')" not in text
-    assert images is None
+    async with app.run_test() as pilot:
+        await _wait_until_ready(pilot)
+        bar = pilot.app.query_one(AttachmentsBar)
+        bar.add(str(sample.resolve()), kind="file", name="snippet.py")
+        chat_text, llm_text, images = pilot.app._render_bar_attachments(
+            "explain this [1]", None
+        )
+        assert chat_text == "explain this @snippet.py"
+        assert llm_text == "explain this @snippet.py"
+        assert images is None
+        await _close_cleanly(pilot)
+
+
+@pytest.mark.asyncio
+async def test_render_bar_attachments_paste_uses_token_count(tmp_path, monkeypatch):
+    """Paste pills should render ``[Pasted <tokens>t]`` in the chat-log copy."""
+    from taui.tui.widgets.attachments_bar import AttachmentsBar
+
+    app = _make_app(monkeypatch, tmp_path)
+    async with app.run_test() as pilot:
+        await _wait_until_ready(pilot)
+        bar = pilot.app.query_one(AttachmentsBar)
+        paste = "x" * 400  # ~100 tokens at chars/4
+        bar.add(paste, kind="paste")
+        chat_text, llm_text, _ = pilot.app._render_bar_attachments(
+            "see [1] please", None
+        )
+        assert "[Pasted 100t]" in chat_text
+        assert "```text" in llm_text
+        assert paste in llm_text
+        await _close_cleanly(pilot)
+
+
+@pytest.mark.asyncio
+async def test_render_bar_attachments_image_uses_image_label(tmp_path, monkeypatch):
+    """Image pills should render ``[Image M]`` based on image order."""
+    from taui.tui.widgets.attachments_bar import AttachmentsBar
+
+    app = _make_app(monkeypatch, tmp_path)
+    async with app.run_test() as pilot:
+        await _wait_until_ready(pilot)
+        bar = pilot.app.query_one(AttachmentsBar)
+        bar.add("data:image/png;base64,first", kind="image")
+        bar.add("data:image/png;base64,second", kind="image")
+        chat_text, llm_text, images = pilot.app._render_bar_attachments(
+            "[1] then [2]", ["data:image/png;base64,first", "data:image/png;base64,second"]
+        )
+        assert chat_text == "[Image 1] then [Image 2]"
+        assert llm_text == "[Image 1] then [Image 2]"
+        assert images == [
+            "data:image/png;base64,first",
+            "data:image/png;base64,second",
+        ]
+        await _close_cleanly(pilot)
 
 
 # ── Session row: name primary, id in gray ──────────────────────────────

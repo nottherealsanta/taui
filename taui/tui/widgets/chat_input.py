@@ -384,6 +384,46 @@ class ChatInput(TextArea):
         """Remove all pending paste attachments."""
         self._pending_pastes.clear()
 
+    # ── Attachment markers ([N] tokens in the buffer) ─────────────────
+
+    def insert_attachment_marker(self, n: int) -> None:
+        """Insert ``[n]`` at the cursor."""
+        self.insert(f"[{n}]")
+
+    def remove_attachment_marker(self, n: int) -> None:
+        """Remove ``[n]`` from the buffer and shift higher ``[m>n]`` down by one.
+
+        Mirrors the renumbering ``AttachmentsBar`` does when a pill is
+        removed at position ``n-1`` and all later pills slide left.
+        """
+        import re
+
+        text = self.text
+        target = f"[{n}]"
+        idx = text.find(target)
+        if idx >= 0:
+            text = text[:idx] + text[idx + len(target):]
+
+        def _shift(match: re.Match[str]) -> str:
+            v = int(match.group(1))
+            return f"[{v - 1}]" if v > n else match.group(0)
+
+        new_text = re.sub(r"\[(\d+)\]", _shift, text)
+        if new_text == self.text:
+            return
+        offset = self._cursor_text_offset()
+        # Best-effort cursor preservation: shift left by the removed marker
+        # if the cursor sat after it.
+        if idx >= 0 and offset > idx:
+            offset = max(idx, offset - len(target))
+        self._updating_completion_text = True
+        try:
+            self.clear()
+            self.insert(new_text)
+            self._move_cursor_to_offset(offset)
+        finally:
+            self._updating_completion_text = False
+
     async def _on_paste(self, event: Paste) -> None:
         """Intercept paste events to detect image file paths.
 
@@ -406,7 +446,7 @@ class ChatInput(TextArea):
             data_url = await asyncio.to_thread(_read_clipboard_image)
             if data_url:
                 self._pending_images.append(data_url)
-                self.post_message(self.ImageAttached(1))
+                self.post_message(self.ImageAttached(1, data_url))
                 return
             if not text:
                 return
@@ -431,13 +471,14 @@ class ChatInput(TextArea):
             remaining_lines.append(line)
 
         if images_found:
-            for img in images_found:
-                self._pending_images.append(img)
-            # Insert remaining non-image text only
+            # Insert remaining non-image text first so attachment markers
+            # follow it at the cursor.
             leftover = "\n".join(remaining_lines).strip()
             if leftover:
                 self.insert(leftover)
-            self.post_message(self.ImageAttached(len(images_found)))
+            for img in images_found:
+                self._pending_images.append(img)
+                self.post_message(self.ImageAttached(1, img))
             event.stop()
             event.prevent_default()
             return
@@ -458,11 +499,17 @@ class ChatInput(TextArea):
         # calling super explicitly would insert the pasted text twice.
 
     class ImageAttached(Message):
-        """Posted when images are attached via paste."""
+        """Posted when an image is attached via paste/clipboard.
 
-        def __init__(self, count: int) -> None:
+        Carries the data URL of the new image so the host can locate the
+        matching pill (the chat input's pending list and the host bar stay
+        in lockstep, but identifying by value is robust to reorderings).
+        """
+
+        def __init__(self, count: int, data_url: str = "") -> None:
             super().__init__()
             self.count = count
+            self.data_url = data_url
 
     class PasteAttached(Message):
         """Posted when a multi-line paste is captured as an attachment.
@@ -899,7 +946,7 @@ class ChatInput(TextArea):
             data_url = await asyncio.to_thread(_read_clipboard_image)
             if data_url:
                 self._pending_images.append(data_url)
-                self.post_message(self.ImageAttached(1))
+                self.post_message(self.ImageAttached(1, data_url))
             return
 
         # ── Escape ───────────────────────────────────────────────────

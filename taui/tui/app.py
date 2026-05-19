@@ -995,75 +995,89 @@ class TauiApp(App[None]):
 
     # ── @file expansion ───────────────────────────────────────────────
 
-    def _expand_pending_files(
+    def _render_bar_attachments(
         self, text: str, images: list[str] | None
-    ) -> tuple[str, list[str] | None]:
-        """Fold sidebar-attached files and folders into the outgoing prompt.
+    ) -> tuple[str, str, list[str] | None]:
+        """Replace ``[N]`` markers in *text* using attachment-bar items.
 
-        Image files join the image-attachment channel (the model can't fetch
-        them via tools). Text files and folders are listed as `@path`
-        references appended to the prompt — the model can call read/grep/ls
-        if it needs the contents. This keeps context lean by default.
+        Returns ``(chat_log_text, llm_text, images)``:
+
+        - ``[N]`` for paste pills → ``[Pasted <tokens>t]`` in the chat log
+          and a fenced ``text`` block in the LLM-bound message.
+        - ``[N]`` for image pills (clipboard / drag-drop) → ``[Image M]``
+          where M is the image's 1-based position in the final list.
+        - ``[N]`` for file pills → ``[Image M]`` (image suffix) or
+          ``@<relpath>`` otherwise.
+        - ``[N]`` for folder pills → ``@<relpath>/``.
+
+        Image bar pills are already present in *images* (kept in pill
+        order by ``ChatInput``); only sidebar-attached image files are
+        appended here. Tokens are estimated as ``max(1, nchars // 4)``.
         """
         from taui.tui.widgets.chat_input import (
             _IMAGE_EXTENSIONS,
             _encode_image_file,
         )
 
-        if not self._pending_files and not self._pending_folders:
-            return text, images
+        bar = self.query_one(AttachmentsBar)
+        items = bar.items
+        out_images: list[str] = list(images or [])
+        chat_repl: dict[int, str] = {}
+        llm_repl: dict[int, str] = {}
+        image_seq = 0  # 1-based index over image-kind pills
 
-        refs: list[str] = []
-        new_images: list[str] = list(images or [])
-        for path in self._pending_files:
-            try:
-                if path.suffix.lower() in _IMAGE_EXTENSIONS:
+        for i, item in enumerate(items):
+            n = i + 1
+            if item.kind == "image":
+                image_seq += 1
+                label = f"[Image {image_seq}]"
+                chat_repl[n] = label
+                llm_repl[n] = label
+            elif item.kind == "paste":
+                tokens = max(1, len(item.data) // 4)
+                chat_repl[n] = f"[Pasted {tokens}t]"
+                llm_repl[n] = f"\n```text\n{item.data}\n```\n"
+            elif item.kind == "file":
+                path = Path(item.data)
+                is_image = False
+                try:
+                    is_image = path.suffix.lower() in _IMAGE_EXTENSIONS
+                except OSError:
+                    is_image = False
+                if is_image:
                     data_url = _encode_image_file(path)
                     if data_url:
-                        new_images.append(data_url)
-                    continue
-            except OSError:
-                continue
-            try:
-                display = path.relative_to(self._config.working_dir)
-            except ValueError:
-                display = path
-            refs.append(f"@{display}")
+                        out_images.append(data_url)
+                        label = f"[Image {len(out_images)}]"
+                        chat_repl[n] = label
+                        llm_repl[n] = label
+                        continue
+                try:
+                    display = path.relative_to(self._config.working_dir)
+                except ValueError:
+                    display = path
+                ref = f"@{display}"
+                chat_repl[n] = ref
+                llm_repl[n] = ref
+            elif item.kind == "folder":
+                path = Path(item.data)
+                try:
+                    display = path.relative_to(self._config.working_dir)
+                except ValueError:
+                    display = path
+                ref = f"@{display}/"
+                chat_repl[n] = ref
+                llm_repl[n] = ref
 
-        for folder in self._pending_folders:
-            try:
-                display = folder.relative_to(self._config.working_dir)
-            except ValueError:
-                display = folder
-            refs.append(f"@{display}/")
+        def _make_sub(table: dict[int, str]):
+            def _sub(match: re.Match[str]) -> str:
+                v = int(match.group(1))
+                return table.get(v, match.group(0))
+            return _sub
 
-        if refs:
-            text = (text.rstrip() + "\n" + " ".join(refs)).strip()
-        return text, (new_images or None)
-
-    def _expand_pending_pastes(self, text: str) -> tuple[str, str]:
-        r"""Fold pasted-text attachments into the outgoing prompt.
-
-        Returns `(expanded_text, display_note)`:
-        - `expanded_text` has each paste appended as a fenced block so the
-          model sees the full content.
-        - `display_note` is a dim Rich-markup string ("\[Pasted N lines]")
-          to append next to the user message in the chat log so the log
-          stays compact even when large pastes are sent.
-        """
-        try:
-            chat_input = self.query_one(ChatInput)
-        except Exception:
-            return text, ""
-        pastes = chat_input.pending_pastes
-        if not pastes:
-            return text, ""
-        blocks = [f"\n```text\n{p}\n```\n" for p in pastes]
-        expanded = (text.rstrip() + "\n" + "".join(blocks)).strip()
-        markers = " ".join(
-            f"\\[Pasted {p.count(chr(10)) + 1} lines]" for p in pastes
-        )
-        return expanded, f"  [dim]{markers}[/dim]"
+        chat_text = re.sub(r"\[(\d+)\]", _make_sub(chat_repl), text)
+        llm_text = re.sub(r"\[(\d+)\]", _make_sub(llm_repl), text)
+        return chat_text, llm_text, (out_images or None)
 
     def _expand_file_refs(self, text: str) -> tuple[str, list[str] | None]:
         """Resolve `@path` references.
@@ -1658,21 +1672,21 @@ class TauiApp(App[None]):
         text, extra_images = self._expand_file_refs(text)
         if extra_images:
             images = (images or []) + extra_images
-        # Fold sidebar-attached files into the prompt / image list.
-        text, images = self._expand_pending_files(text, images)
+        # Replace [N] bar markers with chat-log / LLM-side expansions.
+        chat_text, send_text, images = self._render_bar_attachments(text, images)
 
         if self._is_processing:
             if event.queue:
                 # Alt+Enter while busy → queue
-                self._queued.append((text, images))
-                self._pending_indicators.append(("q", text))
-                await self._show_indicator("q", text)
+                self._queued.append((send_text, images))
+                self._pending_indicators.append(("q", send_text))
+                await self._show_indicator("q", send_text)
             else:
                 # Enter while busy → steer
                 assert self._session is not None
-                self._session._loop.steer(text)
-                self._pending_indicators.append(("s", text))
-                await self._show_indicator("s", text)
+                self._session._loop.steer(send_text)
+                self._pending_indicators.append(("s", send_text))
+                await self._show_indicator("s", send_text)
             return
 
         # Normal send
@@ -1681,17 +1695,7 @@ class TauiApp(App[None]):
         # Show context banner before the very first message
         await self._maybe_show_context_banner(chat_log)
 
-        if images:
-            labels = " ".join(f"\\[Image {i + 1}]" for i in range(len(images)))
-            image_note = f"  [dim]{labels}[/dim]"
-        else:
-            image_note = ""
-        # Pastes: expand into the outbound text but show only a marker in the
-        # chat log so big pastes don't dominate the scroll.
-        send_text, paste_note = self._expand_pending_pastes(text)
-        await self._begin_turn(
-            text, image_note + paste_note, chat_log=chat_log
-        )
+        await self._begin_turn(chat_text, "", chat_log=chat_log)
         # Clear the attachments bar (and pending file/folder/paste lists) after submit
         self.query_one(AttachmentsBar).clear_all()
         self._pending_files.clear()
@@ -1761,44 +1765,47 @@ class TauiApp(App[None]):
             # Refuse paths that escape the project root.
             return
         bar = self.query_one(AttachmentsBar)
+        chat_input = self.query_one(ChatInput)
         if event.is_dir:
             if not path.is_dir():
                 return
             if bar.find_index(kind="folder", data=str(path)) >= 0:
                 return
-            bar.add(path.name, str(path), kind="folder")
+            idx = bar.add(str(path), kind="folder", name=path.name)
             self._pending_folders.append(path)
+            chat_input.insert_attachment_marker(idx + 1)
         else:
             if not path.is_file():
                 return
             if bar.find_index(kind="file", data=str(path)) >= 0:
                 return
-            bar.add(path.name, str(path), kind="file")
+            idx = bar.add(str(path), kind="file", name=path.name)
             self._pending_files.append(path)
+            chat_input.insert_attachment_marker(idx + 1)
 
     @on(ChatInput.ImageAttached)
     async def handle_image_attached(
         self,
         event: ChatInput.ImageAttached,
     ) -> None:
-        """Add pills to the attachments bar for newly attached images."""
+        """Add a pill and an inline ``[N]`` marker for a newly attached image."""
         chat_input = self.query_one(ChatInput)
         bar = self.query_one(AttachmentsBar)
-        # Sync bar with pending images — add pills for new ones
-        existing = bar.count
-        for i in range(existing, chat_input.pending_image_count):
-            idx = i + 1
-            bar.add(f"Image {idx}", chat_input._pending_images[i])
+        if event.data_url and bar.find_index(kind="image", data=event.data_url) >= 0:
+            return
+        idx = bar.add(event.data_url, kind="image")
+        chat_input.insert_attachment_marker(idx + 1)
 
     @on(ChatInput.PasteAttached)
     async def handle_paste_attached(
         self,
         event: ChatInput.PasteAttached,
     ) -> None:
-        """Add a paste pill for a captured multi-line paste."""
+        """Add a paste pill and an inline ``[N]`` marker for a captured paste."""
         bar = self.query_one(AttachmentsBar)
-        line_count = event.text.count("\n") + 1
-        bar.add(f"Pasted ({line_count} lines)", event.text, kind="paste")
+        chat_input = self.query_one(ChatInput)
+        idx = bar.add(event.text, kind="paste")
+        chat_input.insert_attachment_marker(idx + 1)
 
     @on(AttachmentsBar.PasteOpened)
     async def handle_paste_opened(
@@ -1823,6 +1830,7 @@ class TauiApp(App[None]):
                 if not result.text:
                     if bar_idx >= 0:
                         bar.remove(bar_idx)
+                        chat_input.remove_attachment_marker(bar_idx + 1)
                     if input_idx >= 0:
                         chat_input.pop_paste(input_idx)
                     return
@@ -1830,8 +1838,6 @@ class TauiApp(App[None]):
                     chat_input.update_paste(input_idx, result.text)
                 if bar_idx >= 0:
                     bar.update_data(bar_idx, result.text)
-                    n = result.text.count("\n") + 1
-                    bar.update_label(bar_idx, f"Pasted ({n} lines)")
                 return
 
             # action == "insert"
@@ -1839,6 +1845,7 @@ class TauiApp(App[None]):
                 chat_input.pop_paste(input_idx)
             if bar_idx >= 0:
                 bar.remove(bar_idx)
+                chat_input.remove_attachment_marker(bar_idx + 1)
             if result.text:
                 chat_input.insert(result.text)
                 chat_input.focus()
@@ -1852,30 +1859,31 @@ class TauiApp(App[None]):
         self,
         event: AttachmentsBar.Cleared,
     ) -> None:
-        """Sync the chat-input image buffer / app file buffer with the bar."""
+        """Sync the chat-input image buffer / app file buffer with the bar.
+
+        Also strips the matching ``[N]`` marker from the chat input and
+        shifts higher-numbered markers down by one so they stay aligned
+        with the bar's new numbering.
+        """
+        chat_input = self.query_one(ChatInput)
         if event.kind == "file":
             try:
                 self._pending_files.remove(Path(event.data))
             except ValueError:
                 pass
-            return
-        if event.kind == "folder":
+        elif event.kind == "folder":
             try:
                 self._pending_folders.remove(Path(event.data))
             except ValueError:
                 pass
-            return
-        if event.kind == "paste":
-            chat_input = self.query_one(ChatInput)
+        elif event.kind == "paste":
             chat_input.remove_paste_by_value(event.data)
-            return
-        # Default: image kind. Older code keyed by index, but we now have the
-        # data URL, so we can find the exact entry even after re-ordering.
-        chat_input = self.query_one(ChatInput)
-        if event.data and event.data in chat_input._pending_images:
-            chat_input._pending_images.remove(event.data)
-        elif 0 <= event.index < len(chat_input._pending_images):
-            chat_input._pending_images.pop(event.index)
+        else:  # image
+            if event.data and event.data in chat_input._pending_images:
+                chat_input._pending_images.remove(event.data)
+            elif 0 <= event.index < len(chat_input._pending_images):
+                chat_input._pending_images.pop(event.index)
+        chat_input.remove_attachment_marker(event.index + 1)
 
     @on(Sidebar.FileToggleRequested)
     async def handle_sidebar_file_toggle(
@@ -1889,6 +1897,7 @@ class TauiApp(App[None]):
         """
         path = event.path.resolve()
         bar = self.query_one(AttachmentsBar)
+        chat_input = self.query_one(ChatInput)
         path_str = str(path)
         existing = bar.find_index(kind="file", data=path_str)
         if existing >= 0:
@@ -1897,13 +1906,13 @@ class TauiApp(App[None]):
                 self._pending_files.remove(path)
             except ValueError:
                 pass
+            chat_input.remove_attachment_marker(existing + 1)
             return
         if not path.is_file():
             return
-        # Pill shows just the filename — the full path is preserved as the
-        # attachment's `data` and used at submit time when we expand it.
-        bar.add(path.name, path_str, kind="file")
+        idx = bar.add(path_str, kind="file", name=path.name)
         self._pending_files.append(path)
+        chat_input.insert_attachment_marker(idx + 1)
 
     @on(Sidebar.FolderToggleRequested)
     async def handle_sidebar_folder_toggle(
@@ -1913,6 +1922,7 @@ class TauiApp(App[None]):
         """Toggle a folder picked in the sidebar's Files tab as an attachment."""
         path = event.path.resolve()
         bar = self.query_one(AttachmentsBar)
+        chat_input = self.query_one(ChatInput)
         path_str = str(path)
         existing = bar.find_index(kind="folder", data=path_str)
         if existing >= 0:
@@ -1921,11 +1931,13 @@ class TauiApp(App[None]):
                 self._pending_folders.remove(path)
             except ValueError:
                 pass
+            chat_input.remove_attachment_marker(existing + 1)
             return
         if not path.is_dir():
             return
-        bar.add(path.name, path_str, kind="folder")
+        idx = bar.add(path_str, kind="folder", name=path.name)
         self._pending_folders.append(path)
+        chat_input.insert_attachment_marker(idx + 1)
 
     @on(ChatInput.InputCleared)
     async def handle_input_cleared(self, event: ChatInput.InputCleared) -> None:
