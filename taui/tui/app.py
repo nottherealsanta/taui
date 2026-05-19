@@ -2110,14 +2110,19 @@ class TauiApp(App[None]):
             # Agent finished — let the user know if they tabbed away.
             # The terminal prepends its own app name to the banner, so the
             # OSC 777 "header" field should be a short context tag (the
-            # agent id) — not another "taui" prefix.
+            # agent id) — not another "taui" prefix. The body falls back to
+            # "Agent finished" but prefers the session description when set,
+            # so the user gets a meaningful summary at a glance.
             try:
                 agent_id = ""
+                description = ""
                 session = state.session
                 if session is not None:
                     agent_id = str(getattr(session._loop, "agent_id", "") or "")
+                    description = str(getattr(session, "description", "") or "").strip()
                 title = agent_id or "Agent"
-                self._notify_user(title, "Done", kind="done")
+                body = description or "Agent finished"
+                self._notify_user(title, body, kind="done")
             except Exception:
                 pass
 
