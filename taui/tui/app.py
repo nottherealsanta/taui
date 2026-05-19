@@ -2122,7 +2122,13 @@ class TauiApp(App[None]):
                     description = str(getattr(session, "description", "") or "").strip()
                 title = agent_id or "Agent"
                 body = description or "Agent finished"
-                self._notify_user(title, body, kind="done")
+                # In-app toast only fires for background sessions — the
+                # user is already looking at the active tab, so a banner
+                # there would be noise.
+                is_active = self._sessions.active is state
+                self._notify_user(
+                    title, body, kind="done", from_active_session=is_active
+                )
             except Exception:
                 pass
 
@@ -2398,12 +2404,18 @@ class TauiApp(App[None]):
         message: str,
         *,
         kind: str = "info",
+        from_active_session: bool = False,
     ) -> None:
         """Surface an event to the user, in-app or via the OS.
 
-        - When the terminal window has focus → Textual toast (`notify`).
-        - When the terminal is backgrounded → OSC 777 escape, which iTerm2
-          / WezTerm / Kitty translate into a real system notification.
+        - When the terminal window has focus → Textual toast (`notify`),
+          unless the event came from the session the user is already
+          looking at (``from_active_session=True``), in which case the
+          toast is suppressed — they can see it directly in the chat.
+        - When the terminal is backgrounded → OSC 777 escape, which
+          Ghostty / iTerm2 / WezTerm / Kitty translate into a real OS
+          notification. Background sessions always notify the OS so the
+          user gets pinged even if the active tab is something else.
 
         ``kind`` is one of {"info", "question", "done"} and gates which
         events fire based on the user's config flags.
@@ -2422,6 +2434,10 @@ class TauiApp(App[None]):
             body = body[:197] + "…"
         head = header.replace(";", ":")
         if self._window_focused:
+            if from_active_session:
+                # User is already watching this session — don't pop a
+                # toast that just repeats what's on screen.
+                return
             try:
                 self.notify(body, title=head, timeout=4.0)
             except Exception:
