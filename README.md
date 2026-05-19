@@ -1,8 +1,9 @@
 # taui
 
-Agentic coding interface you can reshape.
+Taui is a customizable agentic coding interface for developers. It runs as a
+full-screen Textual TUI; the terminal app is the product.
 
-> **Alpha**: This project is still in early development. APIs, commands, and behavior may change without notice.
+Alpha software: APIs, commands, and behavior may change.
 
 ## Install
 
@@ -10,195 +11,92 @@ Agentic coding interface you can reshape.
 uvx taui
 ```
 
-Or install permanently:
+For local development:
 
 ```bash
-uv pip install taui
+uv run taui
+uv run taui --version
+uv run taui --login
+uv run taui -p copilot -m <model>
+uv run taui -p codex -m <model>
+uv run taui -d /path/to/project
+uv run taui --session <session_id>
 ```
 
-## What is taui?
+CLI parsing and app launch live in `taui/main.py:29` and `taui/main.py:90`.
 
-Taui is a highly customizable agentic coding interface. Instead of adapting your workflow to a fixed assistant, you control the interface itself: UI, agent, tools, prompts, extensions, skills, and storage.
+## What It Does
 
-Taui is a full-screen Textual TUI. Running `taui` launches the terminal interface with a sidebar, scrollable chat history, live streaming, visual tool status, approvals, questions, steering, and queueing.
+- Runs an async agent loop over provider responses, tool calls, and observations:
+  `taui/agent/loop.py:93`.
+- Wires providers, tools, extensions, prompts, store, and loop in one composition root:
+  `taui/session.py:139`.
+- Stores sessions as append-only SQLite event streams in the working directory:
+  `taui/store/store.py:97` and `taui/store/stream.py:22`.
+- Renders chat, streaming output, approvals, questions, sidebars, and session controls in
+  Textual: `taui/tui/app.py:206`.
 
-## Requirements
+## Providers
 
-- Python 3.13+
-- A supported LLM provider account (see below)
+Built-in providers:
 
-## Getting Started
+| Provider | Auth | Implementation |
+| --- | --- | --- |
+| GitHub Copilot | device flow | `taui/llm_provider/providers/copilot.py:33` |
+| OpenAI Codex | PKCE browser flow | `taui/llm_provider/providers/codex.py:26` |
 
-### First Run
+Run `taui --login` to authenticate. Credentials are loaded through
+`taui/llm_provider/config.py:15` and selected by `Config.load()` at
+`taui/config.py:64`.
 
-When you run `taui` for the first time, it launches an interactive provider selection prompt. Pick one or both providers and follow the auth flow:
+## Commands
 
-```bash
-taui
-```
+Important slash commands are registered in `taui/commands/builtins.py:858`.
 
-You can also authenticate explicitly at any time:
+| Command | Purpose |
+| --- | --- |
+| `/help`, `/h`, `/?` | Show help |
+| `/model` | Show, refresh, or switch models |
+| `/provider` | Show or switch provider |
+| `/agents` | List or activate agent profiles |
+| `/sessions` | List or resume sessions |
+| `/new [message]` | Start a new session |
+| `/compact`, `/context` | Manage or inspect context |
+| `/extensions`, `/reload`, `/ext-mode` | Inspect and reload extensions |
+| `/i [message]` | Enter self-edit mode |
+| `/copy`, `/export` | Copy context or export a session |
+| `/hotkeys`, `/keys` | Show key bindings |
+| `/verbose`, `/quiet` | Toggle tool output verbosity |
+| `/update-providers-models` | Refresh the models.dev cache |
 
-```bash
-taui --login
-```
+## Keys
 
-### Providers
-
-Taui currently ships with two built-in providers:
-
-| Provider | Auth Method | What You Need |
-|---|---|---|
-| **GitHub Copilot** | OAuth device flow | A GitHub account with an active Copilot subscription |
-| **OpenAI Codex** | PKCE browser redirect | A ChatGPT Plus or Pro account |
-
-#### GitHub Copilot
-
-1. Run `taui` or `taui --login`
-2. Select **GitHub Copilot**
-3. A device code is displayed — open the GitHub URL shown and enter the code
-4. Once authorized, your token is saved to `~/.config/taui/config.toml`
-5. Subsequent runs use the saved token automatically
-
-#### OpenAI Codex (ChatGPT Plus/Pro)
-
-1. Run `taui` or `taui --login`
-2. Select **OpenAI Codex**
-3. A browser window opens for OpenAI OAuth — sign in and authorize
-4. The token is saved to `~/.config/taui/config.toml`
-
-### Choosing a Provider and Model
-
-```bash
-# Start with a specific provider
-taui -p copilot
-taui -p codex
-
-# Use a specific model
-taui -p copilot -m claude-sonnet-4
-
-# Work in a specific directory
-taui -d /path/to/project
-
-# Resume a previous session
-taui --session <session_id>
-
-# Check version
-taui --version
-```
-
-Within the TUI, use `/model` to switch models and `/provider` to switch providers.
-
-### Tool Approval Policy
-
-By default, destructive tools (`bash`, `write`, `edit`) require user confirmation before executing. Read-only tools (`read`, `glob`, `grep`) run automatically.
-
-You can customize this in your config file (`~/.config/taui/config.toml`):
-
-```toml
-[taui.tool_policy]
-bash = "auto"       # skip confirmation for bash
-write = "confirm"   # require confirmation (default)
-edit = "deny"       # block entirely
-```
-
-Valid policy values: `auto`, `confirm`, `deny`.
-
-Approval prompts also support persistent auto-approval for a whole tool. Choosing the
-project option writes a generated extension to `.taui/extensions/`; choosing the global
-option writes it to `~/.taui/extensions/`. The generated extension replaces the tool with
-an equivalent wrapper and sets that tool's policy to `auto` when extensions load. Project
-scope is the default persistent choice.
-
-## Key Bindings
+App-level bindings are defined in `TauiApp.BINDINGS` at `taui/tui/app.py:399`.
+Input-specific bindings are in `ChatInput.BINDINGS` at
+`taui/tui/widgets/chat_input.py:64`.
 
 | Key | Action |
-|---|---|
+| --- | --- |
 | `Ctrl+Q` | Quit |
 | `Ctrl+N` | New session |
 | `Ctrl+C` | Cancel active request or approval |
-| `Ctrl+D` | Quit (double-press required) |
+| `Ctrl+D` | Quit after double press |
 | `Ctrl+B` | Toggle sidebar |
 | `Ctrl+R` | Toggle info sidebar |
 | `Ctrl+E` | Enter self-edit mode |
 | `Ctrl+X` | Context breakdown |
 | `Alt+Left/Right` | Focus left/right pane |
 | `Ctrl+PageDown/Up` | Next/previous tab |
-| `Escape` | Leave self-edit mode / dismiss panels |
-
-## Slash Commands
-
-| Command | Description |
-|---|---|
-| `/help`, `/h`, `/?` | Show help |
-| `/model` | Switch model |
-| `/provider` | Switch provider |
-| `/compact` | Compact conversation (shows token savings) |
-| `/context` | Show context breakdown |
-| `/clear` | Clear chat |
-| `/cost` | Show session cost |
-| `/sessions` | Browse and resume sessions |
-| `/agents` | List and switch agent variants |
-| `/new` | Start new session |
-| `/reload` | Hot-reload extensions |
-| `/extensions` | List extensions |
-| `/i` | Enter self-edit mode |
-| `/ext-mode` | Enter extensions mode |
-| `/login` | Re-authenticate providers |
-| `/logout` | Clear saved credentials |
-| `/session` | Show current session info |
-| `/copy` | Copy last response |
-| `/export` | Export session |
-| `/hotkeys`, `/keys` | Show key bindings |
-| `/verbose`, `/quiet` | Toggle tool output verbosity |
-| `/debug` | Debug commands (e.g. `/debug questions`) |
-
-## Extending Taui
-
-### Extensions
-
-Extensions are Python files that register tools, commands, hooks, and skills.
-
-**Locations:**
-- Global: `~/.taui/extensions/*.py`
-- Project: `.taui/extensions/*.py`
-
-**Example extension:**
-
-```python
-def register(ctx):
-    ctx.tools.register(my_tool)
-    if ctx.commands:
-        ctx.commands.register(my_command)
-    if ctx.hooks:
-        ctx.hooks.add("system_prompt", my_transform)
-    ctx.skills.add_path("skills/my-skill.md")
-```
-
-Use `/reload` to hot-reload extensions without restarting. Errors from individual extensions are reported in the chat log.
-
-### Skills
-
-Skills provide specialized instructions loaded lazily into the agent context.
-
-**Locations:**
-- `~/.config/agents/skills/<name>/SKILL.md`
-- `~/.taui/skills/<name>/SKILL.md`
-- `.agents/skills/<name>/SKILL.md`
-- `.taui/skills/<name>/SKILL.md`
-
-### Self-Edit Mode
-
-Run `/i` to enter self-edit mode — a specialist agent that can create or modify extensions, skills, commands, and tools through the extension surface.
+| `Escape` | Leave mode or dismiss panels |
 
 ## Configuration
 
-Config is loaded from `~/.config/taui/config.toml` with this structure:
+Config fields are defined in `taui/config.py:33`.
 
 ```toml
 [taui]
 provider = "copilot"
-model = "claude-sonnet-4"
+model = "claude-sonnet-4.5"
 max_turns = 50
 verbose_tools = true
 
@@ -206,16 +104,42 @@ verbose_tools = true
 bash = "confirm"
 write = "confirm"
 edit = "confirm"
+
+[taui.permission]
+read = { "*" = "allow" }
+bash = { "git status" = "allow", "*" = "ask" }
 ```
 
-CLI arguments and environment variables override config file values.
+Tool policy evaluation is in `taui/tools/executor.py:42`; pattern permissions are in
+`taui/permissions.py:38`.
 
-## Data Storage
+## Extensions And Skills
 
-Taui stores session data in `.taui/store.db` (SQLite, WAL mode) in the working directory. Sessions are append-only event streams that support replay.
+Extensions are Python files loaded from `~/.taui/extensions/*.py` and
+`.taui/extensions/*.py`. The `register(ctx)` context is defined at
+`taui/extensions/__init__.py:66`; extension loading starts at
+`taui/extensions/__init__.py:169`.
 
-Credentials are stored at `~/.config/taui/config.toml`. Logs are at `~/.taui/.logs`.
+Skills are `SKILL.md` files discovered by `taui/skills/__init__.py:91` and loaded lazily
+by `taui/skills/__init__.py:52`.
 
-## License
+## Documentation
 
-MIT
+- Product and architecture overview: `docs/taui.md:1`
+- Runtime flow: `docs/runtime.md:1`
+- Tools and permissions: `docs/tools.md:1`, `docs/permission-dsl.md:1`
+- Extensions, hooks, skills, and agents: `docs/build-your-harness.md:1`,
+  `docs/extension-hooks.md:1`, `docs/agents.md:1`
+- Providers and auth: `docs/providers.md:1`
+- Context and prompts: `docs/context-strategies.md:1`, `docs/system-prompt.md:1`
+- Tests and visual harness: `docs/testing.md:1`
+
+## Checks
+
+```bash
+uv run ruff check .
+uv run python -m pytest tests/ -q
+```
+
+Target focused tests first when changing one subsystem. The scenario and visual harness
+are documented in `docs/testing.md:1`.

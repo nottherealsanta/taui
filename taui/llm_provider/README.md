@@ -1,28 +1,17 @@
-# LLM Provider
+# LLM Provider Package
 
-This folder contains the LLM provider base class, provider implementations, and test scripts.
+This package contains Taui's provider abstraction, provider implementations, model
+catalog helpers, and auth flows.
 
-## Files
+## Code Map
 
-- `base.py` — `BaseLLMProvider` abstract base class with retry, streaming, error handling
-- `types.py` — Shared types: `StreamEvent`, `ProviderTurnResult`, `ProviderCapabilities`, etc.
+- Base provider contract: `taui/llm_provider/base.py:102`
+- Shared stream/result types: `taui/llm_provider/types.py:151`
+- Model catalog helpers: `taui/llm_provider/models.py:81`
+- Config persistence: `taui/llm_provider/config.py:15`
+- GitHub Copilot provider: `taui/llm_provider/providers/copilot.py:33`
+- OpenAI Codex provider: `taui/llm_provider/providers/codex.py:26`
+- Copilot auth: `taui/llm_provider/auth/copilot.py:214`
+- Codex auth: `taui/llm_provider/auth/codex.py:63`
 
-The interactive probe script lives at `scripts/provider_probe.py` (at the repo
-root, outside the installed package).
-
-## Usage
-
-```bash
-# Probe a provider's capabilities
-uv run python scripts/provider_probe.py copilot
-uv run python scripts/provider_probe.py codex
-
-# Run with specific tests
-uv run python scripts/provider_probe.py copilot --test streaming
-uv run python scripts/provider_probe.py copilot --test tools
-uv run python scripts/provider_probe.py copilot --test reasoning
-```
-
-## Documentation
-
-See [../../docs/_/llm-provider.md](../../docs/_/llm-provider.md) for the full design document.
+See `docs/providers.md:1` for the maintained provider overview.

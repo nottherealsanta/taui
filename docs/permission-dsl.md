@@ -1,174 +1,64 @@
 # Permission DSL
 
-Taui uses a pattern-based permission ruleset to control tool access. Rules map
-`(tool_name, argument_pattern)` to a policy decision. Patterns use fnmatch glob syntax.
+Permissions map `(tool, subject pattern)` to `allow`, `ask`, or `deny`.
 
-Source: `taui/permissions.py`
+## Code
 
-## `PermissionRule`
+- Rule dataclass: `taui/permissions.py:24`
+- Ruleset layers and matching: `taui/permissions.py:38`
+- Decision method: `taui/permissions.py:86`
+- Tool policy integration: `taui/tools/executor.py:60`
+- Auto-approval check: `taui/tools/executor.py:99`
+- Config fields: `taui/config.py:50`
 
-```python
-@dataclass(slots=True)
-class PermissionRule:
-    tool: str           # Tool name, e.g. "bash", "read", "edit"
-    pattern: str        # fnmatch glob matched against the tool's subject
-    action: PolicyDecision  # AUTO, CONFIRM, or DENY
-```
+## Layers
 
-**Specificity** determines evaluation order within a layer. Longer patterns (more
-non-wildcard characters) are more specific and checked first:
+Rules are evaluated in this order:
 
-```python
-@property
-def specificity(self) -> int:
-    return len(self.pattern.replace("*", "").replace("?", ""))
-```
+1. agent
+2. project
+3. global
 
-So `.env.example` (12) beats `*.env` (4) beats `*` (0).
+Within one layer, more specific patterns are checked first. Specificity is calculated by
+removing `*` and `?` from the pattern and measuring the remaining length:
+`taui/permissions.py:30`.
 
-## `PermissionRuleset`
+## Subjects
 
-Three layers evaluated in order: **agent → project → global**. Within each layer,
-rules are sorted by specificity (most specific first). The first match in the first
-matching layer wins.
+`extract_subject()` chooses the matched text from tool arguments:
+`taui/permissions.py:103`.
 
-```python
-class PermissionRuleset:
-    _agent_rules:   list[PermissionRule]
-    _project_rules: list[PermissionRule]
-    _global_rules:  list[PermissionRule]
-```
+| Tool | Subject |
+| --- | --- |
+| `bash` | command string |
+| `read`, `write`, `edit` | `file_path`, `filePath`, or `path` |
+| `glob`, `grep` | pattern |
+| other tools | empty string |
 
-### `add_rules(rules, layer)`
+## TOML
 
-```python
-ruleset.add_rules(
-    {
-        "read":  {"*": "allow", "*.env": "ask"},
-        "bash":  {"git status": "allow", "git push": "ask", "*": "ask"},
-        "edit":  {"src/**": "allow", "*": "ask"},
-    },
-    layer="project",  # "agent", "project", or "global"
-)
-```
-
-Action strings: `"allow"` maps to `PolicyDecision.AUTO`; `"ask"` maps to
-`PolicyDecision.CONFIRM`. Invalid strings are silently skipped.
-
-### `decide(tool_name, subject)`
-
-```python
-decision = ruleset.decide("bash", "git status")
-# returns PolicyDecision.AUTO | CONFIRM | DENY | None
-```
-
-Returns `None` if no rule matches. `ToolPolicy` falls back to per-tool overrides and
-built-in defaults when `None` is returned.
-
-### `extract_subject(tool_name, arguments)`
-
-Extracts the string to match against patterns from tool arguments:
-
-| Tool | Subject extracted from |
-|------|----------------------|
-| `bash` | `arguments["command"]` |
-| `read`, `write`, `edit` | `file_path` / `filePath` / `path` |
-| `glob` | `arguments["pattern"]` |
-| `grep` | `arguments["pattern"]` |
-| others | `""` (empty string) |
-
-## TOML Format
-
-Rules are expressed as a `[taui.permission]` table. Each key is a tool name; its value
-is a table of `pattern = action` pairs.
-
-### Project permissions: `.taui/permissions.toml`
+Project rules live in `.taui/permissions.toml` or a project config table.
+Global rules live in `~/.taui/permissions.toml`.
 
 ```toml
 [taui.permission]
-# Read everything, but ask before reading .env files
-read = { "*" = "allow", "*.env" = "ask", ".env.example" = "allow" }
-
-# Allow safe git commands, ask for everything else
-bash = { "git status" = "allow", "git log*" = "allow", "git push*" = "ask", "*" = "ask" }
-
-# Allow edits in src/, ask elsewhere
-edit = { "src/**" = "allow", "tests/**" = "allow", "*" = "ask" }
-
-# Block writes to config files entirely
-write = { "*.toml" = "deny", "*.yaml" = "deny", "*" = "allow" }
+read = { "*" = "allow", "*.env" = "ask" }
+bash = { "git status" = "allow", "git log*" = "allow", "*" = "ask" }
+edit = { "src/*" = "allow", "tests/*" = "allow", "*" = "ask" }
+write = { "*.toml" = "deny", "*" = "ask" }
 ```
 
-### Global permissions: `~/.taui/permissions.toml`
+Config loading copies `[taui.permission]` into `Config.permission`:
+`taui/config.py:81`. `Session.create()` installs it into `ToolPolicy`:
+`taui/session.py:176`.
 
-Same format. Applied as the `"global"` layer (lowest priority).
+## Actions
 
-### Agent variant permissions
+| TOML value | Runtime decision |
+| --- | --- |
+| `allow` | `PolicyDecision.AUTO` |
+| `ask` | `PolicyDecision.CONFIRM` |
+| `deny` | `PolicyDecision.DENY` |
 
-Specified inline in a variant's TOML file under `[permission]`:
-
-```toml
-# .taui/agents/reviewer.toml
-name = "reviewer"
-read_only = true
-
-[permission]
-read = { "*" = "allow" }
-grep = { "*" = "allow" }
-glob = { "*" = "allow" }
-```
-
-Applied as the `"agent"` layer (highest priority) when `session.switch_variant()` is
-called.
-
-## Integration with `ToolPolicy`
-
-`ToolPolicy.decide(tool_name, arguments)` consults the ruleset first:
-
-```
-ruleset.decide(tool_name, subject) → decision?
-    yes → return decision
-    no  → check per-tool overrides
-           no  → check built-in defaults (bash/write/edit = CONFIRM)
-                  no  → return AUTO
-```
-
-`ToolPolicy.should_auto_approve(tool_name, arguments)` returns `True` if the ruleset
-returns `PolicyDecision.AUTO` for the subject, or if a stored per-call glob pattern
-matches (used by the TUI's persistent auto-approve extension mechanism).
-
-## Loading Rules at Session Start
-
-In `Session.create()`:
-
-```python
-if config.permission:
-    ruleset = PermissionRuleset()
-    ruleset.add_rules(config.permission, layer="project")
-    policy.set_ruleset(ruleset)
-```
-
-`config.permission` is populated from `.taui/permissions.toml` (or the `[taui.permission]`
-section in a project config file). Extensions can also call
-`ctx.policy.set_ruleset(ruleset)` to layer additional rules.
-
-## Pattern Matching Examples
-
-```
-tool: bash, subject: "git status"
-pattern: "git status"     → exact match, specificity 10
-pattern: "git *"          → glob match, specificity 4
-pattern: "*"              → wildcard, specificity 0
-→ "git status" wins
-
-tool: read, subject: "secrets/.env"
-pattern: ".env.example"   → no match
-pattern: "*.env"          → match (fnmatch: "*.env" matches "secrets/.env"? No — fnmatch
-                            does not cross directory separators by default)
-pattern: "*"              → match
-→ "*" wins (but note fnmatch does not expand ** across slashes without pathlib)
-```
-
-> **Note:** fnmatch does not treat `/` specially. `src/**` matches
-> `src/foo/bar` on some platforms but not others. Prefer flat patterns like `src/*`
-> or test your patterns with Python's `fnmatch.fnmatch()` directly.
+If no rule matches, `ToolPolicy` falls back to per-tool overrides and then builtin
+defaults: `taui/tools/executor.py:60`.

@@ -85,28 +85,32 @@ Important boundaries:
 
 | Path | Purpose |
 | --- | --- |
-| `taui/main.py` | CLI parsing, logging setup, provider login flow, TUI launch |
-| `taui/config.py` | Runtime config defaults and config-file loading |
-| `taui/session.py` | Composition root for provider, tools, extensions, prompt, store, loop |
-| `taui/agent/loop.py` | Agent state machine, tool cycle, streaming callbacks, steering |
-| `taui/agent/context.py` | Token estimation and context breakdown helpers |
-| `taui/store/` | SQLite store, stream client, event/session persistence |
-| `taui/tools/base.py` | Tool protocol, categories, `ToolResult` |
-| `taui/tools/registry.py` | Tool registration, schemas, subsets, guidelines |
-| `taui/tools/executor.py` | Policy decisions, approval outcomes, timeout/error wrapping |
-| `taui/tools/builtins/` | Builtin read/write/edit/search/bash/git/mcp/memory/question/skills/sub-agent tools |
-| `taui/tui/app.py` | Main `TauiApp`, command dispatch, streaming render, steering/queue, sessions |
-| `taui/tui/widgets/` | Textual widgets for input, sidebar, tool status, approvals, info bar |
-| `taui/tui/screens/` | Modal screens such as context breakdown and session picker |
-| `taui/commands/` | Slash command registry and builtins |
-| `taui/extensions/` | Python extension discovery and loading |
-| `taui/skills/` | Skill package discovery and lazy loading |
-| `taui/llm_provider/` | Provider abstraction, auth, model discovery, Copilot/Codex implementations |
-| `taui/self_edit/` | `/i` self-edit mode, panels, controller, scaffolding, playbooks |
-| `taui/lsp/` | LSP client lifecycle and types (experimental — no current consumer) |
-| `taui/symbols/` | Lightweight source symbol extraction (experimental — no current consumer) |
-| `tests/` | Pytest suite with mock providers and isolated tool/TUI tests |
-| `docs/architecture_docs/` | Deeper design notes; verify against code before copying details |
+| `taui/main.py:29` | CLI parsing, logging setup, provider login flow, TUI launch |
+| `taui/config.py:33` | Runtime config defaults and config-file loading |
+| `taui/session.py:139` | Composition root for provider, tools, extensions, prompt, store, loop |
+| `taui/agent/loop.py:93` | Agent state machine, tool cycle, streaming callbacks, steering |
+| `taui/agent/context.py:134` | Token estimation and context compaction helpers |
+| `taui/store/store.py:97` | SQLite store, event/session persistence |
+| `taui/store/stream.py:22` | Stream projections, replay, and live tailing |
+| `taui/tools/base.py:10` | Tool protocol, categories, `ToolResult` |
+| `taui/tools/registry.py:10` | Tool registration, schemas, subsets, guidelines |
+| `taui/tools/executor.py:42` | Policy decisions, approval outcomes, timeout/error wrapping |
+| `taui/tools/builtins/__init__.py:28` | Builtin read/write/edit/search/bash/git/mcp/memory/question/skills/sub-agent tools |
+| `taui/tui/app.py:206` | Main `TauiApp`, command dispatch, streaming render, steering/queue, sessions |
+| `taui/tui/widgets/chat_input.py:35` | Chat input, key handling, prompt history, paste and attachment handling |
+| `taui/tui/widgets/tool_status.py:49` | Tool status rendering |
+| `taui/tui/widgets/approval.py:14` | Inline approval prompt |
+| `taui/tui/screens/context_breakdown.py:15` | Context breakdown modal |
+| `taui/commands/builtins.py:858` | Slash command registration |
+| `taui/extensions/__init__.py:93` | Python extension discovery and loading |
+| `taui/skills/__init__.py:91` | Skill package discovery and lazy loading |
+| `taui/llm_provider/base.py:102` | Provider abstraction |
+| `taui/llm_provider/providers/copilot.py:33` | GitHub Copilot provider |
+| `taui/llm_provider/providers/codex.py:26` | OpenAI Codex provider |
+| `taui/self_edit/factory.py:101` | `/i` self-edit mode prompt and scoped tools |
+| `taui/lsp/client.py:15` | LSP client lifecycle and types (experimental) |
+| `taui/symbols/indexer.py:27` | Lightweight source symbol extraction (experimental) |
+| `tests/scenarios/scripted_provider.py:82` | Deterministic provider harness for tests and snapshots |
 
 ## Runtime Features
 
@@ -150,7 +154,7 @@ are handled by `ChatInput.Submitted.queue`.
 
 ### Slash Commands
 
-Builtins are registered in `taui/commands/builtins.py`. Current commands include:
+Builtins are registered in `taui/commands/builtins.py:858`. Current commands include:
 
 - `/help`, `/h`, `/?`
 - `/cost`
@@ -246,7 +250,7 @@ extension surface. Do not use self-edit as a reason to bypass core invariants in
 - Preserve the `ToolResult.ok()` / `ToolResult.fail()` convention for tool outcomes.
 - Do not let extension, hook, or tool implementation errors crash the agent loop unless
   the failure is truly unrecoverable.
-- Follow Ruff settings from `pyproject.toml`: rules `E`, `F`, `I`, `UP`, line length 100,
+- Follow Ruff settings from `pyproject.toml:40`: rules `E`, `F`, `I`, `UP`, line length 100,
   target `py313`.
 - Avoid adding dependencies unless the feature materially needs them.
 
@@ -255,14 +259,14 @@ extension surface. Do not use self-edit as a reason to bypass core invariants in
 Use existing mock providers and test tools instead of real network calls. Prefer tests
 near the changed behavior:
 
-- tools and policy: `tests/test_tools.py`, `tests/test_builtins.py`, `tests/test_question.py`
-- agent loop and context: `tests/test_agent.py`, `tests/test_context.py`,
-  `tests/test_sub_agent.py`
-- TUI behavior: `tests/test_tui.py`
-- config/session/store: `tests/test_config.py`, `tests/test_session.py`,
-  `tests/test_store.py`
-- extensions/skills/hooks: `tests/test_extensions.py`, `tests/test_skills.py`,
-  `tests/test_hooks.py`
+- tools and policy: `tests/test_tools.py:1`, `tests/test_builtins.py:1`, `tests/test_question.py:1`
+- agent loop and context: `tests/test_agent.py:1`, `tests/test_context.py:1`,
+  `tests/test_sub_agent.py:1`
+- TUI behavior: `tests/test_tui.py:1`
+- config/session/store: `tests/test_config.py:1`, `tests/test_session.py:1`,
+  `tests/test_store.py:1`
+- extensions/skills/hooks: `tests/test_extensions.py:1`, `tests/test_skills.py:1`,
+  `tests/test_hooks.py:1`
 - provider/auth/model plumbing: prefer unit tests with mocks; do not require live LLM auth
 
 When modifying Textual UI behavior, add or update unit tests first when practical. If a
@@ -274,20 +278,20 @@ project directory so `.taui/store.db` writes are intentional.
 For changes that affect what the user sees or how taui reacts to LLM responses,
 use the harness in `tests/scenarios/`:
 
-- `tests/scenarios/scripted_provider.py` — `ScriptedProvider` plays back a list of
+- `tests/scenarios/scripted_provider.py:82` — `ScriptedProvider` plays back a list of
   `Turn` definitions (text deltas, reasoning deltas, tool calls, usage, raised
   errors). It satisfies the same duck-type contract as the real providers, so
   the entire `AgentLoop` runs unmodified.
-- `tests/scenarios/scenarios.py` — named factories: `happy_path`,
+- `tests/scenarios/scenarios.py:25` — named factories: `happy_path`,
   `streamed_reply`, `with_reasoning`, `with_tool_call`, `parallel_tool_calls`,
   `rate_limit_then_recover`, `context_overflow_then_recover`, `auth_expired`,
   `quota_exceeded`, `empty_response`. Add new factories here when a shape
   recurs in more than one test.
-- `tests/test_provider_scenarios.py` — runs each scenario through a real
+- `tests/test_provider_scenarios.py:1` — runs each scenario through a real
   `Session` and asserts on the observable behavior. This is the contract
   between the scripted provider and the rest of taui — if it regresses, the
   visual snapshots become unreliable too.
-- `tests/test_tui_visual.py` — captures SVG snapshots of `TauiApp` in
+- `tests/test_tui_visual.py:1` — captures SVG snapshots of `TauiApp` in
   representative states (driven by `ScriptedProvider`). Snapshots live under
   `tests/__snapshots__/test_tui_visual/`.
 
@@ -302,7 +306,7 @@ When a snapshot test fails, pytest-textual-snapshot writes an HTML diff report
 at `snapshot_report.html`. A coding agent updating the TUI should open that
 report, confirm the visual change matches intent, then re-run with
 `--snapshot-update`. Adding a new snapshot point is usually one extra block in
-`tests/test_tui_visual.py` plus a scenario.
+`tests/test_tui_visual.py:1` plus a scenario.
 
 The harness patches `taui.session._create_provider`, so no network/auth is
 needed — tests run offline and deterministically.
@@ -314,7 +318,7 @@ needed — tests run offline and deterministically.
 - Do not put provider-specific assumptions in the agent loop; keep them in
   `taui/llm_provider/`.
 - Do not make tools raise for normal user-facing failures; return `ToolResult.fail()`.
-- Do not hard-code model names as defaults outside `taui/llm_provider/models.py` and
+- Do not hard-code model names as defaults outside `taui/llm_provider/models.py:127` and
   config loading.
 - Do not add TUI-only behavior to core agent classes unless the behavior is truly
   interface-independent.
@@ -329,38 +333,15 @@ fix the implementation or update this file in the same change.
 
 | Document | Path | Covers |
 | --- | --- | --- |
-| **User-facing README** | `README.md` | Install, getting started, providers, key bindings, slash commands, config, extensions, skills |
-| **Project overview** | `docs/taui.md` | Philosophy, core capabilities, design goals |
-| **Agent-facing guide** | this `AGENTS.md` | Quick start, architecture, source map, conventions, testing, pitfalls |
-
-### Architecture Deep-Dives (`docs/architecture_docs/`)
-
-| Document | Path | Covers |
-| --- | --- | --- |
-| Agent loop | `docs/architecture_docs/agent-loop.md` | State machine, message types, turn lifecycle, callbacks, compaction, steering, variants |
-| Store & streams | `docs/architecture_docs/store-streams.md` | SQLite schema, EventType enum, Store/StreamClient API, live-tail, sessions |
-| Tool system overview | `docs/architecture_docs/tools/overview.md` | Tool protocol, ToolResult, ToolRegistry, ToolExecutor, policy, truncation |
-| Built-in tools | `docs/architecture_docs/tools/builtins.md` | All 20 built-in tools with parameters and behavior |
-| TUI | `docs/architecture_docs/tui.md` | TauiApp layout, messages, ToolController, widgets, screens, streaming |
-| Session & config | `docs/architecture_docs/session-config.md` | Session composition root, Config dataclass, CostTracker |
-| Prompt builder | `docs/architecture_docs/prompt-builder.md` | Template system, variables, adaptive guidelines, instruction discovery |
-| Extensions | `docs/architecture_docs/extensions.md` | Discovery, loading, ExtensionContext, ExtensionRegistry API |
-| Skills | `docs/architecture_docs/skills.md` | Discovery paths, Skill dataclass, SkillRegistry, SkillsTool |
-| Self-edit mode | `docs/architecture_docs/self-edit.md` | /i mode, scoped tools, extension-only output, SelfEditInventory |
-| Sub-agents | `docs/architecture_docs/sub-agents.md` | Sub-agent architecture, task tool, recursion prevention |
-| LLM provider | `docs/architecture_docs/llm-provider.md` | Provider abstraction, wire types, Copilot/Codex implementations |
-| Auth | `docs/architecture_docs/auth.md` | Copilot device flow, Codex PKCE OAuth, config persistence |
-| MCP | `docs/architecture_docs/mcp.md` | MCP protocol bridge, JSON-RPC, server configuration |
-| LSP | `docs/architecture_docs/lsp.md` | LSP client, language servers, wire protocol (experimental) |
-| Symbols | `docs/architecture_docs/symbols.md` | AST-based symbol indexer (experimental) |
-
-### Guides & References (`docs/`)
-
-| Document | Path | Covers |
-| --- | --- | --- |
-| Agent variants | `docs/agents.md` | AgentVariant dataclass, built-in/custom variants, TOML format |
-| Extension hooks | `docs/extension-hooks.md` | HookRegistry API, all hook categories, execution semantics |
-| Permission DSL | `docs/permission-dsl.md` | PermissionRule, 3-layer cascade, TOML format, pattern matching |
-| System prompt | `docs/system-prompt.md` | Template, variables, adaptive guidelines, overrides, assembly pipeline |
-| Context strategies | `docs/context-strategies.md` | Compaction algorithm, soft/hard phases, manual compact, recovery |
-| Build your harness | `docs/build-your-harness.md` | How-to: register tools, variants, hooks, commands, providers, skills |
+| User README | `README.md` | Install, launch, providers, commands, keys, config |
+| Product overview | `docs/taui.md` | Current architecture and invariants |
+| Runtime | `docs/runtime.md` | Request flow, store/replay, TUI state, self-edit |
+| Tools | `docs/tools.md` | Tool contract, builtins, policy integration |
+| Permission DSL | `docs/permission-dsl.md` | Ruleset layers, subjects, TOML |
+| Build your harness | `docs/build-your-harness.md` | Extensions, tools, commands, hooks, skills, variants |
+| Extension hooks | `docs/extension-hooks.md` | Hook registry and supported hook shapes |
+| Agent variants | `docs/agents.md` | Variant fields, TOML, extension registration |
+| Providers | `docs/providers.md` | Provider contract, builtin providers, models, auth |
+| System prompt | `docs/system-prompt.md` | Prompt builder, project instructions, overrides |
+| Context strategies | `docs/context-strategies.md` | Compaction code path and strategy extension point |
+| Testing | `docs/testing.md` | Focused tests, provider scenarios, visual snapshots |
