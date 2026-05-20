@@ -212,3 +212,94 @@ class TestSelfEditModal:
             await pilot.pause()
             assert not isinstance(app.screen, SelfEditModal)
             await app._session.close()
+
+    async def test_modal_tabs_are_clickable(self, tmp_path, monkeypatch):
+        from taui.tui.screens.self_edit_modal import (
+            _CategoryClicked,
+            _CategoryTab,
+            _ScopeChip,
+            _ScopeClicked,
+        )
+
+        provider = scenarios.happy_path("(unused)")
+        app = use_scripted_provider(monkeypatch, tmp_path, provider)
+        async with app.run_test(size=(160, 50)) as pilot:
+            await _ready(app)
+            await app.action_enter_self_edit()
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, SelfEditModal)
+
+            tabs = list(screen.query(_CategoryTab))
+            assert len(tabs) == len(inventory.CATEGORIES)
+
+            # Posting the click message simulates the click handler firing
+            # without depending on the tab's screen geometry.
+            screen.post_message(_CategoryClicked("commands"))
+            await pilot.pause()
+            assert screen._category.key == "commands"
+
+            chips = list(screen.query(_ScopeChip))
+            assert len(chips) == 2
+            screen.post_message(_ScopeClicked("project"))
+            await pilot.pause()
+            assert screen._scope == "project"
+
+            await pilot.press("escape")
+            await app._session.close()
+
+    async def test_editor_llm_generate_populates_body(
+        self, tmp_path, monkeypatch
+    ):
+        from taui.agent.types import Message
+        from taui.llm_provider.types import StreamEvent
+        from taui.tui.screens.self_edit_modal import _Editor
+
+        # Build a fake provider whose stream_text yields one text_delta then done.
+        class FakeProvider:
+            async def stream_text(self, messages, model, temperature=0.1):
+                # Sanity: the prompt is the last user message.
+                assert messages[-1].role == "user"
+                yield StreamEvent.text_delta("Generated body line 1.\n")
+                yield StreamEvent.text_delta("Generated body line 2.\n")
+                yield StreamEvent.done()
+
+        provider = scenarios.happy_path("(unused)")
+        app = use_scripted_provider(monkeypatch, tmp_path, provider)
+        async with app.run_test() as pilot:
+            await _ready(app)
+            await app.action_enter_self_edit()
+            await pilot.pause()
+
+            editor = _Editor(
+                category=inventory.category_by_key("commands"),
+                scope="project",
+                creating=True,
+                item=None,
+                provider=FakeProvider(),
+                model="fake-model",
+            )
+            app.push_screen(editor)
+            await pilot.pause()
+
+            # Type id + brief, then trigger generate.
+            from textual.widgets import Input
+
+            editor.query_one("#se-editor-id", Input).value = "demo"
+            editor.query_one(
+                "#se-editor-llm-prompt", Input
+            ).value = "print hello"
+            editor._start_llm_generation()
+            # Let the worker run.
+            for _ in range(20):
+                await pilot.pause()
+                if "Generated body line" in editor.query_one(
+                    "#se-editor-body"
+                ).text:
+                    break
+
+            body_widget = editor.query_one("#se-editor-body")
+            assert "Generated body line 1." in body_widget.text
+            assert "Generated body line 2." in body_widget.text
+
+            await app._session.close()
