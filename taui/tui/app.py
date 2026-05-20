@@ -12,6 +12,7 @@ from pathlib import Path
 from rich.markup import escape
 from rich.text import Text
 from textual import on, work
+from textual.binding import Binding
 from textual.app import App, ComposeResult, SystemCommand
 from textual.command import CommandInput, CommandPalette, Hit, Hits, Provider
 from textual.containers import Horizontal, Vertical, VerticalScroll
@@ -403,7 +404,7 @@ class TauiApp(App[None]):
         ("ctrl+d", "ctrl_d", ""),
         ("ctrl+b", "toggle_sidebar", "Sidebar"),
         ("ctrl+r", "toggle_info_sidebar", "Info"),
-        ("ctrl+e", "enter_self_edit", "Self-edit"),
+        Binding("ctrl+e", "enter_self_edit", "Self-edit", priority=True),
         ("ctrl+x", "show_context", "Context"),
         ("alt+left", "focus_pane_left", "Focus left pane"),
         ("alt+right", "focus_pane_right", "Focus right pane"),
@@ -2537,6 +2538,9 @@ class TauiApp(App[None]):
             return
 
         if command in ("/i", "/self-edit"):
+            if not msg_arg and command == "/self-edit":
+                await self.action_enter_self_edit()
+                return
             await self._enter_self_edit_with_message(msg_arg)
             return
 
@@ -3266,15 +3270,14 @@ class TauiApp(App[None]):
         self.push_screen(ContextBreakdownScreen(messages))
 
     async def action_enter_self_edit(self) -> None:
-        """Ctrl+E: show usage hint — actual entry is via /i <msg>."""
-        chat_log = self._get_active_chat_log()
-        await chat_log.mount(
-            Static(
-                "[dim]Use /i <message> to start a self-edit session.[/dim]",
-                markup=True,
-            )
+        """Ctrl+E: open the self-edit modal (futuristic yellow console)."""
+        from taui.self_edit.factory import _safe_active_scope
+        from taui.tui.screens.self_edit_modal import SelfEditModal
+
+        scope = _safe_active_scope(self._config.working_dir)
+        self.push_screen(
+            SelfEditModal(self._config.working_dir, initial_scope=scope)
         )
-        self._smart_scroll()
 
     def _self_edit_scope_path(self, scope: str) -> Path:
         if scope == "project":
