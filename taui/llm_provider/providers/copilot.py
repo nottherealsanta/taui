@@ -25,6 +25,7 @@ from ..types import (
     ReasoningFormat,
     StreamEvent,
     ToolIdFormat,
+    Usage,
 )
 
 logger = logging.getLogger(__name__)
@@ -72,6 +73,7 @@ class CopilotProvider(BaseLLMProvider):
             "model": model,
             "messages": messages,
             "stream": True,
+            "stream_options": {"include_usage": True},
             "temperature": temperature,
         }
         if tools:
@@ -96,8 +98,34 @@ class CopilotProvider(BaseLLMProvider):
 
     def parse_stream_event(self, data: str) -> StreamEvent | None:
         chunk = json.loads(data)
+
         choices = chunk.get("choices")
-        if not isinstance(choices, list) or not choices:
+        if isinstance(choices, list) and choices:
+            # Normal delta processing — handled below
+            pass
+        else:
+            # No choices — check for token usage event (final SSE chunk)
+            usage_data = chunk.get("usage")
+            if isinstance(usage_data, dict):
+                prompt_details = usage_data.get("prompt_tokens_details") or {}
+                completion_details = usage_data.get("completion_tokens_details") or {}
+
+                cache_read = 0
+                if isinstance(prompt_details, dict):
+                    cache_read = prompt_details.get("cached_tokens", 0)
+
+                reasoning = 0
+                if isinstance(completion_details, dict):
+                    reasoning = completion_details.get("reasoning_tokens", 0)
+
+                return StreamEvent.usage_event(
+                    Usage(
+                        input_tokens=usage_data.get("prompt_tokens", 0),
+                        output_tokens=usage_data.get("completion_tokens", 0),
+                        cache_read_tokens=cache_read,
+                        reasoning_tokens=reasoning,
+                    )
+                )
             return None
 
         choice = choices[0]

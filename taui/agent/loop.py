@@ -20,7 +20,7 @@ from enum import StrEnum
 from typing import Any
 from uuid import uuid4
 
-from taui.agent.context import DEFAULT_MAX_INPUT_TOKENS, compact_messages, estimate_total_tokens
+from taui.agent.context import estimate_total_tokens
 from taui.agent.tokenizer import Tokenizer, create_tokenizer
 from taui.agent.types import Message
 from taui.llm_provider.errors import ContextOverflowError, QuotaExceededError
@@ -123,6 +123,7 @@ class AgentLoop:
         on_reasoning_delta: Callable[[str], None] | None = None,
         tokenizer: Tokenizer | None = None,
         rate_limiter: RateLimiter | None = None,
+        provider_name: str | None = None,
     ) -> None:
         self.agent_id = agent_id or uuid4().hex[:12]
         self.stream_id = f"agents/{self.agent_id}"
@@ -132,6 +133,7 @@ class AgentLoop:
         self._system_prompt = system_prompt
         self._model = model
         self._max_turns = max_turns
+        self._provider_name = provider_name
 
         # UI callbacks — optional hooks for frontends
         self._on_tool_call = on_tool_call
@@ -168,6 +170,14 @@ class AgentLoop:
     def messages(self) -> list[Message]:
         """Current conversation history (read-only view)."""
         return list(self._messages)
+
+    @property
+    def max_input_tokens(self) -> int:
+        if self._provider_name:
+            from taui.llm_provider.models import get_model_limits
+            limits = get_model_limits(self._provider_name, self._model)
+            return limits.get("input") or limits.get("context") or 180_000
+        return 180_000
 
     # ── Public API ────────────────────────────────────────────────────────
 
@@ -445,7 +455,7 @@ class AgentLoop:
 
     async def _call_llm(self) -> ProviderTurnResult:
         """Call the LLM with current conversation and tool schemas."""
-        self._maybe_compact()
+        await self._maybe_compact()
         messages = self._build_llm_messages()
         tools = self._executor.registry.schemas() or None
         # Wire streaming text delta callback to provider
@@ -461,11 +471,14 @@ class AgentLoop:
             except ContextOverflowError:
                 # Auto-recovery: aggressive compaction + one retry
                 before = estimate_total_tokens(self._messages, self._tokenizer)
-                removed = compact_messages(
+                from taui.agent.context import async_compact_messages
+                removed = await async_compact_messages(
                     self._messages,
-                    soft_ratio=0.50,
-                    hard_ratio=0.60,
                     tokenizer=self._tokenizer,
+                    llm=self._llm,
+                    model=self._model,
+                    provider_name=self._provider_name or "default",
+                    max_input_tokens=self.max_input_tokens,
                 )
                 if removed:
                     after = estimate_total_tokens(self._messages, self._tokenizer)
@@ -485,12 +498,21 @@ class AgentLoop:
             self._llm.on_text_delta = None
             self._llm.on_reasoning_delta = None
 
-    def _maybe_compact(self) -> None:
+    async def _maybe_compact(self) -> None:
         """Compact messages if approaching token budget."""
+        max_input = self.max_input_tokens
         before = estimate_total_tokens(self._messages, self._tokenizer)
-        soft = int(DEFAULT_MAX_INPUT_TOKENS * 0.80)
+        soft = int(max_input * 0.80)
         if before > soft:
-            removed = compact_messages(self._messages, tokenizer=self._tokenizer)
+            from taui.agent.context import async_compact_messages
+            removed = await async_compact_messages(
+                self._messages,
+                tokenizer=self._tokenizer,
+                llm=self._llm,
+                model=self._model,
+                provider_name=self._provider_name or "default",
+                max_input_tokens=max_input,
+            )
             if removed:
                 after = estimate_total_tokens(self._messages, self._tokenizer)
                 logger.info(

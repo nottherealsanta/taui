@@ -3410,6 +3410,7 @@ class TauiApp(App[None]):
             system_prompt=profile.prompt,
             model=self._config.model,
             max_turns=self._config.max_turns,
+            provider_name=self._config.provider,
         )
         loop.stream_id = stream_id
         # Preserve conversation context: carry over messages, updating the

@@ -140,6 +140,51 @@ def get_default_model(provider: str) -> str:
     return models[0]["id"]
 
 
+def get_model_limits(provider: str, model_id: str) -> dict[str, int]:
+    """Retrieve limits (context, input, output) for a model from models.json cache."""
+    # Strip any provider prefix
+    if "/" in model_id:
+        parts = model_id.split("/", 1)
+        if parts[0] in PROVIDER_MAP:
+            provider = parts[0]
+            model_id = parts[1]
+        else:
+            model_id = parts[1]
+
+    # Map to api provider ID
+    api_provider = PROVIDER_MAP.get(provider, provider)
+
+    try:
+        catalog = fetch_models()
+        provider_data = catalog.get(api_provider, {})
+        raw_models = provider_data.get("models", {})
+
+        info = raw_models.get(model_id)
+        if not info:
+            # Prefix or substring match in keys
+            for key, val in raw_models.items():
+                if key.startswith(model_id) or model_id.startswith(key):
+                    info = val
+                    break
+
+        if info and "limit" in info:
+            limit = info["limit"]
+            return {
+                "context": limit.get("context", 180_000),
+                "input": limit.get("input", 128_000),
+                "output": limit.get("output", 32_000),
+            }
+    except Exception:
+        pass
+
+    return {
+        "context": 180_000,
+        "input": 128_000,
+        "output": 32_000,
+    }
+
+
+
 def prompt_model_selection(provider: str) -> str:
     """Interactive model picker using prompt_toolkit.
 

@@ -273,6 +273,7 @@ class Session:
             system_prompt=system_prompt,
             model=config.model,
             max_turns=config.max_turns,
+            provider_name=config.provider,
         )
 
         session = cls(
@@ -405,6 +406,7 @@ class Session:
             system_prompt=prompt,
             model=self.config.model,
             max_turns=self.config.max_turns,
+            provider_name=self.config.provider,
         )
         self._replace_loop(loop)
 
@@ -447,6 +449,7 @@ class Session:
             system_prompt=prompt,
             model=self.config.model,
             max_turns=self.config.max_turns,
+            provider_name=self.config.provider,
         )
         self._replace_loop(loop)
 
@@ -521,6 +524,7 @@ class Session:
                 system_prompt=prompt,
                 model=self.config.model,
                 max_turns=self.config.max_turns,
+                provider_name=self.config.provider,
             )
             self._replace_loop(loop)
 
@@ -586,6 +590,7 @@ class Session:
             system_prompt=prompt,
             model=self.config.model,
             max_turns=self.config.max_turns,
+            provider_name=self.config.provider,
         )
         self._replace_loop(loop)
 
@@ -673,6 +678,7 @@ class Session:
             system_prompt=prompt,
             model=self.config.model,
             max_turns=self.config.max_turns,
+            provider_name=self.config.provider,
         )
         loop.stream_id = stream_id
         self._replace_loop(loop)
@@ -774,6 +780,7 @@ class Session:
             system_prompt=prompt,
             model=self.config.model,
             max_turns=self.config.max_turns,
+            provider_name=self.config.provider,
         )
         loop.stream_id = fork_stream
 
@@ -846,6 +853,7 @@ class Session:
             system_prompt=prompt,
             model=mdl,
             max_turns=turns,
+            provider_name=self.config.provider,
         )
         loop.stream_id = sub_stream
 
