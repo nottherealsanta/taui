@@ -114,6 +114,36 @@ class TestInventory:
         assert "bash" in names
 
 
+class TestModelPicker:
+    def test_subseq_match(self):
+        from taui.tui.screens.self_edit_modal import _subseq_match
+
+        assert _subseq_match("hk", "haiku")
+        assert _subseq_match("snn", "sonnet")
+        assert not _subseq_match("xyz", "haiku")
+        assert _subseq_match("", "haiku")
+
+    def test_picker_filter_substring_first(self):
+        from taui.tui.screens.self_edit_modal import _ModelPicker
+
+        picker = _ModelPicker(
+            models=[
+                "claude-haiku-4.5",
+                "claude-sonnet-4.6",
+                "claude-opus-4.7",
+                "gpt-4o",
+            ],
+        )
+        # Substring matches come before subsequence matches.
+        result = picker._filter("haiku")
+        assert result == ["claude-haiku-4.5"]
+        result = picker._filter("cl")
+        assert result[0].startswith("claude-")
+        # Subsequence picks up scattered matches.
+        result = picker._filter("g4o")
+        assert "gpt-4o" in result
+
+
 class TestListView:
     def test_format_inventory_listing_all_categories(self, tmp_path):
         from taui.self_edit.list_view import format_inventory_listing
@@ -359,13 +389,23 @@ class TestSelfEditModal:
             await pilot.pause()
 
             # Single combined model id input — no separate PROVIDER field.
+            # Empty by default (the user asked for "empty by default,
+            # optional"); a separate hint line explains it's optional.
             model_input = editor.query_one("#se-editor-model-id", Input)
-            assert model_input.value == "anthropic/claude-haiku"
-            assert "optional" in model_input.placeholder.lower()
+            assert model_input.value == ""
+            assert model_input.placeholder == ""
 
             # No duplicate generate-model input for agents — the MODEL ID
             # field is the single source of truth.
             assert not editor.query("#se-editor-gen-model")
+
+            # Agent id label is "AGENT ID" not "ID / NAME"
+            from taui.tui.screens.self_edit_modal import _ToolToggle  # noqa: F401
+            from textual.widgets import Label
+
+            labels = [str(lbl.render()) for lbl in editor.query(Label)]
+            assert "AGENT ID" in labels
+            assert "ID / NAME" not in labels
 
             # Tools are rendered as a Grid of _ToolToggle widgets (one per
             # tool), not a SelectionList — so the user can click each cell
@@ -382,16 +422,150 @@ class TestSelfEditModal:
             editor.query_one("#se-editor-id", Input).value = "XYZ"
             # Submit by invoking the underlying helper directly.
             saved: dict = {}
+            dismissed_called = [False]
 
             def fake_dismiss(result):
-                saved.update(result or {})
+                dismissed_called[0] = True
+                if result is not None:
+                    saved.update(result)
 
             editor.dismiss = fake_dismiss  # type: ignore[method-assign]
             editor._submit()
 
-            assert saved["extra"]["provider"] == "anthropic"
-            assert saved["extra"]["model"] == "claude-haiku"
+            # No model id typed — defaults stay empty.
+            assert saved["extra"]["provider"] == ""
+            assert saved["extra"]["model"] == ""
             assert set(saved["extra"]["allowed_tools"]) == {"read", "edit"}
+            await app._session.close()
+
+    async def test_tabs_wrap_to_two_rows_on_narrow_terminal(
+        self, tmp_path, monkeypatch
+    ):
+        from textual.containers import Horizontal
+
+        from taui.tui.screens.self_edit_modal import _CategoryTab
+
+        provider = scenarios.happy_path("(unused)")
+        app = use_scripted_provider(monkeypatch, tmp_path, provider)
+        async with app.run_test(size=(70, 40)) as pilot:
+            await _ready(app)
+            await app.action_enter_self_edit()
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, SelfEditModal)
+            row1 = screen.query_one("#se-tabs-row-1", Horizontal)
+            row2 = screen.query_one("#se-tabs-row-2", Horizontal)
+            tabs_r1 = list(row1.query(_CategoryTab))
+            tabs_r2 = list(row2.query(_CategoryTab))
+            # On a narrow 70-col terminal the categories should be split.
+            assert len(tabs_r1) > 0
+            assert len(tabs_r2) > 0
+            assert len(tabs_r1) + len(tabs_r2) == len(inventory.CATEGORIES)
+            await pilot.press("escape")
+            await app._session.close()
+
+    async def test_tabs_stay_in_one_row_on_wide_terminal(
+        self, tmp_path, monkeypatch
+    ):
+        from textual.containers import Horizontal
+
+        from taui.tui.screens.self_edit_modal import _CategoryTab
+
+        provider = scenarios.happy_path("(unused)")
+        app = use_scripted_provider(monkeypatch, tmp_path, provider)
+        async with app.run_test(size=(200, 40)) as pilot:
+            await _ready(app)
+            await app.action_enter_self_edit()
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, SelfEditModal)
+            row1 = screen.query_one("#se-tabs-row-1", Horizontal)
+            row2 = screen.query_one("#se-tabs-row-2", Horizontal)
+            assert len(list(row1.query(_CategoryTab))) == len(
+                inventory.CATEGORIES
+            )
+            assert len(list(row2.query(_CategoryTab))) == 0
+            await pilot.press("escape")
+            await app._session.close()
+
+    async def test_generate_opens_fuzzy_model_picker(
+        self, tmp_path, monkeypatch
+    ):
+        from textual.widgets import Input
+
+        from taui.tui.screens import self_edit_modal as sem
+        from taui.tui.screens.self_edit_modal import _Editor, _ModelPicker
+
+        # Stub the model catalog so the picker has something to show.
+        monkeypatch.setattr(
+            sem,
+            "_available_model_ids",
+            lambda provider: ["claude-haiku", "claude-sonnet"],
+        )
+
+        class FakeProvider:
+            async def stream_text(self, messages, model, temperature=0.1):
+                if False:
+                    yield None  # pragma: no cover
+                return
+
+        provider = scenarios.happy_path("(unused)")
+        app = use_scripted_provider(monkeypatch, tmp_path, provider)
+        async with app.run_test(size=(160, 50)) as pilot:
+            await _ready(app)
+            editor = _Editor(
+                category=inventory.category_by_key("commands"),
+                scope="project",
+                creating=True,
+                item=None,
+                working_dir=tmp_path,
+                provider=FakeProvider(),
+                model="claude-haiku",
+                provider_name="anthropic",
+            )
+            app.push_screen(editor)
+            await pilot.pause()
+            editor.query_one("#se-editor-llm-prompt", Input).value = "do thing"
+            editor._start_llm_generation()
+            await pilot.pause()
+            assert isinstance(app.screen, _ModelPicker)
+            await pilot.press("escape")
+            await app._session.close()
+
+    async def test_agent_editor_requires_at_least_one_tool(
+        self, tmp_path, monkeypatch
+    ):
+        from textual.widgets import Input
+
+        from taui.tui.screens.self_edit_modal import _Editor
+
+        provider = scenarios.happy_path("(unused)")
+        app = use_scripted_provider(monkeypatch, tmp_path, provider)
+        async with app.run_test(size=(160, 50)) as pilot:
+            await _ready(app)
+            editor = _Editor(
+                category=inventory.category_by_key("agents"),
+                scope="project",
+                creating=True,
+                item=None,
+                working_dir=tmp_path,
+                provider=None,
+                model="",
+                provider_name="",
+            )
+            app.push_screen(editor)
+            await pilot.pause()
+            editor.query_one("#se-editor-id", Input).value = "XYZ"
+
+            dismissed = [False]
+
+            def fake_dismiss(result):
+                dismissed[0] = True
+
+            editor.dismiss = fake_dismiss  # type: ignore[method-assign]
+            editor._submit()
+            # No tool selected — submit should be refused.
+            assert dismissed[0] is False
             await app._session.close()
 
     async def test_editor_llm_generate_populates_body(
@@ -442,14 +616,10 @@ class TestSelfEditModal:
             editor.query_one(
                 "#se-editor-llm-prompt", Input
             ).value = "print hello"
-            editor._start_llm_generation()
-            # Let the worker run.
-            for _ in range(20):
-                await pilot.pause()
-                if "Generated body line" in editor.query_one(
-                    "#se-editor-body"
-                ).text:
-                    break
+            # Drive the worker directly — Generate now opens a fuzzy model
+            # picker first; the worker is what actually runs after the user
+            # picks a model.
+            await editor._do_generate("print hello", "fake-model")
 
             body_widget = editor.query_one("#se-editor-body")
             assert "Generated body line 1." in body_widget.text

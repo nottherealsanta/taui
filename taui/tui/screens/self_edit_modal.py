@@ -198,6 +198,161 @@ class _ToolToggle(Static):
         return self._selected
 
 
+# ── Fuzzy model picker (used after clicking Generate) ──────────────
+
+
+class _ModelPicker(ModalScreen[str | None]):
+    """Fuzzy-searchable picker for selecting which model generates."""
+
+    DEFAULT_CSS = f"""
+    _ModelPicker {{
+        align: center middle;
+        background: $background 70%;
+    }}
+    #se-mp-dialog {{
+        width: 70%;
+        height: 70%;
+        background: {PANEL_BG};
+        border: round {BORDER};
+        padding: 1;
+    }}
+    #se-mp-dialog .se-mp-header {{
+        height: 1;
+        color: {ACCENT};
+        text-style: bold;
+        padding: 0 1;
+    }}
+    #se-mp-dialog #se-mp-search {{
+        height: 3;
+        width: 100%;
+        border: solid {GRID_GREY};
+        background: {INNER_BG};
+        color: {ACCENT};
+        margin: 1 0;
+    }}
+    #se-mp-dialog #se-mp-search:focus {{
+        border: solid {ACCENT_SOFT};
+    }}
+    #se-mp-dialog OptionList {{
+        height: 1fr;
+        width: 100%;
+        background: {INNER_BG};
+        color: {ACCENT_SOFT};
+        border: solid {GRID_GREY};
+    }}
+    #se-mp-dialog OptionList:focus {{
+        border: solid {ACCENT_SOFT};
+    }}
+    #se-mp-dialog .option-list--option-highlighted {{
+        background: {ACCENT} 20%;
+        color: {ACCENT};
+        text-style: bold;
+    }}
+    #se-mp-dialog .se-mp-hint {{
+        height: 1;
+        color: #666;
+        padding: 1 1 0 1;
+    }}
+    """
+
+    BINDINGS = [("escape", "cancel", "Cancel")]
+
+    def __init__(
+        self, *, models: list[str], default: str = ""
+    ) -> None:
+        super().__init__()
+        self._models = models
+        self._default = default
+
+    def compose(self) -> ComposeResult:
+        with Container(id="se-mp-dialog"):
+            yield Static("◆ select model", classes="se-mp-header")
+            yield Input(
+                placeholder="fuzzy search…",
+                id="se-mp-search",
+                value=self._default,
+            )
+            initial = (
+                self._filter(self._default) if self._default else self._models
+            )
+            yield OptionList(
+                *[Option(m, id=m) for m in initial], id="se-mp-list"
+            )
+            yield Static(
+                "[dim]↑↓ navigate · Enter select · Esc cancel[/dim]",
+                classes="se-mp-hint",
+                markup=True,
+            )
+
+    def on_mount(self) -> None:
+        try:
+            self.query_one("#se-mp-search", Input).focus()
+        except Exception:
+            pass
+
+    def _filter(self, query: str) -> list[str]:
+        q = query.lower().strip()
+        if not q:
+            return list(self._models)
+        # Substring match first, then subsequence fuzzy match.
+        substring = [m for m in self._models if q in m.lower()]
+        seen = set(substring)
+        subseq = [
+            m for m in self._models
+            if m not in seen and _subseq_match(q, m.lower())
+        ]
+        return substring + subseq
+
+    @on(Input.Changed, "#se-mp-search")
+    def _on_search_changed(self, event: Input.Changed) -> None:
+        try:
+            opts = self.query_one("#se-mp-list", OptionList)
+        except Exception:
+            return
+        opts.clear_options()
+        for m in self._filter(event.value):
+            opts.add_option(Option(m, id=m))
+        if opts.option_count:
+            opts.highlighted = 0
+
+    @on(Input.Submitted, "#se-mp-search")
+    def _on_search_submit(self, _: Input.Submitted) -> None:
+        try:
+            opts = self.query_one("#se-mp-list", OptionList)
+        except Exception:
+            return
+        if opts.option_count == 0:
+            return
+        idx = opts.highlighted or 0
+        opt = opts.get_option_at_index(idx)
+        self.dismiss(opt.id)
+
+    @on(OptionList.OptionSelected)
+    def _on_option_selected(self, event: OptionList.OptionSelected) -> None:
+        self.dismiss(event.option_id)
+
+    def on_key(self, event: Key) -> None:
+        if event.key == "escape":
+            event.stop()
+            self.dismiss(None)
+        elif event.key == "down":
+            try:
+                if self.focused is self.query_one("#se-mp-search", Input):
+                    event.stop()
+                    self.query_one("#se-mp-list", OptionList).focus()
+            except Exception:
+                pass
+
+
+def _subseq_match(query: str, target: str) -> bool:
+    """Return True if every char in `query` appears in `target` in order."""
+    i = 0
+    for ch in target:
+        if i < len(query) and ch == query[i]:
+            i += 1
+    return i == len(query)
+
+
 # ── Editor sub-modal ────────────────────────────────────────────────
 
 
@@ -411,28 +566,49 @@ class _Editor(ModalScreen):
                 yield Button("Save", id="se-editor-save", classes="-primary")
 
     def _compose_fields(self) -> ComposeResult:
+        is_agent = self._category.key == "agents"
         with Horizontal(classes="se-field-row"):
-            yield Label("ID / NAME", classes="se-field-label")
+            yield Label(
+                "AGENT ID" if is_agent else "ID",
+                classes="se-field-label",
+            )
             yield Input(
                 value=self._initial_id,
-                placeholder=self._id_placeholder(),
+                placeholder="" if is_agent else self._id_placeholder(),
                 id="se-editor-id",
                 disabled=not self._creating,
             )
-        if self._category.key == "agents":
+        if is_agent:
             with Horizontal(classes="se-field-row"):
                 yield Label("MODEL ID", classes="se-field-label")
                 yield Input(
-                    value=self._initial_model_id(),
-                    placeholder="provider/model — optional, defaults to session",
+                    value=self._initial_extra_model_only(),
+                    placeholder="",
                     id="se-editor-model-id",
                 )
-            yield Static("ALLOWED TOOLS", classes="se-tools-label")
+            yield Static(
+                "[dim]Optional — leave empty to use the session model.[/dim]",
+                classes="se-field-hint",
+                markup=True,
+            )
+            yield Static("ALLOWED TOOLS  [dim](pick at least one)[/dim]",
+                         classes="se-tools-label", markup=True)
             selected = set(self._initial_extra.get("allowed_tools", []))
             all_tools = inventory.all_tool_names(self._working_dir)
             with Grid(id="se-editor-tools"):
                 for name in all_tools:
                     yield _ToolToggle(name, name in selected)
+
+    def _initial_extra_model_only(self) -> str:
+        """For the agent MODEL ID field — combined 'provider/model' string.
+
+        Defaults to empty (the user said: empty by default, optional).
+        """
+        provider = str(self._initial_extra.get("provider", "")).strip()
+        model = str(self._initial_extra.get("model", "")).strip()
+        if not provider and not model:
+            return ""
+        return "/".join(p for p in (provider, model) if p)
 
     def _initial_model_id(self) -> str:
         """Combined provider/model string used as a single model selector."""
@@ -516,6 +692,11 @@ class _Editor(ModalScreen):
                 allowed_tools = [t.tool_name for t in toggles if t.is_selected]
             except Exception:
                 allowed_tools = list(self._initial_extra.get("allowed_tools", []))
+            if not allowed_tools:
+                self._flash_subheader(
+                    "An agent needs at least one allowed tool — pick one below."
+                )
+                return
             try:
                 provider_str, model_str = _split_model_id(
                     self.query_one("#se-editor-model-id", Input).value.strip()
@@ -552,20 +733,37 @@ class _Editor(ModalScreen):
         if not user_brief:
             self._flash_subheader("Type a one-line brief, then click Generate.")
             return
-        model_id = self._effective_model_id()
-        if not model_id:
-            self._flash_subheader(
-                "No model configured — set one in the selector next to Generate."
-            )
+        default_model = self._effective_model_id()
+        models = _available_model_ids(self._provider_name)
+        if default_model and default_model not in models:
+            models = [default_model] + models
+
+        def after(picked: str | None) -> None:
+            if not picked:
+                return
+            self._generating = True
+            try:
+                btn = self.query_one("#se-editor-generate", Button)
+                btn.label = "◆ Generating…"
+                btn.add_class("-busy")
+            except Exception:
+                pass
+            self._generate_worker(user_brief, picked)
+
+        if not models:
+            # Fall back to whatever's in the model-id field if catalog lookup
+            # failed (offline, unknown provider, etc.)
+            if not default_model:
+                self._flash_subheader(
+                    "No model configured — fill the model id field."
+                )
+                return
+            after(default_model)
             return
-        self._generating = True
-        try:
-            btn = self.query_one("#se-editor-generate", Button)
-            btn.label = "◆ Generating…"
-            btn.add_class("-busy")
-        except Exception:
-            pass
-        self._generate_worker(user_brief, model_id)
+
+        self.app.push_screen(
+            _ModelPicker(models=models, default=default_model), after
+        )
 
     def _effective_model_id(self) -> str:
         """Where Generate reads its model from — agent field, gen field, or default."""
@@ -592,6 +790,10 @@ class _Editor(ModalScreen):
 
     @work(exclusive=True, group="self_edit_modal_generate")
     async def _generate_worker(self, user_brief: str, model_id: str) -> None:
+        await self._do_generate(user_brief, model_id)
+
+    async def _do_generate(self, user_brief: str, model_id: str) -> None:
+        """Body of the generation worker — separate so tests can call it."""
         prompt = _build_generation_prompt(self._category.key, user_brief)
         body = ""
         try:
@@ -691,6 +893,42 @@ def _build_generation_prompt(category_key: str, user_brief: str) -> str:
             "`command = ...` and `args = [...]` lines. Optionally `env = {...}`."
         )
     return f"{common}\n\n{user_brief}"
+
+
+def _available_model_ids(provider_name: str) -> list[str]:
+    """Return model IDs the user might want to pick for generation.
+
+    Pulls from the project's model catalog. Returns the configured-provider's
+    models first, then known providers as a fallback. Best-effort — returns
+    an empty list if catalog lookups fail (offline, unknown provider, etc).
+    """
+    try:
+        from taui.llm_provider.models import PROVIDER_MAP, list_models
+    except Exception:
+        return []
+
+    ids: list[str] = []
+    seen: set[str] = set()
+
+    def _add(provider: str) -> None:
+        try:
+            for entry in list_models(provider):
+                mid = str(entry.get("id", "")).strip()
+                if mid and mid not in seen:
+                    seen.add(mid)
+                    ids.append(mid)
+        except Exception:
+            pass
+
+    if provider_name:
+        _add(provider_name)
+    try:
+        for known in PROVIDER_MAP:
+            if known != provider_name:
+                _add(known)
+    except Exception:
+        pass
+    return ids
 
 
 def _split_model_id(raw: str) -> tuple[str, str]:
@@ -805,16 +1043,20 @@ class SelfEditModal(ModalScreen[str | None]):
         padding: 0;
     }}
     #se-top-row {{
-        height: 1;
+        height: auto;
         background: {PANEL_BG};
         padding: 0 2;
     }}
-    #se-top-row #se-tabs-row {{
+    #se-top-row #se-tabs-stack {{
+        width: 1fr;
+        height: auto;
+    }}
+    #se-top-row #se-tabs-stack .se-tabs-row {{
         width: 1fr;
         height: 1;
         align-horizontal: left;
     }}
-    #se-top-row #se-tabs-row _CategoryTab {{
+    #se-top-row #se-tabs-stack .se-tabs-row _CategoryTab {{
         margin: 0 1 0 0;
     }}
     #se-top-row #se-scope-row {{
@@ -946,15 +1188,11 @@ class SelfEditModal(ModalScreen[str | None]):
     def compose(self) -> ComposeResult:
         with Container(id="se-dialog"):
             with Horizontal(id="se-top-row"):
-                with Horizontal(id="se-tabs-row"):
-                    counts = inventory.counts(self._working_dir)
-                    for i, cat in enumerate(inventory.CATEGORIES):
-                        yield _CategoryTab(
-                            cat.key,
-                            cat.label,
-                            counts.get(cat.key, {}).get(self._scope, 0),
-                            active=(i == self._category_index),
-                        )
+                with Vertical(id="se-tabs-stack"):
+                    with Horizontal(classes="se-tabs-row", id="se-tabs-row-1"):
+                        pass  # populated by _layout_tabs on mount/resize
+                    with Horizontal(classes="se-tabs-row", id="se-tabs-row-2"):
+                        pass
                 with Horizontal(id="se-scope-row"):
                     yield _ScopeChip("global", active=self._scope == "global")
                     yield _ScopeChip("project", active=self._scope == "project")
@@ -979,11 +1217,58 @@ class SelfEditModal(ModalScreen[str | None]):
             )
 
     def on_mount(self) -> None:
+        self._layout_tabs()
         self._refresh_items()
         try:
             self.query_one("#se-options", OptionList).focus()
         except Exception:
             pass
+
+    def on_resize(self, event: events.Resize) -> None:
+        self._layout_tabs()
+
+    def _layout_tabs(self) -> None:
+        """Distribute the category tabs across one or two rows.
+
+        On wide terminals everything fits on row 1. On narrow ones we
+        split the categories in half so the user can still see them all.
+        """
+        try:
+            row1 = self.query_one("#se-tabs-row-1", Horizontal)
+            row2 = self.query_one("#se-tabs-row-2", Horizontal)
+        except Exception:
+            return
+
+        # Remove any existing tabs from both rows before re-populating.
+        for tab in list(self.query(_CategoryTab)):
+            tab.remove()
+
+        # Rough char budget: padding (4) + ~2 chars margin/count, summed.
+        approx_total = sum(len(c.label) + 8 for c in inventory.CATEGORIES)
+        # Subtract space reserved for the scope chips on the right.
+        available = (self.size.width or 120) - 24
+        single_row = approx_total <= available
+
+        if single_row:
+            split = [list(inventory.CATEGORIES), []]
+        else:
+            mid = (len(inventory.CATEGORIES) + 1) // 2
+            split = [
+                list(inventory.CATEGORIES[:mid]),
+                list(inventory.CATEGORIES[mid:]),
+            ]
+
+        counts = inventory.counts(self._working_dir)
+        for row, cats in zip((row1, row2), split):
+            for cat in cats:
+                idx = inventory.CATEGORIES.index(cat)
+                tab = _CategoryTab(
+                    cat.key,
+                    cat.label,
+                    counts.get(cat.key, {}).get(self._scope, 0),
+                    active=(idx == self._category_index),
+                )
+                row.mount(tab)
 
     # ── Refresh ───────────────────────────────────────────────────
 
@@ -1015,19 +1300,22 @@ class SelfEditModal(ModalScreen[str | None]):
 
     def _refresh_chrome(self) -> None:
         counts = inventory.counts(self._working_dir)
-        try:
-            tabs_row = self.query_one("#se-tabs-row", Horizontal)
-        except Exception:
-            tabs_row = None
-        if tabs_row is not None:
-            for i, tab in enumerate(tabs_row.query(_CategoryTab)):
-                cat = inventory.CATEGORIES[i]
-                tab._count = counts.get(cat.key, {}).get(self._scope, 0)
-                if i == self._category_index:
-                    tab.add_class("-active")
-                else:
-                    tab.remove_class("-active")
-                tab.refresh()
+        # Tabs may be spread across two rows on narrow terminals — iterate
+        # them all and refresh count/active state by category key.
+        for tab in self.query(_CategoryTab):
+            cat = next(
+                (c for c in inventory.CATEGORIES if c.key == tab.category_key),
+                None,
+            )
+            if cat is None:
+                continue
+            tab._count = counts.get(cat.key, {}).get(self._scope, 0)
+            idx = inventory.CATEGORIES.index(cat)
+            if idx == self._category_index:
+                tab.add_class("-active")
+            else:
+                tab.remove_class("-active")
+            tab.refresh()
         try:
             scope_row = self.query_one("#se-scope-row", Horizontal)
             for chip in scope_row.query(_ScopeChip):
