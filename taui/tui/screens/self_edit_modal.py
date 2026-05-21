@@ -21,16 +21,18 @@ from textual.widgets import (
     Input,
     Label,
     OptionList,
+    SelectionList,
     Static,
     TextArea,
 )
 from textual.widgets.option_list import Option
+from textual.widgets.selection_list import Selection
 
 from taui.self_edit import inventory
 
 
 # ── Palette ──────────────────────────────────────────────────────────
-ACCENT = "#f0c808"        # bright hazard yellow — used for headings/highlights
+ACCENT = "#f0c808"        # bright hazard yellow — highlights / active state
 ACCENT_SOFT = "#c9a300"   # warm yellow — body text accents
 BORDER = "#5a4500"        # dark olive — subtle yellow border
 PANEL_BG = "#0d0d0d"      # dialog background
@@ -40,11 +42,22 @@ HAZARD_AMBER = "#ffae00"  # warning/destructive accent
 GRID_GREY = "#2a2a2a"     # darker grey for inner borders
 
 
-@dataclass(frozen=True, slots=True)
-class _ItemKey:
-    category: str
-    scope: str
-    identifier: str
+# ── Custom events ───────────────────────────────────────────────────
+
+
+class _CategoryClicked(events.Event):
+    def __init__(self, category_key: str) -> None:
+        super().__init__()
+        self.category_key = category_key
+
+
+class _ScopeClicked(events.Event):
+    def __init__(self, scope: str) -> None:
+        super().__init__()
+        self.scope = scope
+
+
+# ── Clickable chrome widgets ────────────────────────────────────────
 
 
 class _CategoryTab(Static):
@@ -93,12 +106,6 @@ class _CategoryTab(Static):
         self.post_message(_CategoryClicked(self._key))
 
 
-class _CategoryClicked(events.Event):
-    def __init__(self, category_key: str) -> None:
-        super().__init__()
-        self.category_key = category_key
-
-
 class _ScopeChip(Static):
     """Clickable scope chip — global / project."""
 
@@ -137,12 +144,6 @@ class _ScopeChip(Static):
     def on_click(self, event: Click) -> None:
         event.stop()
         self.post_message(_ScopeClicked(self._scope))
-
-
-class _ScopeClicked(events.Event):
-    def __init__(self, scope: str) -> None:
-        super().__init__()
-        self.scope = scope
 
 
 # ── Editor sub-modal ────────────────────────────────────────────────
@@ -198,16 +199,25 @@ class _Editor(ModalScreen):
         border: solid {ACCENT_SOFT};
     }}
     #se-editor-dialog .se-prompt-row {{
-        height: 3;
+        height: 1;
         width: 100%;
         padding: 0;
+        margin-top: 1;
     }}
     #se-editor-dialog #se-editor-llm-prompt {{
+        height: 1;
+        border: none;
+        padding: 0 1;
+        background: {INNER_BG};
         width: 1fr;
+    }}
+    #se-editor-dialog #se-editor-llm-prompt:focus {{
+        background: {INNER_BG};
+        border: none;
     }}
     #se-editor-dialog #se-editor-generate {{
         margin: 0 0 0 1;
-        height: 3;
+        height: 1;
         min-width: 0;
         border: none;
         padding: 0 2;
@@ -217,6 +227,33 @@ class _Editor(ModalScreen):
     }}
     #se-editor-dialog #se-editor-generate.-busy {{
         background: {HAZARD_AMBER};
+    }}
+    #se-editor-dialog .se-tools-label {{
+        width: 18;
+        color: {ACCENT_SOFT};
+        padding: 0 1;
+        margin-top: 1;
+    }}
+    #se-editor-dialog #se-editor-tools {{
+        height: 10;
+        width: 100%;
+        border: solid {GRID_GREY};
+        background: {INNER_BG};
+        color: {ACCENT};
+    }}
+    #se-editor-dialog #se-editor-tools:focus {{
+        border: solid {ACCENT_SOFT};
+    }}
+    #se-editor-dialog #se-editor-tools > .selection-list--button-selected {{
+        color: {ACCENT};
+        background: {INNER_BG};
+    }}
+    #se-editor-dialog #se-editor-tools > .selection-list--button-selected-highlighted {{
+        color: {DEEP_BLACK};
+        background: {ACCENT};
+    }}
+    #se-editor-dialog #se-editor-tools > .selection-list--button {{
+        color: {ACCENT_SOFT};
     }}
     #se-editor-dialog TextArea {{
         height: 1fr;
@@ -262,8 +299,10 @@ class _Editor(ModalScreen):
         scope: str,
         creating: bool,
         item: inventory.Item | None,
+        working_dir: Path,
         provider=None,
         model: str = "",
+        provider_name: str = "",
         identifier: str = "",
     ) -> None:
         super().__init__()
@@ -271,11 +310,13 @@ class _Editor(ModalScreen):
         self._scope = scope
         self._creating = creating
         self._item = item
+        self._working_dir = working_dir
         self._initial_id = identifier or (item.identifier if item else "")
         self._initial_body = (item.body if item else category.new_template)
         self._initial_extra = dict(item.extra) if item else {}
         self._provider = provider
         self._model = model
+        self._provider_name = provider_name
         self._generating = False
 
     def compose(self) -> ComposeResult:
@@ -288,13 +329,13 @@ class _Editor(ModalScreen):
                 classes="se-editor-subheader",
             )
             yield from self._compose_fields()
-            if self._creating and self._provider is not None:
+            if self._creating:
                 with Horizontal(classes="se-prompt-row"):
                     yield Input(
                         placeholder=self._llm_placeholder(),
                         id="se-editor-llm-prompt",
                     )
-                    yield Button("◆ Generate", id="se-editor-generate")
+                    yield Button(self._generate_label(), id="se-editor-generate")
             yield TextArea(self._initial_body, id="se-editor-body")
             with Horizontal(classes="se-editor-footer"):
                 yield Button("Cancel", id="se-editor-cancel")
@@ -311,12 +352,6 @@ class _Editor(ModalScreen):
             )
         if self._category.key == "agents":
             with Horizontal(classes="se-field-row"):
-                yield Label("DISPLAY NAME", classes="se-field-label")
-                yield Input(
-                    value=str(self._initial_extra.get("name", "")),
-                    id="se-editor-display",
-                )
-            with Horizontal(classes="se-field-row"):
                 yield Label("PROVIDER", classes="se-field-label")
                 yield Input(
                     value=str(self._initial_extra.get("provider", "")),
@@ -328,13 +363,13 @@ class _Editor(ModalScreen):
                     value=str(self._initial_extra.get("model", "")),
                     id="se-editor-model",
                 )
-            with Horizontal(classes="se-field-row"):
-                yield Label("ALLOWED TOOLS", classes="se-field-label")
-                yield Input(
-                    value=", ".join(self._initial_extra.get("allowed_tools", [])),
-                    placeholder="comma-separated, e.g. read, edit, bash",
-                    id="se-editor-tools",
-                )
+            yield Static("ALLOWED TOOLS", classes="se-tools-label")
+            selected = set(self._initial_extra.get("allowed_tools", []))
+            all_tools = inventory.all_tool_names(self._working_dir)
+            selections = [
+                Selection(name, name, name in selected) for name in all_tools
+            ]
+            yield SelectionList[str](*selections, id="se-editor-tools")
 
     def _id_placeholder(self) -> str:
         if self._category.key == "agents":
@@ -354,6 +389,16 @@ class _Editor(ModalScreen):
             "prompts": "describe the prompt — eg. 'explains a Python traceback'",
             "mcp": "describe the MCP server — eg. 'wraps the github CLI'",
         }.get(self._category.key, "describe what you want")
+
+    def _generate_label(self) -> str:
+        suffix = self._provider_model_label()
+        if suffix:
+            return f"◆ Generate ({suffix})"
+        return "◆ Generate"
+
+    def _provider_model_label(self) -> str:
+        parts = [p for p in (self._provider_name, self._model) if p]
+        return "/".join(parts)
 
     def on_mount(self) -> None:
         if self._creating:
@@ -400,23 +445,21 @@ class _Editor(ModalScreen):
         extra: dict = {}
         if self._category.key == "agents":
             try:
+                tools_widget = self.query_one("#se-editor-tools", SelectionList)
+                allowed_tools = list(tools_widget.selected)
+            except Exception:
+                allowed_tools = list(self._initial_extra.get("allowed_tools", []))
+            try:
                 extra = {
-                    "name": self.query_one("#se-editor-display", Input).value.strip()
-                    or ident,
+                    "name": ident,
                     "provider": self.query_one(
                         "#se-editor-provider", Input
                     ).value.strip(),
                     "model": self.query_one("#se-editor-model", Input).value.strip(),
-                    "allowed_tools": [
-                        s.strip()
-                        for s in self.query_one(
-                            "#se-editor-tools", Input
-                        ).value.split(",")
-                        if s.strip()
-                    ],
+                    "allowed_tools": allowed_tools,
                 }
             except Exception:
-                extra = {}
+                extra = {"name": ident, "allowed_tools": allowed_tools}
         self.dismiss(
             {
                 "identifier": ident,
@@ -461,9 +504,10 @@ class _Editor(ModalScreen):
         prompt = _build_generation_prompt(self._category.key, user_brief)
         body = ""
         try:
-            from taui.agent.types import Message
-
-            messages = [Message(role="user", content=prompt)]
+            # Providers serialize messages by JSON-dumping the request body,
+            # which means we must hand them plain dicts — Message dataclasses
+            # would crash with "Object of type Message is not JSON serializable".
+            messages = [{"role": "user", "content": prompt}]
             async for event in self._provider.stream_text(
                 messages, self._model, temperature=0.2
             ):
@@ -475,7 +519,7 @@ class _Editor(ModalScreen):
             self._generating = False
             try:
                 btn = self.query_one("#se-editor-generate", Button)
-                btn.label = "◆ Generate"
+                btn.label = self._generate_label()
                 btn.remove_class("-busy")
             except Exception:
                 pass
@@ -492,7 +536,7 @@ class _Editor(ModalScreen):
             self._generating = False
             try:
                 btn = self.query_one("#se-editor-generate", Button)
-                btn.label = "◆ Generate"
+                btn.label = self._generate_label()
                 btn.remove_class("-busy")
             except Exception:
                 pass
@@ -658,28 +702,32 @@ class SelfEditModal(ModalScreen[str | None]):
         border: round {BORDER};
         padding: 0;
     }}
-    #se-title-row {{
-        height: 1;
-        background: {PANEL_BG};
-        color: {ACCENT};
-        padding: 0 2;
-    }}
-    #se-tabs-row {{
+    #se-top-row {{
         height: 1;
         background: {PANEL_BG};
         padding: 0 2;
     }}
-    #se-tabs-row _CategoryTab {{
+    #se-top-row #se-tabs-row {{
+        width: 1fr;
+        height: 1;
+        align-horizontal: left;
+    }}
+    #se-top-row #se-tabs-row _CategoryTab {{
         margin: 0 1 0 0;
     }}
-    #se-scope-row {{
+    #se-top-row #se-scope-row {{
+        width: auto;
+        height: 1;
+        align-horizontal: right;
+    }}
+    #se-top-row #se-scope-row _ScopeChip {{
+        margin: 0 0 0 1;
+    }}
+    #se-scope-path {{
         height: 1;
         background: {PANEL_BG};
-        padding: 0 2;
         color: {ACCENT_SOFT};
-    }}
-    #se-scope-row _ScopeChip {{
-        margin: 0 1 0 0;
+        padding: 0 2;
     }}
     #se-description {{
         height: 2;
@@ -710,6 +758,20 @@ class SelfEditModal(ModalScreen[str | None]):
         background: {ACCENT} 20%;
         color: {ACCENT};
         text-style: bold;
+    }}
+    #se-list-pane #se-new-button {{
+        margin-top: 1;
+        height: 1;
+        width: 100%;
+        min-width: 0;
+        border: none;
+        padding: 0 1;
+        background: {ACCENT};
+        color: {DEEP_BLACK};
+        text-style: bold;
+    }}
+    #se-list-pane #se-new-button:hover {{
+        background: {HAZARD_AMBER};
     }}
     #se-preview-pane {{
         width: 1fr;
@@ -780,28 +842,28 @@ class SelfEditModal(ModalScreen[str | None]):
 
     def compose(self) -> ComposeResult:
         with Container(id="se-dialog"):
-            yield Static("▰  self · edit", id="se-title-row")
-            with Horizontal(id="se-tabs-row"):
-                counts = inventory.counts(self._working_dir)
-                for i, cat in enumerate(inventory.CATEGORIES):
-                    yield _CategoryTab(
-                        cat.key,
-                        cat.label,
-                        counts.get(cat.key, {}).get(self._scope, 0),
-                        active=(i == self._category_index),
-                    )
-            with Horizontal(id="se-scope-row"):
-                yield Static("scope", classes="se-scope-label")
-                yield _ScopeChip("global", active=self._scope == "global")
-                yield _ScopeChip("project", active=self._scope == "project")
-                yield Static(
-                    f"  {inventory.scope_root(self._working_dir, self._scope)}",
-                    id="se-scope-path",
-                )
+            with Horizontal(id="se-top-row"):
+                with Horizontal(id="se-tabs-row"):
+                    counts = inventory.counts(self._working_dir)
+                    for i, cat in enumerate(inventory.CATEGORIES):
+                        yield _CategoryTab(
+                            cat.key,
+                            cat.label,
+                            counts.get(cat.key, {}).get(self._scope, 0),
+                            active=(i == self._category_index),
+                        )
+                with Horizontal(id="se-scope-row"):
+                    yield _ScopeChip("global", active=self._scope == "global")
+                    yield _ScopeChip("project", active=self._scope == "project")
+            yield Static(
+                f"  {inventory.scope_root(self._working_dir, self._scope)}",
+                id="se-scope-path",
+            )
             yield Static(self._category.description, id="se-description")
             with Horizontal(id="se-body"):
                 with Vertical(id="se-list-pane"):
                     yield OptionList(id="se-options")
+                    yield Button("+  NEW", id="se-new-button")
                 with Vertical(id="se-preview-pane"):
                     yield Static(
                         "preview",
@@ -935,6 +997,10 @@ class SelfEditModal(ModalScreen[str | None]):
         self._scope = message.scope
         self._refresh_items()
 
+    @on(Button.Pressed, "#se-new-button")
+    def _on_new_button(self, _: Button.Pressed) -> None:
+        self.action_new_item()
+
     # ── Actions ───────────────────────────────────────────────────
 
     @on(OptionList.OptionHighlighted)
@@ -974,14 +1040,16 @@ class SelfEditModal(ModalScreen[str | None]):
         self._refresh_items()
 
     def action_new_item(self) -> None:
-        provider, model = self._llm_handles()
+        provider, model, provider_name = self._llm_handles()
         editor = _Editor(
             category=self._category,
             scope=self._scope,
             creating=True,
             item=None,
+            working_dir=self._working_dir,
             provider=provider,
             model=model,
+            provider_name=provider_name,
         )
 
         def after(result):
@@ -1009,14 +1077,19 @@ class SelfEditModal(ModalScreen[str | None]):
         if item is None:
             self.action_new_item()
             return
-        provider, model = self._llm_handles()
+        if item.builtin and self._category.key == "tools":
+            # Built-in tools are read-only — preview-only.
+            return
+        provider, model, provider_name = self._llm_handles()
         editor = _Editor(
             category=self._category,
             scope=self._scope,
             creating=False,
             item=item,
+            working_dir=self._working_dir,
             provider=provider,
             model=model,
+            provider_name=provider_name,
         )
 
         def after(result):
@@ -1076,16 +1149,18 @@ class SelfEditModal(ModalScreen[str | None]):
             pass
 
     def _llm_handles(self):
-        """Return (provider, model) from the current session, or (None, '')."""
+        """Return (provider, model, provider_name) from the current session."""
         session = getattr(self.app, "_session", None)
         if session is None:
-            return None, ""
+            return None, "", ""
         provider = getattr(session, "_provider", None)
         config = getattr(session, "config", None)
         model = ""
+        provider_name = ""
         if config is not None:
             model = str(getattr(config, "model", "") or "")
-        return provider, model
+            provider_name = str(getattr(config, "provider", "") or "")
+        return provider, model, provider_name
 
     def on_key(self, event: Key) -> None:
         if event.key == "escape":

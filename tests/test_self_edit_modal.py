@@ -100,6 +100,19 @@ class TestInventory:
             "mcp",
         }
 
+    def test_tools_section_includes_builtins(self, tmp_path):
+        items = inventory.list_items(tmp_path, "tools", "global")
+        builtins = [i for i in items if i.builtin]
+        assert len(builtins) >= 5
+        names = {i.identifier for i in builtins}
+        assert {"read", "edit", "write", "bash"}.issubset(names)
+
+    def test_all_tool_names_lists_builtins(self, tmp_path):
+        names = inventory.all_tool_names(tmp_path)
+        assert "read" in names
+        assert "edit" in names
+        assert "bash" in names
+
     def test_first_docstring_extraction(self):
         assert inventory._first_docstring('"""Hi there."""\n') == "Hi there."
         assert (
@@ -213,6 +226,31 @@ class TestSelfEditModal:
             assert not isinstance(app.screen, SelfEditModal)
             await app._session.close()
 
+    async def test_modal_new_button_at_bottom_of_list(
+        self, tmp_path, monkeypatch
+    ):
+        from textual.widgets import Button
+
+        provider = scenarios.happy_path("(unused)")
+        app = use_scripted_provider(monkeypatch, tmp_path, provider)
+        async with app.run_test(size=(160, 50)) as pilot:
+            await _ready(app)
+            await app.action_enter_self_edit()
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, SelfEditModal)
+            new_btn = screen.query_one("#se-new-button", Button)
+            assert new_btn is not None
+            # Clicking the button opens the editor in creating mode.
+            from taui.tui.screens.self_edit_modal import _Editor
+
+            new_btn.press()
+            await pilot.pause()
+            assert isinstance(app.screen, _Editor)
+            await pilot.press("escape")
+            await pilot.pause()
+            await app._session.close()
+
     async def test_modal_tabs_are_clickable(self, tmp_path, monkeypatch):
         from taui.tui.screens.self_edit_modal import (
             _CategoryClicked,
@@ -251,15 +289,20 @@ class TestSelfEditModal:
     async def test_editor_llm_generate_populates_body(
         self, tmp_path, monkeypatch
     ):
-        from taui.agent.types import Message
+        import json
+
         from taui.llm_provider.types import StreamEvent
         from taui.tui.screens.self_edit_modal import _Editor
 
-        # Build a fake provider whose stream_text yields one text_delta then done.
+        # Build a fake provider whose stream_text yields text_deltas then done.
+        # The provider must accept plain dicts (json-serializable) — passing
+        # Message dataclasses would crash real providers with
+        # "Object of type Message is not JSON serializable".
         class FakeProvider:
             async def stream_text(self, messages, model, temperature=0.1):
-                # Sanity: the prompt is the last user message.
-                assert messages[-1].role == "user"
+                # Sanity: messages are JSON-serializable dicts.
+                json.dumps(messages)
+                assert messages[-1]["role"] == "user"
                 yield StreamEvent.text_delta("Generated body line 1.\n")
                 yield StreamEvent.text_delta("Generated body line 2.\n")
                 yield StreamEvent.done()
@@ -276,8 +319,10 @@ class TestSelfEditModal:
                 scope="project",
                 creating=True,
                 item=None,
+                working_dir=tmp_path,
                 provider=FakeProvider(),
                 model="fake-model",
+                provider_name="fake",
             )
             app.push_screen(editor)
             await pilot.pause()

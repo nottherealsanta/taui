@@ -249,7 +249,52 @@ def _list_commands(working_dir: Path, scope: str) -> list[Item]:
 
 
 def _list_tools(working_dir: Path, scope: str) -> list[Item]:
-    return _list_py_dir(working_dir, scope, subdir="extensions", category="tools")
+    items = _list_py_dir(working_dir, scope, subdir="extensions", category="tools")
+    if scope == "global":
+        items = _list_builtin_tools() + items
+    return items
+
+
+def _list_builtin_tools() -> list[Item]:
+    """Built-in tools are read-only; we surface them under the global scope."""
+    try:
+        from taui.tools.builtins import register_builtins
+        from taui.tools.registry import ToolRegistry
+
+        registry = ToolRegistry()
+        register_builtins(registry)
+    except Exception:
+        return []
+    out: list[Item] = []
+    for name in sorted(registry.names):
+        tool = registry.get(name)
+        desc = getattr(tool, "description", "") or "(builtin)"
+        out.append(
+            Item(
+                category="tools",
+                scope="global",
+                identifier=name,
+                label=name,
+                summary=str(desc)[:120],
+                path=Path(f"<builtin:{name}>"),
+                body=str(desc),
+                builtin=True,
+            )
+        )
+    return out
+
+
+def all_tool_names(working_dir: Path) -> list[str]:
+    """Every tool a user might want to grant an agent — builtins + scopes."""
+    names: set[str] = set()
+    for item in _list_builtin_tools():
+        names.add(item.identifier)
+    for scope in ("global", "project"):
+        for item in _list_py_dir(
+            working_dir, scope, subdir="extensions", category="tools"
+        ):
+            names.add(item.identifier)
+    return sorted(names)
 
 
 def _list_prompts(working_dir: Path, scope: str) -> list[Item]:
