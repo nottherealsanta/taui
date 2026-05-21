@@ -64,7 +64,7 @@ class TurnContainer(Vertical):
     TurnContainer > .turn-header {
         height: auto;
         layout: horizontal;
-        background: #262626;
+        background: #1a1a1a;
         margin: 0;
     }
     TurnContainer > .turn-header > .user-text {
