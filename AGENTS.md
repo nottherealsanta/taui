@@ -8,7 +8,7 @@ current behavior and edit it when architecture, commands, or conventions change.
 Taui is a customizable agentic coding interface for developers.
 
 - Package: `taui`
-- Version: `0.6`
+- Version: `0.7`
 - Runtime: Python `>=3.13`
 - UI: full-screen Textual TUI only
 - Entry point: `taui.main:main`
