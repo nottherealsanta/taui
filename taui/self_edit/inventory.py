@@ -368,55 +368,217 @@ def _list_mcp(working_dir: Path, scope: str) -> list[Item]:
     return out
 
 
-_PREFIX_META: dict[str, tuple[str, str]] = {
-    "file_attach": (
-        "File Attachment Prefix",
-        "Character used to expand file attachments in chat input (e.g. @filename).",
+# ── General settings metadata ──────────────────────────────────────
+
+# Ordered sections for the General settings panel.
+# Each entry: (section_label, key, display_label, description, value_type)
+GENERAL_SETTINGS_SECTIONS: tuple[
+    tuple[str, list[tuple[str, str, str, type]]], ...
+] = (
+    (
+        "PREFIXES",
+        [
+            (
+                "file_attach",
+                "File Attachment",
+                "Character that triggers file completion (e.g. @filename).",
+                str,
+            ),
+            (
+                "command",
+                "Command",
+                "Character that triggers slash commands (e.g. /help).",
+                str,
+            ),
+        ],
     ),
-    "command": (
-        "Command Prefix",
-        "Character used to invoke slash commands in chat input (e.g. /help).",
+    (
+        "AGENT",
+        [
+            (
+                "max_turns",
+                "Max Turns",
+                "Maximum tool-use cycles per request.",
+                int,
+            ),
+            (
+                "provider",
+                "Default Provider",
+                "LLM provider used when no override is given.",
+                str,
+            ),
+            (
+                "model",
+                "Default Model",
+                "Model name used when no override is given (empty = auto).",
+                str,
+            ),
+        ],
     ),
+    (
+        "NOTIFICATIONS",
+        [
+            (
+                "notifications",
+                "Notifications",
+                "Enable or disable all notifications.",
+                bool,
+            ),
+            (
+                "notify_on_turn_done",
+                "Notify on Turn Done",
+                "Notify when the agent finishes a request.",
+                bool,
+            ),
+            (
+                "notify_on_question",
+                "Notify on Question",
+                "Notify when the agent asks a question.",
+                bool,
+            ),
+        ],
+    ),
+    (
+        "DISPLAY",
+        [
+            (
+                "verbose_tools",
+                "Verbose Tools",
+                "Show full tool output in the chat log.",
+                bool,
+            ),
+            (
+                "auto_approve_reads",
+                "Auto Approve Reads",
+                "Automatically approve read-only tool calls.",
+                bool,
+            ),
+        ],
+    ),
+)
+
+# Flat map: key -> (toml_dot_path, type)
+_GENERAL_SETTINGS_MAP: dict[str, tuple[str, type]] = {
+    "file_attach": ("prefixes.file_attach", str),
+    "command": ("prefixes.command", str),
+    "max_turns": ("max_turns", int),
+    "provider": ("provider", str),
+    "model": ("model", str),
+    "notifications": ("notifications", bool),
+    "notify_on_turn_done": ("notify_on_turn_done", bool),
+    "notify_on_question": ("notify_on_question", bool),
+    "verbose_tools": ("verbose_tools", bool),
+    "auto_approve_reads": ("auto_approve_reads", bool),
+}
+
+# Total number of general settings (used for the tab badge).
+_GENERAL_SETTINGS_COUNT: int = sum(
+    len(rows) for _, rows in GENERAL_SETTINGS_SECTIONS
+)
+
+# Defaults that mirror taui/config.py.
+_GENERAL_DEFAULTS: dict[str, object] = {
+    "file_attach": "@",
+    "command": "/",
+    "max_turns": 50,
+    "provider": "copilot",
+    "model": "",
+    "notifications": True,
+    "notify_on_turn_done": True,
+    "notify_on_question": True,
+    "verbose_tools": True,
+    "auto_approve_reads": True,
 }
 
 
-def _list_general(working_dir: Path, scope: str) -> list[Item]:
-    from taui.llm_provider.config import CONFIG_PATH, load_config
+def _load_general_values() -> dict[str, object]:
+    """Read current general setting values from the config file."""
+    from taui.llm_provider.config import load_config
 
     raw = load_config()
-    prefixes = raw.get("taui", {}).get("prefixes", {})
-    # Defaults mirror taui/config.py
-    defaults: dict[str, str] = {"file_attach": "@", "command": "/"}
-    defaults.update({k: str(v) for k, v in prefixes.items() if isinstance(v, str)})
+    taui_cfg = raw.get("taui", {})
+    prefixes = taui_cfg.get("prefixes", {})
 
+    values: dict[str, object] = dict(_GENERAL_DEFAULTS)
+    for fld in ("max_turns", "provider", "model", "notifications",
+                "notify_on_turn_done", "notify_on_question", "verbose_tools",
+                "auto_approve_reads"):
+        if fld in taui_cfg:
+            values[fld] = taui_cfg[fld]
+    for fld in ("file_attach", "command"):
+        if fld in prefixes:
+            values[fld] = prefixes[fld]
+    return values
+
+
+def _list_general(working_dir: Path, scope: str) -> list[Item]:
+    """Return one Item per general setting (always global scope)."""
+    from taui.llm_provider.config import CONFIG_PATH
+
+    values = _load_general_values()
     out: list[Item] = []
-    for key, (label, description) in _PREFIX_META.items():
-        value = defaults.get(key, "")
-        out.append(
-            Item(
-                category="general",
-                scope="global",
-                identifier=key,
-                label=label,
-                summary=repr(value),
-                path=CONFIG_PATH,
-                body=f"{description}\n\nCurrent value: {repr(value)}",
-                builtin=False,
+    for _section, rows in GENERAL_SETTINGS_SECTIONS:
+        for key, label, description, _vtype in rows:
+            raw_val = values.get(key, _GENERAL_DEFAULTS.get(key, ""))
+            summary = _format_general_value(raw_val)
+            out.append(
+                Item(
+                    category="general",
+                    scope="global",
+                    identifier=key,
+                    label=label,
+                    summary=summary,
+                    path=CONFIG_PATH,
+                    body=description,
+                    builtin=False,
+                )
             )
-        )
     return out
 
 
-def _save_prefix_setting(key: str, value: str) -> None:
-    """Persist a prefix setting to the global config file."""
+def _format_general_value(value: object) -> str:
+    """Human-readable display string for a setting value."""
+    if isinstance(value, bool):
+        return "on" if value else "off"
+    if value == "" or value is None:
+        return "(auto)"
+    return str(value)
+
+
+def save_general_setting(key: str, value: object) -> None:
+    """Persist a general setting to ~/.config/taui/config.toml under [taui]."""
     from taui.llm_provider.config import CONFIG_PATH, _dict_to_toml, load_config
+
+    if key not in _GENERAL_SETTINGS_MAP:
+        raise KeyError(f"Unknown general setting: {key!r}")
+
+    path, vtype = _GENERAL_SETTINGS_MAP[key]
+    # Coerce to the expected type.
+    if vtype is bool:
+        coerced: object = bool(value)
+    elif vtype is int:
+        coerced = int(value)
+    else:
+        coerced = str(value)
 
     existing = load_config()
     taui_cfg = existing.setdefault("taui", {})
-    prefixes = taui_cfg.setdefault("prefixes", {})
-    prefixes[key] = value
+    parts = path.split(".")
+    target: dict = taui_cfg
+    for part in parts[:-1]:
+        target = target.setdefault(part, {})
+    target[parts[-1]] = coerced
+
     CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     CONFIG_PATH.write_text(_dict_to_toml(existing), encoding="utf-8")
+
+
+def _save_prefix_setting(key: str, value: str) -> None:
+    """Persist a prefix setting to the global config file.
+
+    Kept for backward compatibility — delegates to save_general_setting.
+    """
+    save_general_setting(key, value)
 
 
 _LISTERS: dict[str, Callable[[Path, str], list[Item]]] = {
@@ -645,7 +807,7 @@ def counts(working_dir: Path) -> dict[str, dict[str, int]]:
     result: dict[str, dict[str, int]] = {}
     for cat in CATEGORIES:
         if cat.key == "general":
-            result[cat.key] = {"global": len(_PREFIX_META), "project": 0}
+            result[cat.key] = {"global": _GENERAL_SETTINGS_COUNT, "project": 0}
         else:
             result[cat.key] = {
                 "global": len(list_items(working_dir, cat.key, "global")),

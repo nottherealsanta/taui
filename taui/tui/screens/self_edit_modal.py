@@ -12,7 +12,7 @@ from pathlib import Path
 from rich.text import Text
 from textual import events, on, work
 from textual.app import ComposeResult
-from textual.containers import Container, Grid, Horizontal, Vertical
+from textual.containers import Container, Grid, Horizontal, Vertical, VerticalScroll
 from textual.events import Click, Key
 from textual.screen import ModalScreen
 from textual.widgets import (
@@ -26,7 +26,6 @@ from textual.widgets import (
 from textual.widgets.option_list import Option
 
 from taui.self_edit import inventory
-
 
 # ── Palette ──────────────────────────────────────────────────────────
 ACCENT = "#f0c808"        # bright hazard yellow — highlights / active state
@@ -643,7 +642,7 @@ class _Editor(ModalScreen):
             return {
                 "agents": "describe the agent's job — eg. 'reviews TypeScript PRs for type safety'",
                 "skills": "describe the skill — eg. 'recipes for migrating SQLAlchemy models'",
-                "commands": "describe the command — eg. 'prints current branch and uncommitted files'",
+                "commands": "describe the command — eg. 'prints current branch and files'",
                 "tools": "describe the tool — eg. 'calls a local HTTP endpoint and returns JSON'",
                 "prompts": "describe the prompt — eg. 'explains a Python traceback'",
                 "mcp": "describe the MCP server — eg. 'wraps the github CLI'",
@@ -1231,6 +1230,301 @@ class _PrefixEditor(ModalScreen[str | None]):
         self.dismiss(value)
 
 
+# ── String / int editor sub-modal ───────────────────────────────────
+
+
+class _StringEditor(ModalScreen[str | None]):
+    """Generic single-line input for editing a string or integer setting."""
+
+    DEFAULT_CSS = f"""
+    _StringEditor {{
+        align: center middle;
+        background: $background 70%;
+    }}
+    #se-str-dialog {{
+        width: 60;
+        height: auto;
+        background: {PANEL_BG};
+        border: round {BORDER};
+        padding: 1 2;
+    }}
+    #se-str-dialog .se-str-title {{
+        color: {ACCENT};
+        text-style: bold;
+        margin: 0 0 1 0;
+    }}
+    #se-str-dialog .se-str-label {{
+        color: {ACCENT_SOFT};
+        margin: 0 0 0 0;
+    }}
+    #se-str-dialog Input {{
+        width: 100%;
+        height: 3;
+        border: solid {GRID_GREY};
+        background: {INNER_BG};
+        color: {ACCENT};
+        margin: 0 0 1 0;
+    }}
+    #se-str-dialog Input:focus {{
+        border: solid {ACCENT_SOFT};
+    }}
+    #se-str-dialog .se-str-hint {{
+        color: #666;
+        height: 1;
+        margin: 0 0 1 0;
+    }}
+    #se-str-dialog Horizontal {{
+        height: 1;
+        align-horizontal: right;
+    }}
+    #se-str-dialog Button {{
+        margin: 0 0 0 1;
+        border: none;
+        padding: 0 1;
+        height: 1;
+        min-width: 0;
+        background: {GRID_GREY};
+        color: {ACCENT};
+    }}
+    #se-str-dialog Button.-primary {{
+        background: {ACCENT};
+        color: {DEEP_BLACK};
+        text-style: bold;
+    }}
+    """
+
+    BINDINGS = [("escape", "cancel", "Cancel"), ("ctrl+s", "save", "Save")]
+
+    def __init__(self, *, label: str, current_value: str, hint: str = "") -> None:
+        super().__init__()
+        self._label = label
+        self._current = current_value
+        self._hint = hint or "Esc cancel · Ctrl+S save"
+
+    def compose(self) -> ComposeResult:
+        with Container(id="se-str-dialog"):
+            yield Static(f"◆ EDIT · {self._label}", classes="se-str-title")
+            yield Static("Value:", classes="se-str-label")
+            yield Input(value=self._current, id="se-str-input")
+            yield Static(
+                f"[dim]{self._hint}[/dim]",
+                classes="se-str-hint",
+                markup=True,
+            )
+            with Horizontal():
+                yield Button("Cancel", id="se-str-cancel")
+                yield Button("Save", id="se-str-save", classes="-primary")
+
+    def on_mount(self) -> None:
+        try:
+            self.query_one("#se-str-input", Input).focus()
+        except Exception:
+            pass
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+    def action_save(self) -> None:
+        self._submit()
+
+    def on_key(self, event: Key) -> None:
+        if event.key == "escape":
+            event.stop()
+            self.dismiss(None)
+        elif event.key == "enter":
+            event.stop()
+            self._submit()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "se-str-save":
+            self._submit()
+        else:
+            self.dismiss(None)
+
+    def _submit(self) -> None:
+        try:
+            value = self.query_one("#se-str-input", Input).value
+        except Exception:
+            self.dismiss(None)
+            return
+        self.dismiss(value)
+
+
+# ── General settings panel ───────────────────────────────────────────
+
+
+class _SettingRow(Static):
+    """A single focusable/highlightable row in the general settings panel."""
+
+    DEFAULT_CSS = f"""
+    _SettingRow {{
+        height: 1;
+        width: 100%;
+        padding: 0 1;
+        color: {ACCENT_SOFT};
+    }}
+    _SettingRow.-highlighted {{
+        background: {ACCENT} 20%;
+        color: {ACCENT};
+        text-style: bold;
+    }}
+    _SettingRow.-section-header {{
+        color: {ACCENT};
+        text-style: bold;
+        margin-top: 1;
+        background: transparent;
+    }}
+    """
+
+    def __init__(
+        self,
+        setting_key: str,
+        label: str,
+        value: object,
+        *,
+        is_header: bool = False,
+        section_name: str = "",
+    ) -> None:
+        super().__init__()
+        self.setting_key = setting_key
+        self._label = label
+        self._value = value
+        self._is_header = is_header
+        self._section_name = section_name
+        if is_header:
+            self.add_class("-section-header")
+
+    def render(self) -> Text:
+        if self._is_header:
+            t = Text()
+            t.append(f"─── {self._section_name} ", style=f"bold {ACCENT}")
+            remaining = max(0, 58 - len(self._section_name) - 5)
+            t.append("─" * remaining, style=f"bold {ACCENT}")
+            return t
+        width = 58
+        left = f"  {self._label}"
+        right = str(self._value)
+        dots_space = max(3, width - len(left) - len(right))
+        t = Text()
+        t.append(left)
+        t.append(" " + "·" * (dots_space - 2) + " ", style="dim #555555")
+        t.append(right, style=ACCENT_SOFT)
+        return t
+
+    def set_value(self, value: object) -> None:
+        self._value = value
+        self.refresh()
+
+    def highlight(self, on: bool) -> None:
+        if self._is_header:
+            return
+        if on:
+            self.add_class("-highlighted")
+        else:
+            self.remove_class("-highlighted")
+
+
+class _GeneralSettings(VerticalScroll):
+    """Scrollable settings panel for the General tab."""
+
+    DEFAULT_CSS = f"""
+    _GeneralSettings {{
+        width: 100%;
+        height: 1fr;
+        background: {INNER_BG};
+        border: solid {GRID_GREY};
+        padding: 1 2;
+    }}
+    _GeneralSettings:focus {{
+        border: solid {ACCENT_SOFT};
+    }}
+    """
+
+    BINDINGS = [
+        ("up", "move_up", "Up"),
+        ("down", "move_down", "Down"),
+        ("enter", "activate", "Edit/Toggle"),
+        ("e", "activate", "Edit/Toggle"),
+    ]
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._rows: list[_SettingRow] = []  # non-header rows only
+        self._cursor: int = 0
+
+    def compose(self) -> ComposeResult:
+        return
+        yield  # make this a generator
+
+    def populate(self, values: dict[str, object]) -> None:
+        """Remove old rows and mount fresh ones from current values."""
+        for child in list(self.children):
+            child.remove()
+        self._rows = []
+        self._cursor = 0
+
+        for section_name, section_rows in inventory.GENERAL_SETTINGS_SECTIONS:
+            self.mount(
+                _SettingRow(
+                    "",
+                    "",
+                    "",
+                    is_header=True,
+                    section_name=section_name,
+                )
+            )
+            for key, label, _desc, _vtype in section_rows:
+                raw = values.get(key, inventory._GENERAL_DEFAULTS.get(key, ""))
+                display = inventory._format_general_value(raw)
+                row = _SettingRow(key, label, display)
+                self._rows.append(row)
+                self.mount(row)
+
+        if self._rows:
+            self._rows[0].highlight(True)
+
+    def action_move_up(self) -> None:
+        if not self._rows:
+            return
+        self._rows[self._cursor].highlight(False)
+        self._cursor = (self._cursor - 1) % len(self._rows)
+        self._rows[self._cursor].highlight(True)
+        self._rows[self._cursor].scroll_visible()
+
+    def action_move_down(self) -> None:
+        if not self._rows:
+            return
+        self._rows[self._cursor].highlight(False)
+        self._cursor = (self._cursor + 1) % len(self._rows)
+        self._rows[self._cursor].highlight(True)
+        self._rows[self._cursor].scroll_visible()
+
+    def action_activate(self) -> None:
+        if not self._rows:
+            return
+        row = self._rows[self._cursor]
+        self.post_message(_SettingActivated(row.setting_key))
+
+    def current_key(self) -> str | None:
+        if not self._rows:
+            return None
+        return self._rows[self._cursor].setting_key
+
+    def refresh_row(self, key: str, new_display: str) -> None:
+        for row in self._rows:
+            if row.setting_key == key:
+                row.set_value(new_display)
+                break
+
+
+class _SettingActivated(events.Event):
+    """Posted by _GeneralSettings when the user activates a row."""
+
+    def __init__(self, setting_key: str) -> None:
+        super().__init__()
+        self.setting_key = setting_key
+
+
 # ── Main modal ──────────────────────────────────────────────────────
 
 
@@ -1350,6 +1644,13 @@ class SelfEditModal(ModalScreen[str | None]):
         color: {ACCENT_SOFT};
         padding: 0 2;
     }}
+    #se-settings-pane {{
+        width: 100%;
+        height: 1fr;
+        display: none;
+        background: {PANEL_BG};
+        padding: 0 1;
+    }}
     """
 
     BINDINGS = [
@@ -1414,6 +1715,8 @@ class SelfEditModal(ModalScreen[str | None]):
                     yield Button("+  NEW", id="se-new-button")
                 with Vertical(id="se-preview-pane"):
                     yield Static("", id="se-preview", markup=False)
+                with Container(id="se-settings-pane"):
+                    yield _GeneralSettings(id="se-general-settings")
             yield Static(
                 "n new · e edit · d delete · ←→ category · tab scope · esc close",
                 id="se-footer",
@@ -1422,10 +1725,11 @@ class SelfEditModal(ModalScreen[str | None]):
     def on_mount(self) -> None:
         self._layout_tabs()
         self._refresh_items()
-        try:
-            self.query_one("#se-options", OptionList).focus()
-        except Exception:
-            pass
+        if self._category.key != "general":
+            try:
+                self.query_one("#se-options", OptionList).focus()
+            except Exception:
+                pass
 
     def on_resize(self, event: events.Resize) -> None:
         self._layout_tabs()
@@ -1476,6 +1780,26 @@ class SelfEditModal(ModalScreen[str | None]):
     # ── Refresh ───────────────────────────────────────────────────
 
     def _refresh_items(self) -> None:
+        is_general = self._category.key == "general"
+
+        # Switch between standard list+preview and settings panel.
+        try:
+            list_pane = self.query_one("#se-list-pane", Vertical)
+            preview_pane = self.query_one("#se-preview-pane", Vertical)
+            settings_pane = self.query_one("#se-settings-pane")
+        except Exception:
+            list_pane = preview_pane = settings_pane = None
+
+        if list_pane is not None:
+            list_pane.display = not is_general
+            preview_pane.display = not is_general
+            settings_pane.display = is_general
+
+        if is_general:
+            self._refresh_general_panel()
+            self._refresh_chrome()
+            return
+
         self._items = inventory.list_items(
             self._working_dir, self._category.key, self._scope
         )
@@ -1485,14 +1809,9 @@ class SelfEditModal(ModalScreen[str | None]):
             return
         opts.clear_options()
         if not self._items:
-            empty_msg = (
-                "(settings are global — switch to GLOBAL scope)"
-                if self._category.key == "general"
-                else "(empty — press 'n' to create one)"
-            )
             opts.add_option(
                 Option(
-                    Text(empty_msg, style=f"italic {GRID_GREY}"),
+                    Text("(empty — press 'n' to create one)", style=f"italic {GRID_GREY}"),
                     id="__empty__",
                     disabled=True,
                 )
@@ -1505,6 +1824,19 @@ class SelfEditModal(ModalScreen[str | None]):
             opts.highlighted = 0
         self._update_preview()
         self._refresh_chrome()
+
+    def _refresh_general_panel(self) -> None:
+        """Populate (or repopulate) the _GeneralSettings widget."""
+        try:
+            panel = self.query_one("#se-general-settings", _GeneralSettings)
+        except Exception:
+            return
+        values = inventory._load_general_values()
+        panel.populate(values)
+        try:
+            panel.focus()
+        except Exception:
+            pass
 
     def _refresh_chrome(self) -> None:
         counts = inventory.counts(self._working_dir)
@@ -1682,27 +2014,12 @@ class SelfEditModal(ModalScreen[str | None]):
         self.app.push_screen(editor, after)
 
     def action_edit_item(self) -> None:
+        if self._category.key == "general":
+            self._edit_general_setting()
+            return
         item = self._current_item()
         if item is None:
             self.action_new_item()
-            return
-        if self._category.key == "general":
-            def after_prefix(new_value: str | None) -> None:
-                if new_value is None:
-                    return
-                try:
-                    from taui.self_edit.inventory import _save_prefix_setting
-                    _save_prefix_setting(item.identifier, new_value)
-                except Exception as exc:
-                    self.app.bell()
-                    self._toast(f"Save failed: {exc}")
-                    return
-                self._refresh_items()
-
-            self.app.push_screen(
-                _PrefixEditor(label=item.label, current_value=item.summary.strip("'")),
-                after_prefix,
-            )
             return
         if item.builtin and self._category.key == "tools":
             # Built-in tools are read-only — preview-only.
@@ -1738,6 +2055,103 @@ class SelfEditModal(ModalScreen[str | None]):
             self._refresh_items()
 
         self.app.push_screen(editor, after)
+
+    def _edit_general_setting(self) -> None:
+        """Open an appropriate editor for the currently highlighted general setting."""
+        try:
+            panel = self.query_one("#se-general-settings", _GeneralSettings)
+        except Exception:
+            return
+        key = panel.current_key()
+        if key is None:
+            return
+        self._open_general_editor(key)
+
+    @on(_SettingActivated)
+    def _on_setting_activated(self, event: _SettingActivated) -> None:
+        self._open_general_editor(event.setting_key)
+
+    def _open_general_editor(self, key: str) -> None:
+        """Dispatch to the right editor based on the setting type."""
+        from taui.self_edit.inventory import (
+            _GENERAL_DEFAULTS,
+            _GENERAL_SETTINGS_MAP,
+            _format_general_value,
+            _load_general_values,
+            save_general_setting,
+        )
+
+        if key not in _GENERAL_SETTINGS_MAP:
+            return
+        _path, vtype = _GENERAL_SETTINGS_MAP[key]
+        values = _load_general_values()
+        current = values.get(key, _GENERAL_DEFAULTS.get(key, ""))
+
+        # Find the display label for this key.
+        label = key
+        for _section, rows in inventory.GENERAL_SETTINGS_SECTIONS:
+            for row_key, row_label, _desc, _vt in rows:
+                if row_key == key:
+                    label = row_label
+                    break
+
+        def _save_and_refresh(new_value: object) -> None:
+            try:
+                save_general_setting(key, new_value)
+            except Exception as exc:
+                self.app.bell()
+                self._toast(f"Save failed: {exc}")
+                return
+            # Update the panel row directly to avoid a full repopulate.
+            try:
+                panel = self.query_one("#se-general-settings", _GeneralSettings)
+                panel.refresh_row(key, _format_general_value(new_value))
+            except Exception:
+                pass
+            self._refresh_chrome()
+
+        if vtype is bool:
+            # Toggle immediately — no modal needed.
+            _save_and_refresh(not bool(current))
+            return
+
+        if vtype is str and key in ("file_attach", "command"):
+            # Single-char prefix: use the compact _PrefixEditor.
+            def after_prefix(new_value: str | None) -> None:
+                if new_value is None:
+                    return
+                _save_and_refresh(new_value)
+
+            self.app.push_screen(
+                _PrefixEditor(label=label, current_value=str(current)),
+                after_prefix,
+            )
+            return
+
+        # String or int: generic single-line editor.
+        if vtype is int:
+            hint = "Integer value. Esc cancel · Ctrl+S save"
+        else:
+            hint = "Esc cancel · Ctrl+S save"
+
+        def after_str(new_value: str | None) -> None:
+            if new_value is None:
+                return
+            if vtype is int:
+                try:
+                    coerced: object = int(new_value)
+                except ValueError:
+                    self.app.bell()
+                    self._toast(f"'{new_value}' is not a valid integer.")
+                    return
+            else:
+                coerced = new_value
+            _save_and_refresh(coerced)
+
+        self.app.push_screen(
+            _StringEditor(label=label, current_value=str(current), hint=hint),
+            after_str,
+        )
 
     def action_delete_item(self) -> None:
         item = self._current_item()
