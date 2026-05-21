@@ -91,6 +91,8 @@ class _CategoryTab(Static):
             self.add_class("-active")
 
     def render(self) -> str:
+        if self._key == "general":
+            return self._label
         return f"{self._label} {self._count}"
 
     @property
@@ -1768,6 +1770,9 @@ class SelfEditModal(ModalScreen[str | None]):
         counts = inventory.counts(self._working_dir)
         for row, cats in zip((row1, row2), split):
             for cat in cats:
+                # General is global-only; hide it in project scope.
+                if cat.key == "general" and self._scope == "project":
+                    continue
                 idx = inventory.CATEGORIES.index(cat)
                 tab = _CategoryTab(
                     cat.key,
@@ -1958,6 +1963,7 @@ class SelfEditModal(ModalScreen[str | None]):
 
     def action_next_scope(self) -> None:
         self._scope = "project" if self._scope == "global" else "global"
+        self._bump_off_general()
         self._refresh_items()
 
     def action_set_global(self) -> None:
@@ -1966,16 +1972,36 @@ class SelfEditModal(ModalScreen[str | None]):
 
     def action_set_project(self) -> None:
         self._scope = "project"
+        self._bump_off_general()
         self._refresh_items()
 
+    def _bump_off_general(self) -> None:
+        """If on General in project scope, move to the first category."""
+        if (
+            self._scope == "project"
+            and self._category.key == "general"
+        ):
+            self._category_index = 0
+
     def action_next_category(self) -> None:
-        self._category_index = (self._category_index + 1) % len(inventory.CATEGORIES)
+        n = len(inventory.CATEGORIES)
+        self._category_index = (self._category_index + 1) % n
+        # Skip general in project scope.
+        if (
+            self._scope == "project"
+            and self._category.key == "general"
+        ):
+            self._category_index = (self._category_index + 1) % n
         self._refresh_items()
 
     def action_prev_category(self) -> None:
-        self._category_index = (
-            self._category_index - 1
-        ) % len(inventory.CATEGORIES)
+        n = len(inventory.CATEGORIES)
+        self._category_index = (self._category_index - 1) % n
+        if (
+            self._scope == "project"
+            and self._category.key == "general"
+        ):
+            self._category_index = (self._category_index - 1) % n
         self._refresh_items()
 
     def action_new_item(self) -> None:

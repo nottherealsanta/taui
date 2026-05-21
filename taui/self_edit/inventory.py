@@ -381,13 +381,29 @@ GENERAL_SETTINGS_SECTIONS: tuple[
             (
                 "file_attach",
                 "File Attachment",
-                "Character that triggers file completion (e.g. @filename).",
+                "Character that triggers file completion "
+                "(e.g. @filename).",
                 str,
             ),
             (
                 "command",
                 "Command",
-                "Character that triggers slash commands (e.g. /help).",
+                "Character that triggers slash commands "
+                "(e.g. /help).",
+                str,
+            ),
+            (
+                "skills",
+                "Skills",
+                "Character that triggers skill search "
+                "(e.g. !skill-name).",
+                str,
+            ),
+            (
+                "prompts",
+                "Prompts",
+                "Character that triggers prompt templates "
+                "(e.g. #prompt-name).",
                 str,
             ),
         ],
@@ -461,6 +477,8 @@ GENERAL_SETTINGS_SECTIONS: tuple[
 _GENERAL_SETTINGS_MAP: dict[str, tuple[str, type]] = {
     "file_attach": ("prefixes.file_attach", str),
     "command": ("prefixes.command", str),
+    "skills": ("prefixes.skills", str),
+    "prompts": ("prefixes.prompts", str),
     "max_turns": ("max_turns", int),
     "provider": ("provider", str),
     "model": ("model", str),
@@ -480,6 +498,8 @@ _GENERAL_SETTINGS_COUNT: int = sum(
 _GENERAL_DEFAULTS: dict[str, object] = {
     "file_attach": "@",
     "command": "/",
+    "skills": "!",
+    "prompts": "#",
     "max_turns": 50,
     "provider": "copilot",
     "model": "",

@@ -59,6 +59,8 @@ class Config:
     prefixes: dict[str, str] = field(default_factory=lambda: {
         "file_attach": "@",
         "command": "/",
+        "skills": "!",
+        "prompts": "#",
     })
     # Notifications: in-app toast when focused, OS-level when backgrounded.
     notifications: bool = True
@@ -95,7 +97,12 @@ class Config:
             val = taui_cfg["prefixes"]
             if isinstance(val, dict):
                 # Merge with defaults so missing keys still have a value
-                defaults = {"file_attach": "@", "command": "/"}
+                defaults = {
+                    "file_attach": "@",
+                    "command": "/",
+                    "skills": "!",
+                    "prompts": "#",
+                }
                 defaults.update(val)
                 kwargs["prefixes"] = defaults
         for fld in ("notifications", "notify_on_turn_done", "notify_on_question"):
