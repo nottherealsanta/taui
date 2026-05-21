@@ -10,11 +10,10 @@ from collections.abc import Iterable
 from pathlib import Path
 
 from rich.markup import escape
-from rich.text import Text
 from textual import on, work
 from textual.binding import Binding
 from textual.app import App, ComposeResult, SystemCommand
-from textual.command import CommandInput, CommandPalette, Hit, Hits, Provider
+from textual.command import CommandInput, CommandPalette
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.css.query import NoMatches
 from textual.events import Key
@@ -37,9 +36,12 @@ from taui.tui.messages import (
     ToolEnded,
     ToolStarted,
 )
+from taui.tui.screens.agent_picker import AgentPickerScreen
 from taui.tui.screens.context_breakdown import ContextBreakdownScreen
 from taui.tui.screens.git_diff import GitDiffScreen
+from taui.tui.screens.model_picker import ModelPickerScreen
 from taui.tui.screens.pasted_content import PasteResult, PastedContentScreen
+from taui.tui.screens.theme_picker import ThemePickerScreen
 from taui.tui.session_state import SessionManager, SessionState
 from taui.tui.theme import ALL_THEMES, TAUI_DARK
 from taui.tui.tool_controller import ToolController
@@ -58,171 +60,6 @@ from taui.tui.widgets.tool_status import ToolStatusWidget
 logger = logging.getLogger(__name__)
 
 
-class _ModelPaletteProvider(Provider):
-    """Command palette provider for model switches — one-line rows."""
-
-    async def search(self, query: str) -> Hits:
-        async for hit in self._iter_hits(query):
-            yield hit
-
-    async def discover(self) -> Hits:
-        async for hit in self._iter_hits(""):
-            yield hit
-
-    async def _iter_hits(self, query: str) -> Hits:
-        app = self.app
-        session = getattr(app, "_session", None)
-        if session is None:
-            return
-        from taui.llm_provider.models import list_models
-
-        config = getattr(session, "config", None)
-        provider_name = str(
-            getattr(config, "provider", "")
-            or getattr(session, "provider_name", "")
-            or ""
-        )
-        if not provider_name:
-            return
-        current = str(getattr(session, "model_name", "") or "")
-        try:
-            models = list_models(provider_name)
-        except Exception:
-            models = []
-
-        matcher = self.matcher(query) if query else None
-        for model in models[:30]:
-            model_id = str(model.get("id", ""))
-            if not model_id:
-                continue
-            if matcher is not None:
-                score = matcher.match(model_id)
-                if score <= 0:
-                    continue
-            else:
-                score = 1.0
-            context = int(model.get("context", 0) or 0)
-            ctx = f"{context // 1000}k" if context else "?"
-            reasoning = bool(model.get("reasoning"))
-            is_current = model_id == current
-            yield Hit(
-                score,
-                _format_model_row(
-                    model_id, provider_name, ctx, reasoning, is_current
-                ),
-                lambda model_id=model_id: app._apply_selected_model(model_id),
-                text=model_id,
-                help=None,
-            )
-
-
-class _AgentPaletteProvider(Provider):
-    """Command palette provider for agent switches — one-line rows."""
-
-    async def search(self, query: str) -> Hits:
-        async for hit in self._iter_hits(query):
-            yield hit
-
-    async def discover(self) -> Hits:
-        async for hit in self._iter_hits(""):
-            yield hit
-
-    async def _iter_hits(self, query: str) -> Hits:
-        app = self.app
-        session = getattr(app, "_session", None)
-        if session is None:
-            return
-        try:
-            agents = sorted(
-                (
-                    p
-                    for p in SelfEditStore(app._config.working_dir)
-                    .load_agents()
-                    .values()
-                    if not p.subagent_only
-                ),
-                key=lambda item: item.id,
-            )
-        except Exception:
-            agents = []
-        active_id = str(getattr(session._loop, "agent_id", "") or "").upper()
-
-        matcher = self.matcher(query) if query else None
-        for profile in agents:
-            agent_id = str(getattr(profile, "id", "") or "")
-            if not agent_id:
-                continue
-            name = str(getattr(profile, "name", "") or "")
-            provider = str(getattr(profile, "provider", "") or "")
-            model = str(getattr(profile, "model", "") or "")
-            provider_model = "/".join(p for p in (provider, model) if p) or "-"
-            is_current = agent_id.upper() == active_id
-            haystack = f"{agent_id} {name}".strip()
-            if matcher is not None:
-                score = matcher.match(haystack)
-                if score <= 0:
-                    continue
-            else:
-                score = 1.0
-            color = str(getattr(profile, "color", "") or "")
-            yield Hit(
-                score,
-                _format_agent_row(
-                    agent_id, name, provider_model, is_current, color=color
-                ),
-                lambda profile=profile: app._apply_self_edit_profile(profile),
-                text=haystack,
-                help=None,
-            )
-
-
-def _format_model_row(
-    model_id: str,
-    provider: str,
-    ctx: str,
-    reasoning: bool,
-    is_current: bool,
-) -> Text:
-    """One-line model row: id (bold)  provider  ctx  [R]  [◀]."""
-    row = Text()
-    row.append(model_id, style="bold")
-    row.append("  ")
-    row.append(provider, style="dim")
-    row.append("  ")
-    row.append(ctx, style="dim")
-    if reasoning:
-        row.append("  R", style="dim")
-    if is_current:
-        row.append("  ◀", style="dim")
-    return row
-
-
-def _format_agent_row(
-    agent_id: str,
-    name: str,
-    provider_model: str,
-    is_current: bool,
-    *,
-    color: str = "",
-) -> Text:
-    """One-line agent row: id (bold)  name  provider/model  [◀].
-
-    When the profile defines an accent `color`, the agent_id is tinted to
-    make different profiles visually distinguishable in the palette.
-    """
-    row = Text()
-    id_style = f"bold {color}" if color else "bold"
-    row.append(agent_id, style=id_style)
-    if name:
-        row.append("  ")
-        row.append(name, style="dim")
-    row.append("  ")
-    row.append(provider_model, style="dim")
-    if is_current:
-        row.append("  ◀", style="dim")
-    return row
-
-
 class TauiApp(App[None]):
     """Textual TUI for taui."""
 
@@ -230,8 +67,6 @@ class TauiApp(App[None]):
 
     COMMANDS = {
         SystemCommandsProvider,
-        _ModelPaletteProvider,
-        _AgentPaletteProvider,
     }
 
     CSS = """
@@ -378,8 +213,11 @@ class TauiApp(App[None]):
         color: $primary;
         text-style: bold;
     }
+    /* Command palette — neutral palette inspired by the self-edit modal.
+       Borders and surfaces use plain grays so nothing competes with the
+       focused list highlight. */
     CommandPalette {
-        background: $background 75%;
+        background: #070707 70%;
     }
     CommandPalette > Vertical {
         width: 82;
@@ -387,36 +225,48 @@ class TauiApp(App[None]):
         height: auto;
         max-height: 74%;
         margin-top: 2;
-        background: $surface;
-        border: tall $surface-lighten-1;
+        background: #0d0d0d;
+        border: round #2a2a2a;
+        padding: 0;
     }
     CommandPalette #--input {
-        background: $background;
-        border: tall $secondary;
+        background: #121212;
+        color: #e8e8e8;
+        border: solid #2a2a2a;
         padding: 0 1;
     }
     CommandPalette #--input.--list-visible {
-        border-bottom: tall $surface-lighten-1;
+        border-bottom: solid #2a2a2a;
+    }
+    CommandPalette #--input:focus {
+        border: solid #5a5a5a;
     }
     CommandPalette #--results {
         overlay: none;
         height: auto;
         max-height: 18;
-        background: $surface;
+        background: #0d0d0d;
     }
     CommandPalette CommandList {
         height: auto;
         max-height: 16;
-        background: $surface;
+        background: #0d0d0d;
+        color: #c8c8c8;
+        border: none;
+    }
+    CommandPalette CommandList > .option-list--option-highlighted {
+        background: #2a2a2a;
+        color: #e8e8e8;
+        text-style: bold;
     }
     CommandPalette LoadingIndicator {
-        border-bottom: tall $surface-lighten-1;
+        border-bottom: solid #2a2a2a;
     }
     CommandPalette > .command-palette--help-text {
-        color: $text-muted;
+        color: #707070;
     }
     CommandPalette > .command-palette--highlight {
-        color: $secondary-lighten-1;
+        color: #e8e8e8;
         text-style: bold;
     }
     """
@@ -645,99 +495,23 @@ class TauiApp(App[None]):
             state.context_banner_shown = value
 
     def get_system_commands(self, screen: Screen) -> Iterable[SystemCommand]:
-        """Extend Textual's command palette with Taui commands."""
-        for cmd in super().get_system_commands(screen):
-            if cmd.title == "Maximize":
-                continue
-            yield cmd
+        """Return command-palette entries — only /slash commands."""
         yield from self._taui_palette_commands()
 
     def _taui_palette_commands(self) -> Iterable[SystemCommand]:
-        """Build command-palette entries backed by existing Taui actions."""
-        # Slash commands are the primary palette entries (discoverable).
+        """Build command-palette entries — every registered /slash command."""
         commands = getattr(self, "_commands", None)
-        if commands is not None:
-            for name in commands.names:
-                command = commands.get(name)
-                if command is None:
-                    continue
-                yield SystemCommand(
-                    f"/{name}",
-                    command.description,
-                    lambda name=name: self._run_palette_command(f"/{name}"),
-                )
-
-        # Convenience actions are searchable but not shown by default.
-        yield SystemCommand(
-            "Taui: Select model",
-            "Open the model picker",
-            self._open_model_picker,
-            discover=False,
-        )
-        yield SystemCommand(
-            "Taui: List models",
-            "Print available models for the current provider",
-            lambda: self._run_palette_command("/model list"),
-            discover=False,
-        )
-        yield SystemCommand(
-            "Taui: Select agent",
-            "Open the agent picker",
-            lambda: self.handle_agent_badge_clicked(None),
-            discover=False,
-        )
-        yield SystemCommand(
-            "Taui: Sessions",
-            "Open the sidebar to browse and resume sessions",
-            self._open_sessions_sidebar,
-            discover=False,
-        )
-        yield SystemCommand(
-            "Taui: Context breakdown",
-            "Show current context usage",
-            self._open_context_tree,
-            discover=False,
-        )
-        yield SystemCommand(
-            "Taui: New session",
-            "Start a fresh session",
-            lambda: self.run_worker(
-                self.action_new_chat(),
-                name="palette_new_session",
-                group="palette",
-                exclusive=True,
-            ),
-            discover=False,
-        )
-        yield SystemCommand(
-            "Taui: Toggle sidebar",
-            "Show or hide the project sidebar",
-            self.action_toggle_sidebar,
-            discover=False,
-        )
-        yield SystemCommand(
-            "Taui: Toggle info sidebar",
-            "Show or hide session details",
-            self.action_toggle_info_sidebar,
-            discover=False,
-        )
-        yield SystemCommand(
-            "Taui: Self-edit",
-            "Show self-edit usage",
-            lambda: self.run_worker(
-                self.action_enter_self_edit(),
-                name="palette_self_edit",
-                group="palette",
-                exclusive=True,
-            ),
-            discover=False,
-        )
-        yield SystemCommand(
-            "Taui: Git diff",
-            "Open the git diff viewer",
-            lambda: self._run_palette_command("/diff"),
-            discover=False,
-        )
+        if commands is None:
+            return
+        for name in commands.names:
+            command = commands.get(name)
+            if command is None:
+                continue
+            yield SystemCommand(
+                f"/{name}",
+                command.description,
+                lambda name=name: self._run_palette_command(f"/{name}"),
+            )
 
     def _run_palette_command(self, command: str) -> None:
         """Run a slash command selected from the command palette."""
@@ -1505,7 +1279,7 @@ class TauiApp(App[None]):
     def handle_agent_badge_clicked(
         self, event: InfoBar.AgentBadgeClicked | None = None
     ) -> None:
-        self._open_palette(providers=(_AgentPaletteProvider,))
+        self._open_agent_picker()
 
     @on(InfoBar.ModelBadgeClicked)
     def handle_model_badge_clicked(self, event: InfoBar.ModelBadgeClicked) -> None:
@@ -1518,23 +1292,11 @@ class TauiApp(App[None]):
     async def _load_and_show_sessions(self) -> None:
         self._open_sessions_sidebar()
 
-    def _open_palette(
-        self,
-        prefilter: str = "",
-        providers: tuple[type[Provider], ...] | None = None,
-    ) -> None:
-        """Open the command palette, optionally narrowed to specific providers.
-
-        If `providers` is given, the palette will only consult those providers
-        (skipping the default system commands), so users see just that list.
-        `prefilter` pre-fills the search input.
-        """
+    def _open_palette(self, prefilter: str = "") -> None:
+        """Open the command palette. `prefilter` pre-fills the search input."""
         if CommandPalette.is_open(self):
             return
-        palette = CommandPalette(
-            providers=providers,
-            id="--command-palette",
-        )
+        palette = CommandPalette(id="--command-palette")
         self.push_screen(palette)
         if not prefilter:
             return
@@ -1550,12 +1312,88 @@ class TauiApp(App[None]):
         self.call_after_refresh(_fill)
 
     def _open_model_picker(self) -> None:
-        self._open_palette(providers=(_ModelPaletteProvider,))
+        """Open the modal model picker for the current session/provider."""
+        if self._session is None:
+            return
+        from taui.llm_provider.models import list_models
+
+        provider_name = str(
+            getattr(self._session.config, "provider", "")
+            or getattr(self._session, "provider_name", "")
+            or ""
+        )
+        if not provider_name:
+            return
+        try:
+            models = list_models(provider_name)
+        except Exception:
+            models = []
+        if not models:
+            self.notify(
+                f"No models available for {provider_name}.",
+                severity="warning",
+            )
+            return
+        current = str(getattr(self._session, "model_name", "") or "")
+        self.push_screen(
+            ModelPickerScreen(provider_name, models, current=current),
+            self._apply_selected_model,
+        )
+
+    def _open_agent_picker(self) -> None:
+        """Open the modal agent picker."""
+        if self._session is None:
+            return
+        try:
+            agents = sorted(
+                (
+                    p
+                    for p in SelfEditStore(self._config.working_dir)
+                    .load_agents()
+                    .values()
+                    if not p.subagent_only
+                ),
+                key=lambda item: item.id,
+            )
+        except Exception:
+            agents = []
+        if not agents:
+            self.notify("No agent profiles found.", severity="warning")
+            return
+        active_id = str(getattr(self._session._loop, "agent_id", "") or "")
+        self.push_screen(
+            AgentPickerScreen(agents, current=active_id),
+            self._apply_selected_agent,
+        )
 
     def _open_context_tree(self) -> None:
         if self._session is None:
             return
         self.push_screen(ContextBreakdownScreen(self._session._loop._messages))
+
+    _ALLOWED_THEMES = {"taui-dark", "taui-light"}
+
+    def _open_theme_picker(self) -> None:
+        """Open the modal theme picker (curated taui themes only)."""
+        current = str(self.theme or "taui-dark")
+        self.push_screen(
+            ThemePickerScreen(current=current),
+            self._apply_theme,
+        )
+
+    def _apply_theme(self, theme: str | None) -> None:
+        if not theme:
+            return
+        if theme not in self._ALLOWED_THEMES:
+            self.notify(
+                f"Theme '{theme}' is not supported yet.",
+                severity="warning",
+            )
+            return
+        try:
+            self.theme = theme
+        except Exception as exc:
+            self.notify(f"Failed to switch theme: {exc}", severity="error")
 
     def _open_sessions_sidebar(self) -> None:
         """Open the left sidebar on the sessions tab."""
@@ -2638,10 +2476,18 @@ class TauiApp(App[None]):
             self._open_model_picker()
             return
         if action == "open_agent_picker":
-            self.handle_agent_badge_clicked(None)
+            self._open_agent_picker()
             return
         if action == "open_context_tree":
             self._open_context_tree()
+            return
+        if action == "open_theme_picker":
+            self._open_theme_picker()
+            return
+        if action == "theme_changed":
+            theme = str(result.metadata.get("theme") or "")
+            if theme:
+                self._apply_theme(theme)
             return
         if action == "open_diff_view":
             title = str(result.metadata.get("title") or "Git Diff")

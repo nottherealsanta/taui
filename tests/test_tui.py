@@ -73,7 +73,7 @@ class TestTauiApp:
         assert app.COMMAND_PALETTE_BINDING == "ctrl+p"
         assert app.ENABLE_COMMAND_PALETTE is True
 
-    def test_palette_commands_include_taui_actions(self, tmp_path):
+    def test_palette_commands_are_slash_commands_only(self, tmp_path):
         from taui.config import Config
 
         class FakeConfig:
@@ -94,15 +94,15 @@ class TestTauiApp:
 
         commands = list(app._taui_palette_commands())
         titles = [command.title for command in commands]
-        assert "Taui: Select model" in titles
-        assert "Taui: Select agent" in titles
-        assert "Taui: Sessions" in titles
-        assert "Taui: Git diff" in titles
+        # Palette exposes registered slash commands and nothing else —
+        # model/agent selection is reached via the info bar badges.
+        assert all(t.startswith("/") for t in titles)
         assert "/model" in titles
-        # Model rows are produced by _ModelPaletteProvider, not here.
-        assert not any(t.startswith("Model:") for t in titles)
+        assert "/theme" in titles
+        assert "Taui: Select model" not in titles
+        assert "Taui: Select agent" not in titles
 
-    async def test_model_palette_provider_updates_selected_model(self, tmp_path):
+    async def test_apply_selected_model_updates_session(self, tmp_path):
         from taui.config import Config
         from taui.tui import app as app_module
 
@@ -129,22 +129,13 @@ class TestTauiApp:
             async def resume_session(self, session_id: str) -> bool:
                 return True
 
-        models = [{"id": "gpt-5.5", "context": 400000, "reasoning": True}]
         app = TauiApp(Config(working_dir=tmp_path))
         with patch.object(
             app_module.Session, "create", AsyncMock(return_value=FakeSession())
         ):
             async with app.run_test():
                 app._update_status = MagicMock()
-                with patch(
-                    "taui.llm_provider.models.list_models", return_value=models
-                ):
-                    provider = app_module._ModelPaletteProvider(app.screen)
-                    hits = [hit async for hit in provider._iter_hits("gpt")]
-                assert len(hits) == 1
-                hit = hits[0]
-                assert hit.text == "gpt-5.5"
-                hit.command()
+                app._apply_selected_model("gpt-5.5")
                 assert app._session.config.model == "gpt-5.5"
                 assert app._session._loop._model == "gpt-5.5"
 

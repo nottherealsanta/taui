@@ -20,30 +20,42 @@ class AgentPickerScreen(ModalScreen[str | None]):
     DEFAULT_CSS = """
     AgentPickerScreen {
         align: center middle;
+        background: $background 70%;
     }
     #agent-picker-dialog {
         width: 90;
         max-width: 95%;
         height: auto;
         max-height: 80%;
-        background: $surface;
-        border: thick $surface-lighten-1;
+        background: #0d0d0d;
+        border: round #2a2a2a;
         padding: 1 2;
     }
     #agent-picker-dialog .dialog-title {
         width: 100%;
         content-align: center middle;
         padding: 0 0 1 0;
-        color: cyan;
+        color: #c8c8c8;
         text-style: bold;
     }
     #agent-picker-dialog OptionList {
         height: auto;
         max-height: 18;
+        background: #121212;
+        border: solid #2a2a2a;
+        color: #c8c8c8;
+    }
+    #agent-picker-dialog OptionList:focus {
+        border: solid #5a5a5a;
+    }
+    #agent-picker-dialog .option-list--option-highlighted {
+        background: #2a2a2a;
+        color: #e8e8e8;
+        text-style: bold;
     }
     #agent-picker-dialog .hint {
         padding: 1 0 0 0;
-        color: $text-muted;
+        color: #707070;
     }
     """
 
@@ -85,11 +97,11 @@ def _agent_prompt(agent: AgentProfile, *, current: str) -> Text:
     marker = " ◀" if agent.id.upper() == current else ""
 
     if marker:
-        id_style = "bold cyan"
+        id_style = "bold"
     elif agent.color:
         id_style = f"bold {agent.color}"
     else:
-        id_style = "white"
+        id_style = "default"
 
     text = Text()
     text.append(f"{agent.id:<5s}", style=id_style)
