@@ -544,6 +544,8 @@ class _Editor(ModalScreen):
         self._model = model
         self._provider_name = provider_name
         self._generating = False
+        self._spinner_timer = None
+        self._spinner_index = 0
 
     def compose(self) -> ComposeResult:
         verb = "NEW" if self._creating else "EDIT"
@@ -749,12 +751,7 @@ class _Editor(ModalScreen):
             if not picked:
                 return
             self._generating = True
-            try:
-                btn = self.query_one("#se-editor-generate", Button)
-                btn.label = "◆ Generating…"
-                btn.add_class("-busy")
-            except Exception:
-                pass
+            self._start_spinner()
             self._generate_worker(user_brief, picked)
 
         if not models:
@@ -794,6 +791,41 @@ class _Editor(ModalScreen):
                 return model or raw
         return self._model
 
+    _SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
+
+    def _start_spinner(self) -> None:
+        try:
+            btn = self.query_one("#se-editor-generate", Button)
+        except Exception:
+            return
+        btn.add_class("-busy")
+        self._spinner_index = 0
+        btn.label = f"{self._SPINNER_FRAMES[0]} Generating…"
+        # Tick every 80ms — gives a smooth braille-spinner rotation.
+        self._spinner_timer = self.set_interval(0.08, self._tick_spinner)
+
+    def _tick_spinner(self) -> None:
+        try:
+            btn = self.query_one("#se-editor-generate", Button)
+        except Exception:
+            return
+        self._spinner_index = (self._spinner_index + 1) % len(self._SPINNER_FRAMES)
+        btn.label = f"{self._SPINNER_FRAMES[self._spinner_index]} Generating…"
+
+    def _stop_spinner(self) -> None:
+        if self._spinner_timer is not None:
+            try:
+                self._spinner_timer.stop()
+            except Exception:
+                pass
+            self._spinner_timer = None
+        try:
+            btn = self.query_one("#se-editor-generate", Button)
+            btn.label = "◆ Generate"
+            btn.remove_class("-busy")
+        except Exception:
+            pass
+
     def _flash_subheader(self, text: str) -> None:
         try:
             self.query_one(".se-editor-subheader", Static).update(f"  {text}")
@@ -820,14 +852,10 @@ class _Editor(ModalScreen):
                     body += event.delta
             body = _strip_code_fence(body).strip() + "\n"
         except Exception as exc:
-            self._flash_subheader(f"LLM error: {exc}")
+            msg = str(exc).split("\n", 1)[0][:180]
+            self._flash_subheader(f"LLM error ({model_id}): {msg}")
             self._generating = False
-            try:
-                btn = self.query_one("#se-editor-generate", Button)
-                btn.label = "◆ Generate"
-                btn.remove_class("-busy")
-            except Exception:
-                pass
+            self._stop_spinner()
             return
 
         try:
@@ -839,12 +867,7 @@ class _Editor(ModalScreen):
             pass
         finally:
             self._generating = False
-            try:
-                btn = self.query_one("#se-editor-generate", Button)
-                btn.label = "◆ Generate"
-                btn.remove_class("-busy")
-            except Exception:
-                pass
+            self._stop_spinner()
 
 
 def _build_generation_prompt(category_key: str, user_brief: str) -> str:
@@ -913,36 +936,27 @@ def _available_model_ids(provider_name: str) -> list[str]:
 
 
 def _available_models(provider_name: str) -> list[tuple[str, str]]:
-    """Return (model_id, provider_name) tuples for generation pickers.
+    """Return (model_id, provider_name) tuples for the generation picker.
 
-    Pulls from the project's model catalog. Returns the configured-provider's
-    models first, then known providers as a fallback. Best-effort — returns
-    an empty list if catalog lookups fail (offline, unknown provider, etc).
+    Scoped to the *current* session provider: the editor only has access
+    to the session's wired-up provider instance, so offering models from
+    other providers would just send a request the wrong API can't honor
+    (which surfaces as "LLM error: 500 Internal Server Error"). Best-
+    effort — returns an empty list if the catalog lookup fails.
     """
+    if not provider_name:
+        return []
     try:
-        from taui.llm_provider.models import PROVIDER_MAP, list_models
+        from taui.llm_provider.models import list_models
     except Exception:
         return []
 
     pairs: list[tuple[str, str]] = []
-    seen: set[str] = set()
-
-    def _add(provider: str) -> None:
-        try:
-            for entry in list_models(provider):
-                mid = str(entry.get("id", "")).strip()
-                if mid and mid not in seen:
-                    seen.add(mid)
-                    pairs.append((mid, provider))
-        except Exception:
-            pass
-
-    if provider_name:
-        _add(provider_name)
     try:
-        for known in PROVIDER_MAP:
-            if known != provider_name:
-                _add(known)
+        for entry in list_models(provider_name):
+            mid = str(entry.get("id", "")).strip()
+            if mid:
+                pairs.append((mid, provider_name))
     except Exception:
         pass
     return pairs
