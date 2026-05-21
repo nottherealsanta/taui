@@ -306,29 +306,33 @@ class TauiApp(App[None]):
     }
     MarkdownBlock > .code_inline {
         background: $surface-lighten-1;
-        color: $foreground;
+        color: #56d4dd;
     }
     MarkdownBlock > .strong {
         color: $foreground;
         text-style: bold;
     }
     MarkdownBlock > .em {
-        color: $foreground;
+        color: $accent;
         text-style: italic;
     }
     MarkdownH1 {
-        color: $foreground;
+        color: $primary;
         text-style: bold;
     }
     MarkdownH2 {
-        color: $foreground;
+        color: $accent;
         text-style: bold;
     }
     MarkdownH3 {
-        color: $foreground-darken-1;
+        color: $warning;
         text-style: bold;
     }
-    MarkdownH4, MarkdownH5 {
+    MarkdownH4 {
+        color: $foreground;
+        text-style: bold;
+    }
+    MarkdownH5 {
         color: $foreground-darken-1;
         text-style: bold;
     }
@@ -337,11 +341,11 @@ class TauiApp(App[None]):
         text-style: bold;
     }
     MarkdownBullet {
-        color: $text-muted;
+        color: $accent;
     }
     MarkdownBlockQuote {
         background: $panel 45%;
-        border-left: outer $foreground-darken-2;
+        border-left: outer $accent;
         color: $foreground-darken-1;
     }
     MarkdownFence {
@@ -352,7 +356,7 @@ class TauiApp(App[None]):
         keyline: thin $surface-lighten-1;
     }
     MarkdownTableContent > .header {
-        color: $foreground;
+        color: $primary;
         text-style: bold;
     }
     CommandPalette {
