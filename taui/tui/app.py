@@ -1361,6 +1361,7 @@ class TauiApp(App[None]):
             return
         info_bar = self.query_one(InfoBar)
         tokens = estimate_total_tokens(self._session._loop._messages)
+        wt_handle = getattr(self._session, "worktree", None)
         info_bar.update_info(
             provider=self._session.provider_name,
             model=self._session.model_name,
@@ -1368,6 +1369,7 @@ class TauiApp(App[None]):
             max_tokens=DEFAULT_MAX_INPUT_TOKENS,
             extensions_mode=self._session.extensions_mode,
             agent_id=str(getattr(self._session._loop, "agent_id", "") or ""),
+            worktree_branch=wt_handle.branch if wt_handle else "",
         )
         try:
             chat_input = self.query_one("#chat-input", ChatInput)
@@ -2097,6 +2099,7 @@ class TauiApp(App[None]):
     @on(AgentConfigChanged)
     def handle_agent_config_changed(self, event: AgentConfigChanged) -> None:
         self._refresh_context_banner(event.session_id)
+        self._update_status()
 
     # ── Send message and drain queue ──────────────────────────────────
 

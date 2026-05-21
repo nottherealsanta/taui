@@ -38,6 +38,7 @@ from taui.tools.builtins import register_builtins
 from taui.tools.executor import PolicyDecision, ToolExecutor, ToolPolicy
 from taui.tools.registry import ToolRegistry
 from taui.tools.truncation import TruncationStore
+from taui.worktree import WorktreeHandle
 
 logger = logging.getLogger(__name__)
 
@@ -118,6 +119,7 @@ class Session:
         self._pre_self_edit_state: _SessionSnapshot | None = None
         self._variant_registry: AgentVariantRegistry = AgentVariantRegistry()
         self._config_change_listeners: list[Callable[[], None]] = []
+        self.worktree: WorktreeHandle | None = None
 
     def add_config_change_listener(self, callback: Callable[[], None]) -> None:
         """Register a callback fired when the agent's prompt/tools/policy change.
@@ -308,6 +310,7 @@ class Session:
         session._context_strategy_registry = context_strategy_registry
         configure_builtin_extensions(session)
         session._wire_session_name_tool()
+        session._wire_worktree_tool()
         session._refresh_loop_integrations()
 
         # Wire skill paths bundled by extensions into the skill registry.
@@ -1054,6 +1057,80 @@ class Session:
 
         tool._set_name = set_name
 
+    def _wire_worktree_tool(self) -> None:
+        """Give the worktree tool callbacks to mutate session cwd + persist events."""
+        try:
+            tool = self._registry.get("worktree")
+        except ValueError:
+            return
+
+        async def on_enter(handle: WorktreeHandle) -> None:
+            await self._apply_worktree(handle)
+
+        async def on_exit(keep: bool) -> None:
+            await self._clear_worktree(keep=keep)
+
+        def get_handle() -> WorktreeHandle | None:
+            return self.worktree
+
+        tool._on_enter = on_enter
+        tool._on_exit = on_exit
+        tool._get_handle = get_handle
+        tool._session_id = self.session_id
+
+    def _set_tools_cwd(self, cwd: Path) -> None:
+        """Update working_dir on every tool that exposes one."""
+        for name in self._registry.names:
+            t = self._registry.get(name)
+            if hasattr(t, "working_dir"):
+                t.working_dir = cwd
+
+    async def _apply_worktree(self, handle: WorktreeHandle) -> None:
+        """Adopt a new worktree: rebind tool cwd and persist a WORKTREE event."""
+        from taui.store.events import EventType
+
+        self.worktree = handle
+        self._set_tools_cwd(handle.path)
+        try:
+            await self._store.append(
+                self._loop.stream_id,
+                EventType.WORKTREE,
+                {
+                    "action": "enter",
+                    "path": str(handle.path),
+                    "branch": handle.branch,
+                    "base": handle.base,
+                    "origin": str(handle.origin),
+                },
+            )
+        except Exception:
+            logger.debug("Failed to persist worktree-enter event", exc_info=True)
+        self._notify_config_changed()
+
+    async def _clear_worktree(self, *, keep: bool) -> None:
+        """Drop the active worktree handle and restore the original cwd."""
+        from taui.store.events import EventType
+
+        prior = self.worktree
+        self.worktree = None
+        self._set_tools_cwd(self.config.working_dir)
+        if prior is None:
+            return
+        try:
+            await self._store.append(
+                self._loop.stream_id,
+                EventType.WORKTREE,
+                {
+                    "action": "exit",
+                    "kept": keep,
+                    "path": str(prior.path),
+                    "branch": prior.branch,
+                },
+            )
+        except Exception:
+            logger.debug("Failed to persist worktree-exit event", exc_info=True)
+        self._notify_config_changed()
+
     def _replace_loop(self, loop: AgentLoop) -> None:
         self._loop = loop
         self._refresh_loop_integrations()
@@ -1088,6 +1165,56 @@ class Session:
         self._last_replay_items = transcript.items
         self._message_count = sum(1 for msg in transcript.messages if msg.role == "user")
         self._loaded_offset = await self._stream.get_length(self._loop.stream_id)
+        await self._restore_worktree_from_events()
+
+    async def _restore_worktree_from_events(self) -> None:
+        """Re-bind the session to the worktree active at the end of the stream.
+
+        Reads WORKTREE events in order; the last unmatched ``enter`` wins. If
+        the recorded path no longer exists on disk, the handle is dropped.
+        """
+        from taui.store.events import EventType
+
+        try:
+            events = await self._stream.read_all(self._loop.stream_id)
+        except Exception:
+            logger.debug("worktree restore: read_all failed", exc_info=True)
+            return
+
+        active: WorktreeHandle | None = None
+        for event in events:
+            if event.type != EventType.WORKTREE:
+                continue
+            action = event.data.get("action")
+            if action == "enter":
+                path = event.data.get("path")
+                branch = event.data.get("branch")
+                base = event.data.get("base", "")
+                origin = event.data.get("origin", str(self.config.working_dir))
+                if isinstance(path, str) and isinstance(branch, str):
+                    active = WorktreeHandle(
+                        path=Path(path),
+                        branch=branch,
+                        base=base if isinstance(base, str) else "",
+                        origin=Path(origin),
+                    )
+            elif action == "exit":
+                active = None
+
+        if active is not None and not active.path.exists():
+            logger.info(
+                "worktree restore: path missing, dropping handle (%s)",
+                active.path,
+            )
+            active = None
+
+        if active is None:
+            self.worktree = None
+            self._set_tools_cwd(self.config.working_dir)
+            return
+
+        self.worktree = active
+        self._set_tools_cwd(active.path)
 
     async def _sync_replay_from_store(self) -> None:
         if not self._loop.stream_id:

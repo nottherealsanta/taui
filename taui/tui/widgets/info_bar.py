@@ -152,6 +152,10 @@ class InfoBar(Horizontal):
         text-style: italic;
         margin-right: 2;
     }
+    InfoBar #info-worktree {
+        color: $foreground;
+        margin-right: 2;
+    }
     """
 
     def __init__(self) -> None:
@@ -163,6 +167,7 @@ class InfoBar(Horizontal):
         self._extensions_mode = False
         self._agent_id = ""
         self._plan_mode = False
+        self._worktree_branch = ""
 
     def compose(self) -> ComposeResult:
         yield Static("", id="info-extension")
@@ -170,6 +175,7 @@ class InfoBar(Horizontal):
         yield ModelBadge("", id="info-model")
         yield ProviderBadge("", id="info-provider")
         yield ContextBadge("", id="info-tokens")
+        yield Static("", id="info-worktree")
 
     def update_info(
         self,
@@ -181,6 +187,7 @@ class InfoBar(Horizontal):
         extensions_mode: bool = False,
         agent_id: str = "",
         plan_mode: bool = False,
+        worktree_branch: str = "",
     ) -> None:
         self._provider = provider
         self._model = model
@@ -189,6 +196,7 @@ class InfoBar(Horizontal):
         self._extensions_mode = extensions_mode
         self._agent_id = agent_id
         self._plan_mode = plan_mode
+        self._worktree_branch = worktree_branch
         self._sync_children()
 
     def _sync_children(self) -> None:
@@ -226,6 +234,16 @@ class InfoBar(Horizontal):
             else ""
         )
         tokens.display = bool(self._max_tokens)
+
+        worktree = self.query_one("#info-worktree", Static)
+        if self._worktree_branch:
+            worktree.update(
+                Text(f" ⌥ {self._worktree_branch} ", style="bold black on #79c0ff")
+            )
+            worktree.display = True
+        else:
+            worktree.update("")
+            worktree.display = False
 
 
     def on_mount(self) -> None:
