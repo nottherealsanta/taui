@@ -557,16 +557,19 @@ class _Editor(ModalScreen):
                 classes="se-editor-subheader",
             )
             yield from self._compose_fields()
-            if self._creating:
-                with Horizontal(classes="se-prompt-row"):
-                    yield Input(
-                        placeholder=self._llm_placeholder(),
-                        id="se-editor-llm-prompt",
-                    )
-                    # All categories use the same Generate flow: clicking
-                    # opens a fuzzy model picker. For agents the agent's
-                    # MODEL ID field pre-seeds the picker.
-                    yield Button("◆ Generate", id="se-editor-generate")
+            with Horizontal(classes="se-prompt-row"):
+                yield Input(
+                    placeholder=self._llm_placeholder(),
+                    id="se-editor-llm-prompt",
+                )
+                # Same flow for both creating and editing: clicking opens
+                # the fuzzy model picker, then streams the result into the
+                # body. The label flips based on intent so the user knows
+                # whether they're getting a fresh body or an edit.
+                yield Button(
+                    "◆ Generate" if self._creating else "◆ Edit",
+                    id="se-editor-generate",
+                )
             yield TextArea(self._initial_body, id="se-editor-body")
             with Horizontal(classes="se-editor-footer"):
                 yield Button("Cancel", id="se-editor-cancel")
@@ -637,14 +640,19 @@ class _Editor(ModalScreen):
         return "identifier"
 
     def _llm_placeholder(self) -> str:
-        return {
-            "agents": "describe the agent's job — eg. 'reviews TypeScript PRs for type safety'",
-            "skills": "describe the skill — eg. 'recipes for migrating SQLAlchemy models'",
-            "commands": "describe the command — eg. 'prints current branch and uncommitted files'",
-            "tools": "describe the tool — eg. 'calls a local HTTP endpoint and returns JSON'",
-            "prompts": "describe the prompt — eg. 'explains a Python traceback'",
-            "mcp": "describe the MCP server — eg. 'wraps the github CLI'",
-        }.get(self._category.key, "describe what you want")
+        if self._creating:
+            return {
+                "agents": "describe the agent's job — eg. 'reviews TypeScript PRs for type safety'",
+                "skills": "describe the skill — eg. 'recipes for migrating SQLAlchemy models'",
+                "commands": "describe the command — eg. 'prints current branch and uncommitted files'",
+                "tools": "describe the tool — eg. 'calls a local HTTP endpoint and returns JSON'",
+                "prompts": "describe the prompt — eg. 'explains a Python traceback'",
+                "mcp": "describe the MCP server — eg. 'wraps the github CLI'",
+            }.get(self._category.key, "describe what you want")
+        return "describe the edit — eg. 'make this terser' or 'add a step about logging'"
+
+    def _action_label(self) -> str:
+        return "◆ Generate" if self._creating else "◆ Edit"
 
     def _provider_model_label(self) -> str:
         parts = [p for p in (self._provider_name, self._model) if p]
@@ -738,7 +746,10 @@ class _Editor(ModalScreen):
             return
         user_brief = prompt_input.value.strip()
         if not user_brief:
-            self._flash_subheader("Type a one-line brief, then click Generate.")
+            verb = "Generate" if self._creating else "Edit"
+            self._flash_subheader(
+                f"Type a one-line brief, then click {verb}."
+            )
             return
         default_model = self._effective_model_id()
         pairs = _available_models(self._provider_name)
@@ -800,7 +811,8 @@ class _Editor(ModalScreen):
             return
         btn.add_class("-busy")
         self._spinner_index = 0
-        btn.label = f"{self._SPINNER_FRAMES[0]} Generating…"
+        verb = "Generating…" if self._creating else "Editing…"
+        btn.label = f"{self._SPINNER_FRAMES[0]} {verb}"
         # Tick every 80ms — gives a smooth braille-spinner rotation.
         self._spinner_timer = self.set_interval(0.08, self._tick_spinner)
 
@@ -810,7 +822,8 @@ class _Editor(ModalScreen):
         except Exception:
             return
         self._spinner_index = (self._spinner_index + 1) % len(self._SPINNER_FRAMES)
-        btn.label = f"{self._SPINNER_FRAMES[self._spinner_index]} Generating…"
+        verb = "Generating…" if self._creating else "Editing…"
+        btn.label = f"{self._SPINNER_FRAMES[self._spinner_index]} {verb}"
 
     def _stop_spinner(self) -> None:
         if self._spinner_timer is not None:
@@ -821,7 +834,7 @@ class _Editor(ModalScreen):
             self._spinner_timer = None
         try:
             btn = self.query_one("#se-editor-generate", Button)
-            btn.label = "◆ Generate"
+            btn.label = self._action_label()
             btn.remove_class("-busy")
         except Exception:
             pass
@@ -838,7 +851,17 @@ class _Editor(ModalScreen):
 
     async def _do_generate(self, user_brief: str, model_id: str) -> None:
         """Body of the generation worker — separate so tests can call it."""
-        prompt = _build_generation_prompt(self._category.key, user_brief)
+        current_body = ""
+        if not self._creating:
+            try:
+                current_body = self.query_one("#se-editor-body", TextArea).text
+            except Exception:
+                current_body = self._initial_body
+        prompt = _build_generation_prompt(
+            self._category.key,
+            user_brief,
+            current_body=current_body if not self._creating else None,
+        )
         body = ""
         try:
             # Providers serialize messages by JSON-dumping the request body,
@@ -862,7 +885,10 @@ class _Editor(ModalScreen):
             area = self.query_one("#se-editor-body", TextArea)
             area.text = body
             area.focus()
-            self._flash_subheader("Generated. Edit if needed, then Ctrl+S to save.")
+            verb = "Generated" if self._creating else "Edited"
+            self._flash_subheader(
+                f"{verb}. Review and tweak, then Ctrl+S to save."
+            )
         except Exception:
             pass
         finally:
@@ -870,12 +896,42 @@ class _Editor(ModalScreen):
             self._stop_spinner()
 
 
-def _build_generation_prompt(category_key: str, user_brief: str) -> str:
-    """Per-category prompt template that gets sent to the LLM."""
+def _build_generation_prompt(
+    category_key: str,
+    user_brief: str,
+    *,
+    current_body: str | None = None,
+) -> str:
+    """Per-category prompt template that gets sent to the LLM.
+
+    If `current_body` is provided, build an edit prompt — instruct the
+    model to revise the existing body according to the user's brief and
+    return the full updated body. Otherwise build a create prompt.
+    """
     common = (
         "Output ONLY the file body, no surrounding explanation, no code fences. "
         "Be concise. Use the exact format described."
     )
+    if current_body is not None:
+        category_hint = {
+            "agents": "a taui agent system prompt (plain markdown).",
+            "skills": "a SKILL.md (YAML frontmatter + markdown body).",
+            "commands": "a Python slash-command module.",
+            "tools": "a Python tool extension module.",
+            "prompts": "a markdown prompt fragment.",
+            "mcp": "a TOML `[servers.NAME]` block.",
+        }.get(category_key, "the file body.")
+        return (
+            f"{common}\n\n"
+            f"You are editing {category_hint}\n"
+            f"User instruction:\n  {user_brief}\n\n"
+            "Apply the instruction and return the COMPLETE updated body. "
+            "Keep everything not affected by the instruction unchanged.\n\n"
+            "Current body:\n"
+            "---\n"
+            f"{current_body.rstrip()}\n"
+            "---"
+        )
     if category_key == "agents":
         return (
             f"{common}\n\n"

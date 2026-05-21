@@ -597,6 +597,102 @@ class TestSelfEditModal:
             await pilot.press("escape")
             await app._session.close()
 
+    async def test_edit_mode_has_brief_and_edit_button(
+        self, tmp_path, monkeypatch
+    ):
+        """When editing an existing item, the same prompt+button row
+        appears but the button reads 'Edit' instead of 'Generate'."""
+        from textual.widgets import Button
+
+        from taui.tui.screens.self_edit_modal import _Editor
+
+        # Pre-create a command so we have something to edit.
+        inv_path = inventory.save_item(
+            tmp_path, "commands", "project", "demo",
+            '"""hi."""\nprint("hi")\n',
+        )
+        items = inventory.list_items(tmp_path, "commands", "project")
+        item = next(i for i in items if i.identifier == "demo")
+
+        provider = scenarios.happy_path("(unused)")
+        app = use_scripted_provider(monkeypatch, tmp_path, provider)
+        async with app.run_test(size=(160, 50)) as pilot:
+            await _ready(app)
+            editor = _Editor(
+                category=inventory.category_by_key("commands"),
+                scope="project",
+                creating=False,
+                item=item,
+                working_dir=tmp_path,
+                provider=None,
+                model="claude-haiku",
+                provider_name="anthropic",
+            )
+            app.push_screen(editor)
+            await pilot.pause()
+
+            btn = editor.query_one("#se-editor-generate", Button)
+            assert str(btn.label) == "◆ Edit"
+            # Brief input still present.
+            assert editor.query("#se-editor-llm-prompt")
+            await app._session.close()
+
+    async def test_do_generate_edit_mode_modifies_existing_body(
+        self, tmp_path, monkeypatch
+    ):
+        """In edit mode, the LLM gets the current body in the prompt and
+        the response replaces the body."""
+        import json
+
+        from taui.llm_provider.types import StreamEvent
+        from taui.tui.screens.self_edit_modal import _Editor
+
+        captured_prompt = []
+
+        class FakeProvider:
+            async def stream_text(self, messages, model, temperature=0.1):
+                json.dumps(messages)
+                captured_prompt.append(messages[-1]["content"])
+                yield StreamEvent.text_delta("Edited result body.\n")
+                yield StreamEvent.done()
+
+        # Pre-create an item to edit.
+        inventory.save_item(
+            tmp_path, "commands", "project", "demo",
+            "original body to be edited",
+        )
+        items = inventory.list_items(tmp_path, "commands", "project")
+        item = next(i for i in items if i.identifier == "demo")
+
+        provider = scenarios.happy_path("(unused)")
+        app = use_scripted_provider(monkeypatch, tmp_path, provider)
+        async with app.run_test() as pilot:
+            await _ready(app)
+            editor = _Editor(
+                category=inventory.category_by_key("commands"),
+                scope="project",
+                creating=False,
+                item=item,
+                working_dir=tmp_path,
+                provider=FakeProvider(),
+                model="fake-model",
+                provider_name="fake",
+            )
+            app.push_screen(editor)
+            await pilot.pause()
+            await editor._do_generate("make it terser", "fake-model")
+
+            # The prompt contains both the user instruction and the
+            # existing body so the model can produce a diff-style edit.
+            assert "make it terser" in captured_prompt[0]
+            assert "original body to be edited" in captured_prompt[0]
+            # Body has been replaced with the streamed response.
+            from textual.widgets import TextArea
+            assert "Edited result body." in editor.query_one(
+                "#se-editor-body", TextArea
+            ).text
+            await app._session.close()
+
     async def test_agent_editor_requires_at_least_one_tool(
         self, tmp_path, monkeypatch
     ):
