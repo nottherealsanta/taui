@@ -2538,6 +2538,15 @@ class TauiApp(App[None]):
             return
 
         if command in ("/i", "/self-edit"):
+            subcommand = msg_arg.strip()
+            if subcommand.lower().startswith("list"):
+                # `/self-edit list [category]` — text-mode listing into the
+                # chat log. Friendly fallback for tiny terminals and for
+                # users who want the inventory grep-able in a transcript.
+                parts = subcommand.split(None, 1)
+                category = parts[1].strip() if len(parts) > 1 else None
+                await self._show_self_edit_list_text(category)
+                return
             await self.action_enter_self_edit()
             return
 
@@ -3275,6 +3284,23 @@ class TauiApp(App[None]):
         self.push_screen(
             SelfEditModal(self._config.working_dir, initial_scope=scope)
         )
+
+    async def _show_self_edit_list_text(self, category: str | None) -> None:
+        """Render the self-edit inventory as plain text into the chat log."""
+        from taui.self_edit.list_view import format_inventory_listing
+
+        chat_log = self._get_active_chat_log()
+        try:
+            text = format_inventory_listing(
+                self._config.working_dir, category=category
+            )
+        except KeyError:
+            text = (
+                f"[bold #ffae00]Unknown category:[/bold #ffae00] {escape(category or '')}\n"
+                "Valid categories: agents, skills, commands, tools, prompts, mcp."
+            )
+        await chat_log.mount(Static(text, markup=True))
+        self._smart_scroll()
 
     def _self_edit_scope_path(self, scope: str) -> Path:
         if scope == "project":

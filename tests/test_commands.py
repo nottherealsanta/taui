@@ -262,11 +262,17 @@ class TestBuiltinCommands:
 
         reg = CommandRegistry()
         register_builtins(reg)
-        # /i opens the self-edit modal (no message argument accepted)
+        # /i opens the self-edit modal
         result = await reg.execute("/i")
         assert not result.error
         assert result.metadata["action"] == "self_edit_open"
         assert result.metadata["message"] == ""
+
+        # /i list dumps the inventory as text — the message carries the subcommand
+        result = await reg.execute("/i list agents")
+        assert not result.error
+        assert result.metadata["action"] == "self_edit_open"
+        assert result.metadata["message"] == "list agents"
 
     def test_no_argument_commands_are_marked_for_completion_submit(self):
         from taui.commands.builtins import register_builtins
@@ -274,9 +280,9 @@ class TestBuiltinCommands:
         reg = CommandRegistry()
         register_builtins(reg)
 
-        # /new accepts an optional initial message; /i and /model don't.
+        # /new and /i accept args (initial msg / list subcommand); /model doesn't.
         assert getattr(reg.get("new"), "accepts_args") is True
-        assert getattr(reg.get("i"), "accepts_args") is False
+        assert getattr(reg.get("i"), "accepts_args") is True
         assert getattr(reg.get("model"), "accepts_args") is False
 
     async def test_model_list_has_no_reasoning_icon(self, monkeypatch):

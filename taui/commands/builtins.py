@@ -252,14 +252,17 @@ def _profile_provider_model(profile: Any) -> str:
 
 @dataclass(slots=True)
 class SelfEditModeCommand:
-    """Open the self-edit modal (configure agents, skills, commands, tools, …)."""
+    """Open the self-edit modal, or list the inventory as text."""
 
     name: str = "i"
-    description: str = "Open the self-edit modal"
-    accepts_args: bool = False
+    description: str = (
+        "Open the self-edit modal · `/i list [category]` for text-mode listing"
+    )
+    accepts_args: bool = True
 
     async def execute(self, ctx: CommandContext) -> CommandResult:
-        return CommandResult.ok("", action="self_edit_open", message="")
+        msg = " ".join(ctx.args).strip()
+        return CommandResult.ok(msg, action="self_edit_open", message=msg)
 
 
 @dataclass(slots=True)

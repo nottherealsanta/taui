@@ -113,6 +113,54 @@ class TestInventory:
         assert "edit" in names
         assert "bash" in names
 
+
+class TestListView:
+    def test_format_inventory_listing_all_categories(self, tmp_path):
+        from taui.self_edit.list_view import format_inventory_listing
+
+        text = format_inventory_listing(tmp_path)
+        # Should mention every category label.
+        for cat in inventory.CATEGORIES:
+            assert cat.label in text
+        # Both scopes appear.
+        assert "global" in text
+        assert "project" in text
+
+    def test_format_inventory_listing_single_category(self, tmp_path):
+        from taui.self_edit.list_view import format_inventory_listing
+
+        text = format_inventory_listing(tmp_path, category="tools")
+        # Tools section header is present, includes builtins.
+        assert "▰ TOOLS" in text
+        assert "read" in text
+        # Other section headers are NOT rendered.
+        assert "▰ SKILLS" not in text
+        assert "▰ MCP" not in text
+
+    def test_format_inventory_listing_unknown_category_raises(self, tmp_path):
+        import pytest
+
+        from taui.self_edit.list_view import format_inventory_listing
+
+        with pytest.raises(KeyError):
+            format_inventory_listing(tmp_path, category="nonsense")
+
+    def test_format_inventory_listing_escapes_markup(self, tmp_path):
+        from taui.self_edit import inventory as inv
+        from taui.self_edit.list_view import format_inventory_listing
+
+        # Create a command whose docstring has Rich-markup-like brackets —
+        # the listing must escape them or Rich will try to parse them.
+        inv.save_item(
+            tmp_path,
+            "commands",
+            "project",
+            "demo",
+            '"""Has [tricky] markup."""\n',
+        )
+        text = format_inventory_listing(tmp_path, category="commands")
+        assert r"\[tricky\]" in text
+
     def test_first_docstring_extraction(self):
         assert inventory._first_docstring('"""Hi there."""\n') == "Hi there."
         assert (
