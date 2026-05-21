@@ -13,7 +13,7 @@ from pathlib import Path
 from rich.text import Text
 from textual import events, on, work
 from textual.app import ComposeResult
-from textual.containers import Container, Horizontal, Vertical
+from textual.containers import Container, Grid, Horizontal, Vertical
 from textual.events import Click, Key
 from textual.screen import ModalScreen
 from textual.widgets import (
@@ -21,12 +21,10 @@ from textual.widgets import (
     Input,
     Label,
     OptionList,
-    SelectionList,
     Static,
     TextArea,
 )
 from textual.widgets.option_list import Option
-from textual.widgets.selection_list import Selection
 
 from taui.self_edit import inventory
 
@@ -146,6 +144,60 @@ class _ScopeChip(Static):
         self.post_message(_ScopeClicked(self._scope))
 
 
+# ── Tool toggle (one cell in the allowed-tools grid) ────────────────
+
+
+class _ToolToggle(Static):
+    """Single clickable tool name with on/off state."""
+
+    DEFAULT_CSS = f"""
+    _ToolToggle {{
+        height: 1;
+        width: 1fr;
+        padding: 0 1;
+        color: #555;
+    }}
+    _ToolToggle.-on {{
+        color: {ACCENT};
+        text-style: bold;
+    }}
+    _ToolToggle:hover {{
+        background: {INNER_BG};
+    }}
+    """
+
+    def __init__(self, tool_name: str, selected: bool) -> None:
+        super().__init__()
+        self._tool_name = tool_name
+        self._selected = selected
+        if selected:
+            self.add_class("-on")
+
+    def render(self) -> str:
+        marker = "✓" if self._selected else "·"
+        return f" {marker}  {self._tool_name}"
+
+    def on_click(self, event: Click) -> None:
+        event.stop()
+        self.toggle()
+
+    def toggle(self) -> None:
+        self._selected = not self._selected
+        if self._selected:
+            self.add_class("-on")
+        else:
+            self.remove_class("-on")
+        self.refresh()
+
+    @property
+    def tool_name(self) -> str:
+        return self._tool_name
+
+    @property
+    def is_selected(self) -> bool:
+        return self._selected
+
+
 # ── Editor sub-modal ────────────────────────────────────────────────
 
 
@@ -215,6 +267,19 @@ class _Editor(ModalScreen):
         background: {INNER_BG};
         border: none;
     }}
+    #se-editor-dialog #se-editor-gen-model {{
+        height: 1;
+        border: none;
+        padding: 0 1;
+        background: {INNER_BG};
+        color: {ACCENT_SOFT};
+        width: 32;
+        margin: 0 0 0 1;
+    }}
+    #se-editor-dialog #se-editor-gen-model:focus {{
+        color: {ACCENT};
+        border: none;
+    }}
     #se-editor-dialog #se-editor-generate {{
         margin: 0 0 0 1;
         height: 1;
@@ -229,31 +294,26 @@ class _Editor(ModalScreen):
         background: {HAZARD_AMBER};
     }}
     #se-editor-dialog .se-tools-label {{
-        width: 18;
+        width: 100%;
         color: {ACCENT_SOFT};
         padding: 0 1;
         margin-top: 1;
     }}
     #se-editor-dialog #se-editor-tools {{
-        height: 10;
+        height: 8;
         width: 100%;
         border: solid {GRID_GREY};
         background: {INNER_BG};
-        color: {ACCENT};
+        grid-size: 4;
+        grid-rows: 1;
+        grid-gutter: 0 1;
+        padding: 1;
     }}
-    #se-editor-dialog #se-editor-tools:focus {{
-        border: solid {ACCENT_SOFT};
-    }}
-    #se-editor-dialog #se-editor-tools > .selection-list--button-selected {{
-        color: {ACCENT};
-        background: {INNER_BG};
-    }}
-    #se-editor-dialog #se-editor-tools > .selection-list--button-selected-highlighted {{
-        color: {DEEP_BLACK};
-        background: {ACCENT};
-    }}
-    #se-editor-dialog #se-editor-tools > .selection-list--button {{
-        color: {ACCENT_SOFT};
+    #se-editor-dialog .se-field-hint {{
+        width: 1fr;
+        color: #666;
+        padding: 0 1;
+        height: 1;
     }}
     #se-editor-dialog TextArea {{
         height: 1fr;
@@ -335,7 +395,16 @@ class _Editor(ModalScreen):
                         placeholder=self._llm_placeholder(),
                         id="se-editor-llm-prompt",
                     )
-                    yield Button(self._generate_label(), id="se-editor-generate")
+                    # For agents, the editor's MODEL ID field is the source of
+                    # truth for both the agent's model AND the generate model,
+                    # so we don't render a duplicate selector here.
+                    if self._category.key != "agents":
+                        yield Input(
+                            value=self._initial_model_id(),
+                            placeholder="model id",
+                            id="se-editor-gen-model",
+                        )
+                    yield Button("◆ Generate", id="se-editor-generate")
             yield TextArea(self._initial_body, id="se-editor-body")
             with Horizontal(classes="se-editor-footer"):
                 yield Button("Cancel", id="se-editor-cancel")
@@ -352,24 +421,28 @@ class _Editor(ModalScreen):
             )
         if self._category.key == "agents":
             with Horizontal(classes="se-field-row"):
-                yield Label("PROVIDER", classes="se-field-label")
+                yield Label("MODEL ID", classes="se-field-label")
                 yield Input(
-                    value=str(self._initial_extra.get("provider", "")),
-                    id="se-editor-provider",
-                )
-            with Horizontal(classes="se-field-row"):
-                yield Label("MODEL", classes="se-field-label")
-                yield Input(
-                    value=str(self._initial_extra.get("model", "")),
-                    id="se-editor-model",
+                    value=self._initial_model_id(),
+                    placeholder="provider/model — optional, defaults to session",
+                    id="se-editor-model-id",
                 )
             yield Static("ALLOWED TOOLS", classes="se-tools-label")
             selected = set(self._initial_extra.get("allowed_tools", []))
             all_tools = inventory.all_tool_names(self._working_dir)
-            selections = [
-                Selection(name, name, name in selected) for name in all_tools
-            ]
-            yield SelectionList[str](*selections, id="se-editor-tools")
+            with Grid(id="se-editor-tools"):
+                for name in all_tools:
+                    yield _ToolToggle(name, name in selected)
+
+    def _initial_model_id(self) -> str:
+        """Combined provider/model string used as a single model selector."""
+        provider = str(self._initial_extra.get("provider", "")).strip()
+        model = str(self._initial_extra.get("model", "")).strip()
+        if not provider and not model:
+            # Pre-fill with the current session's model so the user sees
+            # which model Generate will use by default.
+            return self._provider_model_label()
+        return "/".join(p for p in (provider, model) if p)
 
     def _id_placeholder(self) -> str:
         if self._category.key == "agents":
@@ -389,12 +462,6 @@ class _Editor(ModalScreen):
             "prompts": "describe the prompt — eg. 'explains a Python traceback'",
             "mcp": "describe the MCP server — eg. 'wraps the github CLI'",
         }.get(self._category.key, "describe what you want")
-
-    def _generate_label(self) -> str:
-        suffix = self._provider_model_label()
-        if suffix:
-            return f"◆ Generate ({suffix})"
-        return "◆ Generate"
 
     def _provider_model_label(self) -> str:
         parts = [p for p in (self._provider_name, self._model) if p]
@@ -445,21 +512,22 @@ class _Editor(ModalScreen):
         extra: dict = {}
         if self._category.key == "agents":
             try:
-                tools_widget = self.query_one("#se-editor-tools", SelectionList)
-                allowed_tools = list(tools_widget.selected)
+                toggles = list(self.query(_ToolToggle))
+                allowed_tools = [t.tool_name for t in toggles if t.is_selected]
             except Exception:
                 allowed_tools = list(self._initial_extra.get("allowed_tools", []))
             try:
-                extra = {
-                    "name": ident,
-                    "provider": self.query_one(
-                        "#se-editor-provider", Input
-                    ).value.strip(),
-                    "model": self.query_one("#se-editor-model", Input).value.strip(),
-                    "allowed_tools": allowed_tools,
-                }
+                provider_str, model_str = _split_model_id(
+                    self.query_one("#se-editor-model-id", Input).value.strip()
+                )
             except Exception:
-                extra = {"name": ident, "allowed_tools": allowed_tools}
+                provider_str, model_str = "", ""
+            extra = {
+                "name": ident,
+                "provider": provider_str,
+                "model": model_str,
+                "allowed_tools": allowed_tools,
+            }
         self.dismiss(
             {
                 "identifier": ident,
@@ -473,7 +541,7 @@ class _Editor(ModalScreen):
     def _start_llm_generation(self) -> None:
         if self._generating:
             return
-        if self._provider is None or not self._model:
+        if self._provider is None:
             self._flash_subheader("LLM not configured — type body manually.")
             return
         try:
@@ -484,6 +552,12 @@ class _Editor(ModalScreen):
         if not user_brief:
             self._flash_subheader("Type a one-line brief, then click Generate.")
             return
+        model_id = self._effective_model_id()
+        if not model_id:
+            self._flash_subheader(
+                "No model configured — set one in the selector next to Generate."
+            )
+            return
         self._generating = True
         try:
             btn = self.query_one("#se-editor-generate", Button)
@@ -491,7 +565,24 @@ class _Editor(ModalScreen):
             btn.add_class("-busy")
         except Exception:
             pass
-        self._generate_worker(user_brief)
+        self._generate_worker(user_brief, model_id)
+
+    def _effective_model_id(self) -> str:
+        """Where Generate reads its model from — agent field, gen field, or default."""
+        if self._category.key == "agents":
+            try:
+                raw = self.query_one("#se-editor-model-id", Input).value.strip()
+            except Exception:
+                raw = ""
+        else:
+            try:
+                raw = self.query_one("#se-editor-gen-model", Input).value.strip()
+            except Exception:
+                raw = ""
+        if raw:
+            _, model = _split_model_id(raw)
+            return model or raw
+        return self._model
 
     def _flash_subheader(self, text: str) -> None:
         try:
@@ -500,7 +591,7 @@ class _Editor(ModalScreen):
             pass
 
     @work(exclusive=True, group="self_edit_modal_generate")
-    async def _generate_worker(self, user_brief: str) -> None:
+    async def _generate_worker(self, user_brief: str, model_id: str) -> None:
         prompt = _build_generation_prompt(self._category.key, user_brief)
         body = ""
         try:
@@ -509,7 +600,7 @@ class _Editor(ModalScreen):
             # would crash with "Object of type Message is not JSON serializable".
             messages = [{"role": "user", "content": prompt}]
             async for event in self._provider.stream_text(
-                messages, self._model, temperature=0.2
+                messages, model_id, temperature=0.2
             ):
                 if event.type == "text_delta" and event.delta:
                     body += event.delta
@@ -519,7 +610,7 @@ class _Editor(ModalScreen):
             self._generating = False
             try:
                 btn = self.query_one("#se-editor-generate", Button)
-                btn.label = self._generate_label()
+                btn.label = "◆ Generate"
                 btn.remove_class("-busy")
             except Exception:
                 pass
@@ -536,7 +627,7 @@ class _Editor(ModalScreen):
             self._generating = False
             try:
                 btn = self.query_one("#se-editor-generate", Button)
-                btn.label = self._generate_label()
+                btn.label = "◆ Generate"
                 btn.remove_class("-busy")
             except Exception:
                 pass
@@ -600,6 +691,17 @@ def _build_generation_prompt(category_key: str, user_brief: str) -> str:
             "`command = ...` and `args = [...]` lines. Optionally `env = {...}`."
         )
     return f"{common}\n\n{user_brief}"
+
+
+def _split_model_id(raw: str) -> tuple[str, str]:
+    """Split 'provider/model' into (provider, model). One-part falls into model."""
+    raw = raw.strip()
+    if not raw:
+        return "", ""
+    if "/" in raw:
+        provider, _, model = raw.partition("/")
+        return provider.strip(), model.strip()
+    return "", raw
 
 
 def _strip_code_fence(text: str) -> str:
@@ -728,6 +830,7 @@ class SelfEditModal(ModalScreen[str | None]):
         background: {PANEL_BG};
         color: {ACCENT_SOFT};
         padding: 0 2;
+        text-align: right;
     }}
     #se-description {{
         height: 2;
@@ -856,7 +959,7 @@ class SelfEditModal(ModalScreen[str | None]):
                     yield _ScopeChip("global", active=self._scope == "global")
                     yield _ScopeChip("project", active=self._scope == "project")
             yield Static(
-                f"  {inventory.scope_root(self._working_dir, self._scope)}",
+                f"{inventory.scope_root(self._working_dir, self._scope)}  ",
                 id="se-scope-path",
             )
             yield Static(self._category.description, id="se-description")
@@ -937,7 +1040,7 @@ class SelfEditModal(ModalScreen[str | None]):
         try:
             path_label = self.query_one("#se-scope-path", Static)
             path_label.update(
-                f"  {inventory.scope_root(self._working_dir, self._scope)}"
+                f"{inventory.scope_root(self._working_dir, self._scope)}  "
             )
         except Exception:
             pass

@@ -286,6 +286,66 @@ class TestSelfEditModal:
             await pilot.press("escape")
             await app._session.close()
 
+    async def test_agent_editor_uses_single_model_id_and_tool_grid(
+        self, tmp_path, monkeypatch
+    ):
+        from textual.widgets import Input
+
+        from taui.tui.screens.self_edit_modal import _Editor, _ToolToggle
+
+        provider = scenarios.happy_path("(unused)")
+        app = use_scripted_provider(monkeypatch, tmp_path, provider)
+        async with app.run_test(size=(160, 50)) as pilot:
+            await _ready(app)
+            editor = _Editor(
+                category=inventory.category_by_key("agents"),
+                scope="project",
+                creating=True,
+                item=None,
+                working_dir=tmp_path,
+                provider=None,
+                model="claude-haiku",
+                provider_name="anthropic",
+            )
+            app.push_screen(editor)
+            await pilot.pause()
+
+            # Single combined model id input — no separate PROVIDER field.
+            model_input = editor.query_one("#se-editor-model-id", Input)
+            assert model_input.value == "anthropic/claude-haiku"
+            assert "optional" in model_input.placeholder.lower()
+
+            # No duplicate generate-model input for agents — the MODEL ID
+            # field is the single source of truth.
+            assert not editor.query("#se-editor-gen-model")
+
+            # Tools are rendered as a Grid of _ToolToggle widgets (one per
+            # tool), not a SelectionList — so the user can click each cell
+            # and see clearly which are on/off.
+            toggles = list(editor.query(_ToolToggle))
+            assert len(toggles) >= 5
+            assert all(not t.is_selected for t in toggles)  # none selected yet
+
+            # Click two toggles on.
+            for t in toggles:
+                if t.tool_name in {"read", "edit"}:
+                    t.toggle()
+
+            editor.query_one("#se-editor-id", Input).value = "XYZ"
+            # Submit by invoking the underlying helper directly.
+            saved: dict = {}
+
+            def fake_dismiss(result):
+                saved.update(result or {})
+
+            editor.dismiss = fake_dismiss  # type: ignore[method-assign]
+            editor._submit()
+
+            assert saved["extra"]["provider"] == "anthropic"
+            assert saved["extra"]["model"] == "claude-haiku"
+            assert set(saved["extra"]["allowed_tools"]) == {"read", "edit"}
+            await app._session.close()
+
     async def test_editor_llm_generate_populates_body(
         self, tmp_path, monkeypatch
     ):
