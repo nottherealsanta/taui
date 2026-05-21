@@ -351,14 +351,16 @@ class TestSelfEditModal:
             assert isinstance(screen, SelfEditModal)
             new_btn = screen.query_one("#se-new-button", Button)
             assert new_btn is not None
-            # Clicking the button opens the editor in creating mode.
-            from taui.tui.screens.self_edit_modal import _Editor
+            # Clicking the button puts the inline editor into creating mode
+            # on the right pane (instead of pushing a new modal).
+            from taui.tui.screens.self_edit_modal import _InlineEditor
 
             new_btn.press()
             await pilot.pause()
-            assert isinstance(app.screen, _Editor)
-            await pilot.press("escape")
-            await pilot.pause()
+            assert isinstance(app.screen, SelfEditModal)
+            inline = screen.query_one("#se-inline", _InlineEditor)
+            assert inline._creating is True
+            assert inline._mode == "new"
             await app._session.close()
 
     async def test_modal_tabs_are_clickable(self, tmp_path, monkeypatch):

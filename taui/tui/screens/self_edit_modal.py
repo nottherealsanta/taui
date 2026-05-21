@@ -1787,6 +1787,696 @@ class _SettingActivated(events.Event):
         self.setting_key = setting_key
 
 
+# ── Inline edit panel (right pane) ───────────────────────────────────
+
+
+class _InlineSaveRequested(events.Event):
+    """Posted by _InlineEditor when the user clicks Save."""
+
+    def __init__(self, payload: dict, creating: bool) -> None:
+        super().__init__()
+        self.payload = payload
+        self.creating = creating
+
+
+class _InlineEditor(Vertical):
+    """Inline editor that lives in the right pane of the self-edit modal.
+
+    Replaces the standalone _Editor sub-modal: shows the same fields
+    (id, model, usage, color, allowed-tools, body) inline so the user
+    can see and edit selection details without a second modal.
+    """
+
+    DEFAULT_CSS = f"""
+    _InlineEditor {{
+        height: 1fr;
+        width: 100%;
+        background: {INNER_BG};
+        color: #b8b8b8;
+        border: solid {GRID_GREY};
+        padding: 1 1 0 1;
+    }}
+    _InlineEditor .se-inline-header {{
+        height: 1;
+        width: 100%;
+        color: {ACCENT};
+        text-style: bold;
+        padding: 0 1;
+    }}
+    _InlineEditor .se-inline-hint {{
+        height: 1;
+        width: 100%;
+        color: #666;
+        padding: 0 1;
+    }}
+    _InlineEditor .se-inline-empty {{
+        height: 1fr;
+        width: 100%;
+        color: #666;
+        content-align: center middle;
+    }}
+    _InlineEditor .se-field-row {{
+        height: 3;
+        width: 100%;
+        padding: 0;
+    }}
+    _InlineEditor .se-field-label {{
+        width: 14;
+        height: 3;
+        color: {ACCENT_SOFT};
+        content-align: left middle;
+        padding: 1 1 0 1;
+    }}
+    _InlineEditor Input {{
+        width: 1fr;
+        height: 3;
+        border: solid {GRID_GREY};
+        background: {INNER_BG};
+        color: {ACCENT};
+    }}
+    _InlineEditor Input:focus {{
+        border: solid {ACCENT_SOFT};
+    }}
+    _InlineEditor .se-prompt-row {{
+        height: 1;
+        width: 100%;
+        padding: 0;
+        margin: 1 0 0 0;
+    }}
+    _InlineEditor .se-inline-llm-prompt {{
+        height: 1;
+        border: none;
+        padding: 0 1;
+        background: {INNER_BG};
+        width: 1fr;
+    }}
+    _InlineEditor .se-inline-llm-prompt:focus {{
+        background: {INNER_BG};
+        border: none;
+    }}
+    _InlineEditor .se-inline-generate {{
+        margin: 0 0 0 1;
+        height: 1;
+        min-width: 0;
+        border: none;
+        padding: 0 2;
+        background: {ACCENT};
+        color: {DEEP_BLACK};
+        text-style: bold;
+    }}
+    _InlineEditor .se-inline-generate.-busy {{
+        background: {HAZARD_AMBER};
+    }}
+    _InlineEditor .se-tools-label {{
+        width: 100%;
+        color: {ACCENT_SOFT};
+        padding: 0 1;
+        margin-top: 1;
+    }}
+    _InlineEditor .se-inline-tools {{
+        height: 6;
+        width: 100%;
+        border: solid {GRID_GREY};
+        background: {INNER_BG};
+        grid-size: 3;
+        grid-rows: 1;
+        grid-gutter: 0 1;
+        padding: 1;
+    }}
+    _InlineEditor .se-field-hint {{
+        width: 1fr;
+        color: #666;
+        padding: 0 1;
+        height: 1;
+    }}
+    _InlineEditor TextArea {{
+        height: 1fr;
+        width: 100%;
+        border: solid {GRID_GREY};
+        background: {INNER_BG};
+        color: #e5e5e5;
+        margin-top: 1;
+    }}
+    _InlineEditor TextArea:focus {{
+        border: solid {ACCENT_SOFT};
+    }}
+    _InlineEditor .se-inline-footer {{
+        height: 1;
+        width: 100%;
+        margin: 1 0 0 0;
+        align-horizontal: right;
+    }}
+    _InlineEditor .se-inline-footer Button {{
+        margin: 0 0 0 1;
+        height: 1;
+        min-width: 0;
+        border: none;
+        padding: 0 2;
+        background: {GRID_GREY};
+        color: {ACCENT};
+    }}
+    _InlineEditor .se-inline-footer Button.-primary {{
+        background: {ACCENT};
+        color: {DEEP_BLACK};
+        text-style: bold;
+    }}
+    _InlineEditor .se-inline-usage {{
+        height: 1;
+        width: auto;
+        padding: 0 1;
+    }}
+    _InlineEditor .se-inline-color {{
+        height: 1;
+        width: auto;
+        padding: 0 1;
+    }}
+    _InlineEditor .se-hidden {{
+        display: none;
+    }}
+    _InlineEditor .se-inline-preview {{
+        height: 1fr;
+        width: 100%;
+        color: #b8b8b8;
+        padding: 0 1;
+    }}
+    """
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._working_dir: Path | None = None
+        self._category: inventory.Category | None = None
+        self._scope: str = "global"
+        self._provider = None
+        self._model = ""
+        self._provider_name = ""
+        # Live state for the active form
+        self._mode: str = "empty"  # empty | preview | edit | new
+        self._item: inventory.Item | None = None
+        self._creating: bool = False
+        # Cached widget refs for the currently mounted form
+        self._id_input: Input | None = None
+        self._model_input: Input | None = None
+        self._body_area: TextArea | None = None
+        self._llm_input: Input | None = None
+        self._gen_button: Button | None = None
+        self._initial_extra: dict = {}
+        # LLM generation state
+        self._generating = False
+        self._spinner_timer = None
+        self._spinner_index = 0
+
+    def compose(self) -> ComposeResult:
+        yield Static(
+            "(no item selected — press [b]n[/b] to create a new one)",
+            classes="se-inline-empty",
+            markup=True,
+        )
+
+    # ── Context wiring ──────────────────────────────────────────────
+
+    def set_context(
+        self,
+        *,
+        working_dir: Path,
+        category: inventory.Category,
+        scope: str,
+        provider,
+        model: str,
+        provider_name: str,
+    ) -> None:
+        self._working_dir = working_dir
+        self._category = category
+        self._scope = scope
+        self._provider = provider
+        self._model = model
+        self._provider_name = provider_name
+
+    # ── Public state transitions ────────────────────────────────────
+
+    def show_empty(self) -> None:
+        self._mode = "empty"
+        self._item = None
+        self._creating = False
+        self._rebuild()
+
+    def show_item(self, item: inventory.Item | None) -> None:
+        if item is None:
+            self.show_empty()
+            return
+        self._item = item
+        self._creating = False
+        if (
+            self._category is not None
+            and self._category.key == "tools"
+            and item.builtin
+        ):
+            self._mode = "preview"
+        else:
+            self._mode = "edit"
+        self._initial_extra = dict(item.extra)
+        self._rebuild()
+
+    def start_new(self) -> None:
+        if self._category is None:
+            return
+        self._item = None
+        self._creating = True
+        self._mode = "new"
+        self._initial_extra = {}
+        self._rebuild()
+        try:
+            if self._id_input is not None:
+                self._id_input.focus()
+        except Exception:
+            pass
+
+    # ── Rebuild ─────────────────────────────────────────────────────
+
+    def _rebuild(self) -> None:
+        for child in list(self.children):
+            child.remove()
+        self._id_input = None
+        self._model_input = None
+        self._body_area = None
+        self._llm_input = None
+        self._gen_button = None
+
+        if self._mode == "empty" or self._category is None:
+            self.mount(
+                Static(
+                    "(no item selected — press [b]n[/b] to create a new one)",
+                    classes="se-inline-empty",
+                    markup=True,
+                )
+            )
+            return
+
+        if self._mode == "preview":
+            item = self._item
+            assert item is not None
+            header = f"{item.path}"
+            body = item.body
+            if len(body) > 8000:
+                body = body[:8000] + "\n… (truncated)"
+            self.mount(
+                Static(
+                    f"[b {ACCENT}]{item.label}[/b {ACCENT}]  [dim]· read-only (builtin)[/dim]",
+                    classes="se-inline-header",
+                    markup=True,
+                )
+            )
+            self.mount(
+                Static(
+                    f"[dim]{header}[/dim]",
+                    classes="se-inline-hint",
+                    markup=True,
+                )
+            )
+            self.mount(Static(body, classes="se-inline-preview", markup=False))
+            return
+
+        # edit / new
+        cat = self._category
+        item = self._item
+        creating = self._creating
+        verb = "NEW" if creating else "EDIT"
+        header_text = f"▰ {verb} · {cat.label} · {self._scope.upper()} SCOPE"
+        self.mount(
+            Static(header_text, classes="se-inline-header", markup=False)
+        )
+
+        # ID row
+        is_agent = cat.key == "agents"
+        id_row = Horizontal(classes="se-field-row")
+        self.mount(id_row)
+        id_row.mount(
+            Label(
+                "AGENT ID" if is_agent else "ID",
+                classes="se-field-label",
+            )
+        )
+        self._id_input = Input(
+            value=item.identifier if item else "",
+            placeholder=self._id_placeholder(),
+            disabled=not creating,
+            classes="se-inline-id",
+        )
+        id_row.mount(self._id_input)
+
+        # Agent-specific fields
+        if is_agent:
+            model_row = Horizontal(classes="se-field-row")
+            self.mount(model_row)
+            model_row.mount(Label("MODEL ID", classes="se-field-label"))
+            self._model_input = Input(
+                value=self._initial_extra_model(),
+                placeholder="",
+                classes="se-inline-model-id",
+            )
+            model_row.mount(self._model_input)
+            self.mount(
+                Static(
+                    "[dim]Optional — empty uses the session model.[/dim]",
+                    classes="se-field-hint",
+                    markup=True,
+                )
+            )
+
+            # Usage toggle
+            initial_usage = self._initial_usage()
+            self.mount(
+                Static(
+                    "USAGE  [dim](main · sub · both)[/dim]",
+                    classes="se-tools-label",
+                    markup=True,
+                )
+            )
+            usage_row = Horizontal(classes="se-inline-usage")
+            self.mount(usage_row)
+            for value in ("main", "sub", "both"):
+                usage_row.mount(
+                    _UsageToggle(value, selected=(value == initial_usage))
+                )
+
+            # Color swatches
+            color_label_classes = "se-tools-label"
+            initial_color = str(self._initial_extra.get("color", "") or "")
+            if initial_usage == "sub":
+                color_label_classes += " se-hidden"
+            self.mount(
+                Static(
+                    "COLOR  [dim](badge accent in picker / info bar)[/dim]",
+                    classes=color_label_classes,
+                    markup=True,
+                )
+            )
+            color_row = Horizontal(classes="se-inline-color")
+            if initial_usage == "sub":
+                color_row.add_class("se-hidden")
+            self.mount(color_row)
+            for hex_value, _label in AGENT_COLOR_PALETTE:
+                color_row.mount(
+                    _ColorSwatch(hex_value, selected=(hex_value == initial_color))
+                )
+
+            # Allowed tools grid
+            selected = set(self._initial_extra.get("allowed_tools", []))
+            all_tools: list[str] = []
+            if self._working_dir is not None:
+                all_tools = inventory.all_tool_names(self._working_dir)
+            all_on = not selected
+            self.mount(
+                Static(
+                    "ALLOWED TOOLS",
+                    classes="se-tools-label",
+                    markup=False,
+                )
+            )
+            tools_grid = Grid(classes="se-inline-tools")
+            self.mount(tools_grid)
+            for name in all_tools:
+                tools_grid.mount(_ToolToggle(name, all_on or name in selected))
+
+        # LLM prompt + Generate/Edit button
+        prompt_row = Horizontal(classes="se-prompt-row")
+        self.mount(prompt_row)
+        self._llm_input = Input(
+            placeholder=self._llm_placeholder(),
+            classes="se-inline-llm-prompt",
+        )
+        prompt_row.mount(self._llm_input)
+        self._gen_button = Button(
+            "◆ Generate" if creating else "◆ Edit",
+            classes="se-inline-generate",
+        )
+        prompt_row.mount(self._gen_button)
+
+        # Body editor
+        initial_body = item.body if item else cat.new_template
+        self._body_area = TextArea(initial_body, classes="se-inline-body")
+        self.mount(self._body_area)
+
+        # Footer with Save / Reset
+        footer = Horizontal(classes="se-inline-footer")
+        self.mount(footer)
+        footer.mount(Button("Reset", classes="se-inline-reset"))
+        footer.mount(Button("Save", classes="se-inline-save -primary"))
+
+    # ── Helpers ─────────────────────────────────────────────────────
+
+    def _id_placeholder(self) -> str:
+        if self._category is None:
+            return "identifier"
+        if self._category.key == "agents":
+            return "3-letter UPPERCASE id (e.g. RDR)"
+        if self._category.key == "skills":
+            return "kebab-case skill name"
+        if self._category.key == "mcp":
+            return "server name (no spaces)"
+        return "identifier"
+
+    def _llm_placeholder(self) -> str:
+        if self._category is None:
+            return ""
+        if self._creating:
+            return {
+                "agents": "describe the agent's job — eg. 'reviews TypeScript PRs'",
+                "skills": "describe the skill — eg. 'recipes for SQLAlchemy'",
+                "commands": "describe the command — eg. 'prints current branch'",
+                "tools": "describe the tool — eg. 'calls a local HTTP endpoint'",
+                "prompts": "describe the prompt — eg. 'explains a traceback'",
+                "mcp": "describe the MCP server — eg. 'wraps the github CLI'",
+            }.get(self._category.key, "describe what you want")
+        return "describe the edit — eg. 'make this terser'"
+
+    def _initial_usage(self) -> str:
+        from taui.self_edit.store import AGENT_USAGE_VALUES
+
+        raw = str(self._initial_extra.get("usage", "") or "").strip().lower()
+        if raw in AGENT_USAGE_VALUES:
+            return raw
+        if bool(self._initial_extra.get("subagent_only", False)):
+            return "sub"
+        return "both"
+
+    def _initial_extra_model(self) -> str:
+        provider = str(self._initial_extra.get("provider", "")).strip()
+        model = str(self._initial_extra.get("model", "")).strip()
+        if not provider and not model:
+            return ""
+        return "/".join(p for p in (provider, model) if p)
+
+    # ── Event handlers ──────────────────────────────────────────────
+
+    @on(_UsageToggle.Changed)
+    def _on_usage_changed(self, event: _UsageToggle.Changed) -> None:
+        event.stop()
+        for toggle in self.query(_UsageToggle):
+            toggle.set_active(toggle.value == event.value)
+        try:
+            color_row = self.query_one(".se-inline-color")
+            color_label = None
+            for static in self.query(Static):
+                if "se-tools-label" in static.classes and "COLOR" in static.renderable.__str__():
+                    color_label = static
+                    break
+        except Exception:
+            return
+        if event.value == "sub":
+            color_row.add_class("se-hidden")
+            if color_label is not None:
+                color_label.add_class("se-hidden")
+        else:
+            color_row.remove_class("se-hidden")
+            if color_label is not None:
+                color_label.remove_class("se-hidden")
+
+    @on(_ColorSwatch.Changed)
+    def _on_color_changed(self, event: _ColorSwatch.Changed) -> None:
+        event.stop()
+        for swatch in self.query(_ColorSwatch):
+            swatch.set_active(swatch.value == event.value)
+
+    @on(Button.Pressed)
+    def _on_button(self, event: Button.Pressed) -> None:
+        classes = event.button.classes
+        if "se-inline-save" in classes:
+            event.stop()
+            self._submit()
+        elif "se-inline-reset" in classes:
+            event.stop()
+            self._rebuild()
+        elif "se-inline-generate" in classes:
+            event.stop()
+            self._start_llm_generation()
+
+    def _submit(self) -> None:
+        if self._id_input is None or self._body_area is None or self._category is None:
+            return
+        ident = self._id_input.value.strip()
+        body = self._body_area.text
+        if not ident:
+            return
+        if self._category.key == "agents":
+            ident = ident.upper()
+        extra: dict = {}
+        if self._category.key == "agents":
+            try:
+                toggles = list(self.query(_ToolToggle))
+                allowed_tools = [t.tool_name for t in toggles if t.is_selected]
+            except Exception:
+                allowed_tools = list(self._initial_extra.get("allowed_tools", []))
+            provider_str, model_str = "", ""
+            if self._model_input is not None:
+                provider_str, model_str = _split_model_id(
+                    self._model_input.value.strip()
+                )
+            try:
+                usage = next(
+                    t.value for t in self.query(_UsageToggle) if "-on" in t.classes
+                )
+            except StopIteration:
+                usage = self._initial_usage()
+            try:
+                color = next(
+                    s.value for s in self.query(_ColorSwatch) if "-on" in s.classes
+                )
+            except StopIteration:
+                color = str(self._initial_extra.get("color", "") or "")
+            if usage == "sub":
+                color = ""
+            extra = {
+                "name": ident,
+                "provider": provider_str,
+                "model": model_str,
+                "allowed_tools": allowed_tools,
+                "usage": usage,
+                "color": color,
+            }
+        payload = {"identifier": ident, "body": body, "extra": extra}
+        self.post_message(_InlineSaveRequested(payload, self._creating))
+
+    # ── LLM generation (reuses helpers from _Editor) ────────────────
+
+    _SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
+
+    def _start_llm_generation(self) -> None:
+        if self._generating or self._llm_input is None or self._category is None:
+            return
+        if self._provider is None:
+            return
+        user_brief = self._llm_input.value.strip()
+        if not user_brief:
+            return
+        default_model = self._effective_model_id()
+        pairs = _available_models(self._provider_name)
+        if default_model and default_model not in {m for m, _ in pairs}:
+            pairs = [(default_model, self._provider_name)] + pairs
+        models = [m for m, _ in pairs]
+        provider_of = {m: p for m, p in pairs}
+
+        def after(picked: str | None) -> None:
+            if not picked:
+                return
+            self._generating = True
+            self._start_spinner()
+            self._generate_worker(user_brief, picked)
+
+        if not models:
+            if not default_model:
+                return
+            after(default_model)
+            return
+
+        self.app.push_screen(
+            _ModelPicker(
+                models=models,
+                default=default_model,
+                provider_of=provider_of,
+            ),
+            after,
+        )
+
+    def _effective_model_id(self) -> str:
+        if (
+            self._category is not None
+            and self._category.key == "agents"
+            and self._model_input is not None
+        ):
+            raw = self._model_input.value.strip()
+            if raw:
+                _, model = _split_model_id(raw)
+                return model or raw
+        return self._model
+
+    def _start_spinner(self) -> None:
+        if self._gen_button is None:
+            return
+        self._gen_button.add_class("-busy")
+        self._spinner_index = 0
+        verb = "Generating…" if self._creating else "Editing…"
+        self._gen_button.label = f"{self._SPINNER_FRAMES[0]} {verb}"
+        self._spinner_timer = self.set_interval(0.08, self._tick_spinner)
+
+    def _tick_spinner(self) -> None:
+        if self._gen_button is None:
+            return
+        self._spinner_index = (self._spinner_index + 1) % len(self._SPINNER_FRAMES)
+        verb = "Generating…" if self._creating else "Editing…"
+        self._gen_button.label = (
+            f"{self._SPINNER_FRAMES[self._spinner_index]} {verb}"
+        )
+
+    def _stop_spinner(self) -> None:
+        if self._spinner_timer is not None:
+            try:
+                self._spinner_timer.stop()
+            except Exception:
+                pass
+            self._spinner_timer = None
+        if self._gen_button is not None:
+            self._gen_button.label = (
+                "◆ Generate" if self._creating else "◆ Edit"
+            )
+            self._gen_button.remove_class("-busy")
+
+    @work(exclusive=True, group="self_edit_inline_generate")
+    async def _generate_worker(self, user_brief: str, model_id: str) -> None:
+        await self._do_generate(user_brief, model_id)
+
+    async def _do_generate(self, user_brief: str, model_id: str) -> None:
+        if self._category is None or self._body_area is None:
+            return
+        current_body = "" if self._creating else self._body_area.text
+        prompt = _build_generation_prompt(
+            self._category.key,
+            user_brief,
+            current_body=current_body if not self._creating else None,
+        )
+        body = ""
+        try:
+            messages = [{"role": "user", "content": prompt}]
+            async for event in self._provider.stream_text(
+                messages, model_id, temperature=0.2
+            ):
+                if event.type == "text_delta" and event.delta:
+                    body += event.delta
+            body = _strip_code_fence(body).strip() + "\n"
+        except Exception:
+            self._generating = False
+            self._stop_spinner()
+            return
+        try:
+            if self._body_area is not None:
+                self._body_area.text = body
+                self._body_area.focus()
+        except Exception:
+            pass
+        finally:
+            self._generating = False
+            self._stop_spinner()
+
+
 # ── Main modal ──────────────────────────────────────────────────────
 
 
@@ -1848,7 +2538,7 @@ class SelfEditModal(ModalScreen[str | None]):
         padding: 0 1;
     }}
     #se-list-pane {{
-        width: 40%;
+        width: 34%;
         height: 1fr;
         padding: 0 1 0 0;
     }}
@@ -1873,32 +2563,25 @@ class SelfEditModal(ModalScreen[str | None]):
         width: 100%;
         min-width: 0;
         border: none;
-        padding: 0 1;
+        padding: 0;
         background: {ACCENT};
         color: {DEEP_BLACK};
         text-style: bold;
+        content-align: center middle;
     }}
     #se-list-pane #se-new-button:hover {{
         background: {HAZARD_AMBER};
+        color: {DEEP_BLACK};
     }}
-    #se-preview-pane {{
+    #se-list-pane #se-new-button:focus {{
+        background: {HAZARD_AMBER};
+        color: {DEEP_BLACK};
+        text-style: bold;
+    }}
+    #se-edit-pane {{
         width: 1fr;
         height: 1fr;
         padding: 0 0 0 1;
-    }}
-    #se-preview-pane .se-preview-header {{
-        height: 1;
-        color: {ACCENT_SOFT};
-        text-style: bold;
-        background: {PANEL_BG};
-    }}
-    #se-preview-pane #se-preview {{
-        height: 1fr;
-        width: 100%;
-        background: {INNER_BG};
-        color: #b8b8b8;
-        border: solid {GRID_GREY};
-        padding: 1;
     }}
     #se-footer {{
         height: 1;
@@ -1974,9 +2657,9 @@ class SelfEditModal(ModalScreen[str | None]):
             with Horizontal(id="se-body"):
                 with Vertical(id="se-list-pane"):
                     yield OptionList(id="se-options")
-                    yield Button("+  NEW", id="se-new-button")
-                with Vertical(id="se-preview-pane"):
-                    yield Static("", id="se-preview", markup=False)
+                    yield Button("✚ NEW", id="se-new-button")
+                with Vertical(id="se-edit-pane"):
+                    yield _InlineEditor(id="se-inline")
                 with Container(id="se-settings-pane"):
                     yield _GeneralSettings(id="se-general-settings")
             yield Static(
@@ -2047,17 +2730,17 @@ class SelfEditModal(ModalScreen[str | None]):
     def _refresh_items(self) -> None:
         is_general = self._category.key == "general"
 
-        # Switch between standard list+preview and settings panel.
+        # Switch between standard list+inline-editor and settings panel.
         try:
             list_pane = self.query_one("#se-list-pane", Vertical)
-            preview_pane = self.query_one("#se-preview-pane", Vertical)
+            edit_pane = self.query_one("#se-edit-pane", Vertical)
             settings_pane = self.query_one("#se-settings-pane")
         except Exception:
-            list_pane = preview_pane = settings_pane = None
+            list_pane = edit_pane = settings_pane = None
 
         if list_pane is not None:
             list_pane.display = not is_general
-            preview_pane.display = not is_general
+            edit_pane.display = not is_general
             settings_pane.display = is_general
 
         if is_general:
@@ -2087,7 +2770,7 @@ class SelfEditModal(ModalScreen[str | None]):
                     Option(self._render_item_row(item), id=item.identifier)
                 )
             opts.highlighted = 0
-        self._update_preview()
+        self._sync_inline_panel()
         self._refresh_chrome()
 
     def _refresh_general_panel(self) -> None:
@@ -2181,20 +2864,26 @@ class SelfEditModal(ModalScreen[str | None]):
             return None
         return self._items[idx]
 
-    def _update_preview(self) -> None:
+    def _sync_inline_panel(self) -> None:
+        """Push the highlighted item (or empty state) into the inline editor."""
         try:
-            preview = self.query_one("#se-preview", Static)
+            inline = self.query_one("#se-inline", _InlineEditor)
         except Exception:
             return
+        provider, model, provider_name = self._llm_handles()
+        inline.set_context(
+            working_dir=self._working_dir,
+            category=self._category,
+            scope=self._scope,
+            provider=provider,
+            model=model,
+            provider_name=provider_name,
+        )
         item = self._current_item()
         if item is None:
-            preview.update("(no item selected)")
-            return
-        excerpt = item.body
-        if len(excerpt) > 4000:
-            excerpt = excerpt[:4000] + "\n… (truncated)"
-        header = f"{item.path}"
-        preview.update(f"{header}\n{'─' * min(60, len(header))}\n{excerpt}")
+            inline.show_empty()
+        else:
+            inline.show_item(item)
 
     # ── Tab / scope clicks ─────────────────────────────────────────
 
@@ -2219,14 +2908,15 @@ class SelfEditModal(ModalScreen[str | None]):
 
     @on(OptionList.OptionHighlighted)
     def _on_option_highlighted(self, _: OptionList.OptionHighlighted) -> None:
-        self._update_preview()
+        self._sync_inline_panel()
 
     @on(OptionList.OptionSelected)
     def _on_option_selected(self, event: OptionList.OptionSelected) -> None:
         if event.option_id == "__empty__":
             self.action_new_item()
             return
-        self.action_edit_item()
+        # Form is already inline — focus the body so the user can edit.
+        self._focus_inline_body()
 
     def action_close(self) -> None:
         self.dismiss(None)
@@ -2277,37 +2967,20 @@ class SelfEditModal(ModalScreen[str | None]):
     def action_new_item(self) -> None:
         if self._category.key == "general":
             return
+        try:
+            inline = self.query_one("#se-inline", _InlineEditor)
+        except Exception:
+            return
         provider, model, provider_name = self._llm_handles()
-        editor = _Editor(
+        inline.set_context(
+            working_dir=self._working_dir,
             category=self._category,
             scope=self._scope,
-            creating=True,
-            item=None,
-            working_dir=self._working_dir,
             provider=provider,
             model=model,
             provider_name=provider_name,
         )
-
-        def after(result):
-            if result is None:
-                return
-            try:
-                inventory.save_item(
-                    self._working_dir,
-                    self._category.key,
-                    self._scope,
-                    result["identifier"],
-                    result["body"],
-                    result.get("extra"),
-                )
-            except Exception as exc:
-                self.app.bell()
-                self._toast(f"Save failed: {exc}")
-                return
-            self._refresh_items()
-
-        self.app.push_screen(editor, after)
+        inline.start_new()
 
     def action_edit_item(self) -> None:
         if self._category.key == "general":
@@ -2318,39 +2991,55 @@ class SelfEditModal(ModalScreen[str | None]):
             self.action_new_item()
             return
         if item.builtin and self._category.key == "tools":
-            # Built-in tools are read-only — preview-only.
+            # Built-in tools are read-only — preview only in the right pane.
             return
-        provider, model, provider_name = self._llm_handles()
-        editor = _Editor(
-            category=self._category,
-            scope=self._scope,
-            creating=False,
-            item=item,
-            working_dir=self._working_dir,
-            provider=provider,
-            model=model,
-            provider_name=provider_name,
-        )
+        # The form is already mounted inline; just focus its body.
+        self._focus_inline_body()
 
-        def after(result):
-            if result is None:
-                return
-            try:
-                inventory.save_item(
-                    self._working_dir,
-                    self._category.key,
-                    self._scope,
-                    result["identifier"] or item.identifier,
-                    result["body"],
-                    result.get("extra"),
-                )
-            except Exception as exc:
-                self.app.bell()
-                self._toast(f"Save failed: {exc}")
-                return
-            self._refresh_items()
+    def _focus_inline_body(self) -> None:
+        try:
+            inline = self.query_one("#se-inline", _InlineEditor)
+            if inline._body_area is not None:
+                inline._body_area.focus()
+        except Exception:
+            pass
 
-        self.app.push_screen(editor, after)
+    @on(_InlineSaveRequested)
+    def _on_inline_save(self, message: _InlineSaveRequested) -> None:
+        message.stop()
+        if self._category is None:
+            return
+        try:
+            current_id = (
+                self._current_item().identifier
+                if self._current_item() is not None
+                else ""
+            )
+            ident = message.payload["identifier"] or current_id
+            inventory.save_item(
+                self._working_dir,
+                self._category.key,
+                self._scope,
+                ident,
+                message.payload["body"],
+                message.payload.get("extra"),
+            )
+        except Exception as exc:
+            self.app.bell()
+            self._toast(f"Save failed: {exc}")
+            return
+        # Refresh list, then re-select the saved item if possible.
+        self._refresh_items()
+        try:
+            opts = self.query_one("#se-options", OptionList)
+            for i, it in enumerate(self._items):
+                if it.identifier == ident:
+                    opts.highlighted = i
+                    break
+        except Exception:
+            pass
+        self._sync_inline_panel()
+        self._toast(f"Saved {self._category.label.lower()} · {ident}")
 
     def _edit_general_setting(self) -> None:
         """Open an appropriate editor for the currently highlighted general setting."""
