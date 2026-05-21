@@ -154,21 +154,15 @@ def list_items(working_dir: Path, category: str, scope: str) -> list[Item]:
 
 def _list_agents(working_dir: Path, scope: str) -> list[Item]:
     store = SelfEditStore(working_dir)
-    agents = store.load_agents()
+    # Ensure defaults exist before listing
+    store.ensure_default_agents()
+    store._migrate_agents_json(scope)
+    agents = store.load_agents_for_scope(scope)
     out: list[Item] = []
     for profile in agents.values():
         prompt_path = profile.prompt_path
         if prompt_path is None:
             continue
-        in_scope = (
-            (scope == "global" and Path.home() in prompt_path.parents)
-            or (scope == "project" and prompt_path.is_relative_to(working_dir))
-        )
-        if not in_scope and not (
-            profile.id in ("DEF", "PLN", "EXP") and scope == "project"
-        ):
-            continue
-        builtin = profile.id in ("DEF", "PLN", "EXP")
         model_label = "/".join(
             part for part in (profile.provider, profile.model) if part
         ) or "—"
@@ -182,7 +176,7 @@ def _list_agents(working_dir: Path, scope: str) -> list[Item]:
                 summary=summary,
                 path=prompt_path,
                 body=profile.prompt,
-                builtin=builtin,
+                builtin=False,
                 extra={
                     "name": profile.name,
                     "provider": profile.provider,
@@ -194,7 +188,7 @@ def _list_agents(working_dir: Path, scope: str) -> list[Item]:
                 },
             )
         )
-    return sorted(out, key=lambda i: (not i.builtin, i.identifier))
+    return sorted(out, key=lambda i: i.identifier)
 
 
 def _list_skills(working_dir: Path, scope: str) -> list[Item]:

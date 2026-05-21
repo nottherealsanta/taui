@@ -8,10 +8,7 @@ from textual.containers import Horizontal
 from textual.message import Message
 from textual.widgets import Static
 
-AGENT_COLORS = {
-    "DEF": "#58a6ff",
-    "PLN": "#d2a8ff",
-}
+AGENT_COLORS: dict[str, str] = {}
 _AGENT_FALLBACK_COLORS = [
     "#58a6ff",
     "#f2cc60",
@@ -29,6 +26,29 @@ def _fmt_tokens(n: int) -> str:
     if n < 1000:
         return str(n)
     return f"{round(n / 1000)}k"
+
+
+def sync_agent_colors(working_dir: "Path | None" = None) -> None:
+    """Refresh ``AGENT_COLORS`` from the on-disk agent profiles.
+
+    Called once at startup and again after the self-edit modal closes so
+    that color changes take effect immediately.
+    """
+    from pathlib import Path
+
+    from taui.self_edit.store import SelfEditStore
+
+    if working_dir is None:
+        return
+    try:
+        profiles = SelfEditStore(working_dir).load_agents()
+    except Exception:
+        return
+    AGENT_COLORS.clear()
+    for agent_id, profile in profiles.items():
+        color = str(getattr(profile, "color", "") or "").strip()
+        if color:
+            AGENT_COLORS[agent_id.upper()] = color
 
 
 def _agent_color(agent_id: str) -> str:

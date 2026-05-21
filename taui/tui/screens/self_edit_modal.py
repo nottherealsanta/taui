@@ -296,6 +296,7 @@ class _ColorSwatch(Static):
         content-align: center middle;
     }}
     _ColorSwatch.-on {{
+        color: #111;
         text-style: bold;
     }}
     _ColorSwatch.-none {{
@@ -323,7 +324,9 @@ class _ColorSwatch(Static):
         else:
             # Per-instance background override.
             self.styles.background = color
-            self.styles.color = color
+            # When selected, use a dark contrasting text color so the
+            # checkmark is visible against the colored background.
+            self.styles.color = "#111" if selected else color
         if selected:
             self.add_class("-on")
 
@@ -347,8 +350,12 @@ class _ColorSwatch(Static):
     def set_active(self, active: bool) -> None:
         if active:
             self.add_class("-on")
+            if self._color:
+                self.styles.color = "#111"
         else:
             self.remove_class("-on")
+            if self._color:
+                self.styles.color = self._color
         self.refresh()
 
 
@@ -781,26 +788,20 @@ class _Editor(ModalScreen):
                     yield _UsageToggle(value, selected=(value == initial_usage))
 
             # ── COLOR: row of swatches — main + both only ──────
+            # Build classes and set hidden state before yielding to avoid
+            # duplicate widget IDs (yield + with block would mount twice).
+            color_label_classes = "se-tools-label"
             color_row = Horizontal(id="se-editor-color")
-            if initial_usage != "sub":
-                yield Static(
-                    "COLOR  [dim](badge accent in picker / info bar)[/dim]",
-                    classes="se-tools-label",
-                    id="se-editor-color-label",
-                    markup=True,
-                )
-                yield color_row
-            else:
-                # Mount hidden so we can re-show on usage change without
-                # rebuilding the form. Display is suppressed via CSS class.
-                yield Static(
-                    "COLOR  [dim](badge accent in picker / info bar)[/dim]",
-                    classes="se-tools-label se-hidden",
-                    id="se-editor-color-label",
-                    markup=True,
-                )
+            if initial_usage == "sub":
+                color_label_classes += " se-hidden"
                 color_row.add_class("se-hidden")
-                yield color_row
+
+            yield Static(
+                "COLOR  [dim](badge accent in picker / info bar)[/dim]",
+                classes=color_label_classes,
+                id="se-editor-color-label",
+                markup=True,
+            )
             initial_color = str(self._initial_extra.get("color", "") or "")
             with color_row:
                 for hex_value, _label in AGENT_COLOR_PALETTE:
@@ -2158,6 +2159,16 @@ class SelfEditModal(ModalScreen[str | None]):
         marker = "■" if item.builtin else "▸"
         text.append(f" {marker} ", style=ACCENT)
         text.append(f"{item.label:<24s}", style=f"bold {ACCENT}")
+
+        # For agents, show usage badge (main / sub / both).
+        # main and both agents carry a user-chosen color; sub agents don't.
+        if item.category == "agents":
+            usage = str(item.extra.get("usage", "") or "").strip().lower()
+            color = str(item.extra.get("color", "") or "").strip()
+            if usage in ("main", "sub", "both"):
+                badge_style = f"dim {color}" if color else "dim"
+                text.append(f" [{usage}]", style=badge_style)
+
         suffix = " [builtin]" if item.builtin else ""
         text.append(f" {item.summary}{suffix}", style="#cccccc")
         return text

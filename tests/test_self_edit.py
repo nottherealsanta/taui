@@ -43,7 +43,7 @@ def test_self_edit_scope_roundtrip(tmp_path):
 def test_agents_include_defaults_and_save_prompt_file(tmp_path):
     store = SelfEditStore(tmp_path)
     agents = store.load_agents()
-    assert list(agents) == ["DEF", "PLN", "EXP"]
+    assert set(agents) == {"DEF", "PLN", "EXP"}
     assert agents["DEF"].prompt_path is not None
     assert agents["DEF"].prompt_path.exists()
     assert agents["DEF"].allowed_tools == []
@@ -73,7 +73,7 @@ def test_agents_include_defaults_and_save_prompt_file(tmp_path):
     assert loaded["ABC"].name == "Custom"
     assert loaded["ABC"].prompt == "p"
     assert loaded["ABC"].prompt_path is not None
-    assert loaded["ABC"].prompt_path.read_text(encoding="utf-8") == "p"
+    assert "p" in loaded["ABC"].prompt_path.read_text(encoding="utf-8")
 
 
 def test_inline_agent_prompt_migrates_to_markdown_file(tmp_path):
@@ -103,9 +103,13 @@ def test_inline_agent_prompt_migrates_to_markdown_file(tmp_path):
     assert loaded["ABC"].prompt == "legacy prompt"
     assert loaded["ABC"].prompt_path is not None
     assert loaded["ABC"].prompt_path.exists()
-    rewritten = json.loads(agents_file.read_text(encoding="utf-8"))
-    assert "prompt_path" in rewritten["profiles"][0]
-    assert "prompt" not in rewritten["profiles"][0]
+    # agents.json should be renamed to agents.json.bak after migration
+    assert not agents_file.exists()
+    assert (base / "agents.json.bak").exists()
+    # The migrated .md file should exist with frontmatter
+    md_path = base / "agents" / "ABC.md"
+    assert md_path.exists()
+    assert "legacy prompt" in md_path.read_text(encoding="utf-8")
 
 
 def test_extension_source_model():

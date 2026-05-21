@@ -47,7 +47,7 @@ from taui.tui.widgets.agent_response import AgentResponse
 from taui.tui.widgets.attachments_bar import AttachmentsBar
 from taui.tui.widgets.chat_input import ChatInput
 from taui.tui.widgets.info2 import Info2
-from taui.tui.widgets.info_bar import InfoBar, _agent_color
+from taui.tui.widgets.info_bar import InfoBar, _agent_color, sync_agent_colors
 from taui.tui.widgets.reply_footer import ReplyFooter
 from taui.tui.widgets.turn_container import TurnContainer
 
@@ -795,6 +795,7 @@ class TauiApp(App[None]):
             yield SessionInfoSidebar()
 
     async def on_mount(self) -> None:
+        sync_agent_colors(self._config.working_dir)
         self._commands = self._build_commands()
         self._configure_chat_input()
         self._session_initializing = True
@@ -3312,8 +3313,17 @@ class TauiApp(App[None]):
         from taui.tui.screens.self_edit_modal import SelfEditModal
 
         scope = _safe_active_scope(self._config.working_dir)
+
+        def _on_modal_close(_result: str | None) -> None:
+            # Refresh the agent color cache so any changes made in the
+            # modal are reflected immediately in the info bar, reply
+            # footers, and progress indicators.
+            sync_agent_colors(self._config.working_dir)
+            self._update_status()
+
         self.push_screen(
-            SelfEditModal(self._config.working_dir, initial_scope=scope)
+            SelfEditModal(self._config.working_dir, initial_scope=scope),
+            _on_modal_close,
         )
 
     async def _show_self_edit_list_text(self, category: str | None) -> None:

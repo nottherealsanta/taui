@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import shlex
 from dataclasses import dataclass
 from pathlib import Path
@@ -114,11 +113,11 @@ def collect_self_edit_inventory(working_dir: Path) -> SelfEditInventory:
     rows = (
         InventoryRow(
             label="Agents",
-            builtin_label="2",
-            global_count=_count_agents(home / ".taui" / "self_edit" / "agents.json"),
+            builtin_label="3 default",
+            global_count=_count_agents(home / ".taui" / "self_edit" / "agents"),
             global_path="~/.taui/self_edit/agents/",
             project_count=_count_agents(
-                working_dir / ".taui" / "self_edit" / "agents.json"
+                working_dir / ".taui" / "self_edit" / "agents"
             ),
             project_path=".taui/self_edit/agents/",
         ),
@@ -175,7 +174,7 @@ def _format_inventory_markdown(inv: SelfEditInventory) -> str:
             "commands/",
             "extensions/",
             "skills/",
-            "self_edit/agents.json",
+            "self_edit/agents/",
             "mcp.toml",
         )
     )
@@ -229,17 +228,14 @@ def _safe_active_scope(working_dir: Path) -> str:
 
 
 def _count_agents(path: Path) -> int:
-    if not path.is_file():
+    if not path.is_dir():
         return 0
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return 0
-    rows = data.get("profiles", [])
+    import re
+    _id_re = re.compile(r"^[A-Z]{3}$")
     return sum(
         1
-        for row in rows
-        if isinstance(row, dict) and str(row.get("id", "")).upper() not in {"DEF", "PLN", "EXP"}
+        for entry in path.iterdir()
+        if entry.is_file() and entry.suffix == ".md" and _id_re.match(entry.stem.upper())
     )
 
 

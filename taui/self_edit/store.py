@@ -76,55 +76,190 @@ class ExtensionSource:
     error: str | None = None
 
 
-_DEFAULT_AGENTS = [
-    AgentProfile(
-        id="DEF",
-        name="Default",
-        prompt="You are a pragmatic software engineer. Make scoped changes and verify them.",
-        provider="",
-        model="",
-        allowed_tools=[],
-        auto_approve_all=True,
+# Default agent files: filename -> full frontmatter+prompt markdown content.
+_DEFAULT_AGENT_FILES: dict[str, str] = {
+    "DEF.md": (
+        '---\n'
+        'name: Default\n'
+        'usage: both\n'
+        'color: "#7aa2f7"\n'
+        'allowed_tools: []\n'
+        'auto_approve_all: true\n'
+        '---\n'
+        'You are a pragmatic software engineer. Make scoped changes and verify them.'
     ),
-    AgentProfile(
-        id="PLN",
-        name="Planner",
-        prompt=(
-            "You are PLN, a planning agent. Investigate the task and produce a "
-            "clear, actionable implementation plan. Do not write or edit code — "
-            "only read, search, and reason.\n\n"
-            "Return a plan with: (1) Goal — one sentence restating what is being "
-            "built; (2) Key files — paths (with line numbers when useful); "
-            "(3) Steps — an ordered list of concrete edits or actions; "
-            "(4) Risks / open questions — anything ambiguous or worth confirming.\n\n"
-            "Prefer file_path:line_number references over prose. Stop as soon as "
-            "the plan is solid — do not pad."
-        ),
-        provider="",
-        model="",
-        allowed_tools=["read", "glob", "grep"],
+    "PLN.md": (
+        '---\n'
+        'name: Planner\n'
+        'usage: both\n'
+        'color: "#bb9af7"\n'
+        'allowed_tools: ["read", "glob", "grep"]\n'
+        '---\n'
+        'You are PLN, a planning agent. Investigate the task and produce a clear, '
+        'actionable implementation plan. Do not write or edit code — '
+        'only read, search, and reason.\n'
+        '\n'
+        'Return a plan with: (1) Goal — one sentence restating what is being built; '
+        '(2) Key files — paths (with line numbers when useful); '
+        '(3) Steps — an ordered list of concrete edits or actions; '
+        '(4) Risks / open questions — anything ambiguous or worth confirming.\n'
+        '\n'
+        'Prefer file_path:line_number references over prose. Stop as soon as '
+        'the plan is solid — do not pad.'
     ),
-    AgentProfile(
-        id="EXP",
-        name="Explorer",
-        prompt=(
-            "You are EXP, a code-exploration sub-agent. You are spawned by a "
-            "parent agent to answer a focused question about the codebase.\n\n"
-            "You have read-only tools: `read`, `glob`, `grep`, and `bash` "
-            "(for safe inspection like `ls`, `wc`, `head`, `cat`). Do not "
-            "modify files.\n\n"
-            "Workflow: cast a wide net first (glob/grep), narrow to the "
-            "files that matter, then read them. Return a tight, structured "
-            "answer with file_path:line_number references — no padding, no "
-            "speculation. If the question is ambiguous, answer the most "
-            "useful interpretation and note the alternative in one line."
-        ),
-        provider="",
-        model="",
-        allowed_tools=["read", "glob", "grep", "bash"],
-        usage="sub",
+    "EXP.md": (
+        '---\n'
+        'name: Explorer\n'
+        'usage: sub\n'
+        'allowed_tools: ["read", "glob", "grep", "bash"]\n'
+        '---\n'
+        'You are EXP, a code-exploration sub-agent. You are spawned by a parent agent '
+        'to answer a focused question about the codebase.\n'
+        '\n'
+        'You have read-only tools: `read`, `glob`, `grep`, and `bash` '
+        '(for safe inspection like `ls`, `wc`, `head`, `cat`). Do not modify files.\n'
+        '\n'
+        'Workflow: cast a wide net first (glob/grep), narrow to the files that matter, '
+        'then read them. Return a tight, structured answer with file_path:line_number '
+        'references — no padding, no speculation. If the question is ambiguous, answer '
+        'the most useful interpretation and note the alternative in one line.'
     ),
-]
+}
+
+
+def _parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
+    """Parse YAML-like frontmatter from markdown text.
+
+    Returns (metadata_dict, body_text).
+    """
+    stripped = text.lstrip()
+    if not stripped.startswith("---"):
+        return {}, text
+    # Find the closing ---
+    end = stripped.find("---", 3)
+    if end < 0:
+        return {}, text
+    fm_text = stripped[3:end].strip()
+    body = stripped[end + 3:].lstrip("\n")
+
+    meta: dict[str, Any] = {}
+    for line in fm_text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        colon = line.find(":")
+        if colon < 0:
+            continue
+        key = line[:colon].strip()
+        val_str = line[colon + 1:].strip()
+        # Parse value
+        if val_str.lower() in ("true", "yes"):
+            meta[key] = True
+        elif val_str.lower() in ("false", "no"):
+            meta[key] = False
+        elif val_str.startswith("[") or val_str.startswith("{"):
+            try:
+                meta[key] = json.loads(val_str)
+            except json.JSONDecodeError:
+                meta[key] = val_str
+        elif val_str.startswith('"') and val_str.endswith('"'):
+            meta[key] = val_str[1:-1]
+        elif val_str.startswith("'") and val_str.endswith("'"):
+            meta[key] = val_str[1:-1]
+        else:
+            meta[key] = val_str
+    return meta, body
+
+
+def _serialize_frontmatter(meta: dict[str, Any], body: str) -> str:
+    """Serialize metadata and body into a frontmatter markdown file."""
+    lines = ["---"]
+    for key, value in meta.items():
+        if isinstance(value, bool):
+            lines.append(f"{key}: {str(value).lower()}")
+        elif isinstance(value, (list, dict)):
+            lines.append(f"{key}: {json.dumps(value)}")
+        elif isinstance(value, str) and (
+            value.startswith("#") or ":" in value or value != value.strip()
+        ):
+            lines.append(f'{key}: "{value}"')
+        else:
+            lines.append(f"{key}: {value}")
+    lines.append("---")
+    return "\n".join(lines) + "\n" + body
+
+
+def _parse_agent_frontmatter(
+    text: str, agent_id: str, path: Path
+) -> AgentProfile | None:
+    """Parse a frontmatter markdown file into an AgentProfile.
+
+    Returns None if the file is malformed or the ID is invalid.
+    """
+    if not _AGENT_ID_RE.match(agent_id):
+        return None
+    try:
+        meta, body = _parse_frontmatter(text)
+        raw_usage = str(meta.get("usage", "")).strip().lower()
+        if raw_usage in AGENT_USAGE_VALUES:
+            usage = raw_usage
+        elif bool(meta.get("subagent_only", False)):
+            usage = "sub"
+        else:
+            usage = "both"
+        # Parse tool_config from frontmatter if present
+        raw_tc = meta.get("tool_config", {})
+        tool_config: dict[str, ToolConfig] = {}
+        if isinstance(raw_tc, dict):
+            for tname, tval in raw_tc.items():
+                if isinstance(tval, dict):
+                    tool_config[tname] = ToolConfig(
+                        policy=str(tval.get("policy", "auto")),
+                        param_restrictions=dict(
+                            tval.get("param_restrictions", {})
+                        ),
+                    )
+        return AgentProfile(
+            id=agent_id,
+            name=str(meta.get("name", "") or agent_id),
+            prompt=body,
+            provider=str(meta.get("provider", "")),
+            model=str(meta.get("model", "")),
+            allowed_tools=[str(x) for x in meta.get("allowed_tools", [])],
+            prompt_path=path,
+            tool_config=tool_config,
+            auto_approve_all=bool(meta.get("auto_approve_all", False)),
+            usage=usage,
+            color=str(meta.get("color", "")),
+        )
+    except Exception:
+        return None
+
+
+def _serialize_agent_frontmatter(profile: AgentProfile) -> str:
+    """Convert an AgentProfile to a frontmatter markdown string."""
+    meta: dict[str, Any] = {
+        "name": profile.name,
+        "usage": profile.usage,
+    }
+    if profile.color:
+        meta["color"] = profile.color
+    meta["allowed_tools"] = list(profile.allowed_tools)
+    if profile.auto_approve_all:
+        meta["auto_approve_all"] = profile.auto_approve_all
+    if profile.provider:
+        meta["provider"] = profile.provider
+    if profile.model:
+        meta["model"] = profile.model
+    if profile.tool_config:
+        meta["tool_config"] = {
+            name: {
+                "policy": tc.policy,
+                "param_restrictions": tc.param_restrictions,
+            }
+            for name, tc in profile.tool_config.items()
+        }
+    return _serialize_frontmatter(meta, profile.prompt)
 
 
 class SelfEditStore:
@@ -144,11 +279,11 @@ class SelfEditStore:
     def _state_file(self) -> Path:
         return self._working_dir / self.PROJECT_DIR / "state.json"
 
-    def _agents_file(self, scope: str) -> Path:
-        return self.dir_for_scope(scope) / "agents.json"
-
     def _agent_prompt_file(self, scope: str, agent_id: str) -> Path:
         return self.dir_for_scope(scope) / "agents" / f"{agent_id}.md"
+
+    def _agents_dir(self, scope: str) -> Path:
+        return self.dir_for_scope(scope) / "agents"
 
     def load_default_scope(self) -> str:
         path = self._state_file()
@@ -166,194 +301,189 @@ class SelfEditStore:
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(json.dumps({"scope": scope}, indent=2), encoding="utf-8")
 
-    def ensure_default_prompts(self) -> None:
-        for profile in _DEFAULT_AGENTS:
-            path = self._agent_prompt_file("project", profile.id)
+    def ensure_default_agents(self) -> None:
+        """Write default agent .md files to the global directory if missing."""
+        agents_dir = self._agents_dir("global")
+        agents_dir.mkdir(parents=True, exist_ok=True)
+        for filename, content in _DEFAULT_AGENT_FILES.items():
+            path = agents_dir / filename
             if not path.exists():
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text(profile.prompt, encoding="utf-8")
-
-    def load_agents(self) -> dict[str, AgentProfile]:
-        self.ensure_default_prompts()
-        merged = {a.id: self._default_with_path(a) for a in _DEFAULT_AGENTS}
-        for scope in ("global", "project"):
-            path = self._agents_file(scope)
-            if not path.exists():
-                continue
-            try:
-                data = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                continue
-            changed = False
-            rows = list(data.get("profiles", []))
-            for row in rows:
-                profile, migrated = self._agent_from_row(row, scope)
-                changed = changed or migrated
-                if profile is not None:
-                    merged[profile.id] = profile
-            if changed:
-                data["profiles"] = rows
                 try:
-                    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+                    path.write_text(content, encoding="utf-8")
                 except OSError:
                     pass
-        return merged
 
-    def save_agent(self, profile: AgentProfile, scope: str) -> None:
-        path = self._agents_file(scope)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        prompt_path = profile.prompt_path or self._agent_prompt_file(scope, profile.id)
-        prompt_path.parent.mkdir(parents=True, exist_ok=True)
-        prompt_path.write_text(profile.prompt, encoding="utf-8")
-
-        data = {"profiles": []}
-        if path.exists():
-            try:
-                data = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                data = {"profiles": []}
-
-        row = self._agent_to_row(profile, prompt_path)
-        rows = list(data.get("profiles", []))
-        for index, existing in enumerate(rows):
-            if str(existing.get("id", "")).upper() == profile.id:
-                rows[index] = row
-                break
-        else:
-            rows.append(row)
-        data["profiles"] = rows
-        path.write_text(json.dumps(data, indent=2), encoding="utf-8")
-
-    def delete_agent(self, agent_id: str, scope: str) -> None:
-        """Delete a saved agent row and prompt file for the given scope."""
-        normalized = agent_id.upper()
-        path = self._agents_file(scope)
-        if path.exists():
-            try:
-                data = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                data = {"profiles": []}
-            rows = [
-                row
-                for row in list(data.get("profiles", []))
-                if str(row.get("id", "")).upper() != normalized
-            ]
-            data["profiles"] = rows
-            try:
-                path.write_text(json.dumps(data, indent=2), encoding="utf-8")
-            except OSError:
-                pass
-
-        prompt_path = self._agent_prompt_file(scope, normalized)
-        if prompt_path.exists():
-            prompt_path.unlink()
-
-    def _default_with_path(self, profile: AgentProfile) -> AgentProfile:
-        prompt_path = self._agent_prompt_file("project", profile.id)
-        prompt = profile.prompt
+    def _migrate_agents_json(self, scope: str) -> None:
+        """Migrate old agents.json to per-file frontmatter .md files."""
+        agents_json = self.dir_for_scope(scope) / "agents.json"
+        if not agents_json.exists():
+            return
         try:
-            prompt = prompt_path.read_text(encoding="utf-8")
-        except OSError:
-            pass
-        return AgentProfile(
-            id=profile.id,
-            name=profile.name,
-            prompt=prompt,
-            provider=profile.provider,
-            model=profile.model,
-            allowed_tools=list(profile.allowed_tools),
-            prompt_path=prompt_path,
-            tool_config={},
-            auto_approve_all=profile.auto_approve_all,
-            usage=profile.usage,
-            color=profile.color,
-        )
-
-    def _agent_from_row(self, row: Any, scope: str) -> tuple[AgentProfile | None, bool]:
-        if not isinstance(row, dict):
-            return None, False
-        try:
-            agent_id = str(row["id"]).upper()
-            if not _AGENT_ID_RE.match(agent_id):
-                return None, False
-            prompt_path_raw = str(row.get("prompt_path", "")).strip()
-            inline_prompt = str(row.get("prompt", ""))
-            migrated = False
-            if not prompt_path_raw:
-                prompt_path = self._agent_prompt_file(scope, agent_id)
-                if inline_prompt:
+            data = json.loads(agents_json.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return
+        rows = data.get("profiles", [])
+        agents_dir = self._agents_dir(scope)
+        agents_dir.mkdir(parents=True, exist_ok=True)
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            try:
+                agent_id = str(row.get("id", "")).upper()
+                if not _AGENT_ID_RE.match(agent_id):
+                    continue
+                md_path = agents_dir / f"{agent_id}.md"
+                if md_path.exists():
+                    # Don't overwrite user edits
+                    continue
+                # Try to get prompt from prompt_path or inline
+                prompt = str(row.get("prompt", ""))
+                prompt_path_raw = str(row.get("prompt_path", "")).strip()
+                if prompt_path_raw:
+                    pp = Path(prompt_path_raw)
+                    if not pp.is_absolute():
+                        pp = self.dir_for_scope(scope) / pp
                     try:
-                        prompt_path.parent.mkdir(parents=True, exist_ok=True)
-                        if not prompt_path.exists():
-                            prompt_path.write_text(inline_prompt, encoding="utf-8")
-                        row["prompt_path"] = str(prompt_path)
-                        row.pop("prompt", None)
-                        migrated = True
+                        prompt = pp.read_text(encoding="utf-8")
                     except OSError:
-                        prompt_path = None
+                        pass
+                raw_usage = str(row.get("usage", "")).strip().lower()
+                if raw_usage in AGENT_USAGE_VALUES:
+                    usage = raw_usage
+                elif bool(row.get("subagent_only", False)):
+                    usage = "sub"
                 else:
-                    prompt_path = None
-            else:
-                prompt_path = Path(prompt_path_raw)
-                if not prompt_path.is_absolute():
-                    prompt_path = self.dir_for_scope(scope) / prompt_path
-            prompt = inline_prompt
-            if prompt_path is not None:
-                try:
-                    prompt = prompt_path.read_text(encoding="utf-8")
-                except OSError:
-                    pass
-            raw_tc = row.get("tool_config", {})
-            tool_config: dict[str, ToolConfig] = {}
-            if isinstance(raw_tc, dict):
-                for tname, tval in raw_tc.items():
-                    if isinstance(tval, dict):
-                        tool_config[tname] = ToolConfig(
-                            policy=str(tval.get("policy", "auto")),
-                            param_restrictions=dict(tval.get("param_restrictions", {})),
-                        )
-            # Resolve `usage` — prefer the new field; fall back to the legacy
-            # `subagent_only` boolean if a project file pre-dates `usage`.
-            raw_usage = str(row.get("usage", "")).strip().lower()
-            if raw_usage in AGENT_USAGE_VALUES:
-                usage = raw_usage
-            elif bool(row.get("subagent_only", False)):
-                usage = "sub"
-            else:
-                usage = "both"
-            return (
-                AgentProfile(
+                    usage = "both"
+                profile = AgentProfile(
                     id=agent_id,
-                    name=str(row.get("name", "")) or agent_id,
+                    name=str(row.get("name", "") or agent_id),
                     prompt=prompt,
                     provider=str(row.get("provider", "")),
                     model=str(row.get("model", "")),
                     allowed_tools=[str(x) for x in row.get("allowed_tools", [])],
-                    prompt_path=prompt_path,
-                    tool_config=tool_config,
+                    tool_config={
+                        tname: ToolConfig(
+                            policy=str(tval.get("policy", "auto")),
+                            param_restrictions=dict(
+                                tval.get("param_restrictions", {})
+                            ),
+                        )
+                        for tname, tval in (row.get("tool_config") or {}).items()
+                        if isinstance(tval, dict)
+                    },
                     auto_approve_all=bool(row.get("auto_approve_all", False)),
                     usage=usage,
                     color=str(row.get("color", "")),
-                ),
-                migrated,
-            )
-        except (KeyError, TypeError, ValueError):
-            return None, False
+                )
+                md_path.write_text(_serialize_agent_frontmatter(profile), encoding="utf-8")
+            except Exception:
+                continue
+        # Rename agents.json to agents.json.bak
+        try:
+            agents_json.rename(agents_json.with_suffix(".json.bak"))
+        except OSError:
+            pass
 
-    @staticmethod
-    def _agent_to_row(profile: AgentProfile, prompt_path: Path) -> dict[str, Any]:
-        return {
-            "id": profile.id,
-            "name": profile.name,
-            "provider": profile.provider,
-            "model": profile.model,
-            "allowed_tools": list(profile.allowed_tools),
-            "prompt_path": str(prompt_path),
-            "tool_config": {
-                name: {"policy": tc.policy, "param_restrictions": tc.param_restrictions}
-                for name, tc in profile.tool_config.items()
-            },
-            "auto_approve_all": profile.auto_approve_all,
-            "usage": profile.usage,
-            "color": profile.color,
-        }
+    def _migrate_old_prompt_files(self, scope: str) -> None:
+        """Migrate old prompt-only .md files (no frontmatter) to frontmatter format.
+
+        Old files were written by ensure_default_prompts() and contain only the
+        prompt body. We upgrade them in-place by adding frontmatter from the
+        global defaults if available.
+        """
+        agents_dir = self._agents_dir(scope)
+        if not agents_dir.is_dir():
+            return
+        for md_path in agents_dir.glob("*.md"):
+            agent_id = md_path.stem.upper()
+            if not _AGENT_ID_RE.match(agent_id):
+                continue
+            try:
+                text = md_path.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            # Check if it has frontmatter
+            if text.lstrip().startswith("---"):
+                continue
+            # Old prompt-only file — try to get metadata from global default
+            global_path = self._agents_dir("global") / f"{agent_id}.md"
+            if global_path.exists():
+                try:
+                    global_text = global_path.read_text(encoding="utf-8")
+                    meta, _ = _parse_frontmatter(global_text)
+                    if meta:
+                        # Rewrite with frontmatter from global + local prompt body
+                        new_content = _serialize_frontmatter(meta, text)
+                        md_path.write_text(new_content, encoding="utf-8")
+                        continue
+                except OSError:
+                    pass
+            # No global default — just delete the old file so global takes over
+            try:
+                md_path.unlink()
+            except OSError:
+                pass
+
+    def load_agents(self) -> dict[str, AgentProfile]:
+        """Load all agents from global and project scopes. Project overrides global."""
+        self.ensure_default_agents()
+        # Migrate old agents.json files if present
+        for scope in ("global", "project"):
+            self._migrate_agents_json(scope)
+        # Migrate old prompt-only .md files
+        self._migrate_old_prompt_files("project")
+
+        merged: dict[str, AgentProfile] = {}
+        for scope in ("global", "project"):
+            agents_dir = self._agents_dir(scope)
+            if not agents_dir.is_dir():
+                continue
+            for md_path in sorted(agents_dir.glob("*.md")):
+                agent_id = md_path.stem.upper()
+                if not _AGENT_ID_RE.match(agent_id):
+                    continue
+                try:
+                    text = md_path.read_text(encoding="utf-8")
+                except OSError:
+                    continue
+                profile = _parse_agent_frontmatter(text, agent_id, md_path)
+                if profile is not None:
+                    merged[agent_id] = profile
+        return merged
+
+    def load_agents_for_scope(self, scope: str) -> dict[str, AgentProfile]:
+        """Load agents from a single scope directory (no merging)."""
+        agents_dir = self._agents_dir(scope)
+        result: dict[str, AgentProfile] = {}
+        if not agents_dir.is_dir():
+            return result
+        for md_path in sorted(agents_dir.glob("*.md")):
+            agent_id = md_path.stem.upper()
+            if not _AGENT_ID_RE.match(agent_id):
+                continue
+            try:
+                text = md_path.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            profile = _parse_agent_frontmatter(text, agent_id, md_path)
+            if profile is not None:
+                result[agent_id] = profile
+        return result
+
+    def save_agent(self, profile: AgentProfile, scope: str) -> None:
+        """Write an agent as a single frontmatter .md file."""
+        agents_dir = self._agents_dir(scope)
+        agents_dir.mkdir(parents=True, exist_ok=True)
+        md_path = agents_dir / f"{profile.id}.md"
+        content = _serialize_agent_frontmatter(profile)
+        md_path.write_text(content, encoding="utf-8")
+
+    def delete_agent(self, agent_id: str, scope: str) -> None:
+        """Delete the agent .md file for the given scope."""
+        normalized = agent_id.upper()
+        md_path = self._agent_prompt_file(scope, normalized)
+        if md_path.exists():
+            try:
+                md_path.unlink()
+            except OSError:
+                pass
