@@ -2538,7 +2538,7 @@ class TauiApp(App[None]):
             return
 
         if command in ("/i", "/self-edit"):
-            if not msg_arg and command == "/self-edit":
+            if not msg_arg:
                 await self.action_enter_self_edit()
                 return
             await self._enter_self_edit_with_message(msg_arg)
