@@ -16,7 +16,7 @@ from __future__ import annotations
 from rich.markup import escape
 from textual import events
 from textual.app import ComposeResult
-from textual.containers import Vertical
+from textual.containers import Horizontal, Vertical
 from textual.widget import Widget
 from textual.widgets import Static
 
@@ -74,9 +74,20 @@ class TurnContainer(Vertical):
         text-style: bold;
     }
     TurnContainer > .turn-summary {
-        height: auto;
+        height: 1;
         padding: 0 2 0 4;
         margin: 0;
+        layout: horizontal;
+        color: #6e7681;
+    }
+    TurnContainer > .turn-summary > .turn-summary-left {
+        width: 1fr;
+        height: 1;
+        color: #8b949e;
+    }
+    TurnContainer > .turn-summary > .turn-summary-right {
+        width: auto;
+        height: 1;
         color: #6e7681;
     }
     TurnContainer > .turn-body {
@@ -101,7 +112,19 @@ class TurnContainer(Vertical):
 
     def compose(self) -> ComposeResult:
         yield Vertical(classes="turn-header")
-        yield Static("", classes="turn-summary", id="turn-summary", markup=False)
+        with Horizontal(classes="turn-summary", id="turn-summary"):
+            yield Static(
+                "",
+                classes="turn-summary-left",
+                id="turn-summary-left",
+                markup=False,
+            )
+            yield Static(
+                "",
+                classes="turn-summary-right",
+                id="turn-summary-right",
+                markup=False,
+            )
         yield Vertical(classes="turn-body")
 
     async def on_mount(self) -> None:
@@ -116,23 +139,26 @@ class TurnContainer(Vertical):
 
     def _refresh_summary(self) -> None:
         try:
-            label = self.query_one("#turn-summary", Static)
+            row = self.query_one("#turn-summary", Horizontal)
+            left = self.query_one("#turn-summary-left", Static)
+            right = self.query_one("#turn-summary-right", Static)
         except Exception:
             return
         if self.has_class("collapsed"):
-            text = _format_summary(
-                self.turn_id,
+            left_text, right_text = _format_summary(
                 self._total_tokens,
                 self._tool_count,
                 self._model,
                 self._duration_s,
                 self._agent_id,
             )
-            label.display = True
+            row.display = True
+            left.update(left_text)
+            right.update(right_text)
         else:
-            text = ""
-            label.display = False
-        label.update(text)
+            row.display = False
+            left.update("")
+            right.update("")
 
     @property
     def body(self) -> Vertical:
@@ -186,29 +212,35 @@ class TurnContainer(Vertical):
 
 
 def _format_summary(
-    turn_id: int,
     tokens: int,
     tools: int,
     model: str,
     duration_s: float,
     agent_id: str = "",
-) -> str:
+) -> tuple[str, str]:
+    """Return (left, right) summary halves for the collapsed turn footer.
+
+    Left: agent · model · time   (identity / metadata)
+    Right: tokens · tools         (volume metrics)
+    """
+    left_parts: list[str] = []
+    if agent_id:
+        left_parts.append(agent_id)
+    if model:
+        left_parts.append(model)
+    if duration_s > 0:
+        if duration_s >= 60:
+            mins = int(duration_s // 60)
+            secs = int(duration_s % 60)
+            left_parts.append(f"{mins}m{secs}s")
+        else:
+            left_parts.append(f"{duration_s:.1f}s")
+
     if tokens >= 1000:
         tok_str = f"{tokens / 1000:.1f}k tok"
     else:
         tok_str = f"{tokens} tok"
     tool_str = f"{tools} tool{'s' if tools != 1 else ''}"
-    parts: list[str] = []
-    if agent_id:
-        parts.append(agent_id)
-    parts.extend([tok_str, tool_str])
-    if model:
-        parts.append(model)
-    if duration_s > 0:
-        if duration_s >= 60:
-            mins = int(duration_s // 60)
-            secs = int(duration_s % 60)
-            parts.append(f"{mins}m{secs}s")
-        else:
-            parts.append(f"{duration_s:.1f}s")
-    return " │ ".join(parts)
+    right_parts = [tok_str, tool_str]
+
+    return " · ".join(left_parts), " · ".join(right_parts)
