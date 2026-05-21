@@ -64,13 +64,13 @@ class TurnContainer(Vertical):
     TurnContainer > .turn-header {
         height: auto;
         layout: horizontal;
-        background: $surface;
+        background: #262626;
         margin: 0;
     }
     TurnContainer > .turn-header > .user-text {
         width: 1fr;
         padding: 1 2 1 0;
-        color: #e6edf3;
+        color: #e6e6e6;
         text-style: bold;
     }
     TurnContainer > .turn-summary {

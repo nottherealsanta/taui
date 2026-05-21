@@ -230,7 +230,7 @@ class TauiApp(App[None]):
     #chat-container {
         height: auto;
         border: tall $background;
-        background: $surface;
+        background: #1a1a1a;
         margin: 0 1;
         padding: 0;
     }
