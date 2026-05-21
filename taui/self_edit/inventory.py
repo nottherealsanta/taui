@@ -8,10 +8,9 @@ list of `Item`s, both keyed by `(scope, identifier)`.
 
 from __future__ import annotations
 
-import json
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
 
 from taui.self_edit.store import SelfEditStore
 
@@ -115,6 +114,13 @@ CATEGORIES: tuple[Category, ...] = (
             '[servers.NAME]\ncommand = "python"\nargs = ["-m", "your_mcp_server"]\n'
         ),
         new_extension=".toml-entry",
+    ),
+    Category(
+        key="general",
+        label="GENERAL",
+        description="General settings: prefix characters and input behavior.",
+        new_template="",
+        new_extension="",
     ),
 )
 
@@ -362,6 +368,57 @@ def _list_mcp(working_dir: Path, scope: str) -> list[Item]:
     return out
 
 
+_PREFIX_META: dict[str, tuple[str, str]] = {
+    "file_attach": (
+        "File Attachment Prefix",
+        "Character used to expand file attachments in chat input (e.g. @filename).",
+    ),
+    "command": (
+        "Command Prefix",
+        "Character used to invoke slash commands in chat input (e.g. /help).",
+    ),
+}
+
+
+def _list_general(working_dir: Path, scope: str) -> list[Item]:
+    from taui.llm_provider.config import CONFIG_PATH, load_config
+
+    raw = load_config()
+    prefixes = raw.get("taui", {}).get("prefixes", {})
+    # Defaults mirror taui/config.py
+    defaults: dict[str, str] = {"file_attach": "@", "command": "/"}
+    defaults.update({k: str(v) for k, v in prefixes.items() if isinstance(v, str)})
+
+    out: list[Item] = []
+    for key, (label, description) in _PREFIX_META.items():
+        value = defaults.get(key, "")
+        out.append(
+            Item(
+                category="general",
+                scope="global",
+                identifier=key,
+                label=label,
+                summary=repr(value),
+                path=CONFIG_PATH,
+                body=f"{description}\n\nCurrent value: {repr(value)}",
+                builtin=False,
+            )
+        )
+    return out
+
+
+def _save_prefix_setting(key: str, value: str) -> None:
+    """Persist a prefix setting to the global config file."""
+    from taui.llm_provider.config import CONFIG_PATH, _dict_to_toml, load_config
+
+    existing = load_config()
+    taui_cfg = existing.setdefault("taui", {})
+    prefixes = taui_cfg.setdefault("prefixes", {})
+    prefixes[key] = value
+    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    CONFIG_PATH.write_text(_dict_to_toml(existing), encoding="utf-8")
+
+
 _LISTERS: dict[str, Callable[[Path, str], list[Item]]] = {
     "agents": _list_agents,
     "skills": _list_skills,
@@ -369,6 +426,7 @@ _LISTERS: dict[str, Callable[[Path, str], list[Item]]] = {
     "tools": _list_tools,
     "prompts": _list_prompts,
     "mcp": _list_mcp,
+    "general": _list_general,
 }
 
 
@@ -450,7 +508,7 @@ def delete_item(working_dir: Path, category: str, scope: str, identifier: str) -
 def _save_agent(
     working_dir: Path, scope: str, identifier: str, body: str, extra: dict
 ) -> Path:
-    from taui.self_edit.store import AgentProfile, ToolConfig
+    from taui.self_edit.store import AgentProfile
 
     store = SelfEditStore(working_dir)
     profile = AgentProfile(
@@ -586,8 +644,11 @@ def counts(working_dir: Path) -> dict[str, dict[str, int]]:
     """Counts of items per (category, scope). Used for header badges."""
     result: dict[str, dict[str, int]] = {}
     for cat in CATEGORIES:
-        result[cat.key] = {
-            "global": len(list_items(working_dir, cat.key, "global")),
-            "project": len(list_items(working_dir, cat.key, "project")),
-        }
+        if cat.key == "general":
+            result[cat.key] = {"global": len(_PREFIX_META), "project": 0}
+        else:
+            result[cat.key] = {
+                "global": len(list_items(working_dir, cat.key, "global")),
+                "project": len(list_items(working_dir, cat.key, "project")),
+            }
     return result

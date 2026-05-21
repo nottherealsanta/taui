@@ -7,7 +7,6 @@ skills, commands, tools, prompts, MCP servers) across both scopes
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
 
 from rich.text import Text
@@ -1111,6 +1110,127 @@ class _ConfirmDelete(ModalScreen[bool]):
         self.dismiss(event.button.id == "se-confirm-yes")
 
 
+# ── Prefix editor sub-modal ─────────────────────────────────────────
+
+
+class _PrefixEditor(ModalScreen[str | None]):
+    """Simple single-character input for editing a prefix setting."""
+
+    DEFAULT_CSS = f"""
+    _PrefixEditor {{
+        align: center middle;
+        background: $background 70%;
+    }}
+    #se-prefix-dialog {{
+        width: 52;
+        height: auto;
+        background: {PANEL_BG};
+        border: round {BORDER};
+        padding: 1 2;
+    }}
+    #se-prefix-dialog .se-prefix-title {{
+        color: {ACCENT};
+        text-style: bold;
+        margin: 0 0 1 0;
+    }}
+    #se-prefix-dialog .se-prefix-label {{
+        color: {ACCENT_SOFT};
+        margin: 0 0 0 0;
+    }}
+    #se-prefix-dialog Input {{
+        width: 100%;
+        height: 3;
+        border: solid {GRID_GREY};
+        background: {INNER_BG};
+        color: {ACCENT};
+        margin: 0 0 1 0;
+    }}
+    #se-prefix-dialog Input:focus {{
+        border: solid {ACCENT_SOFT};
+    }}
+    #se-prefix-dialog .se-prefix-hint {{
+        color: #666;
+        height: 1;
+        margin: 0 0 1 0;
+    }}
+    #se-prefix-dialog Horizontal {{
+        height: 1;
+        align-horizontal: right;
+    }}
+    #se-prefix-dialog Button {{
+        margin: 0 0 0 1;
+        border: none;
+        padding: 0 1;
+        height: 1;
+        min-width: 0;
+        background: {GRID_GREY};
+        color: {ACCENT};
+    }}
+    #se-prefix-dialog Button.-primary {{
+        background: {ACCENT};
+        color: {DEEP_BLACK};
+        text-style: bold;
+    }}
+    """
+
+    BINDINGS = [("escape", "cancel", "Cancel"), ("ctrl+s", "save", "Save")]
+
+    def __init__(self, *, label: str, current_value: str) -> None:
+        super().__init__()
+        self._label = label
+        self._current = current_value
+
+    def compose(self) -> ComposeResult:
+        with Container(id="se-prefix-dialog"):
+            yield Static(f"◆ EDIT · {self._label}", classes="se-prefix-title")
+            yield Static("Prefix character:", classes="se-prefix-label")
+            yield Input(value=self._current, max_length=2, id="se-prefix-input")
+            yield Static(
+                "[dim]Single character. Esc cancel · Ctrl+S save[/dim]",
+                classes="se-prefix-hint",
+                markup=True,
+            )
+            with Horizontal():
+                yield Button("Cancel", id="se-prefix-cancel")
+                yield Button("Save", id="se-prefix-save", classes="-primary")
+
+    def on_mount(self) -> None:
+        try:
+            self.query_one("#se-prefix-input", Input).focus()
+        except Exception:
+            pass
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+    def action_save(self) -> None:
+        self._submit()
+
+    def on_key(self, event: Key) -> None:
+        if event.key == "escape":
+            event.stop()
+            self.dismiss(None)
+        elif event.key == "enter":
+            event.stop()
+            self._submit()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "se-prefix-save":
+            self._submit()
+        else:
+            self.dismiss(None)
+
+    def _submit(self) -> None:
+        try:
+            value = self.query_one("#se-prefix-input", Input).value
+        except Exception:
+            self.dismiss(None)
+            return
+        if not value:
+            return
+        self.dismiss(value)
+
+
 # ── Main modal ──────────────────────────────────────────────────────
 
 
@@ -1365,9 +1485,14 @@ class SelfEditModal(ModalScreen[str | None]):
             return
         opts.clear_options()
         if not self._items:
+            empty_msg = (
+                "(settings are global — switch to GLOBAL scope)"
+                if self._category.key == "general"
+                else "(empty — press 'n' to create one)"
+            )
             opts.add_option(
                 Option(
-                    Text("(empty — press 'n' to create one)", style=f"italic {GRID_GREY}"),
+                    Text(empty_msg, style=f"italic {GRID_GREY}"),
                     id="__empty__",
                     disabled=True,
                 )
@@ -1419,6 +1544,14 @@ class SelfEditModal(ModalScreen[str | None]):
             self.query_one("#se-description", Static).update(
                 self._category.description
             )
+        except Exception:
+            pass
+        try:
+            new_btn = self.query_one("#se-new-button", Button)
+            if self._category.key == "general":
+                new_btn.display = False
+            else:
+                new_btn.display = True
         except Exception:
             pass
 
@@ -1514,6 +1647,8 @@ class SelfEditModal(ModalScreen[str | None]):
         self._refresh_items()
 
     def action_new_item(self) -> None:
+        if self._category.key == "general":
+            return
         provider, model, provider_name = self._llm_handles()
         editor = _Editor(
             category=self._category,
@@ -1550,6 +1685,24 @@ class SelfEditModal(ModalScreen[str | None]):
         item = self._current_item()
         if item is None:
             self.action_new_item()
+            return
+        if self._category.key == "general":
+            def after_prefix(new_value: str | None) -> None:
+                if new_value is None:
+                    return
+                try:
+                    from taui.self_edit.inventory import _save_prefix_setting
+                    _save_prefix_setting(item.identifier, new_value)
+                except Exception as exc:
+                    self.app.bell()
+                    self._toast(f"Save failed: {exc}")
+                    return
+                self._refresh_items()
+
+            self.app.push_screen(
+                _PrefixEditor(label=item.label, current_value=item.summary.strip("'")),
+                after_prefix,
+            )
             return
         if item.builtin and self._category.key == "tools":
             # Built-in tools are read-only — preview-only.
@@ -1589,6 +1742,8 @@ class SelfEditModal(ModalScreen[str | None]):
     def action_delete_item(self) -> None:
         item = self._current_item()
         if item is None:
+            return
+        if self._category.key == "general":
             return
         if item.builtin:
             self._toast("Built-in items cannot be deleted.")
