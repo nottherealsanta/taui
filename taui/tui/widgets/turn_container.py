@@ -243,4 +243,7 @@ def _format_summary(
     tool_str = f"{tools} tool{'s' if tools != 1 else ''}"
     right_parts = [tok_str, tool_str]
 
-    return " · ".join(left_parts), " · ".join(right_parts)
+    left = " · ".join(left_parts)
+    if left:
+        left = "└ " + left
+    return left, " · ".join(right_parts)
