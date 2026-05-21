@@ -395,8 +395,8 @@ class TestSelfEditModal:
             assert model_input.value == ""
             assert model_input.placeholder == ""
 
-            # No duplicate generate-model input for agents — the MODEL ID
-            # field is the single source of truth.
+            # No editor-level model input besides MODEL ID — Generate
+            # always opens the fuzzy picker.
             assert not editor.query("#se-editor-gen-model")
 
             # Agent id label is "AGENT ID" not "ID / NAME"
@@ -486,6 +486,36 @@ class TestSelfEditModal:
             )
             assert len(list(row2.query(_CategoryTab))) == 0
             await pilot.press("escape")
+            await app._session.close()
+
+    async def test_no_inline_model_input_for_any_panel(
+        self, tmp_path, monkeypatch
+    ):
+        """Generate flow is unified — no panel has a separate model id box
+        next to the Generate button; clicking Generate always opens the
+        fuzzy model picker."""
+        from taui.tui.screens.self_edit_modal import _Editor
+
+        provider = scenarios.happy_path("(unused)")
+        app = use_scripted_provider(monkeypatch, tmp_path, provider)
+        async with app.run_test(size=(160, 50)) as pilot:
+            await _ready(app)
+            for cat_key in ("agents", "skills", "commands", "tools", "prompts", "mcp"):
+                editor = _Editor(
+                    category=inventory.category_by_key(cat_key),
+                    scope="project",
+                    creating=True,
+                    item=None,
+                    working_dir=tmp_path,
+                    provider=None,
+                    model="claude-haiku",
+                    provider_name="anthropic",
+                )
+                app.push_screen(editor)
+                await pilot.pause()
+                assert not editor.query("#se-editor-gen-model"), cat_key
+                await pilot.press("escape")
+                await pilot.pause()
             await app._session.close()
 
     async def test_generate_opens_fuzzy_model_picker(

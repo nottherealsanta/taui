@@ -210,11 +210,13 @@ class _ModelPicker(ModalScreen[str | None]):
         background: $background 70%;
     }}
     #se-mp-dialog {{
-        width: 70%;
-        height: 70%;
+        width: 60;
+        max-width: 80%;
+        height: auto;
+        max-height: 50%;
         background: {PANEL_BG};
         border: round {BORDER};
-        padding: 1;
+        padding: 0 1 1 1;
     }}
     #se-mp-dialog .se-mp-header {{
         height: 1;
@@ -228,13 +230,13 @@ class _ModelPicker(ModalScreen[str | None]):
         border: solid {GRID_GREY};
         background: {INNER_BG};
         color: {ACCENT};
-        margin: 1 0;
+        margin: 0;
     }}
     #se-mp-dialog #se-mp-search:focus {{
         border: solid {ACCENT_SOFT};
     }}
     #se-mp-dialog OptionList {{
-        height: 1fr;
+        height: 12;
         width: 100%;
         background: {INNER_BG};
         color: {ACCENT_SOFT};
@@ -422,19 +424,6 @@ class _Editor(ModalScreen):
         background: {INNER_BG};
         border: none;
     }}
-    #se-editor-dialog #se-editor-gen-model {{
-        height: 1;
-        border: none;
-        padding: 0 1;
-        background: {INNER_BG};
-        color: {ACCENT_SOFT};
-        width: 32;
-        margin: 0 0 0 1;
-    }}
-    #se-editor-dialog #se-editor-gen-model:focus {{
-        color: {ACCENT};
-        border: none;
-    }}
     #se-editor-dialog #se-editor-generate {{
         margin: 0 0 0 1;
         height: 1;
@@ -550,15 +539,9 @@ class _Editor(ModalScreen):
                         placeholder=self._llm_placeholder(),
                         id="se-editor-llm-prompt",
                     )
-                    # For agents, the editor's MODEL ID field is the source of
-                    # truth for both the agent's model AND the generate model,
-                    # so we don't render a duplicate selector here.
-                    if self._category.key != "agents":
-                        yield Input(
-                            value=self._initial_model_id(),
-                            placeholder="model id",
-                            id="se-editor-gen-model",
-                        )
+                    # All categories use the same Generate flow: clicking
+                    # opens a fuzzy model picker. For agents the agent's
+                    # MODEL ID field pre-seeds the picker.
                     yield Button("◆ Generate", id="se-editor-generate")
             yield TextArea(self._initial_body, id="se-editor-body")
             with Horizontal(classes="se-editor-footer"):
@@ -766,20 +749,20 @@ class _Editor(ModalScreen):
         )
 
     def _effective_model_id(self) -> str:
-        """Where Generate reads its model from — agent field, gen field, or default."""
+        """Pre-seed value for the model picker.
+
+        For agents, fall back to the agent's MODEL ID field. For other
+        categories there's no editor-level model field, so we use the
+        session's current model.
+        """
         if self._category.key == "agents":
             try:
                 raw = self.query_one("#se-editor-model-id", Input).value.strip()
             except Exception:
                 raw = ""
-        else:
-            try:
-                raw = self.query_one("#se-editor-gen-model", Input).value.strip()
-            except Exception:
-                raw = ""
-        if raw:
-            _, model = _split_model_id(raw)
-            return model or raw
+            if raw:
+                _, model = _split_model_id(raw)
+                return model or raw
         return self._model
 
     def _flash_subheader(self, text: str) -> None:
