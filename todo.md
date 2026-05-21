@@ -1,0 +1,4 @@
+- questions should not be notification
+- fix order when tool calling and thoughts appear. 
+- context meter needs to update in near real time 
+- maybe tools need not have two scopes
