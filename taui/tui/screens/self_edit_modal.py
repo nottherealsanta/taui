@@ -1447,8 +1447,8 @@ class _GeneralSettings(VerticalScroll):
         ("e", "activate", "Edit/Toggle"),
     ]
 
-    def __init__(self) -> None:
-        super().__init__()
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
         self._rows: list[_SettingRow] = []  # non-header rows only
         self._cursor: int = 0
 

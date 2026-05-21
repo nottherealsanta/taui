@@ -230,4 +230,5 @@ example/
 
 __snapshots__/
 !tests/__snapshots__/
-snapshot_report.html.taui/
+snapshot_report.html
+.taui/
