@@ -260,17 +260,22 @@ class _ModelPicker(ModalScreen[str | None]):
     BINDINGS = [("escape", "cancel", "Cancel")]
 
     def __init__(
-        self, *, models: list[str], default: str = ""
+        self,
+        *,
+        models: list[str],
+        default: str = "",
+        provider_of: dict[str, str] | None = None,
     ) -> None:
         super().__init__()
         self._models = models
         self._default = default
+        self._provider_of = provider_of or {}
 
     def compose(self) -> ComposeResult:
         with Container(id="se-mp-dialog"):
             yield Static("◆ select model", classes="se-mp-header")
             yield Input(
-                placeholder="fuzzy search…",
+                placeholder="",
                 id="se-mp-search",
                 value=self._default,
             )
@@ -278,13 +283,30 @@ class _ModelPicker(ModalScreen[str | None]):
                 self._filter(self._default) if self._default else self._models
             )
             yield OptionList(
-                *[Option(m, id=m) for m in initial], id="se-mp-list"
+                *[Option(self._row(m), id=m) for m in initial],
+                id="se-mp-list",
             )
             yield Static(
                 "[dim]↑↓ navigate · Enter select · Esc cancel[/dim]",
                 classes="se-mp-hint",
                 markup=True,
             )
+
+    def _row(self, model_id: str) -> Text:
+        """Render one model row: id on the left, provider in dim grey on the right."""
+        provider = self._provider_of.get(model_id, "")
+        text = Text()
+        # Compute padding so the provider sits flush right within the option row.
+        # OptionList option width — we don't know exactly, but ~48 cols works
+        # with the picker's fixed 60-col dialog (minus borders/padding).
+        width = 50
+        left = model_id
+        right = provider
+        pad = max(1, width - len(left) - len(right))
+        text.append(left, style=ACCENT_SOFT)
+        text.append(" " * pad)
+        text.append(right, style="#777777")
+        return text
 
     def on_mount(self) -> None:
         try:
@@ -313,7 +335,7 @@ class _ModelPicker(ModalScreen[str | None]):
             return
         opts.clear_options()
         for m in self._filter(event.value):
-            opts.add_option(Option(m, id=m))
+            opts.add_option(Option(self._row(m), id=m))
         if opts.option_count:
             opts.highlighted = 0
 
@@ -717,9 +739,11 @@ class _Editor(ModalScreen):
             self._flash_subheader("Type a one-line brief, then click Generate.")
             return
         default_model = self._effective_model_id()
-        models = _available_model_ids(self._provider_name)
-        if default_model and default_model not in models:
-            models = [default_model] + models
+        pairs = _available_models(self._provider_name)
+        if default_model and default_model not in {m for m, _ in pairs}:
+            pairs = [(default_model, self._provider_name)] + pairs
+        models = [m for m, _ in pairs]
+        provider_of = {m: p for m, p in pairs}
 
         def after(picked: str | None) -> None:
             if not picked:
@@ -745,7 +769,12 @@ class _Editor(ModalScreen):
             return
 
         self.app.push_screen(
-            _ModelPicker(models=models, default=default_model), after
+            _ModelPicker(
+                models=models,
+                default=default_model,
+                provider_of=provider_of,
+            ),
+            after,
         )
 
     def _effective_model_id(self) -> str:
@@ -879,7 +908,12 @@ def _build_generation_prompt(category_key: str, user_brief: str) -> str:
 
 
 def _available_model_ids(provider_name: str) -> list[str]:
-    """Return model IDs the user might want to pick for generation.
+    """Backward-compat shim — returns ids only. Prefer `_available_models`."""
+    return [mid for mid, _provider in _available_models(provider_name)]
+
+
+def _available_models(provider_name: str) -> list[tuple[str, str]]:
+    """Return (model_id, provider_name) tuples for generation pickers.
 
     Pulls from the project's model catalog. Returns the configured-provider's
     models first, then known providers as a fallback. Best-effort — returns
@@ -890,7 +924,7 @@ def _available_model_ids(provider_name: str) -> list[str]:
     except Exception:
         return []
 
-    ids: list[str] = []
+    pairs: list[tuple[str, str]] = []
     seen: set[str] = set()
 
     def _add(provider: str) -> None:
@@ -899,7 +933,7 @@ def _available_model_ids(provider_name: str) -> list[str]:
                 mid = str(entry.get("id", "")).strip()
                 if mid and mid not in seen:
                     seen.add(mid)
-                    ids.append(mid)
+                    pairs.append((mid, provider))
         except Exception:
             pass
 
@@ -911,7 +945,7 @@ def _available_model_ids(provider_name: str) -> list[str]:
                 _add(known)
     except Exception:
         pass
-    return ids
+    return pairs
 
 
 def _split_model_id(raw: str) -> tuple[str, str]:
@@ -1189,10 +1223,6 @@ class SelfEditModal(ModalScreen[str | None]):
                     yield OptionList(id="se-options")
                     yield Button("+  NEW", id="se-new-button")
                 with Vertical(id="se-preview-pane"):
-                    yield Static(
-                        "preview",
-                        classes="se-preview-header",
-                    )
                     yield Static("", id="se-preview", markup=False)
             yield Static(
                 "n new · e edit · d delete · ←→ category · tab scope · esc close",

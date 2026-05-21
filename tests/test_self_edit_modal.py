@@ -123,6 +123,38 @@ class TestModelPicker:
         assert not _subseq_match("xyz", "haiku")
         assert _subseq_match("", "haiku")
 
+    def test_picker_row_shows_provider_name(self):
+        from taui.tui.screens.self_edit_modal import _ModelPicker
+
+        picker = _ModelPicker(
+            models=["claude-haiku", "gpt-4o"],
+            provider_of={"claude-haiku": "anthropic", "gpt-4o": "openai"},
+        )
+        row = picker._row("claude-haiku")
+        text = row.plain
+        assert "claude-haiku" in text
+        assert "anthropic" in text
+        # Provider sits to the right of the model id.
+        assert text.index("claude-haiku") < text.index("anthropic")
+
+    async def test_picker_search_input_has_no_placeholder(
+        self, tmp_path, monkeypatch
+    ):
+        from textual.widgets import Input
+
+        from taui.tui.screens.self_edit_modal import _ModelPicker
+
+        provider = scenarios.happy_path("(unused)")
+        app = use_scripted_provider(monkeypatch, tmp_path, provider)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await _ready(app)
+            app.push_screen(_ModelPicker(models=["claude-haiku"]))
+            await pilot.pause()
+            search = app.screen.query_one("#se-mp-search", Input)
+            assert search.placeholder == ""
+            await pilot.press("escape")
+            await app._session.close()
+
     def test_picker_filter_substring_first(self):
         from taui.tui.screens.self_edit_modal import _ModelPicker
 
@@ -529,8 +561,11 @@ class TestSelfEditModal:
         # Stub the model catalog so the picker has something to show.
         monkeypatch.setattr(
             sem,
-            "_available_model_ids",
-            lambda provider: ["claude-haiku", "claude-sonnet"],
+            "_available_models",
+            lambda provider: [
+                ("claude-haiku", "anthropic"),
+                ("claude-sonnet", "anthropic"),
+            ],
         )
 
         class FakeProvider:
