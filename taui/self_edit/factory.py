@@ -114,12 +114,12 @@ def collect_self_edit_inventory(working_dir: Path) -> SelfEditInventory:
         InventoryRow(
             label="Agents",
             builtin_label="3 default",
-            global_count=_count_agents(home / ".taui" / "self_edit" / "agents"),
-            global_path="~/.taui/self_edit/agents/",
+            global_count=_count_agents(home / ".taui" / "agents"),
+            global_path="~/.taui/agents/",
             project_count=_count_agents(
-                working_dir / ".taui" / "self_edit" / "agents"
+                working_dir / ".taui" / "agents"
             ),
-            project_path=".taui/self_edit/agents/",
+            project_path=".taui/agents/",
         ),
         InventoryRow(
             label="Tools / Extensions",
@@ -174,7 +174,7 @@ def _format_inventory_markdown(inv: SelfEditInventory) -> str:
             "commands/",
             "extensions/",
             "skills/",
-            "self_edit/agents/",
+            "agents/",
             "mcp.toml",
         )
     )

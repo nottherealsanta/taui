@@ -156,7 +156,6 @@ def _list_agents(working_dir: Path, scope: str) -> list[Item]:
     store = SelfEditStore(working_dir)
     # Ensure defaults exist before listing
     store.ensure_default_agents()
-    store._migrate_agents_json(scope)
     agents = store.load_agents_for_scope(scope)
     out: list[Item] = []
     for profile in agents.values():
@@ -302,8 +301,8 @@ def all_tool_names(working_dir: Path) -> list[str]:
 
 
 def _list_prompts(working_dir: Path, scope: str) -> list[Item]:
-    """Standalone prompts: any .md under self_edit/prompts/."""
-    root = scope_root(working_dir, scope) / "self_edit" / "prompts"
+    """Standalone prompts: any .md under prompts/."""
+    root = scope_root(working_dir, scope) / "prompts"
     if not root.is_dir():
         return []
     out: list[Item] = []
@@ -619,7 +618,7 @@ def new_item_path(
     """Path to where a new item with this identifier would be saved."""
     root = scope_root(working_dir, scope)
     if category == "agents":
-        return root / "self_edit" / "agents" / f"{identifier.upper()}.md"
+        return root / "agents" / f"{identifier.upper()}.md"
     if category == "skills":
         return root / "skills" / identifier / "SKILL.md"
     if category == "commands":
@@ -627,7 +626,7 @@ def new_item_path(
     if category == "tools":
         return root / "extensions" / f"{identifier}.py"
     if category == "prompts":
-        return root / "self_edit" / "prompts" / f"{identifier}.md"
+        return root / "prompts" / f"{identifier}.md"
     if category == "mcp":
         return root / "mcp.toml"
     raise KeyError(category)

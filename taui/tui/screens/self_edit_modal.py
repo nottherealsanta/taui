@@ -810,13 +810,15 @@ class _Editor(ModalScreen):
                         selected=(hex_value == initial_color),
                     )
 
-            yield Static("ALLOWED TOOLS  [dim](pick at least one)[/dim]",
+            yield Static("ALLOWED TOOLS",
                          classes="se-tools-label", markup=True)
             selected = set(self._initial_extra.get("allowed_tools", []))
             all_tools = inventory.all_tool_names(self._working_dir)
+            # Empty allowed_tools means "all tools" — show them all as ON.
+            all_on = not selected
             with Grid(id="se-editor-tools"):
                 for name in all_tools:
-                    yield _ToolToggle(name, name in selected)
+                    yield _ToolToggle(name, all_on or name in selected)
 
     def _initial_usage(self) -> str:
         """Read the initial usage value from the extra dict, defaulting to 'both'."""
@@ -952,11 +954,7 @@ class _Editor(ModalScreen):
                 allowed_tools = [t.tool_name for t in toggles if t.is_selected]
             except Exception:
                 allowed_tools = list(self._initial_extra.get("allowed_tools", []))
-            if not allowed_tools:
-                self._flash_subheader(
-                    "An agent needs at least one allowed tool — pick one below."
-                )
-                return
+
             try:
                 provider_str, model_str = _split_model_id(
                     self.query_one("#se-editor-model-id", Input).value.strip()

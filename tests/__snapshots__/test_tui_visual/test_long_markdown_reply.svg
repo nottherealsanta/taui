@@ -45,11 +45,11 @@
 .terminal-r11 { fill: #ffffff;font-weight: bold }
 .terminal-r12 { fill: #d2d2d2 }
 .terminal-r13 { fill: #80d08b }
-.terminal-r14 { fill: #58a6ff }
+.terminal-r14 { fill: #7aa2f7 }
 .terminal-r15 { fill: #686868 }
 .terminal-r16 { fill: #070707 }
 .terminal-r17 { fill: #e1e1e1 }
-.terminal-r18 { fill: #58a6ff;font-weight: bold }
+.terminal-r18 { fill: #7aa2f7;font-weight: bold }
 .terminal-r19 { fill: #a3a3a3;font-style: italic; }
 .terminal-r20 { fill: #d2d2d2;font-style: italic; }
 .terminal-r21 { fill: #30363d }

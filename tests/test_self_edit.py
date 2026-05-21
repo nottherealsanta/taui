@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
 
@@ -76,42 +75,6 @@ def test_agents_include_defaults_and_save_prompt_file(tmp_path):
     assert "p" in loaded["ABC"].prompt_path.read_text(encoding="utf-8")
 
 
-def test_inline_agent_prompt_migrates_to_markdown_file(tmp_path):
-    base = tmp_path / ".taui" / "self_edit"
-    base.mkdir(parents=True)
-    agents_file = base / "agents.json"
-    agents_file.write_text(
-        json.dumps(
-            {
-                "profiles": [
-                    {
-                        "id": "ABC",
-                        "name": "Old",
-                        "prompt": "legacy prompt",
-                        "provider": "",
-                        "model": "",
-                        "allowed_tools": [],
-                    }
-                ]
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    loaded = SelfEditStore(tmp_path).load_agents()
-
-    assert loaded["ABC"].prompt == "legacy prompt"
-    assert loaded["ABC"].prompt_path is not None
-    assert loaded["ABC"].prompt_path.exists()
-    # agents.json should be renamed to agents.json.bak after migration
-    assert not agents_file.exists()
-    assert (base / "agents.json.bak").exists()
-    # The migrated .md file should exist with frontmatter
-    md_path = base / "agents" / "ABC.md"
-    assert md_path.exists()
-    assert "legacy prompt" in md_path.read_text(encoding="utf-8")
-
-
 def test_extension_source_model():
     ext = ExtensionSource(
         name="mcp",
@@ -162,7 +125,7 @@ def test_delete_agent_removes_row_and_prompt_file(tmp_path):
 
     loaded = store.load_agents()
     assert "TST" not in loaded
-    assert not (tmp_path / ".taui" / "self_edit" / "agents" / "TST.md").exists()
+    assert not (tmp_path / ".taui" / "agents" / "TST.md").exists()
 
 
 # ── AgentLoop tests ────────────────────────────────────────────────────

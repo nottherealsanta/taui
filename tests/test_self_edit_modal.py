@@ -444,9 +444,12 @@ class TestSelfEditModal:
             # and see clearly which are on/off.
             toggles = list(editor.query(_ToolToggle))
             assert len(toggles) >= 5
-            assert all(not t.is_selected for t in toggles)  # none selected yet
+            assert all(t.is_selected for t in toggles)  # all on by default
 
-            # Click two toggles on.
+            # Turn all tools off, then select only read and edit.
+            for t in toggles:
+                if t.is_selected:
+                    t.toggle()
             for t in toggles:
                 if t.tool_name in {"read", "edit"}:
                     t.toggle()
@@ -693,12 +696,12 @@ class TestSelfEditModal:
             ).text
             await app._session.close()
 
-    async def test_agent_editor_requires_at_least_one_tool(
+    async def test_agent_editor_allows_empty_tool_selection(
         self, tmp_path, monkeypatch
     ):
         from textual.widgets import Input
 
-        from taui.tui.screens.self_edit_modal import _Editor
+        from taui.tui.screens.self_edit_modal import _Editor, _ToolToggle
 
         provider = scenarios.happy_path("(unused)")
         app = use_scripted_provider(monkeypatch, tmp_path, provider)
@@ -718,6 +721,11 @@ class TestSelfEditModal:
             await pilot.pause()
             editor.query_one("#se-editor-id", Input).value = "XYZ"
 
+            # Turn all tools off.
+            for t in editor.query(_ToolToggle):
+                if t.is_selected:
+                    t.toggle()
+
             dismissed = [False]
 
             def fake_dismiss(result):
@@ -725,8 +733,8 @@ class TestSelfEditModal:
 
             editor.dismiss = fake_dismiss  # type: ignore[method-assign]
             editor._submit()
-            # No tool selected — submit should be refused.
-            assert dismissed[0] is False
+            # Empty tool selection is allowed — submit should proceed.
+            assert dismissed[0] is True
             await app._session.close()
 
     async def test_editor_llm_generate_populates_body(

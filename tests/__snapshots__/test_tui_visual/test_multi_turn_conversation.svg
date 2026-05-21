@@ -38,11 +38,11 @@
 .terminal-r4 { fill: #8b949e;font-weight: bold }
 .terminal-r5 { fill: #e6e6e6;font-weight: bold }
 .terminal-r6 { fill: #e8e8e8 }
-.terminal-r7 { fill: #58a6ff }
+.terminal-r7 { fill: #7aa2f7 }
 .terminal-r8 { fill: #686868 }
 .terminal-r9 { fill: #070707 }
 .terminal-r10 { fill: #e1e1e1 }
-.terminal-r11 { fill: #58a6ff;font-weight: bold }
+.terminal-r11 { fill: #7aa2f7;font-weight: bold }
 .terminal-r12 { fill: #a3a3a3;font-style: italic; }
 .terminal-r13 { fill: #d2d2d2;font-style: italic; }
 .terminal-r14 { fill: #30363d }

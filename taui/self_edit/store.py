@@ -265,8 +265,8 @@ def _serialize_agent_frontmatter(profile: AgentProfile) -> str:
 class SelfEditStore:
     """Disk persistence for self-edit artifacts."""
 
-    PROJECT_DIR = Path(".taui/self_edit")
-    GLOBAL_DIR = Path.home() / ".taui" / "self_edit"
+    PROJECT_DIR = Path(".taui")
+    GLOBAL_DIR = Path.home() / ".taui"
 
     def __init__(self, working_dir: Path) -> None:
         self._working_dir = working_dir
@@ -313,125 +313,10 @@ class SelfEditStore:
                 except OSError:
                     pass
 
-    def _migrate_agents_json(self, scope: str) -> None:
-        """Migrate old agents.json to per-file frontmatter .md files."""
-        agents_json = self.dir_for_scope(scope) / "agents.json"
-        if not agents_json.exists():
-            return
-        try:
-            data = json.loads(agents_json.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return
-        rows = data.get("profiles", [])
-        agents_dir = self._agents_dir(scope)
-        agents_dir.mkdir(parents=True, exist_ok=True)
-        for row in rows:
-            if not isinstance(row, dict):
-                continue
-            try:
-                agent_id = str(row.get("id", "")).upper()
-                if not _AGENT_ID_RE.match(agent_id):
-                    continue
-                md_path = agents_dir / f"{agent_id}.md"
-                if md_path.exists():
-                    # Don't overwrite user edits
-                    continue
-                # Try to get prompt from prompt_path or inline
-                prompt = str(row.get("prompt", ""))
-                prompt_path_raw = str(row.get("prompt_path", "")).strip()
-                if prompt_path_raw:
-                    pp = Path(prompt_path_raw)
-                    if not pp.is_absolute():
-                        pp = self.dir_for_scope(scope) / pp
-                    try:
-                        prompt = pp.read_text(encoding="utf-8")
-                    except OSError:
-                        pass
-                raw_usage = str(row.get("usage", "")).strip().lower()
-                if raw_usage in AGENT_USAGE_VALUES:
-                    usage = raw_usage
-                elif bool(row.get("subagent_only", False)):
-                    usage = "sub"
-                else:
-                    usage = "both"
-                profile = AgentProfile(
-                    id=agent_id,
-                    name=str(row.get("name", "") or agent_id),
-                    prompt=prompt,
-                    provider=str(row.get("provider", "")),
-                    model=str(row.get("model", "")),
-                    allowed_tools=[str(x) for x in row.get("allowed_tools", [])],
-                    tool_config={
-                        tname: ToolConfig(
-                            policy=str(tval.get("policy", "auto")),
-                            param_restrictions=dict(
-                                tval.get("param_restrictions", {})
-                            ),
-                        )
-                        for tname, tval in (row.get("tool_config") or {}).items()
-                        if isinstance(tval, dict)
-                    },
-                    auto_approve_all=bool(row.get("auto_approve_all", False)),
-                    usage=usage,
-                    color=str(row.get("color", "")),
-                )
-                md_path.write_text(_serialize_agent_frontmatter(profile), encoding="utf-8")
-            except Exception:
-                continue
-        # Rename agents.json to agents.json.bak
-        try:
-            agents_json.rename(agents_json.with_suffix(".json.bak"))
-        except OSError:
-            pass
-
-    def _migrate_old_prompt_files(self, scope: str) -> None:
-        """Migrate old prompt-only .md files (no frontmatter) to frontmatter format.
-
-        Old files were written by ensure_default_prompts() and contain only the
-        prompt body. We upgrade them in-place by adding frontmatter from the
-        global defaults if available.
-        """
-        agents_dir = self._agents_dir(scope)
-        if not agents_dir.is_dir():
-            return
-        for md_path in agents_dir.glob("*.md"):
-            agent_id = md_path.stem.upper()
-            if not _AGENT_ID_RE.match(agent_id):
-                continue
-            try:
-                text = md_path.read_text(encoding="utf-8")
-            except OSError:
-                continue
-            # Check if it has frontmatter
-            if text.lstrip().startswith("---"):
-                continue
-            # Old prompt-only file — try to get metadata from global default
-            global_path = self._agents_dir("global") / f"{agent_id}.md"
-            if global_path.exists():
-                try:
-                    global_text = global_path.read_text(encoding="utf-8")
-                    meta, _ = _parse_frontmatter(global_text)
-                    if meta:
-                        # Rewrite with frontmatter from global + local prompt body
-                        new_content = _serialize_frontmatter(meta, text)
-                        md_path.write_text(new_content, encoding="utf-8")
-                        continue
-                except OSError:
-                    pass
-            # No global default — just delete the old file so global takes over
-            try:
-                md_path.unlink()
-            except OSError:
-                pass
 
     def load_agents(self) -> dict[str, AgentProfile]:
         """Load all agents from global and project scopes. Project overrides global."""
         self.ensure_default_agents()
-        # Migrate old agents.json files if present
-        for scope in ("global", "project"):
-            self._migrate_agents_json(scope)
-        # Migrate old prompt-only .md files
-        self._migrate_old_prompt_files("project")
 
         merged: dict[str, AgentProfile] = {}
         for scope in ("global", "project"):

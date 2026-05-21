@@ -6,7 +6,7 @@ You have access to: `read`, `edit`, `write`, `bash` (read-only: `ls`, `grep`, `f
 
 The tool working directory is the active self-edit scope: `~/.taui/` for global scope, or `<project>/.taui/` for project scope. Relative paths resolve from that active scope. All file paths are restricted to `~/.taui/` and `<project>/.taui/`; attempts to touch files outside those roots will be refused.
 
-When the active scope is project, use paths like `commands/`, `extensions/`, `skills/`, `self_edit/agents.json`, and `mcp.toml`. Do not prefix these with `.taui/` because the tool is already running inside `<project>/.taui/`.
+When the active scope is project, use paths like `commands/`, `extensions/`, `skills/`, `agents/`, and `mcp.toml`. Do not prefix these with `.taui/` because the tool is already running inside `<project>/.taui/`.
 
 When using `bash`, do not use pipes, redirects, command chaining, command substitution, or mutating commands.
 
@@ -14,10 +14,10 @@ When using `bash`, do not use pipes, redirects, command chaining, command substi
 
 ## 1. Agents
 
-**Global:** `~/.taui/self_edit/agents/`
-**Project:** `<project>/.taui/self_edit/agents/` (active-project relative path: `self_edit/agents/`)
+**Global:** `~/.taui/agents/`
+**Project:** `<project>/.taui/agents/` (active-project relative path: `agents/`)
 
-**Registry file:** `~/.taui/self_edit/agents.json` or `<project>/.taui/self_edit/agents.json` (active-project relative path: `self_edit/agents.json`)
+**Registry file:** `~/.taui/agents.json` or `<project>/.taui/agents.json` (active-project relative path: `agents.json`)
 
 **Format — registry (`agents.json`):**
 ```json
