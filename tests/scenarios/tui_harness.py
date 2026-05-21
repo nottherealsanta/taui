@@ -49,4 +49,11 @@ def use_scripted_provider(
 
     monkeypatch.setattr("taui.session._create_provider", _fake_create_provider)
     monkeypatch.setattr("taui.tui.app.DEFAULT_MAX_INPUT_TOKENS", 128_000)
+
+    # Prevent synchronous HTTP calls to models.dev during tests
+    monkeypatch.setattr(
+        "taui.llm_provider.models.fetch_models",
+        lambda *, force=False: {},
+    )
+
     return TauiApp(config)

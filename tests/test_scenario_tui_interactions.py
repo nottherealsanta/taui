@@ -19,21 +19,21 @@ from tests.scenarios import ScriptedProvider, ScriptedToolCall, Turn, scenarios
 from tests.scenarios.tui_harness import use_scripted_provider
 
 
-async def _ready(app, *, timeout: float = 2.0) -> None:
+async def _ready(app, pilot, *, timeout: float = 2.0) -> None:
     deadline = asyncio.get_event_loop().time() + timeout
     while asyncio.get_event_loop().time() < deadline:
         if app._session is not None and not app._session_initializing:
             return
-        await asyncio.sleep(0)
+        await pilot.pause()
     raise TimeoutError("session never ready")
 
 
-async def _wait_idle(app, *, timeout: float = 2.0) -> None:
+async def _wait_idle(app, pilot, *, timeout: float = 2.0) -> None:
     deadline = asyncio.get_event_loop().time() + timeout
     while asyncio.get_event_loop().time() < deadline:
         if not getattr(app, "_is_processing", False):
             return
-        await asyncio.sleep(0)
+        await pilot.pause()
     raise TimeoutError("app stayed busy")
 
 
@@ -42,14 +42,14 @@ class TestSlashCommands:
         provider = scenarios.streamed_reply("first reply")
         app = use_scripted_provider(monkeypatch, tmp_path, provider)
         async with app.run_test() as pilot:
-            await _ready(app)
+            await _ready(app, pilot)
             from taui.tui.widgets.chat_input import ChatInput
 
             chat_input = app.query_one("#chat-input", ChatInput)
             chat_input.text = "hello"
             chat_input.focus()
             await pilot.press("enter")
-            await _wait_idle(app)
+            await _wait_idle(app, pilot)
 
             chat_log = app.query_one("#chat-log", VerticalScroll)
             assert len(chat_log.children) > 0
@@ -65,7 +65,7 @@ class TestSlashCommands:
         provider = scenarios.happy_path("(unused)")
         app = use_scripted_provider(monkeypatch, tmp_path, provider)
         async with app.run_test() as pilot:
-            await _ready(app)
+            await _ready(app, pilot)
             from taui.tui.widgets.chat_input import ChatInput
 
             chat_input = app.query_one("#chat-input", ChatInput)
@@ -86,14 +86,14 @@ class TestErrorRendering:
         provider = scenarios.auth_expired()
         app = use_scripted_provider(monkeypatch, tmp_path, provider)
         async with app.run_test() as pilot:
-            await _ready(app)
+            await _ready(app, pilot)
             from taui.tui.widgets.chat_input import ChatInput
 
             chat_input = app.query_one("#chat-input", ChatInput)
             chat_input.text = "hi"
             chat_input.focus()
             await pilot.press("enter")
-            await _wait_idle(app, timeout=3.0)
+            await _wait_idle(app, pilot, timeout=3.0)
 
             rendered = " ".join(str(w.content) for w in app.query(Static))
             assert "token expired" in rendered.lower() or "error" in rendered.lower()
@@ -113,7 +113,7 @@ class TestQueueWhileBusy:
         provider = scenarios.happy_path("ok")
         app = use_scripted_provider(monkeypatch, tmp_path, provider)
         async with app.run_test() as pilot:
-            await _ready(app)
+            await _ready(app, pilot)
             from taui.tui.widgets.chat_input import ChatInput
 
             # Force the busy state and post a queued-style message directly.
@@ -149,7 +149,7 @@ class TestApprovalFlow:
         )
         app = use_scripted_provider(monkeypatch, tmp_path, provider)
         async with app.run_test() as pilot:
-            await _ready(app)
+            await _ready(app, pilot)
             from taui.tui.widgets.chat_input import ChatInput
 
             chat_input = app.query_one("#chat-input", ChatInput)
@@ -168,7 +168,7 @@ class TestApprovalFlow:
 
             # Reject — the agent loop should resume and finish with the second turn.
             info2.dismiss()
-            await _wait_idle(app, timeout=3.0)
+            await _wait_idle(app, pilot, timeout=3.0)
             # Either we got a final "done" or the cancellation path ran; either is
             # acceptable. What matters is the app didn't hang.
             assert not app._is_processing
