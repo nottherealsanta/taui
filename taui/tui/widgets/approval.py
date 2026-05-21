@@ -17,11 +17,18 @@ class ApprovalPrompt(Widget):
     DEFAULT_CSS = """
     ApprovalPrompt {
         height: auto;
-        padding: 0 1;
+        padding: 0 0 0 1;
         margin: 0 0 1 0;
+        border-left: tall #f2cc60;
+    }
+    ApprovalPrompt.approval-resolved-ok {
+        border-left: tall #3fb950;
+    }
+    ApprovalPrompt.approval-resolved-deny {
+        border-left: tall #ff7b72;
     }
     ApprovalPrompt .approval-question {
-        color: yellow;
+        color: $foreground;
         padding: 0 0 0 0;
     }
     ApprovalPrompt .approval-buttons {
@@ -62,6 +69,9 @@ class ApprovalPrompt(Widget):
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         approved = event.button.id == "approve-btn"
+        self.add_class(
+            "approval-resolved-ok" if approved else "approval-resolved-deny"
+        )
         self.post_message(self.Responded(approved))
         if self._future and not self._future.done():
             self._future.set_result(approved)
