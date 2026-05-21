@@ -198,7 +198,7 @@ def _format_summary(
     else:
         tok_str = f"{tokens} tok"
     tool_str = f"{tools} tool{'s' if tools != 1 else ''}"
-    parts: list[str] = [f"◆ turn {turn_id}"]
+    parts: list[str] = []
     if agent_id:
         parts.append(agent_id)
     parts.extend([tok_str, tool_str])
@@ -211,4 +211,4 @@ def _format_summary(
             parts.append(f"{mins}m{secs}s")
         else:
             parts.append(f"{duration_s:.1f}s")
-    return "── " + " │ ".join(parts) + " ──"
+    return " │ ".join(parts)
