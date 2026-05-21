@@ -31,6 +31,31 @@ def _fmt_tokens(n: int) -> str:
     return f"{round(n / 1000)}k"
 
 
+_CTX_BAR_WIDTH = 10
+_CTX_FILLED = "▰"  # ▰
+_CTX_EMPTY = "▱"   # ▱
+
+
+def _ctx_bar(tokens: int, max_tokens: int) -> Text:
+    """Segmented HUD-style context bar with color ramp."""
+    if not max_tokens:
+        return Text("")
+    pct = (tokens / max_tokens) * 100
+    if pct >= 90:
+        color = "#ff5050"
+    elif pct >= 75:
+        color = "#ffb84d"
+    else:
+        color = "#7cff5a"
+    filled = min(_CTX_BAR_WIDTH, int((pct / 100) * _CTX_BAR_WIDTH))
+    empty = _CTX_BAR_WIDTH - filled
+    bar = Text()
+    bar.append(_CTX_FILLED * filled, style=color)
+    bar.append(_CTX_EMPTY * empty, style="dim")
+    bar.append(f" {_fmt_tokens(tokens)}/{_fmt_tokens(max_tokens)}", style="dim italic")
+    return bar
+
+
 def _agent_color(agent_id: str) -> str:
     normalized = agent_id.upper()
     if normalized in AGENT_COLORS:
@@ -191,20 +216,22 @@ class InfoBar(Horizontal):
             extension.display = True
 
         self.query_one("#info-agent", AgentBadge).set_agent(self._agent_id)
-        self.query_one("#info-model", Static).update(
-            self._model or Text("initializing…", style="dim italic")
-        )
+        model = self.query_one("#info-model", Static)
+        if self._model:
+            model_text = Text()
+            model_text.append("◤ ", style="bold")
+            model_text.append(self._model, style="bold")
+            model_text.append(" ◢", style="bold")
+            model.update(model_text)
+        else:
+            model.update(Text("initializing…", style="dim italic"))
 
         provider = self.query_one("#info-provider", Static)
         provider.update(self._provider)
         provider.display = bool(self._provider)
 
         tokens = self.query_one("#info-tokens", Static)
-        tokens.update(
-            f"{_fmt_tokens(self._tokens)}/{_fmt_tokens(self._max_tokens)}"
-            if self._max_tokens
-            else ""
-        )
+        tokens.update(_ctx_bar(self._tokens, self._max_tokens))
         tokens.display = bool(self._max_tokens)
 
 
