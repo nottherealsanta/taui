@@ -845,6 +845,42 @@ class UpdateProvidersModelsCommand:
 
 
 @dataclass(slots=True)
+class ThemeCommand:
+    """Switch between taui themes.
+
+    Switching to themes outside the taui set currently breaks styling,
+    so this command intentionally only exposes the curated taui themes.
+    """
+
+    name: str = "theme"
+    description: str = "Switch theme (/theme [dark|light])"
+    accepts_args: bool = True
+
+    async def execute(self, ctx: CommandContext) -> CommandResult:
+        if not ctx.args:
+            return CommandResult.ok("", action="open_theme_picker")
+
+        choice = ctx.args[0].lower()
+        # Accept short or full names.
+        aliases = {
+            "dark": "taui-dark",
+            "light": "taui-light",
+            "taui-dark": "taui-dark",
+            "taui-light": "taui-light",
+        }
+        target = aliases.get(choice)
+        if target is None:
+            return CommandResult.fail(
+                f"Unknown theme: {choice}. Options: dark, light"
+            )
+        return CommandResult.ok(
+            f"Theme set to {target}",
+            action="theme_changed",
+            theme=target,
+        )
+
+
+@dataclass(slots=True)
 class DebugCommand:
     """Run UI debug scenarios."""
 
@@ -939,6 +975,7 @@ def register_builtins(
     registry.register(HotkeysCommand())
     registry.register(verbose_cmd)
     registry.register(debug_cmd)
+    registry.register(ThemeCommand())
     registry.register(UpdateProvidersModelsCommand())
 
     registry.alias("h", "help")
