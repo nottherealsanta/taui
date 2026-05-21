@@ -2000,7 +2000,7 @@ class TauiApp(App[None]):
             sp = getattr(self._session, "_extensions_prompt", "") or sp
         agent_id = str(getattr(self._session._loop, "agent_id", "") or "")
         agent_clr = _agent_color(agent_id) if agent_id else "#58a6ff"
-        bg_clr = "#0d1117" if self.theme == TAUI_DARK.name else "#ffffff"
+        bg_clr = "#070707" if self.theme == TAUI_DARK.name else "#ffffff"
         label_style = f"bold {bg_clr} on {agent_clr}"
 
         if sp:

@@ -121,6 +121,7 @@ class TurnContainer(Vertical):
             return
         if self.has_class("collapsed"):
             text = _format_summary(
+                self.turn_id,
                 self._total_tokens,
                 self._tool_count,
                 self._model,
@@ -185,6 +186,7 @@ class TurnContainer(Vertical):
 
 
 def _format_summary(
+    turn_id: int,
     tokens: int,
     tools: int,
     model: str,
@@ -196,7 +198,7 @@ def _format_summary(
     else:
         tok_str = f"{tokens} tok"
     tool_str = f"{tools} tool{'s' if tools != 1 else ''}"
-    parts: list[str] = []
+    parts: list[str] = [f"◆ turn {turn_id}"]
     if agent_id:
         parts.append(agent_id)
     parts.extend([tok_str, tool_str])
@@ -209,4 +211,4 @@ def _format_summary(
             parts.append(f"{mins}m{secs}s")
         else:
             parts.append(f"{duration_s:.1f}s")
-    return "└ " + " · ".join(parts)
+    return "── " + " │ ".join(parts) + " ──"

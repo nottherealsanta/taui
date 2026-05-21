@@ -16,11 +16,10 @@ glyphs like `▰▱◆◤◢` are fine).
 
 ## Layer 1 — Look
 
-- **1.1 Themes** (`taui/tui/theme.py`): add `taui-arcade` (neon synthwave) and
-  `taui-terminal` (phosphor CRT). Existing themes stay default.
-- **1.2 Status bar** (`taui/tui/widgets/status_bar.py`): segmented HUD bar
-  `◤ model ◢ provider  ▰▰▰▰▰▱▱▱▱▱ 42% ctx  T:23 X:41 A:12` with live counters
-  bound to Reactive values from `session_state`.
+- **1.1 Theme** (`taui/tui/theme.py`): darken default `taui-dark` to a
+  near-black neutral palette (no blue tint). No additional themes.
+- **1.2 Status bar** (`taui/tui/widgets/info_bar.py`): keep existing
+  `model / provider / Nk/Nk` format. No segmented bar, no brackets.
 - **1.3 Footer** (`taui/tui/widgets/footer.py`): chip-style keys `[Ctrl+B]`,
   press-flash via CSS class.
 - **1.4 Tool cards** (`taui/tui/widgets/tool_status.py`): bordered card per

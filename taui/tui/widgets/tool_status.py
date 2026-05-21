@@ -45,6 +45,32 @@ _DIFF_DEL_COLOR = "#f85149"
 _SPINNER_FRAMES = ("⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷")
 _STATIC_ICON = "✦"
 
+# Tool category rail — left-edge colored bar that signals tool kind at a
+# glance. Lower-cased tool name → category class. Unknown tools get the
+# default muted rail.
+_TOOL_CATEGORIES: dict[str, str] = {
+    "read": "read",
+    "grep": "read",
+    "glob": "read",
+    "ls": "read",
+    "listfiles": "read",
+    "repo_overview": "read",
+    "edit": "write",
+    "write": "write",
+    "notebookedit": "write",
+    "bash": "exec",
+    "bashoutput": "exec",
+    "killshell": "exec",
+    "webfetch": "web",
+    "websearch": "web",
+    "sub_agent": "agent",
+    "task": "agent",
+}
+
+
+def _tool_category(name: str) -> str:
+    return _TOOL_CATEGORIES.get(name.lower(), "other")
+
 
 class ToolStatusWidget(Widget):
     """Status display for a single tool execution.
@@ -61,8 +87,19 @@ class ToolStatusWidget(Widget):
         width: 100%;
         height: auto;
         layout: vertical;
-        padding: 0 0;
+        padding: 0 0 0 1;
+        border-left: tall #30363d;
     }
+    ToolStatusWidget.cat-read    { border-left: tall #56d4dd; }
+    ToolStatusWidget.cat-write   { border-left: tall #d2a8ff; }
+    ToolStatusWidget.cat-exec    { border-left: tall #f2cc60; }
+    ToolStatusWidget.cat-web     { border-left: tall #58a6ff; }
+    ToolStatusWidget.cat-agent   { border-left: tall #b14bff; }
+    ToolStatusWidget.cat-other   { border-left: tall #30363d; }
+    ToolStatusWidget.tool-flash  { border-left: tall #7cff5a; }
+    ToolStatusWidget.tool-fail-flash { border-left: tall #ff4d6d; }
+    ToolStatusWidget.tool-ok     { border-left: tall #3fb950; }
+    ToolStatusWidget.tool-fail   { border-left: tall #ff7b72; }
     ToolStatusWidget #header {
         width: 100%;
         height: auto;
@@ -108,6 +145,7 @@ class ToolStatusWidget(Widget):
             self.args_str = " ".join(args_str.split())
         self._spinner_timer: Timer | None = None
         self._spinner_index = 0
+        self.add_class(f"cat-{_tool_category(tool_name)}")
 
     # ── lifecycle ──────────────────────────────────────────────────────────
 
@@ -216,11 +254,24 @@ class ToolStatusWidget(Widget):
 
     # ── completion / failure ───────────────────────────────────────────────
 
+    def _flash_and_settle(self, flash_class: str, final_class: str) -> None:
+        """One-shot rail flash → settled color. No per-frame work."""
+        if not self.is_mounted:
+            return
+        self.add_class(flash_class)
+        def _settle() -> None:
+            if not self.is_mounted:
+                return
+            self.remove_class(flash_class)
+            self.add_class(final_class)
+        self.set_timer(0.2, _settle)
+
     async def complete(self, output: str = "") -> None:
         self._stop_spinner()
         if not self.is_mounted:
             return
         self._set_icon(_STATIC_ICON)
+        self._flash_and_settle("tool-flash", "tool-ok")
 
         formatted = format_output(self.tool_name, self.arguments, output)
         suffix = ""
@@ -249,6 +300,7 @@ class ToolStatusWidget(Widget):
         if not self.is_mounted:
             return
         self._set_icon(_STATIC_ICON)
+        self._flash_and_settle("tool-fail-flash", "tool-fail")
 
         err_line = ""
         if error:

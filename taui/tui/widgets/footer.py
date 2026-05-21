@@ -27,30 +27,26 @@ class CustomFooter(Static):
         self._busy = busy
         self.refresh()
 
+    def _chip(self, t: Text, key: str, label: str) -> None:
+        t.append("[", style="#30363d")
+        t.append(key, style="bold #e6edf3")
+        t.append("] ", style="#30363d")
+        t.append(label, style="#8b949e")
+        t.append("  ")
+
     def render(self) -> Text:
         t = Text()
-        t.append("ctrl+q", style="#e6edf3")
-        t.append(" quit  ", style="#8b949e")
-        t.append("ctrl+n", style="#e6edf3")
-        t.append(" new  ", style="#8b949e")
-        t.append("ctrl+b", style="#e6edf3")
-        t.append(" sidebar  ", style="#8b949e")
-        t.append("ctrl+r", style="#e6edf3")
-        t.append(" info  ", style="#8b949e")
-        t.append("ctrl+x", style="#e6edf3")
-        t.append(" context  ", style="#8b949e")
-        t.append("alt+←/→", style="#e6edf3")
-        t.append(" focus pane  ", style="#8b949e")
+        self._chip(t, "ctrl+q", "quit")
+        self._chip(t, "ctrl+n", "new")
+        self._chip(t, "ctrl+b", "sidebar")
+        self._chip(t, "ctrl+r", "info")
+        self._chip(t, "ctrl+x", "context")
+        self._chip(t, "alt+←/→", "focus pane")
         if self._busy:
-            t.append("enter", style="#e6edf3")
-            t.append(" steer  ", style="#8b949e")
-            t.append("alt+enter", style="#e6edf3")
-            t.append(" queue  ", style="#8b949e")
-            t.append("ctrl+c", style="#e6edf3")
-            t.append(" cancel", style="#8b949e")
+            self._chip(t, "enter", "steer")
+            self._chip(t, "alt+enter", "queue")
+            self._chip(t, "ctrl+c", "cancel")
         else:
-            t.append("enter", style="#e6edf3")
-            t.append(" send  ", style="#8b949e")
-            t.append("shift+enter", style="#e6edf3")
-            t.append(" newline", style="#8b949e")
+            self._chip(t, "enter", "send")
+            self._chip(t, "shift+enter", "newline")
         return t
