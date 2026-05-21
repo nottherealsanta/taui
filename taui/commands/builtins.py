@@ -252,15 +252,14 @@ def _profile_provider_model(profile: Any) -> str:
 
 @dataclass(slots=True)
 class SelfEditModeCommand:
-    """Start a self-edit session, optionally with an initial message."""
+    """Open the self-edit modal (configure agents, skills, commands, tools, …)."""
 
     name: str = "i"
-    description: str = "Start a self-edit session: /i [message]"
-    accepts_args: bool = True
+    description: str = "Open the self-edit modal"
+    accepts_args: bool = False
 
     async def execute(self, ctx: CommandContext) -> CommandResult:
-        msg = " ".join(ctx.args).strip()
-        return CommandResult.ok(msg, action="self_edit_open", message=msg)
+        return CommandResult.ok("", action="self_edit_open", message="")
 
 
 @dataclass(slots=True)

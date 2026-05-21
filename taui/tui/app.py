@@ -2538,10 +2538,7 @@ class TauiApp(App[None]):
             return
 
         if command in ("/i", "/self-edit"):
-            if not msg_arg:
-                await self.action_enter_self_edit()
-                return
-            await self._enter_self_edit_with_message(msg_arg)
+            await self.action_enter_self_edit()
             return
 
         if command in ("/clear", "/new"):
@@ -3287,86 +3284,6 @@ class TauiApp(App[None]):
     def _self_edit_scope_line(self, scope: str) -> str:
         path = self._self_edit_scope_path(scope)
         return f"[#f0c808]Current scope: {escape(scope)} {escape(str(path))}[/#f0c808]"
-
-    def _self_edit_scope_banner(self) -> str:
-        """Rich-markup block shown when self-edit mode opens — scope, paths, counts."""
-        from taui.self_edit.factory import collect_self_edit_inventory
-
-        inv = collect_self_edit_inventory(self._config.working_dir)
-
-        global_path = str(self._self_edit_scope_path("global"))
-        project_path = str(self._self_edit_scope_path("project"))
-
-        header_row = (
-            f"{'Category':<20}"
-            f"{'built-in':<18}"
-            f"{'global':<10}"
-            f"{'project':<10}"
-        )
-        body_rows: list[str] = []
-        for r in inv.rows:
-            body_rows.append(
-                f"{r.label:<20}"
-                f"{r.builtin_label:<18}"
-                f"{r.global_count:<10}"
-                f"{r.project_count:<10}"
-            )
-
-        lines = [
-            "[bold #f0c808]── self-edit mode · /exit to return ──[/bold #f0c808]",
-            f"[bold]{header_row}[/bold]",
-            *body_rows,
-            "",
-            f"[white]global   {escape(global_path)}[/white]",
-            f"[white]project  {escape(project_path)}[/white]",
-            "",
-            "[#f0c808]Tab toggles scope[/#f0c808]",
-            self._self_edit_scope_line(inv.active_scope),
-        ]
-        if inv.fresh:
-            lines += [
-                "",
-                "[dim italic]Fresh install — no global or project items yet. "
-                "The first file you create in one of the paths above becomes "
-                "the first item in that scope.[/dim italic]",
-            ]
-        return "\n".join(lines)
-
-    async def _enter_self_edit_with_message(self, msg: str) -> None:
-        """Enter self-edit mode and submit the first message."""
-        chat_log = self._get_active_chat_log()
-        if self._session is None:
-            await chat_log.mount(
-                Static("[yellow]No active session.[/yellow]", markup=True)
-            )
-            return
-
-        # If already in self-edit, exit first so we get a truly fresh session
-        if self._session.self_edit_mode:
-            await self._session.toggle_self_edit_mode()
-
-        await self._session.toggle_self_edit_mode()
-        await chat_log.remove_children()
-        await chat_log.mount(
-            Static(self._self_edit_scope_banner(), markup=True)
-        )
-        self._wire_callbacks()
-        self._update_status()
-
-        if not msg:
-            self._smart_scroll()
-            return
-
-        # Mount user message and send via normal path
-        await chat_log.mount(
-            Static(
-                f"[bold #e6edf3]{escape(msg)}[/bold #e6edf3]",
-                classes="user-message",
-                markup=True,
-            )
-        )
-        self._smart_scroll()
-        self._send_and_drain(msg)
 
     def _apply_self_edit_profile(self, profile: AgentProfile) -> None:
         if self._session is None:
