@@ -55,6 +55,13 @@ class Config:
     theme: dict = field(default_factory=dict)  # style overrides
     keybindings: dict = field(default_factory=dict)  # custom keybindings
     extension_dirs: list[str] = field(default_factory=list)
+    # Prefix characters for input triggers
+    prefixes: dict[str, str] = field(default_factory=lambda: {
+        "file_attach": "@",
+        "command": "/",
+        "skills": "!",
+        "prompts": "#",
+    })
     # Notifications: in-app toast when focused, OS-level when backgrounded.
     notifications: bool = True
     notify_on_turn_done: bool = True
@@ -86,6 +93,18 @@ class Config:
             val = taui_cfg["extension_dirs"]
             if isinstance(val, list):
                 kwargs["extension_dirs"] = val
+        if "prefixes" in taui_cfg:
+            val = taui_cfg["prefixes"]
+            if isinstance(val, dict):
+                # Merge with defaults so missing keys still have a value
+                defaults = {
+                    "file_attach": "@",
+                    "command": "/",
+                    "skills": "!",
+                    "prompts": "#",
+                }
+                defaults.update(val)
+                kwargs["prefixes"] = defaults
         for fld in ("notifications", "notify_on_turn_done", "notify_on_question"):
             if fld in taui_cfg:
                 kwargs[fld] = bool(taui_cfg[fld])

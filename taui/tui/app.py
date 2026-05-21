@@ -907,6 +907,7 @@ class TauiApp(App[None]):
         chat_input.set_model_completer(self._complete_model_arg)
         chat_input.set_arg_completer("agents", self._complete_agents_arg)
         chat_input.set_at_completer(self._complete_at_attachment)
+        chat_input.set_prefixes(self._config.prefixes)
         self._refresh_command_completions()
         chat_input.can_submit = True
 
@@ -1095,8 +1096,9 @@ class TauiApp(App[None]):
         result: list[str] = []
         images: list[str] = []
         for token in tokens:
-            if token.startswith("@") and len(token) > 1:
-                fpath = Path(token[1:])
+            fa_prefix = self._config.prefixes.get("file_attach", "@")
+            if token.startswith(fa_prefix) and len(token) > len(fa_prefix):
+                fpath = Path(token[len(fa_prefix):])
                 if not fpath.is_absolute():
                     fpath = self._config.working_dir / fpath
                 if (
@@ -1650,7 +1652,7 @@ class TauiApp(App[None]):
         text = event.value
         images = event.images or None
 
-        if text.startswith("/"):
+        if text.startswith(self._config.prefixes.get("command", "/")):
             await self._handle_command(text)
             return
 

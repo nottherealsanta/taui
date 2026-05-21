@@ -214,6 +214,9 @@ class ChatInput(TextArea):
         self._at_completer: Callable[[str], list[tuple[str, bool]]] | None = None
         self._at_range: tuple[int, int] | None = None
         self._at_is_dir: dict[str, bool] = {}
+        # Configurable prefix characters
+        self._file_attach_prefix: str = "@"
+        self._command_prefix: str = "/"
 
     def set_completions(self, completions: list[tuple[str, str] | Completion]) -> None:
         """Set available completions.
@@ -256,6 +259,11 @@ class ChatInput(TextArea):
         """Install completion for `@<file-or-folder>` references."""
         self._at_completer = completer
 
+    def set_prefixes(self, prefixes: dict[str, str]) -> None:
+        """Configure prefix characters for file attachment and commands."""
+        self._file_attach_prefix = prefixes.get("file_attach", "@")
+        self._command_prefix = prefixes.get("command", "/")
+
     def _cursor_text_offset(self) -> int:
         """Return the cursor position as a character offset into ``self.text``."""
         row, col = self.cursor_location
@@ -284,7 +292,7 @@ class ChatInput(TextArea):
         while i > 0 and not text[i - 1].isspace():
             i -= 1
         # i is now the start of the token.
-        if i >= len(text) or text[i] != "@":
+        if i >= len(text) or text[i] != self._file_attach_prefix:
             return None
         # The `@` must be at start-of-text or preceded by whitespace.
         if i > 0 and not text[i - 1].isspace():
@@ -602,7 +610,7 @@ class ChatInput(TextArea):
 
     def _command_arg_prefix(self) -> tuple[str, str] | None:
         """Return (command, arg prefix) when command arg completion applies."""
-        if not self.text.startswith("/") or " " not in self.text:
+        if not self.text.startswith(self._command_prefix) or " " not in self.text:
             return None
         command, arg = self.text[1:].split(" ", 1)
         command = command.lower()
@@ -725,13 +733,13 @@ class ChatInput(TextArea):
         from taui.tui.widgets.info2 import Info2
 
         text = self.text
-        if not text.startswith("/"):
+        if not text.startswith(self._command_prefix):
             self._dismiss_completion()
             return
 
         arg_prefix = self._command_arg_prefix()
         prefix = text[1:].split()[0] if text[1:].strip() else text[1:]
-        dropdown_prefix = "/"
+        dropdown_prefix = self._command_prefix
         if arg_prefix is not None:
             command_name, prefix = arg_prefix
             matches = self._get_matching_command_args(command_name, prefix)
@@ -1154,7 +1162,7 @@ class ChatInput(TextArea):
             return
         self._at_range = None
         text = self.text
-        if text.startswith("/") and (
+        if text.startswith(self._command_prefix) and (
             " " not in text[1:] or self._command_arg_prefix() is not None
         ):
             self._show_completion()

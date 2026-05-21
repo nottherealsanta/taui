@@ -425,9 +425,6 @@ def test_long_markdown_reply(snap_compare, tmp_path, monkeypatch):
     assert snap_compare(app, run_before=setup, terminal_size=(100, 30))
 
 
-# ── Turn folding ───────────────────────────────────────────────────────
-
-
 def test_three_turns_oldest_collapsed(snap_compare, tmp_path, monkeypatch):
     """With three sequential exchanges, the oldest should auto-collapse."""
     provider = ScriptedProvider(
@@ -632,6 +629,25 @@ def test_attachment_pills_with_paste_and_image(snap_compare, tmp_path, monkeypat
         # Type some plain text between the markers so the [1] / [2] tokens
         # appear with surrounding context.
         chat_input.insert(" look at ", location=(0, 3))
+        await pilot.pause()
+        await _close_cleanly(pilot)
+
+    assert snap_compare(app, run_before=setup, terminal_size=(100, 30))
+
+
+def test_self_edit_general_tab(snap_compare, tmp_path, monkeypatch):
+    provider = scenarios.happy_path("(unused)")
+    app = use_scripted_provider(monkeypatch, tmp_path, provider)
+
+    async def setup(pilot: Pilot) -> None:
+        await _wait_until_ready(pilot)
+        # Open self-edit modal
+        await pilot.press("ctrl+e")
+        await pilot.pause()
+        await pilot.pause()
+        # Navigate to General tab (last category) — press left to wrap
+        await pilot.press("left")
+        await pilot.pause()
         await pilot.pause()
         await _close_cleanly(pilot)
 
