@@ -10,6 +10,12 @@ from typing import Any
 
 _AGENT_ID_RE = re.compile(r"^[A-Z]{3}$")
 
+# Valid `usage` values for AgentProfile. Controls where the profile shows up:
+#   "main" — main agent only (Tab cycle, /agents, picker); not spawnable via sub_agent
+#   "sub"  — sub-agent only (hidden from main UI); spawnable via sub_agent(agent_id=…)
+#   "both" — available in both contexts (default)
+AGENT_USAGE_VALUES = ("main", "sub", "both")
+
 
 @dataclass(slots=True)
 class ToolConfig:
@@ -31,6 +37,27 @@ class AgentProfile:
     prompt_path: Path | None = None
     tool_config: dict[str, ToolConfig] = field(default_factory=dict)
     auto_approve_all: bool = False
+    # Where the profile is reachable. One of "main", "sub", "both".
+    usage: str = "both"
+    # Optional accent color (hex like "#7aa2f7", named like "cyan", or "").
+    # Used to tint the agent badge in the picker / info bar. Sub-only agents
+    # don't use a color.
+    color: str = ""
+
+    @property
+    def subagent_only(self) -> bool:
+        """Back-compat alias: True iff this profile is hidden from main UI."""
+        return self.usage == "sub"
+
+    @property
+    def main_visible(self) -> bool:
+        """Show in the main agent picker / Tab cycle / /agents listing."""
+        return self.usage in ("main", "both")
+
+    @property
+    def spawnable_as_sub(self) -> bool:
+        """Reachable via `sub_agent` tool with `agent_id=<ID>`."""
+        return self.usage in ("sub", "both")
 
 
 @dataclass(slots=True)
@@ -76,6 +103,26 @@ _DEFAULT_AGENTS = [
         provider="",
         model="",
         allowed_tools=["read", "glob", "grep"],
+    ),
+    AgentProfile(
+        id="EXP",
+        name="Explorer",
+        prompt=(
+            "You are EXP, a code-exploration sub-agent. You are spawned by a "
+            "parent agent to answer a focused question about the codebase.\n\n"
+            "You have read-only tools: `read`, `glob`, `grep`, and `bash` "
+            "(for safe inspection like `ls`, `wc`, `head`, `cat`). Do not "
+            "modify files.\n\n"
+            "Workflow: cast a wide net first (glob/grep), narrow to the "
+            "files that matter, then read them. Return a tight, structured "
+            "answer with file_path:line_number references — no padding, no "
+            "speculation. If the question is ambiguous, answer the most "
+            "useful interpretation and note the alternative in one line."
+        ),
+        provider="",
+        model="",
+        allowed_tools=["read", "glob", "grep", "bash"],
+        usage="sub",
     ),
 ]
 
@@ -218,6 +265,8 @@ class SelfEditStore:
             prompt_path=prompt_path,
             tool_config={},
             auto_approve_all=profile.auto_approve_all,
+            usage=profile.usage,
+            color=profile.color,
         )
 
     def _agent_from_row(self, row: Any, scope: str) -> tuple[AgentProfile | None, bool]:
@@ -263,6 +312,15 @@ class SelfEditStore:
                             policy=str(tval.get("policy", "auto")),
                             param_restrictions=dict(tval.get("param_restrictions", {})),
                         )
+            # Resolve `usage` — prefer the new field; fall back to the legacy
+            # `subagent_only` boolean if a project file pre-dates `usage`.
+            raw_usage = str(row.get("usage", "")).strip().lower()
+            if raw_usage in AGENT_USAGE_VALUES:
+                usage = raw_usage
+            elif bool(row.get("subagent_only", False)):
+                usage = "sub"
+            else:
+                usage = "both"
             return (
                 AgentProfile(
                     id=agent_id,
@@ -274,6 +332,8 @@ class SelfEditStore:
                     prompt_path=prompt_path,
                     tool_config=tool_config,
                     auto_approve_all=bool(row.get("auto_approve_all", False)),
+                    usage=usage,
+                    color=str(row.get("color", "")),
                 ),
                 migrated,
             )
@@ -294,4 +354,6 @@ class SelfEditStore:
                 for name, tc in profile.tool_config.items()
             },
             "auto_approve_all": profile.auto_approve_all,
+            "usage": profile.usage,
+            "color": profile.color,
         }

@@ -134,7 +134,13 @@ class _AgentPaletteProvider(Provider):
             return
         try:
             agents = sorted(
-                SelfEditStore(app._config.working_dir).load_agents().values(),
+                (
+                    p
+                    for p in SelfEditStore(app._config.working_dir)
+                    .load_agents()
+                    .values()
+                    if not p.subagent_only
+                ),
                 key=lambda item: item.id,
             )
         except Exception:
@@ -158,9 +164,12 @@ class _AgentPaletteProvider(Provider):
                     continue
             else:
                 score = 1.0
+            color = str(getattr(profile, "color", "") or "")
             yield Hit(
                 score,
-                _format_agent_row(agent_id, name, provider_model, is_current),
+                _format_agent_row(
+                    agent_id, name, provider_model, is_current, color=color
+                ),
                 lambda profile=profile: app._apply_self_edit_profile(profile),
                 text=haystack,
                 help=None,
@@ -189,11 +198,21 @@ def _format_model_row(
 
 
 def _format_agent_row(
-    agent_id: str, name: str, provider_model: str, is_current: bool
+    agent_id: str,
+    name: str,
+    provider_model: str,
+    is_current: bool,
+    *,
+    color: str = "",
 ) -> Text:
-    """One-line agent row: id (bold)  name  provider/model  [◀]."""
+    """One-line agent row: id (bold)  name  provider/model  [◀].
+
+    When the profile defines an accent `color`, the agent_id is tinted to
+    make different profiles visually distinguishable in the palette.
+    """
     row = Text()
-    row.append(agent_id, style="bold")
+    id_style = f"bold {color}" if color else "bold"
+    row.append(agent_id, style=id_style)
     if name:
         row.append("  ")
         row.append(name, style="dim")
@@ -1161,6 +1180,8 @@ class TauiApp(App[None]):
         agents = store.load_agents()
         matches: list[tuple[str, str, bool]] = []
         for agent in sorted(agents.values(), key=lambda item: item.id):
+            if agent.subagent_only:
+                continue
             if prefix and not agent.id.lower().startswith(prefix.lower()):
                 continue
             matches.append((agent.id, agent.name, False))
@@ -1287,7 +1308,10 @@ class TauiApp(App[None]):
         if self._session is None:
             return
         agents = SelfEditStore(self._config.working_dir).load_agents()
-        profiles = sorted(agents.values(), key=lambda item: item.id)
+        profiles = sorted(
+            (p for p in agents.values() if not p.subagent_only),
+            key=lambda item: item.id,
+        )
         if not profiles:
             return
         active_id = str(getattr(self._session._loop, "agent_id", "") or "").upper()

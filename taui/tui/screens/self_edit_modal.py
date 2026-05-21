@@ -198,6 +198,160 @@ class _ToolToggle(Static):
         return self._selected
 
 
+# ── Usage toggle (main / sub / both) ───────────────────────────────
+
+
+_USAGE_LABELS: dict[str, str] = {
+    "main": "MAIN ONLY",
+    "sub": "SUB ONLY",
+    "both": "BOTH",
+}
+
+
+class _UsageToggle(Static):
+    """Single segment of the 3-way usage selector."""
+
+    DEFAULT_CSS = f"""
+    _UsageToggle {{
+        height: 1;
+        width: auto;
+        padding: 0 2;
+        color: #666;
+        background: {INNER_BG};
+        content-align: center middle;
+    }}
+    _UsageToggle.-on {{
+        color: {DEEP_BLACK};
+        background: {ACCENT};
+        text-style: bold;
+    }}
+    _UsageToggle:hover {{
+        color: {ACCENT};
+    }}
+    _UsageToggle.-on:hover {{
+        color: {DEEP_BLACK};
+    }}
+    """
+
+    class Changed(events.Event):
+        def __init__(self, value: str) -> None:
+            super().__init__()
+            self.value = value
+
+    def __init__(self, value: str, *, selected: bool) -> None:
+        super().__init__()
+        self._value = value
+        if selected:
+            self.add_class("-on")
+
+    def render(self) -> str:
+        return _USAGE_LABELS.get(self._value, self._value.upper())
+
+    def on_click(self, event: Click) -> None:
+        event.stop()
+        if "-on" in self.classes:
+            return
+        self.post_message(_UsageToggle.Changed(self._value))
+
+    @property
+    def value(self) -> str:
+        return self._value
+
+    def set_active(self, active: bool) -> None:
+        if active:
+            self.add_class("-on")
+        else:
+            self.remove_class("-on")
+        self.refresh()
+
+
+# ── Color swatch (single colour cell) ──────────────────────────────
+
+# Curated palette — kept short so it stays a one-row selector.
+# Empty string means "no accent colour".
+AGENT_COLOR_PALETTE: tuple[tuple[str, str], ...] = (
+    ("",        "—"),         # no accent
+    ("#f0c808", "yellow"),
+    ("#7aa2f7", "blue"),
+    ("#9ece6a", "green"),
+    ("#bb9af7", "purple"),
+    ("#f7768e", "red"),
+    ("#73daca", "teal"),
+    ("#ff9e64", "orange"),
+    ("#e0af68", "amber"),
+    ("#a9b1d6", "grey"),
+)
+
+
+class _ColorSwatch(Static):
+    """Single clickable color cell in the agent color selector."""
+
+    DEFAULT_CSS = f"""
+    _ColorSwatch {{
+        height: 1;
+        width: 5;
+        margin: 0 1 0 0;
+        background: {INNER_BG};
+        color: {INNER_BG};
+        content-align: center middle;
+    }}
+    _ColorSwatch.-on {{
+        text-style: bold;
+    }}
+    _ColorSwatch.-none {{
+        color: #555;
+        background: {INNER_BG};
+    }}
+    _ColorSwatch.-none.-on {{
+        color: {ACCENT};
+    }}
+    _ColorSwatch:hover {{
+        text-style: bold;
+    }}
+    """
+
+    class Changed(events.Event):
+        def __init__(self, value: str) -> None:
+            super().__init__()
+            self.value = value
+
+    def __init__(self, color: str, *, selected: bool) -> None:
+        super().__init__()
+        self._color = color
+        if not color:
+            self.add_class("-none")
+        else:
+            # Per-instance background override.
+            self.styles.background = color
+            self.styles.color = color
+        if selected:
+            self.add_class("-on")
+
+    def render(self) -> str:
+        if not self._color:
+            return "  —  "
+        # Render a check on selected swatches; padded with spaces so the
+        # tile shows the background colour either way.
+        return "  ✓  " if "-on" in self.classes else "     "
+
+    def on_click(self, event: Click) -> None:
+        event.stop()
+        if "-on" in self.classes:
+            return
+        self.post_message(_ColorSwatch.Changed(self._color))
+
+    @property
+    def value(self) -> str:
+        return self._color
+
+    def set_active(self, active: bool) -> None:
+        if active:
+            self.add_class("-on")
+        else:
+            self.remove_class("-on")
+        self.refresh()
+
+
 # ── Fuzzy model picker (used after clicking Generate) ──────────────
 
 
@@ -511,6 +665,19 @@ class _Editor(ModalScreen):
         color: {DEEP_BLACK};
         text-style: bold;
     }}
+    #se-editor-dialog #se-editor-usage {{
+        height: 1;
+        width: auto;
+        padding: 0 1;
+    }}
+    #se-editor-dialog #se-editor-color {{
+        height: 1;
+        width: auto;
+        padding: 0 1;
+    }}
+    #se-editor-dialog .se-hidden {{
+        display: none;
+    }}
     """
 
     BINDINGS = [
@@ -601,6 +768,47 @@ class _Editor(ModalScreen):
                 classes="se-field-hint",
                 markup=True,
             )
+
+            # ── USAGE: 3-way toggle ─────────────────────────────
+            initial_usage = self._initial_usage()
+            yield Static(
+                "USAGE  [dim](main = tab/picker only · sub = spawnable by sub_agent · both)[/dim]",
+                classes="se-tools-label",
+                markup=True,
+            )
+            with Horizontal(id="se-editor-usage"):
+                for value in ("main", "sub", "both"):
+                    yield _UsageToggle(value, selected=(value == initial_usage))
+
+            # ── COLOR: row of swatches — main + both only ──────
+            color_row = Horizontal(id="se-editor-color")
+            if initial_usage != "sub":
+                yield Static(
+                    "COLOR  [dim](badge accent in picker / info bar)[/dim]",
+                    classes="se-tools-label",
+                    id="se-editor-color-label",
+                    markup=True,
+                )
+                yield color_row
+            else:
+                # Mount hidden so we can re-show on usage change without
+                # rebuilding the form. Display is suppressed via CSS class.
+                yield Static(
+                    "COLOR  [dim](badge accent in picker / info bar)[/dim]",
+                    classes="se-tools-label se-hidden",
+                    id="se-editor-color-label",
+                    markup=True,
+                )
+                color_row.add_class("se-hidden")
+                yield color_row
+            initial_color = str(self._initial_extra.get("color", "") or "")
+            with color_row:
+                for hex_value, _label in AGENT_COLOR_PALETTE:
+                    yield _ColorSwatch(
+                        hex_value,
+                        selected=(hex_value == initial_color),
+                    )
+
             yield Static("ALLOWED TOOLS  [dim](pick at least one)[/dim]",
                          classes="se-tools-label", markup=True)
             selected = set(self._initial_extra.get("allowed_tools", []))
@@ -608,6 +816,18 @@ class _Editor(ModalScreen):
             with Grid(id="se-editor-tools"):
                 for name in all_tools:
                     yield _ToolToggle(name, name in selected)
+
+    def _initial_usage(self) -> str:
+        """Read the initial usage value from the extra dict, defaulting to 'both'."""
+        from taui.self_edit.store import AGENT_USAGE_VALUES
+
+        raw = str(self._initial_extra.get("usage", "") or "").strip().lower()
+        if raw in AGENT_USAGE_VALUES:
+            return raw
+        # Back-compat: read the legacy boolean if present.
+        if bool(self._initial_extra.get("subagent_only", False)):
+            return "sub"
+        return "both"
 
     def _initial_extra_model_only(self) -> str:
         """For the agent MODEL ID field — combined 'provider/model' string.
@@ -689,6 +909,30 @@ class _Editor(ModalScreen):
         else:
             self.dismiss(None)
 
+    @on(_UsageToggle.Changed)
+    def _on_usage_changed(self, event: _UsageToggle.Changed) -> None:
+        """Update the active segment and show/hide the colour row."""
+        event.stop()
+        for toggle in self.query(_UsageToggle):
+            toggle.set_active(toggle.value == event.value)
+        try:
+            color_row = self.query_one("#se-editor-color", Horizontal)
+            color_label = self.query_one("#se-editor-color-label", Static)
+        except Exception:
+            return
+        if event.value == "sub":
+            color_row.add_class("se-hidden")
+            color_label.add_class("se-hidden")
+        else:
+            color_row.remove_class("se-hidden")
+            color_label.remove_class("se-hidden")
+
+    @on(_ColorSwatch.Changed)
+    def _on_color_changed(self, event: _ColorSwatch.Changed) -> None:
+        event.stop()
+        for swatch in self.query(_ColorSwatch):
+            swatch.set_active(swatch.value == event.value)
+
     def _submit(self) -> None:
         try:
             ident = self.query_one("#se-editor-id", Input).value.strip()
@@ -718,11 +962,28 @@ class _Editor(ModalScreen):
                 )
             except Exception:
                 provider_str, model_str = "", ""
+            # Usage + color come from the toggle widgets.
+            try:
+                usage = next(
+                    t.value for t in self.query(_UsageToggle) if "-on" in t.classes
+                )
+            except StopIteration:
+                usage = self._initial_usage()
+            try:
+                color = next(
+                    s.value for s in self.query(_ColorSwatch) if "-on" in s.classes
+                )
+            except StopIteration:
+                color = str(self._initial_extra.get("color", "") or "")
+            if usage == "sub":
+                color = ""
             extra = {
                 "name": ident,
                 "provider": provider_str,
                 "model": model_str,
                 "allowed_tools": allowed_tools,
+                "usage": usage,
+                "color": color,
             }
         self.dismiss(
             {

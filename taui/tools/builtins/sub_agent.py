@@ -65,12 +65,24 @@ class SubAgentTool:
                             "Be specific about what output is expected."
                         ),
                     },
+                    "agent_id": {
+                        "type": "string",
+                        "description": (
+                            "Optional 3-letter ID of an agent profile to "
+                            "spawn (e.g. \"EXP\" for the code explorer). "
+                            "When set, the profile's system prompt, allowed "
+                            "tools, and model are used. `tools` overrides "
+                            "the profile's tool list when both are given."
+                        ),
+                    },
                     "tools": {
                         "type": "array",
                         "items": {"type": "string"},
                         "description": (
                             "Tool names the sub-agent can use. "
-                            "Defaults to read-only tools: read, glob, grep, bash."
+                            "Defaults to read-only tools: read, glob, grep, bash. "
+                            "Ignored when `agent_id` is set and this is not "
+                            "provided."
                         ),
                     },
                     "max_turns": {
@@ -91,29 +103,59 @@ class SubAgentTool:
                 "Sub-agent not configured. No parent session."
             )
 
-        # Resolve tool subset
+        # Resolve agent profile (optional)
+        profile = None
+        agent_id_arg = arguments.get("agent_id")
+        if isinstance(agent_id_arg, str) and agent_id_arg.strip():
+            profile, err = self._resolve_profile(agent_id_arg.strip().upper())
+            if err is not None:
+                return ToolResult.fail(err)
+
+        # Resolve tool subset: explicit `tools` wins, then profile's allowed_tools,
+        # then defaults.
         requested_tools = arguments.get("tools")
         default_tools = ["read", "glob", "grep", "bash"]
         tool_names: list[str] | None
 
         if requested_tools and isinstance(requested_tools, list):
             tool_names = [t for t in requested_tools if t != "sub_agent"]
+        elif profile is not None and profile.allowed_tools:
+            tool_names = [t for t in profile.allowed_tools if t != "sub_agent"]
         else:
             tool_names = [t for t in default_tools]
 
         max_turns = min(arguments.get("max_turns", 10), 25)
 
+        # System prompt: profile prompt wins over default
+        if profile is not None and profile.prompt:
+            system_prompt = profile.prompt
+        else:
+            system_prompt = (
+                "You are a focused research agent. "
+                "Complete the given task concisely and "
+                "return your findings."
+            )
+
+        # Model: profile override wins over the parent's model
+        model = (profile.model if profile and profile.model else self._model) or None
+
+        # Stable name for the sub-session (becomes the agent_id on the loop /
+        # the stream id). When spawning a profile, prefix the ID so the
+        # operator can tell at a glance which profile is running.
+        from uuid import uuid4
+        if profile is not None:
+            sub_name = f"{profile.id.lower()}-{uuid4().hex[:6]}"
+        else:
+            sub_name = None
+
         # Preferred path: use Session.create_sub_session()
         if self._session is not None:
             try:
                 sub = await self._session.create_sub_session(
+                    name=sub_name,
                     tools=tool_names or None,
-                    system_prompt=(
-                        "You are a focused research agent. "
-                        "Complete the given task concisely and "
-                        "return your findings."
-                    ),
-                    model=self._model or None,
+                    system_prompt=system_prompt,
+                    model=model,
                     max_turns=max_turns,
                 )
                 result = await sub.send(task)
@@ -121,20 +163,55 @@ class SubAgentTool:
                     result.text,
                     turns=result.turns,
                     state=result.state.value,
+                    agent_id=profile.id if profile else None,
                 )
             except Exception as exc:
                 return ToolResult.fail(f"Sub-agent failed: {exc}")
 
         # Legacy fallback: direct AgentLoop construction
         return await self._execute_legacy(
-            task, tool_names, max_turns
+            task, tool_names, max_turns, system_prompt
         )
+
+    def _resolve_profile(self, agent_id: str) -> tuple[Any, str | None]:
+        """Look up an AgentProfile by ID via the parent session's working dir.
+
+        Returns (profile, error_message). Profiles with `usage == "main"` are
+        refused — they're meant for direct user control only.
+        """
+        if self._session is None:
+            return None, (
+                "Cannot resolve `agent_id`: sub-agent has no parent session."
+            )
+        try:
+            from taui.self_edit.store import SelfEditStore
+
+            working_dir = self._session.config.working_dir
+            profiles = SelfEditStore(working_dir).load_agents()
+        except Exception as exc:
+            return None, f"Failed to load agent profiles: {exc}"
+        profile = profiles.get(agent_id)
+        if profile is None:
+            spawnable = sorted(
+                p.id for p in profiles.values() if p.spawnable_as_sub
+            )
+            available = ", ".join(spawnable) or "(none)"
+            return None, (
+                f"Unknown agent_id: {agent_id}. Spawnable: {available}"
+            )
+        if not profile.spawnable_as_sub:
+            return None, (
+                f"Agent {agent_id} is marked main-only "
+                "(usage=\"main\") and cannot be spawned as a sub-agent."
+            )
+        return profile, None
 
     async def _execute_legacy(
         self,
         task: str,
         tool_names: list[str] | None,
         max_turns: int,
+        system_prompt: str | None = None,
     ) -> ToolResult:
         """Fallback execution using direct LLM/executor injection."""
         from taui.agent.loop import AgentLoop
@@ -158,7 +235,7 @@ class SubAgentTool:
             llm=self._llm,
             executor=child_executor,
             stream=self._stream,
-            system_prompt=self._system_prompt or (
+            system_prompt=system_prompt or self._system_prompt or (
                 "You are a focused research agent. Complete "
                 "the given task concisely."
             ),

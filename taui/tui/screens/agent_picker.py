@@ -84,8 +84,15 @@ def _agent_prompt(agent: AgentProfile, *, current: str) -> Text:
     model = "/".join(part for part in (agent.provider, agent.model) if part) or "-"
     marker = " ◀" if agent.id.upper() == current else ""
 
+    if marker:
+        id_style = "bold cyan"
+    elif agent.color:
+        id_style = f"bold {agent.color}"
+    else:
+        id_style = "white"
+
     text = Text()
-    text.append(f"{agent.id:<5s}", style="bold cyan" if marker else "white")
+    text.append(f"{agent.id:<5s}", style=id_style)
     text.append(f"{agent.name:<24s}", style="white")
     text.append(f"  {model}{marker}", style="dim")
     return text

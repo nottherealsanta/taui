@@ -164,9 +164,11 @@ def _list_agents(working_dir: Path, scope: str) -> list[Item]:
             (scope == "global" and Path.home() in prompt_path.parents)
             or (scope == "project" and prompt_path.is_relative_to(working_dir))
         )
-        if not in_scope and not (profile.id in ("DEF", "PLN") and scope == "project"):
+        if not in_scope and not (
+            profile.id in ("DEF", "PLN", "EXP") and scope == "project"
+        ):
             continue
-        builtin = profile.id in ("DEF", "PLN")
+        builtin = profile.id in ("DEF", "PLN", "EXP")
         model_label = "/".join(
             part for part in (profile.provider, profile.model) if part
         ) or "—"
@@ -187,6 +189,8 @@ def _list_agents(working_dir: Path, scope: str) -> list[Item]:
                     "model": profile.model,
                     "allowed_tools": list(profile.allowed_tools),
                     "auto_approve_all": profile.auto_approve_all,
+                    "usage": profile.usage,
+                    "color": profile.color,
                 },
             )
         )
@@ -693,6 +697,11 @@ def _save_agent(
     from taui.self_edit.store import AgentProfile
 
     store = SelfEditStore(working_dir)
+    from taui.self_edit.store import AGENT_USAGE_VALUES
+
+    usage = str(extra.get("usage", "both")).strip().lower()
+    if usage not in AGENT_USAGE_VALUES:
+        usage = "sub" if bool(extra.get("subagent_only", False)) else "both"
     profile = AgentProfile(
         id=identifier.upper(),
         name=str(extra.get("name", identifier)),
@@ -702,6 +711,8 @@ def _save_agent(
         allowed_tools=list(extra.get("allowed_tools", [])),
         tool_config={},
         auto_approve_all=bool(extra.get("auto_approve_all", False)),
+        usage=usage,
+        color=str(extra.get("color", "")),
     )
     store.save_agent(profile, scope)
     return store._agent_prompt_file(scope, identifier.upper())

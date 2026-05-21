@@ -193,7 +193,10 @@ class AgentsCommand:
 
         session = self._get_session()
         store = self._get_store()
-        agents = store.load_agents()
+        all_agents = store.load_agents()
+        # `/agents` only shows/activates main-mode agents — sub-agent-only
+        # profiles are reachable through the `sub_agent` tool, not directly.
+        agents = {aid: p for aid, p in all_agents.items() if not p.subagent_only}
         if not ctx.args:
             return CommandResult.ok(
                 "", action="open_agent_picker"

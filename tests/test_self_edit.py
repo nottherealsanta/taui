@@ -43,13 +43,21 @@ def test_self_edit_scope_roundtrip(tmp_path):
 def test_agents_include_defaults_and_save_prompt_file(tmp_path):
     store = SelfEditStore(tmp_path)
     agents = store.load_agents()
-    assert list(agents) == ["DEF", "PLN"]
+    assert list(agents) == ["DEF", "PLN", "EXP"]
     assert agents["DEF"].prompt_path is not None
     assert agents["DEF"].prompt_path.exists()
     assert agents["DEF"].allowed_tools == []
     assert agents["PLN"].prompt_path is not None
     assert agents["PLN"].prompt_path.exists()
     assert agents["PLN"].allowed_tools == ["read", "glob", "grep"]
+    # EXP is a sub-agent-only explorer profile.
+    assert agents["EXP"].usage == "sub"
+    assert agents["EXP"].subagent_only is True
+    assert agents["EXP"].main_visible is False
+    assert agents["EXP"].spawnable_as_sub is True
+    assert agents["EXP"].allowed_tools == ["read", "glob", "grep", "bash"]
+    assert agents["DEF"].usage == "both"
+    assert agents["PLN"].usage == "both"
 
     custom = AgentProfile(
         id="ABC",

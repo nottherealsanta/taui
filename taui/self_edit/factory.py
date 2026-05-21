@@ -239,7 +239,7 @@ def _count_agents(path: Path) -> int:
     return sum(
         1
         for row in rows
-        if isinstance(row, dict) and str(row.get("id", "")).upper() not in {"DEF", "PLN"}
+        if isinstance(row, dict) and str(row.get("id", "")).upper() not in {"DEF", "PLN", "EXP"}
     )
 
 
