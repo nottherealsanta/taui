@@ -300,6 +300,11 @@ def all_tool_names(working_dir: Path) -> list[str]:
     return sorted(names)
 
 
+def builtin_tool_names() -> set[str]:
+    """Set of identifiers for built-in tools (used for filtering UI)."""
+    return {item.identifier for item in _list_builtin_tools()}
+
+
 def _list_prompts(working_dir: Path, scope: str) -> list[Item]:
     """Standalone prompts: any .md under prompts/."""
     root = scope_root(working_dir, scope) / "prompts"

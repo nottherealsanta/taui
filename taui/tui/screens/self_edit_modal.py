@@ -198,6 +198,64 @@ class _ToolToggle(Static):
         return self._selected
 
 
+class _ShowBuiltinToggle(Static):
+    """Single clickable on/off pill for the 'show built-in' tools filter."""
+
+    class Changed(events.Event):
+        def __init__(self, value: bool) -> None:
+            super().__init__()
+            self.value = value
+
+    def __init__(self, *, selected: bool) -> None:
+        super().__init__(classes="se-tools-toggle")
+        self._selected = selected
+        if selected:
+            self.add_class("-on")
+
+    def render(self) -> str:
+        marker = "✓" if self._selected else "·"
+        return f" {marker} show built-in "
+
+    def on_click(self, event: Click) -> None:
+        event.stop()
+        self._selected = not self._selected
+        if self._selected:
+            self.add_class("-on")
+        else:
+            self.remove_class("-on")
+        self.refresh()
+        self.post_message(_ShowBuiltinToggle.Changed(self._selected))
+
+
+class _ListBuiltinToggle(Static):
+    """Show/hide built-in items in the main category list (TOOLS tab)."""
+
+    class Changed(events.Event):
+        def __init__(self, value: bool) -> None:
+            super().__init__()
+            self.value = value
+
+    def __init__(self, *, selected: bool) -> None:
+        super().__init__()
+        self._selected = selected
+        if selected:
+            self.add_class("-on")
+
+    def render(self) -> str:
+        marker = "✓" if self._selected else "·"
+        return f" {marker} show built-in "
+
+    def on_click(self, event: Click) -> None:
+        event.stop()
+        self._selected = not self._selected
+        if self._selected:
+            self.add_class("-on")
+        else:
+            self.remove_class("-on")
+        self.refresh()
+        self.post_message(_ListBuiltinToggle.Changed(self._selected))
+
+
 # ── Usage toggle (main / sub / both) ───────────────────────────────
 
 
@@ -289,7 +347,7 @@ class _ColorSwatch(Static):
     DEFAULT_CSS = f"""
     _ColorSwatch {{
         height: 1;
-        width: 5;
+        width: 3;
         margin: 0 1 0 0;
         background: {INNER_BG};
         color: {INNER_BG};
@@ -332,10 +390,10 @@ class _ColorSwatch(Static):
 
     def render(self) -> str:
         if not self._color:
-            return "  —  "
+            return " — "
         # Render a check on selected swatches; padded with spaces so the
         # tile shows the background colour either way.
-        return "  ✓  " if "-on" in self.classes else "     "
+        return " ✓ " if "-on" in self.classes else "   "
 
     def on_click(self, event: Click) -> None:
         event.stop()
@@ -1816,12 +1874,34 @@ class _InlineEditor(Vertical):
         border: solid {GRID_GREY};
         padding: 1 1 0 1;
     }}
-    _InlineEditor .se-inline-header {{
+    _InlineEditor .se-inline-header-row {{
         height: 1;
         width: 100%;
+        padding: 0 1;
+    }}
+    _InlineEditor .se-inline-header {{
+        height: 1;
+        width: 1fr;
         color: {ACCENT};
         text-style: bold;
-        padding: 0 1;
+        padding: 0;
+    }}
+    _InlineEditor .se-inline-header-row Button {{
+        margin: 0 0 0 1;
+        height: 1;
+        min-height: 1;
+        width: auto;
+        min-width: 8;
+        border: none;
+        padding: 0 2;
+        background: {GRID_GREY};
+        color: {ACCENT};
+        content-align: center middle;
+    }}
+    _InlineEditor .se-inline-header-row Button.-primary {{
+        background: {ACCENT};
+        color: {DEEP_BLACK};
+        text-style: bold;
     }}
     _InlineEditor .se-inline-hint {{
         height: 1;
@@ -1892,6 +1972,35 @@ class _InlineEditor(Vertical):
         color: {ACCENT_SOFT};
         padding: 0 1;
         margin-top: 1;
+    }}
+    _InlineEditor .se-tools-header {{
+        height: 1;
+        width: 100%;
+        padding: 0 1;
+        margin-top: 1;
+    }}
+    _InlineEditor .se-tools-header Static {{
+        width: 1fr;
+        color: {ACCENT_SOFT};
+    }}
+    _InlineEditor .se-tools-toggle {{
+        height: 1;
+        width: auto;
+        padding: 0 2;
+        color: #777;
+        background: {INNER_BG};
+        content-align: center middle;
+    }}
+    _InlineEditor .se-tools-toggle.-on {{
+        color: {DEEP_BLACK};
+        background: {ACCENT};
+        text-style: bold;
+    }}
+    _InlineEditor .se-tools-toggle:hover {{
+        color: {ACCENT};
+    }}
+    _InlineEditor .se-tools-toggle.-on:hover {{
+        color: {DEEP_BLACK};
     }}
     _InlineEditor .se-inline-tools {{
         height: auto;
@@ -1984,6 +2093,8 @@ class _InlineEditor(Vertical):
         self._generating = False
         self._spinner_timer = None
         self._spinner_index = 0
+        # Allowed-tools UI: whether to surface built-in tools in the grid.
+        self._show_builtin_tools = False
 
     def compose(self) -> ComposeResult:
         yield Static(
@@ -2101,9 +2212,13 @@ class _InlineEditor(Vertical):
         creating = self._creating
         verb = "NEW" if creating else "EDIT"
         header_text = f"▰ {verb} · {cat.label} · {self._scope.upper()} SCOPE"
-        self.mount(
+        header_row = Horizontal(classes="se-inline-header-row")
+        self.mount(header_row)
+        header_row.mount(
             Static(header_text, classes="se-inline-header", markup=False)
         )
+        header_row.mount(Button("Reset", classes="se-inline-reset"))
+        header_row.mount(Button("Save", classes="se-inline-save -primary"))
 
         # ID row
         is_agent = cat.key == "agents"
@@ -2146,7 +2261,7 @@ class _InlineEditor(Vertical):
             initial_usage = self._initial_usage()
             self.mount(
                 Static(
-                    "USAGE  [dim](main · sub · both)[/dim]",
+                    "USAGE",
                     classes="se-tools-label",
                     markup=True,
                 )
@@ -2179,23 +2294,27 @@ class _InlineEditor(Vertical):
                     _ColorSwatch(hex_value, selected=(hex_value == initial_color))
                 )
 
-            # Allowed tools grid
+            # Allowed tools grid (with show-built-in toggle on top)
             selected = set(self._initial_extra.get("allowed_tools", []))
             all_tools: list[str] = []
             if self._working_dir is not None:
                 all_tools = inventory.all_tool_names(self._working_dir)
+            builtins = inventory.builtin_tool_names()
             all_on = not selected
-            self.mount(
-                Static(
-                    "ALLOWED TOOLS",
-                    classes="se-tools-label",
-                    markup=False,
-                )
+            tools_header = Horizontal(classes="se-tools-header")
+            self.mount(tools_header)
+            tools_header.mount(Static("ALLOWED TOOLS", markup=False))
+            tools_header.mount(
+                _ShowBuiltinToggle(selected=self._show_builtin_tools)
             )
             tools_grid = Grid(classes="se-inline-tools")
             self.mount(tools_grid)
             for name in all_tools:
-                tools_grid.mount(_ToolToggle(name, all_on or name in selected))
+                toggle = _ToolToggle(name, all_on or name in selected)
+                is_builtin = name in builtins
+                if is_builtin and not self._show_builtin_tools:
+                    toggle.display = False
+                tools_grid.mount(toggle)
 
         # LLM prompt + Generate/Edit button
         prompt_row = Horizontal(classes="se-prompt-row")
@@ -2215,12 +2334,6 @@ class _InlineEditor(Vertical):
         initial_body = item.body if item else cat.new_template
         self._body_area = TextArea(initial_body, classes="se-inline-body")
         self.mount(self._body_area)
-
-        # Footer with Save / Reset
-        footer = Horizontal(classes="se-inline-footer")
-        self.mount(footer)
-        footer.mount(Button("Reset", classes="se-inline-reset"))
-        footer.mount(Button("Save", classes="se-inline-save -primary"))
 
     # ── Helpers ─────────────────────────────────────────────────────
 
@@ -2296,6 +2409,15 @@ class _InlineEditor(Vertical):
         event.stop()
         for swatch in self.query(_ColorSwatch):
             swatch.set_active(swatch.value == event.value)
+
+    @on(_ShowBuiltinToggle.Changed)
+    def _on_show_builtin_changed(self, event: _ShowBuiltinToggle.Changed) -> None:
+        event.stop()
+        self._show_builtin_tools = event.value
+        builtins = inventory.builtin_tool_names()
+        for toggle in self.query(_ToolToggle):
+            if toggle.tool_name in builtins:
+                toggle.display = event.value
 
     @on(Button.Pressed)
     def _on_button(self, event: Button.Pressed) -> None:
@@ -2527,11 +2649,6 @@ class SelfEditModal(ModalScreen[str | None]):
         padding: 0 2;
         text-align: right;
     }}
-    #se-description {{
-        height: 2;
-        color: #8a8a8a;
-        padding: 0 2;
-    }}
     #se-body {{
         height: 1fr;
         background: {PANEL_BG};
@@ -2558,7 +2675,7 @@ class SelfEditModal(ModalScreen[str | None]):
         text-style: bold;
     }}
     #se-list-pane #se-new-button {{
-        margin-top: 1;
+        margin: 1 0 1 0;
         height: 1;
         width: 100%;
         min-width: 0;
@@ -2568,6 +2685,26 @@ class SelfEditModal(ModalScreen[str | None]):
         color: {DEEP_BLACK};
         text-style: bold;
         content-align: center middle;
+    }}
+    #se-list-pane #se-list-builtin-toggle {{
+        height: 1;
+        width: 100%;
+        margin: 0 0 1 0;
+        padding: 0;
+        color: #777;
+        background: {INNER_BG};
+        content-align: center middle;
+    }}
+    #se-list-pane #se-list-builtin-toggle.-on {{
+        color: {DEEP_BLACK};
+        background: {ACCENT};
+        text-style: bold;
+    }}
+    #se-list-pane #se-list-builtin-toggle:hover {{
+        color: {ACCENT};
+    }}
+    #se-list-pane #se-list-builtin-toggle.-on:hover {{
+        color: {DEEP_BLACK};
     }}
     #se-list-pane #se-new-button:hover {{
         background: {HAZARD_AMBER};
@@ -2633,6 +2770,9 @@ class SelfEditModal(ModalScreen[str | None]):
             ),
         )
         self._items: list[inventory.Item] = []
+        # Show built-in tools in the TOOLS category list. Default off so
+        # the user's own tools are easier to scan; toggle re-includes them.
+        self._show_builtin_in_list: bool = False
 
     @property
     def _category(self) -> inventory.Category:
@@ -2653,11 +2793,15 @@ class SelfEditModal(ModalScreen[str | None]):
                 f"{inventory.scope_root(self._working_dir, self._scope)}  ",
                 id="se-scope-path",
             )
-            yield Static(self._category.description, id="se-description")
             with Horizontal(id="se-body"):
                 with Vertical(id="se-list-pane"):
-                    yield OptionList(id="se-options")
                     yield Button("✚ NEW", id="se-new-button")
+                    list_toggle = _ListBuiltinToggle(
+                        selected=self._show_builtin_in_list,
+                    )
+                    list_toggle.id = "se-list-builtin-toggle"
+                    yield list_toggle
+                    yield OptionList(id="se-options")
                 with Vertical(id="se-edit-pane"):
                     yield _InlineEditor(id="se-inline")
                 with Container(id="se-settings-pane"):
@@ -2713,8 +2857,11 @@ class SelfEditModal(ModalScreen[str | None]):
         counts = inventory.counts(self._working_dir)
         for row, cats in zip((row1, row2), split):
             for cat in cats:
-                # General is global-only; hide it in project scope.
-                if cat.key == "general" and self._scope == "project":
+                # General and tools are global-only; hide them in project scope.
+                if (
+                    self._scope == "project"
+                    and cat.key in ("general", "tools")
+                ):
                     continue
                 idx = inventory.CATEGORIES.index(cat)
                 tab = _CategoryTab(
@@ -2751,10 +2898,23 @@ class SelfEditModal(ModalScreen[str | None]):
         self._items = inventory.list_items(
             self._working_dir, self._category.key, self._scope
         )
+        if (
+            self._category.key == "tools"
+            and not self._show_builtin_in_list
+        ):
+            self._items = [it for it in self._items if not it.builtin]
         try:
             opts = self.query_one("#se-options", OptionList)
         except Exception:
             return
+        # Show the list-level "show built-in" toggle only on the TOOLS tab.
+        try:
+            list_toggle = self.query_one(
+                "#se-list-builtin-toggle", _ListBuiltinToggle
+            )
+            list_toggle.display = self._category.key == "tools"
+        except Exception:
+            pass
         opts.clear_options()
         if not self._items:
             opts.add_option(
@@ -2829,12 +2989,6 @@ class SelfEditModal(ModalScreen[str | None]):
         except Exception:
             pass
         try:
-            self.query_one("#se-description", Static).update(
-                self._category.description
-            )
-        except Exception:
-            pass
-        try:
             new_btn = self.query_one("#se-new-button", Button)
             if self._category.key == "general":
                 new_btn.display = False
@@ -2845,21 +2999,22 @@ class SelfEditModal(ModalScreen[str | None]):
 
     def _render_item_row(self, item: inventory.Item) -> Text:
         text = Text()
-        marker = "■" if item.builtin else "▸"
-        text.append(f" {marker} ", style=ACCENT)
-        text.append(f"{item.label:<24s}", style=f"bold {ACCENT}")
+        label_style = f"bold {ACCENT_SOFT}" if item.builtin else f"bold {ACCENT}"
+        text.append(" ", style=ACCENT)
+        text.append(f"{item.label:<22s}", style=label_style)
 
-        # For agents, show usage badge (main / sub / both).
-        # main and both agents carry a user-chosen color; sub agents don't.
+        # Agents: id + usage badge only (no name / model summary).
         if item.category == "agents":
             usage = str(item.extra.get("usage", "") or "").strip().lower()
             color = str(item.extra.get("color", "") or "").strip()
             if usage in ("main", "sub", "both"):
                 badge_style = f"dim {color}" if color else "dim"
                 text.append(f" [{usage}]", style=badge_style)
+            return text
 
+        # Non-agents: keep the summary line so users can scan descriptions.
         suffix = " [builtin]" if item.builtin else ""
-        text.append(f" {item.summary}{suffix}", style="#cccccc")
+        text.append(f" {item.summary}{suffix}", style="#999999")
         return text
 
     def _current_item(self) -> inventory.Item | None:
@@ -2912,6 +3067,12 @@ class SelfEditModal(ModalScreen[str | None]):
     def _on_new_button(self, _: Button.Pressed) -> None:
         self.action_new_item()
 
+    @on(_ListBuiltinToggle.Changed)
+    def _on_list_builtin_changed(self, event: _ListBuiltinToggle.Changed) -> None:
+        event.stop()
+        self._show_builtin_in_list = event.value
+        self._refresh_items()
+
     # ── Actions ───────────────────────────────────────────────────
 
     @on(OptionList.OptionHighlighted)
@@ -2944,32 +3105,41 @@ class SelfEditModal(ModalScreen[str | None]):
         self._refresh_items()
 
     def _bump_off_general(self) -> None:
-        """If on General in project scope, move to the first category."""
-        if (
+        """If on a project-hidden category in project scope, move forward."""
+        n = len(inventory.CATEGORIES)
+        steps = 0
+        while (
             self._scope == "project"
-            and self._category.key == "general"
+            and self._category.key in ("general", "tools")
+            and steps < n
         ):
-            self._category_index = 0
+            self._category_index = (self._category_index + 1) % n
+            steps += 1
 
     def action_next_category(self) -> None:
         n = len(inventory.CATEGORIES)
         self._category_index = (self._category_index + 1) % n
-        # Skip general in project scope.
-        if (
+        steps = 0
+        while (
             self._scope == "project"
-            and self._category.key == "general"
+            and self._category.key in ("general", "tools")
+            and steps < n
         ):
             self._category_index = (self._category_index + 1) % n
+            steps += 1
         self._refresh_items()
 
     def action_prev_category(self) -> None:
         n = len(inventory.CATEGORIES)
         self._category_index = (self._category_index - 1) % n
-        if (
+        steps = 0
+        while (
             self._scope == "project"
-            and self._category.key == "general"
+            and self._category.key in ("general", "tools")
+            and steps < n
         ):
             self._category_index = (self._category_index - 1) % n
+            steps += 1
         self._refresh_items()
 
     def action_new_item(self) -> None:
@@ -3178,7 +3348,7 @@ class SelfEditModal(ModalScreen[str | None]):
 
     def _toast(self, message: str) -> None:
         try:
-            self.query_one("#se-description", Static).update(
+            self.query_one("#se-footer", Static).update(
                 f"[bold {HAZARD_AMBER}]{message}[/bold {HAZARD_AMBER}]"
             )
         except Exception:
