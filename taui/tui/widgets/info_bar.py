@@ -108,8 +108,8 @@ class ContextBadge(Static):
         self.post_message(InfoBar.ContextBadgeClicked())
 
 
-class InfoBar(Horizontal):
-    """Single-line bar below input showing session info."""
+class InfoBar(Static):
+    """Two-line bar below input showing session info."""
 
     class AgentBadgeClicked(Message):
         """Posted when the active agent badge is clicked."""
@@ -129,8 +129,8 @@ class InfoBar(Horizontal):
 
     DEFAULT_CSS = """
     InfoBar {
-        height: 1;
-        padding: 0 2;
+        height: 2;
+        padding: 0 2 0 2;
         margin: 0;
         color: $text-muted;
         background: transparent;
@@ -141,6 +141,13 @@ class InfoBar(Horizontal):
         margin: 0;
         padding: 0;
         background: transparent;
+    }
+    InfoBar #info-row-1 {
+        height: 1;
+    }
+    InfoBar #info-row-2 {
+        height: 1;
+        align: right middle;
     }
     InfoBar #info-extension {
         margin-right: 2;
@@ -162,9 +169,7 @@ class InfoBar(Horizontal):
         margin-right: 2;
     }
     InfoBar #info-tokens {
-        color: $foreground-darken-1;
-        text-style: italic;
-        margin-right: 2;
+        color: #707070;
     }
     InfoBar #info-worktree {
         color: $foreground;
@@ -185,13 +190,15 @@ class InfoBar(Horizontal):
         self._worktree_branch = ""
 
     def compose(self) -> ComposeResult:
-        yield Static("", id="info-extension")
-        yield AgentBadge(id="info-agent")
-        yield ModelBadge("", id="info-model")
-        yield ProviderBadge("", id="info-provider")
-        yield VariantBadge("", id="info-variant")
-        yield ContextBadge("", id="info-tokens")
-        yield Static("", id="info-worktree")
+        with Horizontal(id="info-row-1"):
+            yield Static("", id="info-extension")
+            yield AgentBadge(id="info-agent")
+            yield ModelBadge("", id="info-model")
+            yield ProviderBadge("", id="info-provider")
+            yield VariantBadge("", id="info-variant")
+            yield Static("", id="info-worktree")
+        with Horizontal(id="info-row-2"):
+            yield ContextBadge("", id="info-tokens")
 
     def update_info(
         self,
@@ -250,12 +257,13 @@ class InfoBar(Horizontal):
         variant.display = bool(self._variant)
 
         tokens = self.query_one("#info-tokens", Static)
-        tokens.update(
-            f"{_fmt_tokens(self._tokens)}/{_fmt_tokens(self._max_tokens)}"
-            if self._max_tokens
-            else ""
-        )
-        tokens.display = bool(self._max_tokens)
+        if self._max_tokens:
+            pct = min(round(self._tokens / self._max_tokens * 100), 100)
+            tokens.update(f"{_fmt_tokens(self._tokens)} ({pct}%)")
+            tokens.display = True
+        else:
+            tokens.update("")
+            tokens.display = False
 
         worktree = self.query_one("#info-worktree", Static)
         if self._worktree_branch:

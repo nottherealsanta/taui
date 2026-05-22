@@ -50,7 +50,7 @@ class ChatInput(TextArea):
         min-height: 1;
         max-height: 8;
         border: none;
-        padding: 0 2 1 2;
+        padding: 1 2 1 2;
         margin: 0;
         background: transparent;
         color: $text;
