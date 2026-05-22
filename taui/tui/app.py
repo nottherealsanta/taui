@@ -76,7 +76,6 @@ class TauiApp(App[None]):
         ("ctrl+d", "ctrl_d", ""),
         ("ctrl+b", "toggle_sidebar", "Sidebar"),
         ("ctrl+r", "toggle_info_sidebar", "Info"),
-        Binding("ctrl+e", "enter_self_edit", "Self-edit", priority=True),
         ("ctrl+x", "show_context", "Context"),
         ("alt+left", "focus_pane_left", "Focus left pane"),
         ("alt+right", "focus_pane_right", "Focus right pane"),
