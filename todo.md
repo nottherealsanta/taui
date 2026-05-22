@@ -1,4 +1,3 @@
-- questions should not be notification
 - fix order when tool calling and thoughts appear.
 - context meter needs to update in near real time
 - maybe tools need not have two scopes
@@ -11,3 +10,4 @@
 - ctrl+i to open self-edit modal
 - each tools (builtin and user's) should start with multiline comment explaining what it does.
 - in self-edit, sub model are gray color as color option is not needed. 
+- tasks should not be a json file, it should just exist in context. 

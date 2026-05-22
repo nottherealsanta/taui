@@ -102,7 +102,7 @@ class CopilotProvider(BaseLLMProvider):
             body=body,
         )
 
-    def parse_stream_event(self, data: str) -> StreamEvent | None:
+    def parse_stream_event(self, data: str) -> StreamEvent | list[StreamEvent] | None:
         chunk = json.loads(data)
 
         choices = chunk.get("choices")
@@ -139,38 +139,45 @@ class CopilotProvider(BaseLLMProvider):
         if not isinstance(delta, dict):
             return None
 
+        # Collect all events from this chunk — a single SSE delta can
+        # carry reasoning_text, content, *and* tool_calls simultaneously.
+        events: list[StreamEvent] = []
+
         # Text content
         content = delta.get("content")
         if isinstance(content, str) and content:
-            return StreamEvent.text_delta(content)
+            events.append(StreamEvent.text_delta(content))
 
         # Reasoning text (visible to user)
         reasoning_text = delta.get("reasoning_text")
         if isinstance(reasoning_text, str) and reasoning_text:
-            return StreamEvent.reasoning_delta(reasoning_text)
+            events.append(StreamEvent.reasoning_delta(reasoning_text))
 
-        # Tool call deltas
+        # Tool call deltas — handle every entry, not just the first
         tc_deltas = delta.get("tool_calls")
-        if isinstance(tc_deltas, list) and tc_deltas:
-            tc = tc_deltas[0]
-            if not isinstance(tc, dict):
-                return None
-            idx = tc.get("index", 0)
-            func = tc.get("function", {})
+        if isinstance(tc_deltas, list):
+            for tc in tc_deltas:
+                if not isinstance(tc, dict):
+                    continue
+                idx = tc.get("index", 0)
+                func = tc.get("function", {})
 
-            # Start of a new tool call (has id and name)
-            if tc.get("id") and isinstance(func, dict) and func.get("name"):
-                return StreamEvent.tool_call_start(
-                    index=idx,
-                    call_id=tc["id"],
-                    name=func["name"],
-                )
+                # Start of a new tool call (has id and name)
+                if tc.get("id") and isinstance(func, dict) and func.get("name"):
+                    events.append(
+                        StreamEvent.tool_call_start(
+                            index=idx,
+                            call_id=tc["id"],
+                            name=func["name"],
+                        )
+                    )
+                # Arguments delta
+                elif isinstance(func, dict) and isinstance(func.get("arguments"), str):
+                    events.append(StreamEvent.tool_call_delta(idx, func["arguments"]))
 
-            # Arguments delta
-            if isinstance(func, dict) and isinstance(func.get("arguments"), str):
-                return StreamEvent.tool_call_delta(idx, func["arguments"])
-
-        return None
+        if not events:
+            return None
+        return events[0] if len(events) == 1 else events
 
     def refresh_credentials(self) -> None:
         self.credentials = ensure_valid_token(self.credentials)

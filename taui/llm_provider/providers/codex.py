@@ -96,7 +96,7 @@ class CodexProvider(BaseLLMProvider):
             body=body,
         )
 
-    def parse_stream_event(self, data: str) -> StreamEvent | None:
+    def parse_stream_event(self, data: str) -> StreamEvent | list[StreamEvent] | None:
         chunk = json.loads(data)
         event_type = chunk.get("type", "")
 

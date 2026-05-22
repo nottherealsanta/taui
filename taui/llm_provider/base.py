@@ -137,12 +137,14 @@ class BaseLLMProvider(ABC):
         ...
 
     @abstractmethod
-    def parse_stream_event(self, data: str) -> StreamEvent | None:
+    def parse_stream_event(self, data: str) -> StreamEvent | list[StreamEvent] | None:
         """
-        Parse one SSE `data:` line into a StreamEvent.
+        Parse one SSE ``data:`` line into one or more StreamEvents.
 
-        Return None if this chunk contains no actionable event
-        (e.g., a keepalive or metadata-only chunk).
+        Return ``None`` if this chunk contains no actionable event
+        (e.g., a keepalive or metadata-only chunk).  Return a list
+        when a single SSE chunk carries multiple event types (e.g.
+        ``reasoning_text`` *and* ``tool_calls`` in the same delta).
         """
         ...
 
@@ -445,7 +447,11 @@ class BaseLLMProvider(ABC):
                         continue
 
                     if event is not None:
-                        yield event
+                        if isinstance(event, list):
+                            for e in event:
+                                yield e
+                        else:
+                            yield event
 
     # ── Retry delay computation ────────────────────────────────────
 

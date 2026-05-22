@@ -29,7 +29,7 @@ class _Chevron(Static):
         width: 3;
         height: auto;
         padding: 1 0 1 1;
-        color: #8b949e;
+        color: #323232;
         text-style: bold;
     }
     _Chevron:hover {

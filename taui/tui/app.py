@@ -903,8 +903,7 @@ class TauiApp(App[None]):
             self._set_busy(False, state)
 
         state.current_response = None
-        state.current_reasoning = None
-        state.reasoning_buf = ""
+        self._flush_and_detach_reasoning(state)
         state.streamed_text = False
         state.reply_footer = None
         state.pending_indicators.clear()
@@ -1365,8 +1364,7 @@ class TauiApp(App[None]):
         if st is None:
             return
         # Finalize reasoning block when regular text starts arriving
-        if st.current_reasoning is not None:
-            st.current_reasoning = None
+        self._flush_and_detach_reasoning(st)
         if st.current_response is None:
             st.current_response = AgentResponse()
             await self._mount_in_reply(st.current_response, state=st)
@@ -1385,11 +1383,8 @@ class TauiApp(App[None]):
             return
         st.reasoning_buf += event.text
         if st.current_reasoning is None:
-            display = st.reasoning_buf
-            if len(display) > 300:
-                display = display[:300] + "..."
             st.current_reasoning = Static(
-                f"[dim italic]{escape(display)}[/dim italic]",
+                f"[dim italic]{escape(st.reasoning_buf)}[/dim italic]",
                 classes="reasoning-text",
                 markup=True,
             )
@@ -1401,11 +1396,8 @@ class TauiApp(App[None]):
             def _flush_reasoning() -> None:
                 st._reasoning_render_pending = False
                 if st.current_reasoning is not None:
-                    display = st.reasoning_buf
-                    if len(display) > 300:
-                        display = display[:300] + "..."
                     st.current_reasoning.update(
-                        f"[dim italic]{escape(display)}[/dim italic]"
+                        f"[dim italic]{escape(st.reasoning_buf)}[/dim italic]"
                     )
 
             self.call_after_refresh(_flush_reasoning)
@@ -1962,8 +1954,7 @@ class TauiApp(App[None]):
 
         st.tool_ctrl.reset_section()
         st.current_response = None
-        st.current_reasoning = None
-        st.reasoning_buf = ""
+        self._flush_and_detach_reasoning(st)
         st.streamed_text = False
         st.reply_footer = None
         await self._begin_reply_footer(st)
@@ -2073,6 +2064,23 @@ class TauiApp(App[None]):
             # (and `_begin_reply_footer` rebuilds a fresh one) once we're
             # safely past any in-flight callbacks from the prior turn.
 
+    def _flush_and_detach_reasoning(self, st: SessionState) -> None:
+        """Flush any pending reasoning update, then detach the widget ref.
+
+        The widget stays in the DOM with its final content — we just stop
+        appending to it.  This avoids the race where a deferred
+        ``call_after_refresh`` flush runs *after* the state has been
+        cleared, silently dropping the last batch of reasoning text.
+        """
+        if st.current_reasoning is not None:
+            if st.reasoning_buf:
+                st.current_reasoning.update(
+                    f"[dim italic]{escape(st.reasoning_buf)}[/dim italic]"
+                )
+            st._reasoning_render_pending = False
+            st.current_reasoning = None
+        st.reasoning_buf = ""
+
     async def _finalize_response(self, state: SessionState | None = None) -> None:
         """Finalize the current streaming response if any."""
         st = state or self._sessions.active
@@ -2082,9 +2090,7 @@ class TauiApp(App[None]):
             await st.current_response.finalize()
             st.current_response = None
             st.tool_ctrl.reset_section()
-        if st.current_reasoning is not None:
-            st.current_reasoning = None
-            st.reasoning_buf = ""
+        self._flush_and_detach_reasoning(st)
 
     # ── Busy state management ─────────────────────────────────────────
 

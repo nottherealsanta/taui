@@ -134,7 +134,7 @@ class AttachmentsBar(Widget):
         height: auto;
         max-height: 1;
         padding: 0 2;
-        margin: 0 0 1 0;
+        margin: 1 0 0 0;
         display: none;
     }
     AttachmentsBar.has-items {
