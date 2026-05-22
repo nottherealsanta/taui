@@ -22,6 +22,7 @@ from taui.tools.builtins.skills import SkillsTool
 from taui.tools.builtins.sub_agent import SubAgentTool
 from taui.tools.builtins.task import TaskTool
 from taui.tools.builtins.webfetch import WebfetchTool
+from taui.tools.builtins.worktree import WorktreeTool
 from taui.tools.registry import ToolRegistry
 
 
@@ -48,6 +49,7 @@ def register_builtins(registry: ToolRegistry) -> None:
         LspTool(),
         RepoOverviewTool(),
         NotebookEditTool(),
+        WorktreeTool(),
     ]:
         registry.register(tool)
 
@@ -72,6 +74,7 @@ __all__ = [
     "SubAgentTool",
     "TaskTool",
     "WebfetchTool",
+    "WorktreeTool",
     "WriteTool",
     "register_builtins",
 ]

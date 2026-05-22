@@ -50,6 +50,7 @@ class ToolPolicy:
         "bash": PolicyDecision.CONFIRM,
         "write": PolicyDecision.CONFIRM,
         "edit": PolicyDecision.CONFIRM,
+        "worktree": PolicyDecision.CONFIRM,
     }
 
     def __init__(self, overrides: dict[str, PolicyDecision] | None = None) -> None:

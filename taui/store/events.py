@@ -40,6 +40,9 @@ class EventType(StrEnum):
     USAGE = "usage"
     ERROR = "error"
 
+    # Worktree lifecycle
+    WORKTREE = "worktree"
+
 
 @dataclass(frozen=True, slots=True)
 class Event:
