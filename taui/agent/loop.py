@@ -698,7 +698,7 @@ class AgentLoop:
             if msg.role == "system" and not msg.tool_call_id:
                 entry["_cache"] = True
             result.append(entry)
-        return result
+        return _assert_tool_call_groups(result)
 
     async def _emit(self, event_type: EventType, data: dict[str, Any]) -> None:
         """Write an event to the stream (if stream is configured)."""
@@ -719,3 +719,51 @@ def _serialize_tool_call(tc: ProviderToolCall) -> dict[str, Any]:
         "name": tc.name,
         "arguments": tc.arguments,
     }
+
+
+def _assert_tool_call_groups(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Validate and repair tool-call / tool-result ordering before provider send.
+
+    Providers require that every assistant message with ``tool_calls`` is
+    immediately followed by matching ``tool`` role messages. This is a
+    last-resort defense that catches ordering issues from any source
+    (replay, compaction, external stream appends).
+    """
+    # Index tool messages by tool_call_id.
+    tool_msgs: dict[str, dict[str, Any]] = {}
+    for msg in messages:
+        if msg.get("role") == "tool" and msg.get("tool_call_id"):
+            tool_msgs[msg["tool_call_id"]] = msg
+
+    # Collect call_ids that belong to assistant groups.
+    grouped_ids: set[str] = set()
+    for msg in messages:
+        if msg.get("role") == "assistant" and msg.get("tool_calls"):
+            for tc in msg["tool_calls"]:
+                call_id = tc.get("id") or ""
+                if call_id:
+                    grouped_ids.add(call_id)
+
+    if not grouped_ids:
+        return messages  # fast path: no tool calls at all
+
+    result: list[dict[str, Any]] = []
+    for msg in messages:
+        if msg.get("role") == "tool" and msg.get("tool_call_id") in grouped_ids:
+            continue  # will be placed by parent assistant message
+
+        result.append(msg)
+
+        if msg.get("role") == "assistant" and msg.get("tool_calls"):
+            for tc in msg["tool_calls"]:
+                call_id = tc.get("id") or ""
+                if call_id in tool_msgs:
+                    result.append(tool_msgs[call_id])
+                else:
+                    result.append({
+                        "role": "tool",
+                        "tool_call_id": call_id,
+                        "content": "Tool result was not recorded.",
+                    })
+
+    return result

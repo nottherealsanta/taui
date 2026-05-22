@@ -155,7 +155,65 @@ def replay_events(events: list[Event]) -> ReplayTranscript:
                 )
             )
 
-    return ReplayTranscript(messages=messages, items=items)
+    return ReplayTranscript(
+        messages=_normalize_tool_call_groups(messages),
+        items=items,
+    )
+
+
+def _normalize_tool_call_groups(messages: list[Message]) -> list[Message]:
+    """Ensure every assistant tool-call message is immediately followed by its results.
+
+    Providers (Anthropic, Copilot Claude proxy) require that every assistant message
+    containing ``tool_calls`` is immediately followed by the corresponding tool result
+    messages, with no intervening user or assistant messages.
+
+    This function:
+    - Moves tool result messages to directly follow their parent assistant message,
+      ordered by the assistant's ``tool_calls`` list.
+    - Synthesizes placeholder results for any tool calls with missing results.
+    - Preserves all other messages in their original relative order.
+    """
+    # Index all tool result messages by call_id.
+    tool_results: dict[str, Message] = {}
+    for msg in messages:
+        if msg.role == "tool" and msg.tool_call_id:
+            tool_results[msg.tool_call_id] = msg
+
+    # Collect all call_ids that belong to an assistant tool_calls group.
+    grouped_call_ids: set[str] = set()
+    for msg in messages:
+        if msg.role == "assistant" and msg.tool_calls:
+            for tc in msg.tool_calls:
+                grouped_call_ids.add(tc.call_id)
+
+    # Rebuild: skip grouped tool results from original positions, re-inject them
+    # immediately after the parent assistant message.
+    result: list[Message] = []
+    for msg in messages:
+        # Skip tool results that will be placed by their parent assistant message.
+        if msg.role == "tool" and msg.tool_call_id in grouped_call_ids:
+            continue
+
+        result.append(msg)
+
+        # After an assistant with tool_calls, inject matching results immediately.
+        if msg.role == "assistant" and msg.tool_calls:
+            for tc in msg.tool_calls:
+                if tc.call_id in tool_results:
+                    result.append(tool_results[tc.call_id])
+                else:
+                    # Synthesize a placeholder so the provider sees a complete group.
+                    result.append(
+                        Message(
+                            role="tool",
+                            content="Tool result was not recorded before session resume.",
+                            tool_call_id=tc.call_id,
+                            name=tc.name or None,
+                        )
+                    )
+
+    return result
 
 
 def serialize_tool_call(tc: ProviderToolCall) -> dict[str, Any]:
