@@ -69,13 +69,13 @@ class ChatInput(TextArea):
         Binding("alt+left", "cursor_word_left", "Cursor word left", show=False),
         Binding("alt+right", "cursor_word_right", "Cursor word right", show=False),
         Binding(
-            "alt+shift+left",
+            "shift+alt+left,alt+shift+left",
             "cursor_word_left(True)",
             "Cursor word left select",
             show=False,
         ),
         Binding(
-            "alt+shift+right",
+            "shift+alt+right,alt+shift+right",
             "cursor_word_right(True)",
             "Cursor word right select",
             show=False,
@@ -84,15 +84,29 @@ class ChatInput(TextArea):
         Binding("super+left", "cursor_line_start", "Cursor line start", show=False),
         Binding("super+right", "cursor_line_end", "Cursor line end", show=False),
         Binding(
-            "super+shift+left",
+            "shift+super+left,super+shift+left",
             "cursor_line_start(True)",
             "Cursor line start select",
             show=False,
         ),
         Binding(
-            "super+shift+right",
+            "shift+super+right,super+shift+right",
             "cursor_line_end(True)",
             "Cursor line end select",
+            show=False,
+        ),
+        # ── Line selection fallbacks (Emacs-style, for terminals that
+        #    swallow Cmd+Shift+Arrow) ─────────────────────────────────
+        Binding(
+            "shift+ctrl+a,ctrl+shift+a",
+            "cursor_line_start(True)",
+            "Select to line start",
+            show=False,
+        ),
+        Binding(
+            "shift+ctrl+e,ctrl+shift+e",
+            "cursor_line_end(True)",
+            "Select to line end",
             show=False,
         ),
         # ── Document start/end (cmd+up/down) ─────────────────────────
@@ -109,13 +123,13 @@ class ChatInput(TextArea):
             show=False,
         ),
         Binding(
-            "super+shift+up",
+            "shift+super+up,super+shift+up",
             "chat_cursor_doc_start_select",
             "Cursor document start select",
             show=False,
         ),
         Binding(
-            "super+shift+down",
+            "shift+super+down,super+shift+down",
             "chat_cursor_doc_end_select",
             "Cursor document end select",
             show=False,
