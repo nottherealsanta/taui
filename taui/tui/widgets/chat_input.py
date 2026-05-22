@@ -95,20 +95,6 @@ class ChatInput(TextArea):
             "Cursor line end select",
             show=False,
         ),
-        # ── Line selection fallbacks (Emacs-style, for terminals that
-        #    swallow Cmd+Shift+Arrow) ─────────────────────────────────
-        Binding(
-            "shift+ctrl+a,ctrl+shift+a",
-            "cursor_line_start(True)",
-            "Select to line start",
-            show=False,
-        ),
-        Binding(
-            "shift+ctrl+e,ctrl+shift+e",
-            "cursor_line_end(True)",
-            "Select to line end",
-            show=False,
-        ),
         # ── Document start/end (cmd+up/down) ─────────────────────────
         Binding(
             "super+up",
