@@ -627,7 +627,7 @@ class _Editor(ModalScreen):
         margin-top: 1;
     }}
     #se-editor-dialog #se-editor-tools {{
-        height: 8;
+        height: auto;
         width: 100%;
         border: solid {GRID_GREY};
         background: {INNER_BG};
@@ -1894,7 +1894,7 @@ class _InlineEditor(Vertical):
         margin-top: 1;
     }}
     _InlineEditor .se-inline-tools {{
-        height: 6;
+        height: auto;
         width: 100%;
         border: solid {GRID_GREY};
         background: {INNER_BG};
@@ -2766,8 +2766,16 @@ class SelfEditModal(ModalScreen[str | None]):
             )
         else:
             for item in self._items:
+                # ID must be unique within the OptionList — a user extension
+                # file can share a name with a builtin tool (e.g. worktree.py
+                # vs the WorktreeTool builtin), so disambiguate by builtin flag.
+                opt_id = (
+                    f"builtin:{item.identifier}"
+                    if item.builtin
+                    else f"user:{item.identifier}"
+                )
                 opts.add_option(
-                    Option(self._render_item_row(item), id=item.identifier)
+                    Option(self._render_item_row(item), id=opt_id)
                 )
             opts.highlighted = 0
         self._sync_inline_panel()

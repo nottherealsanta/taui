@@ -11,8 +11,8 @@ from pathlib import Path
 
 from rich.markup import escape
 from textual import on, work
-from textual.binding import Binding
 from textual.app import App, ComposeResult, SystemCommand
+from textual.binding import Binding
 from textual.command import CommandInput, CommandPalette
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.css.query import NoMatches
@@ -36,11 +36,9 @@ from taui.tui.messages import (
     ToolEnded,
     ToolStarted,
 )
-from taui.tui.screens.agent_picker import AgentPickerScreen
 from taui.tui.screens.context_breakdown import ContextBreakdownScreen
 from taui.tui.screens.git_diff import GitDiffScreen
-from taui.tui.screens.model_picker import ModelPickerScreen
-from taui.tui.screens.pasted_content import PasteResult, PastedContentScreen
+from taui.tui.screens.pasted_content import PastedContentScreen, PasteResult
 from taui.tui.screens.theme_picker import ThemePickerScreen
 from taui.tui.session_state import SessionManager, SessionState
 from taui.tui.theme import ALL_THEMES, TAUI_DARK
@@ -51,11 +49,10 @@ from taui.tui.widgets.chat_input import ChatInput
 from taui.tui.widgets.info2 import Info2
 from taui.tui.widgets.info_bar import InfoBar, _agent_color, sync_agent_colors
 from taui.tui.widgets.reply_footer import ReplyFooter
-from taui.tui.widgets.turn_container import TurnContainer
-
 from taui.tui.widgets.sidebar import Sidebar
 from taui.tui.widgets.spinner import ActivityProgress
 from taui.tui.widgets.tool_status import ToolStatusWidget
+from taui.tui.widgets.turn_container import TurnContainer
 
 logger = logging.getLogger(__name__)
 
@@ -706,6 +703,8 @@ class TauiApp(App[None]):
         chat_input.set_model_completer(self._complete_model_arg)
         chat_input.set_arg_completer("agents", self._complete_agents_arg)
         chat_input.set_at_completer(self._complete_at_attachment)
+        chat_input.set_skill_completer(self._complete_skill)
+        chat_input.set_prompt_completer(self._complete_prompt)
         chat_input.set_prefixes(self._config.prefixes)
         self._refresh_command_completions()
         chat_input.can_submit = True
@@ -957,7 +956,7 @@ class TauiApp(App[None]):
         for agent in sorted(agents.values(), key=lambda item: item.id):
             if agent.subagent_only:
                 continue
-            if prefix and not agent.id.lower().startswith(prefix.lower()):
+            if prefix and not _fuzzy_match(prefix.lower(), agent.id.lower()):
                 continue
             matches.append((agent.id, agent.name, False))
         return matches
@@ -966,6 +965,42 @@ class TauiApp(App[None]):
         """Complete `@<file>` references with files/folders from the project."""
         completer = self._ensure_at_completer()
         return completer.complete(prefix)
+
+    def _complete_skill(self, prefix: str) -> list[tuple[str, str, bool]]:
+        """Complete skill names for the skill prefix."""
+        if self._session is None:
+            return []
+        reg = getattr(self._session, "_skill_registry", None)
+        if reg is None:
+            return []
+        matches: list[tuple[str, str, bool]] = []
+        for skill in reg.list_all():
+            if prefix and not _fuzzy_match(prefix.lower(), skill.name.lower()):
+                continue
+            tag = " (loaded)" if skill.loaded else ""
+            matches.append((skill.name, f"{skill.scope}{tag}", False))
+        return matches
+
+    def _complete_prompt(self, prefix: str) -> list[tuple[str, str, bool]]:
+        """Complete prompt identifiers for the prompt prefix."""
+        from taui.self_edit.inventory import list_items
+
+        wd = self._config.working_dir
+        try:
+            prompts = (
+                list_items(wd, "prompts", "project")
+                + list_items(wd, "prompts", "global")
+            )
+        except Exception:
+            return []
+        matches: list[tuple[str, str, bool]] = []
+        for p in prompts:
+            label = getattr(p, "label", "") or ""
+            summary = getattr(p, "summary", "") or ""
+            if prefix and not _fuzzy_match(prefix.lower(), label.lower()):
+                continue
+            matches.append((label, summary[:50], False))
+        return matches
 
     def _ensure_at_completer(self):
         """Return the cached AtCompleter for the current working directory."""
@@ -1281,11 +1316,13 @@ class TauiApp(App[None]):
     def handle_agent_badge_clicked(
         self, event: InfoBar.AgentBadgeClicked | None = None
     ) -> None:
-        self._open_agent_picker()
+        cmd_pfx = self._config.prefixes.get("command", "/")
+        self._refill_input(f"{cmd_pfx}agents ")
 
     @on(InfoBar.ModelBadgeClicked)
     def handle_model_badge_clicked(self, event: InfoBar.ModelBadgeClicked) -> None:
-        self._open_model_picker()
+        cmd_pfx = self._config.prefixes.get("command", "/")
+        self._refill_input(f"{cmd_pfx}model ")
 
     @on(InfoBar.ContextBadgeClicked)
     def handle_context_badge_clicked(self, event: InfoBar.ContextBadgeClicked) -> None:
@@ -1313,60 +1350,65 @@ class TauiApp(App[None]):
 
         self.call_after_refresh(_fill)
 
-    def _open_model_picker(self) -> None:
-        """Open the modal model picker for the current session/provider."""
-        if self._session is None:
+    def _apply_selected_skill(self, name: str | None) -> None:
+        if not name:
             return
-        from taui.llm_provider.models import list_models
-
-        provider_name = str(
-            getattr(self._session.config, "provider", "")
-            or getattr(self._session, "provider_name", "")
-            or ""
-        )
-        if not provider_name:
+        skill_reg = getattr(self._session, "_skill_registry", None)
+        if skill_reg is None:
             return
-        try:
-            models = list_models(provider_name)
-        except Exception:
-            models = []
-        if not models:
-            self.notify(
-                f"No models available for {provider_name}.",
-                severity="warning",
+        skill = skill_reg.get(name)
+        if skill is None:
+            return
+        if skill.loaded:
+            skill.loaded = False
+            self.notify(f"Skill '{name}' unloaded.")
+        else:
+            try:
+                content = skill.load_content()
+            except Exception as exc:
+                self.notify(f"Failed to load skill '{name}': {exc}", severity="error")
+                return
+            from taui.agent.loop import Message
+            self._session._loop._messages.append(
+                Message(role="system", content=f"[Skill: {name}]\n\n{content}")
             )
-            return
-        current = str(getattr(self._session, "model_name", "") or "")
-        self.push_screen(
-            ModelPickerScreen(provider_name, models, current=current),
-            self._apply_selected_model,
-        )
+            skill.loaded = True
+            self.notify(f"Skill '{name}' loaded.")
 
-    def _open_agent_picker(self) -> None:
-        """Open the modal agent picker."""
-        if self._session is None:
-            return
+    def _lookup_prompt_body(self, identifier: str) -> str | None:
+        """Return the body of a prompt with the given identifier, or None."""
+        from taui.self_edit.inventory import list_items
+
+        wd = self._config.working_dir
         try:
-            agents = sorted(
-                (
-                    p
-                    for p in SelfEditStore(self._config.working_dir)
-                    .load_agents()
-                    .values()
-                    if not p.subagent_only
-                ),
-                key=lambda item: item.id,
+            items = (
+                list_items(wd, "prompts", "project")
+                + list_items(wd, "prompts", "global")
             )
         except Exception:
-            agents = []
-        if not agents:
-            self.notify("No agent profiles found.", severity="warning")
+            return None
+        for item in items:
+            if item.identifier == identifier:
+                return item.body
+        return None
+
+    async def _apply_selected_prompt(self, identifier: str | None) -> None:
+        if not identifier:
             return
-        active_id = str(getattr(self._session._loop, "agent_id", "") or "")
-        self.push_screen(
-            AgentPickerScreen(agents, current=active_id),
-            self._apply_selected_agent,
-        )
+        body = self._lookup_prompt_body(identifier)
+        if body is None:
+            self.notify(f"Prompt '{identifier}' not found.", severity="error")
+            return
+        await self._submit_generated_prompt(body)
+
+    def _refill_input(self, text: str) -> None:
+        """Re-fill the chat input with *text* after a command cleared it."""
+        try:
+            ci = self.query_one("#chat-input", ChatInput)
+            ci.clear()
+            ci.insert(text)
+        except Exception:
+            pass
 
     def _open_context_tree(self) -> None:
         if self._session is None:
@@ -1456,6 +1498,14 @@ class TauiApp(App[None]):
             exclusive=True,
         )
 
+    @on(Info2.SkillSelected)
+    def handle_info2_skill_selected(self, event: Info2.SkillSelected) -> None:
+        self._apply_selected_skill(event.skill_name)
+
+    @on(Info2.PromptSelected)
+    async def handle_info2_prompt_selected(self, event: Info2.PromptSelected) -> None:
+        await self._apply_selected_prompt(event.prompt_id)
+
     # ── Streaming text handlers ───────────────────────────────────────
 
     @on(StreamTextDelta)
@@ -1525,6 +1575,28 @@ class TauiApp(App[None]):
         if text.startswith(self._config.prefixes.get("command", "/")):
             await self._handle_command(text)
             return
+
+        skills_pfx = self._config.prefixes.get("skills", "!")
+        if text.startswith(skills_pfx):
+            name = text[len(skills_pfx):].strip()
+            if name:
+                self._apply_selected_skill(name)
+            else:
+                self._refill_input(skills_pfx)
+            return
+
+        prompts_pfx = self._config.prefixes.get("prompts", "#")
+        if text.startswith(prompts_pfx):
+            identifier = text[len(prompts_pfx):].strip()
+            if not identifier:
+                self._refill_input(prompts_pfx)
+                return
+            # Only intercept when the identifier matches a known prompt;
+            # otherwise let the text (e.g. a Markdown heading) flow through
+            # as a normal user message.
+            if self._lookup_prompt_body(identifier) is not None:
+                await self._apply_selected_prompt(identifier)
+                return
 
         if self._session is None:
             chat_log = self._get_active_chat_log()
@@ -2476,10 +2548,18 @@ class TauiApp(App[None]):
             return
 
         if action == "open_model_picker":
-            self._open_model_picker()
+            cmd_pfx = self._config.prefixes.get("command", "/")
+            self._refill_input(f"{cmd_pfx}model ")
             return
         if action == "open_agent_picker":
-            self._open_agent_picker()
+            cmd_pfx = self._config.prefixes.get("command", "/")
+            self._refill_input(f"{cmd_pfx}agents ")
+            return
+        if action == "open_skill_picker":
+            self._refill_input(self._config.prefixes.get("skills", "!"))
+            return
+        if action == "open_prompt_picker":
+            self._refill_input(self._config.prefixes.get("prompts", "#"))
             return
         if action == "open_context_tree":
             self._open_context_tree()
@@ -3497,3 +3577,8 @@ def _is_ordered_subsequence(needle: str, haystack: str) -> bool:
         if index < len(needle) and needle[index] == char:
             index += 1
     return index == len(needle)
+
+
+def _fuzzy_match(query: str, target: str) -> bool:
+    """Substring or ordered-subsequence match."""
+    return query in target or _is_ordered_subsequence(query, target)

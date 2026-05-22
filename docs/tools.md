@@ -41,7 +41,9 @@ Read and search categories can run concurrently in the loop:
 | webfetch | `taui/tools/builtins/webfetch.py:80` |
 | LSP | `taui/tools/builtins/lsp.py:100` |
 | repo overview | `taui/tools/builtins/repo_overview.py:41` |
-| notebook edit | `taui/tools/builtins/notebook_edit.py:64` |
+
+The sample `notebook_edit` tool is intentionally not a builtin. It lives in
+`test/user_extension.py` as a user extension example.
 
 ## Policies
 

@@ -280,10 +280,11 @@ class TestBuiltinCommands:
         reg = CommandRegistry()
         register_builtins(reg)
 
-        # /new and /i accept args (initial msg / list subcommand); /model doesn't.
+        # /new, /i, /model, and /agents all accept args for inline completion.
         assert getattr(reg.get("new"), "accepts_args") is True
         assert getattr(reg.get("i"), "accepts_args") is True
-        assert getattr(reg.get("model"), "accepts_args") is False
+        assert getattr(reg.get("model"), "accepts_args") is True
+        assert getattr(reg.get("agents"), "accepts_args") is True
 
     async def test_model_list_has_no_reasoning_icon(self, monkeypatch):
         from taui.commands.builtins import register_builtins
@@ -436,7 +437,7 @@ class TestBuiltinCommands:
         result = await reg.execute("/agents pln")
 
         assert not result.error
-        assert result.output == "Activated PLN"
+        assert result.output == ""
         assert result.metadata["action"] == "agent_activated"
         assert result.metadata["agent_id"] == "PLN"
         assert applied == [profile]

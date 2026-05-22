@@ -1,4 +1,4 @@
-"""Model picker modal screen."""
+"""Model picker modal screen with fuzzy search."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from textual.app import ComposeResult
 from textual.containers import Container
 from textual.events import Key
 from textual.screen import ModalScreen
-from textual.widgets import Label, OptionList
+from textual.widgets import Input, OptionList
 from textual.widgets.option_list import Option
 
 
@@ -26,19 +26,19 @@ class ModelPickerScreen(ModalScreen[str | None]):
         height: auto;
         max-height: 80%;
         background: #0d0d0d;
-        border: round #2a2a2a;
-        padding: 1 2;
+        border: none;
+        padding: 0;
     }
-    #model-picker-dialog .dialog-title {
+    #model-picker-dialog #model-search {
         width: 100%;
-        content-align: center middle;
-        padding: 0 0 1 0;
-        color: #c8c8c8;
-        text-style: bold;
+        background: #121212;
+        border: solid #2a2a2a;
+    }
+    #model-picker-dialog #model-search:focus {
+        border: solid #5a5a5a;
     }
     #model-picker-dialog OptionList {
-        height: auto;
-        max-height: 18;
+        height: 18;
         background: #121212;
         border: solid #2a2a2a;
         color: #c8c8c8;
@@ -51,10 +51,6 @@ class ModelPickerScreen(ModalScreen[str | None]):
         color: #e8e8e8;
         text-style: bold;
     }
-    #model-picker-dialog .hint {
-        padding: 1 0 0 0;
-        color: #707070;
-    }
     """
 
     def __init__(self, provider: str, models: list[dict], *, current: str) -> None:
@@ -65,10 +61,7 @@ class ModelPickerScreen(ModalScreen[str | None]):
 
     def compose(self) -> ComposeResult:
         with Container(id="model-picker-dialog"):
-            yield Label(
-                f"[bold]{self._provider}/{self._current}[/bold]",
-                classes="dialog-title",
-            )
+            yield Input(placeholder="Search models…", id="model-search")
             yield OptionList(
                 *[
                     Option(_model_prompt(model, current=self._current), id=str(model["id"]))
@@ -76,10 +69,47 @@ class ModelPickerScreen(ModalScreen[str | None]):
                 ],
                 id="model-options",
             )
-            yield Label("Enter to select, Esc to cancel", classes="hint")
+
 
     def on_mount(self) -> None:
-        self.query_one("#model-options", OptionList).focus()
+        self.query_one("#model-search", Input).focus()
+
+    def _filter(self, query: str) -> list[dict]:
+        q = query.lower().strip()
+        if not q:
+            return list(self._models)
+        substring = [m for m in self._models if q in str(m["id"]).lower()]
+        seen_ids = {str(m["id"]) for m in substring}
+        subseq = [
+            m for m in self._models
+            if str(m["id"]) not in seen_ids and _subseq_match(q, str(m["id"]).lower())
+        ]
+        return substring + subseq
+
+    @on(Input.Changed, "#model-search")
+    def _on_search_changed(self, event: Input.Changed) -> None:
+        try:
+            opts = self.query_one("#model-options", OptionList)
+        except Exception:
+            return
+        opts.clear_options()
+        for model in self._filter(event.value):
+            mid = str(model["id"])
+            opts.add_option(Option(_model_prompt(model, current=self._current), id=mid))
+        if opts.option_count:
+            opts.highlighted = 0
+
+    @on(Input.Submitted, "#model-search")
+    def _on_search_submit(self, _: Input.Submitted) -> None:
+        try:
+            opts = self.query_one("#model-options", OptionList)
+        except Exception:
+            return
+        if opts.option_count == 0:
+            return
+        idx = opts.highlighted or 0
+        opt = opts.get_option_at_index(idx)
+        self.dismiss(opt.id)
 
     @on(OptionList.OptionSelected)
     def on_option_selected(self, event: OptionList.OptionSelected) -> None:
@@ -92,6 +122,15 @@ class ModelPickerScreen(ModalScreen[str | None]):
         if event.key == "escape":
             event.stop()
             self.dismiss(None)
+
+
+def _subseq_match(query: str, target: str) -> bool:
+    """Return True if every char in `query` appears in `target` in order."""
+    i = 0
+    for ch in target:
+        if i < len(query) and ch == query[i]:
+            i += 1
+    return i == len(query)
 
 
 def _model_prompt(model: dict, *, current: str) -> Text:

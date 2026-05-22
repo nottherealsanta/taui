@@ -13,7 +13,6 @@ from taui.tools.builtins.git import GitTool
 from taui.tools.builtins.lsp import LspTool
 from taui.tools.builtins.mcp import McpTool
 from taui.tools.builtins.memory import MemoryTool
-from taui.tools.builtins.notebook_edit import NotebookEditTool
 from taui.tools.builtins.peek import PeekTool
 from taui.tools.builtins.question import QuestionTool
 from taui.tools.builtins.repo_overview import RepoOverviewTool
@@ -48,7 +47,6 @@ def register_builtins(registry: ToolRegistry) -> None:
         ApplyPatchTool(),
         LspTool(),
         RepoOverviewTool(),
-        NotebookEditTool(),
         WorktreeTool(),
     ]:
         registry.register(tool)
@@ -64,7 +62,6 @@ __all__ = [
     "GrepTool",
     "McpTool",
     "MemoryTool",
-    "NotebookEditTool",
     "PeekTool",
     "QuestionTool",
     "ReadTool",

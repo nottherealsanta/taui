@@ -1,4 +1,4 @@
-"""Agent picker modal screen."""
+"""Agent picker modal screen with fuzzy search."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from textual.app import ComposeResult
 from textual.containers import Container
 from textual.events import Key
 from textual.screen import ModalScreen
-from textual.widgets import Label, OptionList
+from textual.widgets import Input, OptionList
 from textual.widgets.option_list import Option
 
 from taui.self_edit import AgentProfile
@@ -28,19 +28,19 @@ class AgentPickerScreen(ModalScreen[str | None]):
         height: auto;
         max-height: 80%;
         background: #0d0d0d;
-        border: round #2a2a2a;
-        padding: 1 2;
+        border: none;
+        padding: 0;
     }
-    #agent-picker-dialog .dialog-title {
+    #agent-picker-dialog #agent-search {
         width: 100%;
-        content-align: center middle;
-        padding: 0 0 1 0;
-        color: #c8c8c8;
-        text-style: bold;
+        background: #121212;
+        border: solid #2a2a2a;
+    }
+    #agent-picker-dialog #agent-search:focus {
+        border: solid #5a5a5a;
     }
     #agent-picker-dialog OptionList {
-        height: auto;
-        max-height: 18;
+        height: 18;
         background: #121212;
         border: solid #2a2a2a;
         color: #c8c8c8;
@@ -53,10 +53,6 @@ class AgentPickerScreen(ModalScreen[str | None]):
         color: #e8e8e8;
         text-style: bold;
     }
-    #agent-picker-dialog .hint {
-        padding: 1 0 0 0;
-        color: #707070;
-    }
     """
 
     def __init__(self, agents: list[AgentProfile], *, current: str) -> None:
@@ -66,7 +62,7 @@ class AgentPickerScreen(ModalScreen[str | None]):
 
     def compose(self) -> ComposeResult:
         with Container(id="agent-picker-dialog"):
-            yield Label("[bold]Select Agent[/bold]", classes="dialog-title")
+            yield Input(placeholder="Search agents…", id="agent-search")
             yield OptionList(
                 *[
                     Option(_agent_prompt(agent, current=self._current), id=agent.id)
@@ -74,10 +70,50 @@ class AgentPickerScreen(ModalScreen[str | None]):
                 ],
                 id="agent-options",
             )
-            yield Label("Enter to select, Esc to cancel", classes="hint")
+
 
     def on_mount(self) -> None:
-        self.query_one("#agent-options", OptionList).focus()
+        self.query_one("#agent-search", Input).focus()
+
+    def _filter(self, query: str) -> list[AgentProfile]:
+        q = query.lower().strip()
+        if not q:
+            return list(self._agents)
+        substring = [
+            a for a in self._agents
+            if q in a.id.lower() or q in a.name.lower()
+        ]
+        seen_ids = {a.id for a in substring}
+        subseq = [
+            a for a in self._agents
+            if a.id not in seen_ids
+            and (_subseq_match(q, a.id.lower()) or _subseq_match(q, a.name.lower()))
+        ]
+        return substring + subseq
+
+    @on(Input.Changed, "#agent-search")
+    def _on_search_changed(self, event: Input.Changed) -> None:
+        try:
+            opts = self.query_one("#agent-options", OptionList)
+        except Exception:
+            return
+        opts.clear_options()
+        for agent in self._filter(event.value):
+            opts.add_option(Option(_agent_prompt(agent, current=self._current), id=agent.id))
+        if opts.option_count:
+            opts.highlighted = 0
+
+    @on(Input.Submitted, "#agent-search")
+    def _on_search_submit(self, _: Input.Submitted) -> None:
+        try:
+            opts = self.query_one("#agent-options", OptionList)
+        except Exception:
+            return
+        if opts.option_count == 0:
+            return
+        idx = opts.highlighted or 0
+        opt = opts.get_option_at_index(idx)
+        self.dismiss(opt.id)
 
     @on(OptionList.OptionSelected)
     def on_option_selected(self, event: OptionList.OptionSelected) -> None:
@@ -90,6 +126,15 @@ class AgentPickerScreen(ModalScreen[str | None]):
         if event.key == "escape":
             event.stop()
             self.dismiss(None)
+
+
+def _subseq_match(query: str, target: str) -> bool:
+    """Return True if every char in `query` appears in `target` in order."""
+    i = 0
+    for ch in target:
+        if i < len(query) and ch == query[i]:
+            i += 1
+    return i == len(query)
 
 
 def _agent_prompt(agent: AgentProfile, *, current: str) -> Text:

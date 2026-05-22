@@ -45,6 +45,8 @@ class Info2Mode(Enum):
     MODELS = auto()
     AGENTS = auto()
     SESSIONS = auto()
+    SKILLS = auto()
+    PROMPTS = auto()
     CONTEXT = auto()
     APPROVAL = auto()
     QUESTIONS = auto()
@@ -134,6 +136,20 @@ class Info2(ScrollableContainer):
             super().__init__()
             self.session_id = session_id
 
+    class SkillSelected(Message):
+        """A skill was selected inline."""
+
+        def __init__(self, skill_name: str) -> None:
+            super().__init__()
+            self.skill_name = skill_name
+
+    class PromptSelected(Message):
+        """A prompt was selected inline."""
+
+        def __init__(self, prompt_id: str) -> None:
+            super().__init__()
+            self.prompt_id = prompt_id
+
     class Dismissed(Message):
         """Panel was dismissed without selection."""
 
@@ -154,6 +170,8 @@ class Info2(ScrollableContainer):
         self._model_items: list[dict] = []
         self._agent_items: list = []  # list[AgentProfile]
         self._session_items: list[dict] = []
+        self._skill_items: list = []  # list[Skill]
+        self._prompt_items: list = []  # list[Item]
         self._current_marker: str = ""
         self._prefix: str = "/"
         self._context_tree: Tree[str] | None = None
@@ -231,6 +249,26 @@ class Info2(ScrollableContainer):
         self._rebuild_sessions()
         self.add_class("active")
 
+    def show_skills(self, skills: list) -> None:
+        """Show inline skill picker."""
+        if not skills:
+            return
+        self._mode = Info2Mode.SKILLS
+        self._skill_items = skills[:50]
+        self.selected_index = 0
+        self._rebuild_skills()
+        self.add_class("active")
+
+    def show_prompts(self, prompts: list) -> None:
+        """Show inline prompt picker."""
+        if not prompts:
+            return
+        self._mode = Info2Mode.PROMPTS
+        self._prompt_items = prompts[:50]
+        self.selected_index = 0
+        self._rebuild_prompts()
+        self.add_class("active")
+
     def show_context_tree(self, messages: list[Any], max_tokens: int) -> None:
         """Show an inline context tree grouped by message role."""
         self._mode = Info2Mode.CONTEXT
@@ -281,6 +319,8 @@ class Info2(ScrollableContainer):
         self._model_items = []
         self._agent_items = []
         self._session_items = []
+        self._skill_items = []
+        self._prompt_items = []
         self._context_tree = None
         self._questions_panel = None
         self.remove_children()
@@ -308,6 +348,13 @@ class Info2(ScrollableContainer):
                     and 0 <= self.selected_index < len(self._session_items)
                 ):
                     return str(self._session_items[self.selected_index]["session_id"])
+            case Info2Mode.SKILLS:
+                if self._skill_items and 0 <= self.selected_index < len(self._skill_items):
+                    return self._skill_items[self.selected_index].name
+            case Info2Mode.PROMPTS:
+                if self._prompt_items and 0 <= self.selected_index < len(self._prompt_items):
+                    item = self._prompt_items[self.selected_index]
+                    return getattr(item, "identifier", None) or item.get("identifier")
             case Info2Mode.CONTEXT:
                 return None
             case Info2Mode.APPROVAL:
@@ -358,6 +405,16 @@ class Info2(ScrollableContainer):
                 if value is not None:
                     self.post_message(self.SessionSelected(value))
                 self.hide()
+            case Info2Mode.SKILLS:
+                value = self.current_value
+                if value is not None:
+                    self.post_message(self.SkillSelected(value))
+                self.hide()
+            case Info2Mode.PROMPTS:
+                value = self.current_value
+                if value is not None:
+                    self.post_message(self.PromptSelected(value))
+                self.hide()
             case Info2Mode.CONTEXT:
                 if self._context_tree is not None:
                     self._context_tree.action_toggle_node()
@@ -399,6 +456,10 @@ class Info2(ScrollableContainer):
                 return len(self._agent_items)
             case Info2Mode.SESSIONS:
                 return len(self._session_items)
+            case Info2Mode.SKILLS:
+                return len(self._skill_items)
+            case Info2Mode.PROMPTS:
+                return len(self._prompt_items)
             case Info2Mode.CONTEXT:
                 return 0
             case Info2Mode.APPROVAL:
@@ -443,6 +504,22 @@ class Info2(ScrollableContainer):
                 item.add_class("highlighted")
             self.mount(item)
 
+    def _rebuild_skills(self) -> None:
+        self.remove_children()
+        for i, skill in enumerate(self._skill_items):
+            item = Info2Item(self._skill_label(skill))
+            if i == self.selected_index:
+                item.add_class("highlighted")
+            self.mount(item)
+
+    def _rebuild_prompts(self) -> None:
+        self.remove_children()
+        for i, prompt in enumerate(self._prompt_items):
+            item = Info2Item(self._prompt_label(prompt))
+            if i == self.selected_index:
+                item.add_class("highlighted")
+            self.mount(item)
+
     def _model_label(self, model: dict) -> Text:
         model_id = str(model.get("id", ""))
         context = int(model.get("context", 0) or 0)
@@ -479,6 +556,28 @@ class Info2(ScrollableContainer):
         text.append(sid, style="bold cyan")
         text.append(f"  {desc:<40s}  ", style="white")
         text.append(f"{msgs:>3} msgs  {ago}{mode_tag}", style="dim")
+        return text
+
+    @staticmethod
+    def _skill_label(skill) -> Text:
+        marker = " ◀" if skill.loaded else ""
+        text = Text()
+        text.append(
+            f"{skill.name:<30s}",
+            style="bold cyan" if marker else "white",
+        )
+        text.append(f"  {skill.scope}{marker}", style="dim")
+        return text
+
+    @staticmethod
+    def _prompt_label(prompt) -> Text:
+        label = getattr(prompt, "label", "") or prompt.get("label", "")
+        summary = getattr(prompt, "summary", "") or prompt.get("summary", "")
+        scope = getattr(prompt, "scope", "") or prompt.get("scope", "")
+        text = Text()
+        text.append(f"{label:<20s}", style="white")
+        text.append(f"  {summary[:40]:<40s}", style="dim")
+        text.append(f"  {scope}", style="dim")
         return text
 
     def _rebuild_approval(self) -> None:

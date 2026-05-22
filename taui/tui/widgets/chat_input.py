@@ -217,6 +217,14 @@ class ChatInput(TextArea):
         # Configurable prefix characters
         self._file_attach_prefix: str = "@"
         self._command_prefix: str = "/"
+        self._skills_prefix: str = "!"
+        self._prompts_prefix: str = "#"
+        self._skill_completer: Callable[
+            [str], list[Completion]
+        ] | None = None
+        self._prompt_completer: Callable[
+            [str], list[Completion]
+        ] | None = None
 
     def set_completions(self, completions: list[tuple[str, str] | Completion]) -> None:
         """Set available completions.
@@ -259,10 +267,26 @@ class ChatInput(TextArea):
         """Install completion for `@<file-or-folder>` references."""
         self._at_completer = completer
 
+    def set_skill_completer(
+        self,
+        completer: Callable[[str], list[Completion]] | None,
+    ) -> None:
+        """Install completion for skill prefix (e.g. ``!<skill>``)."""
+        self._skill_completer = completer
+
+    def set_prompt_completer(
+        self,
+        completer: Callable[[str], list[Completion]] | None,
+    ) -> None:
+        """Install completion for prompt prefix (e.g. ``#<prompt>``)."""
+        self._prompt_completer = completer
+
     def set_prefixes(self, prefixes: dict[str, str]) -> None:
         """Configure prefix characters for file attachment and commands."""
         self._file_attach_prefix = prefixes.get("file_attach", "@")
         self._command_prefix = prefixes.get("command", "/")
+        self._skills_prefix = prefixes.get("skills", "!")
+        self._prompts_prefix = prefixes.get("prompts", "#")
 
     def _cursor_text_offset(self) -> int:
         """Return the cursor position as a character offset into ``self.text``."""
@@ -761,6 +785,28 @@ class ChatInput(TextArea):
         except Exception:
             pass
 
+    def _show_prefix_completion(
+        self, prefix_char: str, completer: Callable[[str], list[Completion]]
+    ) -> None:
+        """Show completions for a single-char prefix (skills, prompts)."""
+        from taui.tui.widgets.info2 import Info2
+
+        text = self.text
+        if " " in text[len(prefix_char):]:
+            self._dismiss_completion()
+            return
+        query = text[len(prefix_char):]
+        matches = completer(query)
+        if not matches:
+            self._dismiss_completion()
+            return
+        try:
+            info2 = self.app.query_one(Info2)
+            info2.show_completions(matches, prefix=prefix_char)
+            self._completion_active = True
+        except Exception:
+            pass
+
     def _dismiss_completion(self) -> None:
         """Hide the completion dropdown."""
         from taui.tui.widgets.info2 import Info2
@@ -779,12 +825,20 @@ class ChatInput(TextArea):
         trailing_space: bool,
         keep_completion: bool = False,
     ) -> None:
-        """Replace input with a slash command without refreshing the menu."""
+        """Replace input with a prefixed completion without refreshing."""
+        from taui.tui.widgets.info2 import Info2
+
+        prefix = self._command_prefix
+        try:
+            info2 = self.app.query_one(Info2)
+            prefix = info2._prefix or prefix
+        except Exception:
+            pass
         self._updating_completion_text = True
         try:
             self.clear()
             suffix = " " if trailing_space else ""
-            self.insert(f"/{value}{suffix}")
+            self.insert(f"{prefix}{value}{suffix}")
         finally:
             self._updating_completion_text = False
         if not keep_completion:
@@ -799,11 +853,19 @@ class ChatInput(TextArea):
         keep_completion: bool = False,
     ) -> None:
         """Replace a slash command's first argument with a completion."""
+        from taui.tui.widgets.info2 import Info2
+
+        prefix = self._command_prefix
+        try:
+            info2 = self.app.query_one(Info2)
+            prefix = info2._prefix or prefix
+        except Exception:
+            pass
         self._updating_completion_text = True
         try:
             self.clear()
             suffix = " " if trailing_space else ""
-            self.insert(f"/{command_name} {value}{suffix}")
+            self.insert(f"{prefix}{command_name} {value}{suffix}")
         finally:
             self._updating_completion_text = False
         if not keep_completion:
@@ -1166,6 +1228,20 @@ class ChatInput(TextArea):
             " " not in text[1:] or self._command_arg_prefix() is not None
         ):
             self._show_completion()
+        elif (
+            text.startswith(self._skills_prefix)
+            and self._skill_completer is not None
+        ):
+            self._show_prefix_completion(
+                self._skills_prefix, self._skill_completer
+            )
+        elif (
+            text.startswith(self._prompts_prefix)
+            and self._prompt_completer is not None
+        ):
+            self._show_prefix_completion(
+                self._prompts_prefix, self._prompt_completer
+            )
         elif self._completion_active:
             self._dismiss_completion()
 

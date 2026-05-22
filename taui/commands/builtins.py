@@ -87,7 +87,7 @@ class ClearCommand:
 class ModelCommand:
     name: str = "model"
     description: str = "Show, set, list, or select model interactively"
-    accepts_args: bool = False
+    accepts_args: bool = True
     _get_session: Any = None
 
     async def execute(self, ctx: CommandContext) -> CommandResult:
@@ -180,7 +180,7 @@ class AgentsCommand:
 
     name: str = "agents"
     description: str = "List or activate agents (/agents [ID])"
-    accepts_args: bool = False
+    accepts_args: bool = True
     _get_session: Any = None
     _get_store: Any = None
     _get_apply_profile: Any = None
@@ -216,7 +216,7 @@ class AgentsCommand:
 
         self._get_apply_profile(profile)
         return CommandResult.ok(
-            f"Activated {profile.id}",
+            "",
             action="agent_activated",
             agent_id=profile.id,
         )
