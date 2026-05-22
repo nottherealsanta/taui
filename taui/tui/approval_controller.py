@@ -52,6 +52,16 @@ class ApprovalController:
         self._app = app
         self._active_questions_panel: QuestionsPanel | None = None
 
+    def _from_active_session(self) -> bool:
+        """Return whether this per-session controller belongs to the visible session."""
+        sessions = getattr(self._app, "_sessions", None)
+        if sessions is None:
+            return True
+        active = getattr(sessions, "active", None)
+        if active is None:
+            return True
+        return getattr(active, "approval_ctrl", None) is self
+
     def has_active_panel(self) -> bool:
         return self._active_questions_panel is not None
 
@@ -85,7 +95,12 @@ class ApprovalController:
             # continue, so this is a "please look at me" moment.
             try:
                 first = specs[0][0] if specs else "Question"
-                self._app._notify_user("Question", first, kind="question")
+                self._app._notify_user(
+                    "Question",
+                    first,
+                    kind="question",
+                    from_active_session=self._from_active_session(),
+                )
             except Exception:
                 pass
             return await panel.wait_for_answers()

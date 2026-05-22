@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from textual.app import App
@@ -72,6 +73,69 @@ class TestTauiApp:
         assert "ctrl+c" in keys
         assert app.COMMAND_PALETTE_BINDING == "ctrl+p"
         assert app.ENABLE_COMMAND_PALETTE is True
+
+    def test_question_notification_suppressed_for_focused_active_session(self, tmp_path):
+        from taui.config import Config
+
+        app = TauiApp(Config(working_dir=tmp_path))
+        app._window_focused = True
+        app.notify = MagicMock()  # type: ignore[method-assign]
+
+        app._notify_user(
+            "Question",
+            "Pick one",
+            kind="question",
+            from_active_session=True,
+        )
+
+        app.notify.assert_not_called()
+
+    def test_question_notification_toasts_for_focused_background_session(self, tmp_path):
+        from taui.config import Config
+
+        app = TauiApp(Config(working_dir=tmp_path))
+        app._window_focused = True
+        app.notify = MagicMock()  # type: ignore[method-assign]
+
+        app._notify_user(
+            "Question",
+            "Pick one",
+            kind="question",
+            from_active_session=False,
+        )
+
+        app.notify.assert_called_once_with("Pick one", title="Question", timeout=4.0)
+
+    def test_question_notification_uses_os_when_app_blurred(self, tmp_path):
+        from taui.config import Config
+
+        class FakeDriver:
+            def __init__(self) -> None:
+                self.writes: list[str] = []
+                self.flushed = False
+
+            def write(self, value: str) -> None:
+                self.writes.append(value)
+
+            def flush(self) -> None:
+                self.flushed = True
+
+        driver = FakeDriver()
+        app = TauiApp(Config(working_dir=tmp_path))
+        app._window_focused = False
+        app._driver = driver
+        app.notify = MagicMock()  # type: ignore[method-assign]
+
+        app._notify_user(
+            "Question",
+            "Pick one",
+            kind="question",
+            from_active_session=True,
+        )
+
+        app.notify.assert_not_called()
+        assert driver.writes == ["\x1b]777;notify;Question;Pick one\x07"]
+        assert driver.flushed is True
 
     def test_palette_commands_are_slash_commands_only(self, tmp_path):
         from taui.config import Config
@@ -406,7 +470,7 @@ class TestTauiApp:
                     for widget in app.query(Static)
                 )
 
-    def test_apply_selected_model_updates_session(self, tmp_path):
+    def test_apply_selected_model_updates_existing_session(self, tmp_path):
         from taui.config import Config
 
         class FakeConfig:
@@ -1253,6 +1317,118 @@ class TestMessages:
     def test_stream_text_delta(self):
         msg = StreamTextDelta("hello ")
         assert msg.text == "hello "
+
+
+# ── ApprovalController notifications ─────────────────────────────────
+
+
+class TestApprovalControllerNotifications:
+    async def test_question_from_active_session_is_marked_active(self):
+        from taui.tui.approval_controller import ApprovalController
+
+        class FakeChatInput:
+            disabled = False
+            focused = False
+
+            def focus(self) -> None:
+                self.focused = True
+
+        class FakePanel:
+            _future = None
+
+            async def wait_for_answers(self) -> list[str | None]:
+                return [None]
+
+        class FakeInfo2:
+            hidden = False
+
+            def show_questions(self, specs):
+                return FakePanel()
+
+            def hide(self) -> None:
+                self.hidden = True
+
+        class FakeApp:
+            def __init__(self) -> None:
+                self.chat_input = FakeChatInput()
+                self.info2 = FakeInfo2()
+                self.notifications: list[dict] = []
+                self._sessions = SimpleNamespace(active=None)
+
+            def query_one(self, selector, *_args):
+                if selector == "#chat-input":
+                    return self.chat_input
+                if selector == "#info2":
+                    return self.info2
+                raise AssertionError(selector)
+
+            def _smart_scroll(self) -> None:
+                pass
+
+            def _notify_user(self, _header, _message, **kwargs) -> None:
+                self.notifications.append(kwargs)
+
+        app = FakeApp()
+        controller = ApprovalController(app)  # type: ignore[arg-type]
+        app._sessions.active = SimpleNamespace(approval_ctrl=controller)
+
+        answers = await controller.on_questions_batch([("Pick one", None)])
+
+        assert answers == [None]
+        assert app.notifications == [
+            {"kind": "question", "from_active_session": True}
+        ]
+
+    async def test_question_from_inactive_session_is_marked_background(self):
+        from taui.tui.approval_controller import ApprovalController
+
+        class FakeChatInput:
+            disabled = False
+
+            def focus(self) -> None:
+                pass
+
+        class FakePanel:
+            _future = None
+
+            async def wait_for_answers(self) -> list[str | None]:
+                return [None]
+
+        class FakeInfo2:
+            def show_questions(self, specs):
+                return FakePanel()
+
+            def hide(self) -> None:
+                pass
+
+        class FakeApp:
+            def __init__(self) -> None:
+                self.notifications: list[dict] = []
+                self._sessions = SimpleNamespace(
+                    active=SimpleNamespace(approval_ctrl=object())
+                )
+
+            def query_one(self, selector, *_args):
+                if selector == "#chat-input":
+                    return FakeChatInput()
+                if selector == "#info2":
+                    return FakeInfo2()
+                raise AssertionError(selector)
+
+            def _smart_scroll(self) -> None:
+                pass
+
+            def _notify_user(self, _header, _message, **kwargs) -> None:
+                self.notifications.append(kwargs)
+
+        app = FakeApp()
+        controller = ApprovalController(app)  # type: ignore[arg-type]
+
+        await controller.on_questions_batch([("Pick one", None)])
+
+        assert app.notifications == [
+            {"kind": "question", "from_active_session": False}
+        ]
 
 
 # ── FIFO tool tracking ──────────────────────────────────────────────
