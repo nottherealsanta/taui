@@ -114,6 +114,7 @@ class AgentLoop:
         stream: StreamClient | None = None,
         system_prompt: str = "You are a helpful coding assistant.",
         model: str = "default",
+        model_variant: str = "",
         max_turns: int = 50,
         on_tool_call: Callable[[str, str, dict], Awaitable[None]] | None = None,
         on_tool_result: Callable[[str, str, str, bool], Awaitable[None]] | None = None,
@@ -132,6 +133,7 @@ class AgentLoop:
         self._stream = stream
         self._system_prompt = system_prompt
         self._model = model
+        self._model_variant = model_variant or ""
         self._max_turns = max_turns
         self._provider_name = provider_name
 
@@ -465,9 +467,19 @@ class AgentLoop:
             try:
                 if self._rate_limiter:
                     async with self._rate_limiter.acquire():
-                        return await self._llm.create_turn(messages, self._model, tools=tools)
+                        return await self._llm.create_turn(
+                            messages,
+                            self._model,
+                            tools=tools,
+                            thinking_level=self._model_variant or None,
+                        )
                 else:
-                    return await self._llm.create_turn(messages, self._model, tools=tools)
+                    return await self._llm.create_turn(
+                        messages,
+                        self._model,
+                        tools=tools,
+                        thinking_level=self._model_variant or None,
+                    )
             except ContextOverflowError:
                 # Auto-recovery: aggressive compaction + one retry
                 before = estimate_total_tokens(self._messages, self._tokenizer)
@@ -491,9 +503,19 @@ class AgentLoop:
                     messages = self._build_llm_messages()
                 if self._rate_limiter:
                     async with self._rate_limiter.acquire():
-                        return await self._llm.create_turn(messages, self._model, tools=tools)
+                        return await self._llm.create_turn(
+                            messages,
+                            self._model,
+                            tools=tools,
+                            thinking_level=self._model_variant or None,
+                        )
                 else:
-                    return await self._llm.create_turn(messages, self._model, tools=tools)
+                    return await self._llm.create_turn(
+                        messages,
+                        self._model,
+                        tools=tools,
+                        thinking_level=self._model_variant or None,
+                    )
         finally:
             self._llm.on_text_delta = None
             self._llm.on_reasoning_delta = None

@@ -274,6 +274,7 @@ class Session:
             stream=stream,
             system_prompt=system_prompt,
             model=config.model,
+            model_variant=config.model_variant,
             max_turns=config.max_turns,
             provider_name=config.provider,
         )
@@ -349,6 +350,7 @@ class Session:
                 self.session_id,
                 stream_id=self._loop.stream_id,
                 model=self.config.model,
+                model_variant=self.config.model_variant,
             )
             self._session_persisted = True
 
@@ -408,6 +410,7 @@ class Session:
             stream=self._stream,
             system_prompt=prompt,
             model=self.config.model,
+            model_variant=self.config.model_variant,
             max_turns=self.config.max_turns,
             provider_name=self.config.provider,
         )
@@ -421,6 +424,7 @@ class Session:
             mode=mode,
             stream_id=self._loop.stream_id,
             model=self.config.model,
+            model_variant=self.config.model_variant,
         )
         self._session_persisted = True
         await self._stream.ensure_stream(self._loop.stream_id)
@@ -451,6 +455,7 @@ class Session:
             stream=self._stream,
             system_prompt=prompt,
             model=self.config.model,
+            model_variant=self.config.model_variant,
             max_turns=self.config.max_turns,
             provider_name=self.config.provider,
         )
@@ -462,6 +467,7 @@ class Session:
             mode="extensions" if self.extensions_mode else "normal",
             stream_id=self._loop.stream_id,
             model=self.config.model,
+            model_variant=self.config.model_variant,
         )
         self._session_persisted = True
         await self._stream.ensure_stream(self._loop.stream_id)
@@ -526,6 +532,7 @@ class Session:
                 stream=self._stream,
                 system_prompt=prompt,
                 model=self.config.model,
+                model_variant=self.config.model_variant,
                 max_turns=self.config.max_turns,
                 provider_name=self.config.provider,
             )
@@ -536,6 +543,7 @@ class Session:
                 mode="self_edit",
                 stream_id=self._loop.stream_id,
                 model=self.config.model,
+                model_variant=self.config.model_variant,
             )
             self._session_persisted = True
             await self._stream.ensure_stream(self._loop.stream_id)
@@ -592,6 +600,7 @@ class Session:
             stream=self._stream,
             system_prompt=prompt,
             model=self.config.model,
+            model_variant=self.config.model_variant,
             max_turns=self.config.max_turns,
             provider_name=self.config.provider,
         )
@@ -603,6 +612,7 @@ class Session:
             mode=mode,
             stream_id=self._loop.stream_id,
             model=self.config.model,
+            model_variant=self.config.model_variant,
         )
         self._session_persisted = True
         await self._stream.ensure_stream(self._loop.stream_id)
@@ -657,6 +667,7 @@ class Session:
         saved_model = str(meta.get("model") or "")
         if saved_model:
             self.config.model = saved_model
+        self.config.model_variant = str(meta.get("model_variant") or "")
 
         if self.self_edit_mode:
             from taui.self_edit.factory import build_self_edit_executor
@@ -680,6 +691,7 @@ class Session:
             stream=self._stream,
             system_prompt=prompt,
             model=self.config.model,
+            model_variant=self.config.model_variant,
             max_turns=self.config.max_turns,
             provider_name=self.config.provider,
         )
@@ -782,6 +794,7 @@ class Session:
             stream=self._stream,
             system_prompt=prompt,
             model=self.config.model,
+            model_variant=self.config.model_variant,
             max_turns=self.config.max_turns,
             provider_name=self.config.provider,
         )
@@ -808,7 +821,12 @@ class Session:
         forked._base_system_prompt = self._base_system_prompt
         forked._extensions_prompt = self._extensions_prompt
 
-        await self._store.create_session(fork_id, stream_id=fork_stream, model=self.config.model)
+        await self._store.create_session(
+            fork_id,
+            stream_id=fork_stream,
+            model=self.config.model,
+            model_variant=self.config.model_variant,
+        )
         forked._loaded_offset = await self._stream.get_length(fork_stream)
 
         return forked
@@ -874,7 +892,12 @@ class Session:
         )
         sub._system_prompt = prompt
 
-        await self._store.create_session(sub_id, stream_id=sub_stream, model=self.config.model)
+        await self._store.create_session(
+            sub_id,
+            stream_id=sub_stream,
+            model=self.config.model,
+            model_variant=self.config.model_variant,
+        )
         sub._loaded_offset = 0
 
         return sub
@@ -912,6 +935,10 @@ class Session:
     @property
     def model_name(self) -> str:
         return self.config.model
+
+    @property
+    def model_variant(self) -> str:
+        return self.config.model_variant
 
     @property
     def working_dir(self) -> Path:

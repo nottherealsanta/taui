@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from rich.text import Text
 from textual.app import ComposeResult
 from textual.containers import Horizontal
@@ -28,14 +30,12 @@ def _fmt_tokens(n: int) -> str:
     return f"{round(n / 1000)}k"
 
 
-def sync_agent_colors(working_dir: "Path | None" = None) -> None:
+def sync_agent_colors(working_dir: Path | None = None) -> None:
     """Refresh ``AGENT_COLORS`` from the on-disk agent profiles.
 
     Called once at startup and again after the self-edit modal closes so
     that color changes take effect immediately.
     """
-    from pathlib import Path
-
     from taui.self_edit.store import SelfEditStore
 
     if working_dir is None:
@@ -94,6 +94,13 @@ class ProviderBadge(Static):
         self.post_message(InfoBar.ModelBadgeClicked())
 
 
+class VariantBadge(Static):
+    """Clickable model variant (reasoning effort / thinking level)."""
+
+    def on_click(self) -> None:
+        self.post_message(InfoBar.VariantBadgeClicked())
+
+
 class ContextBadge(Static):
     """Clickable context token usage."""
 
@@ -113,6 +120,9 @@ class InfoBar(Horizontal):
 
     class ModelBadgeClicked(Message):
         """Posted when the model/provider area is clicked."""
+
+    class VariantBadgeClicked(Message):
+        """Posted when the model-variant badge is clicked."""
 
     class ContextBadgeClicked(Message):
         """Posted when the context token area is clicked."""
@@ -147,6 +157,10 @@ class InfoBar(Horizontal):
         text-style: italic;
         margin-right: 2;
     }
+    InfoBar #info-variant {
+        color: $foreground-darken-2;
+        margin-right: 2;
+    }
     InfoBar #info-tokens {
         color: $foreground-darken-1;
         text-style: italic;
@@ -161,6 +175,7 @@ class InfoBar(Horizontal):
     def __init__(self) -> None:
         super().__init__()
         self._provider = ""
+        self._variant = ""
         self._model = ""
         self._tokens = 0
         self._max_tokens = 0
@@ -174,6 +189,7 @@ class InfoBar(Horizontal):
         yield AgentBadge(id="info-agent")
         yield ModelBadge("", id="info-model")
         yield ProviderBadge("", id="info-provider")
+        yield VariantBadge("", id="info-variant")
         yield ContextBadge("", id="info-tokens")
         yield Static("", id="info-worktree")
 
@@ -182,6 +198,7 @@ class InfoBar(Horizontal):
         *,
         provider: str = "",
         model: str = "",
+        variant: str = "",
         tokens: int = 0,
         max_tokens: int = 0,
         extensions_mode: bool = False,
@@ -190,6 +207,7 @@ class InfoBar(Horizontal):
         worktree_branch: str = "",
     ) -> None:
         self._provider = provider
+        self._variant = variant
         self._model = model
         self._tokens = tokens
         self._max_tokens = max_tokens
@@ -226,6 +244,10 @@ class InfoBar(Horizontal):
         provider = self.query_one("#info-provider", Static)
         provider.update(self._provider)
         provider.display = bool(self._provider)
+
+        variant = self.query_one("#info-variant", Static)
+        variant.update(self._variant)
+        variant.display = bool(self._variant)
 
         tokens = self.query_one("#info-tokens", Static)
         tokens.update(

@@ -63,6 +63,7 @@ class CopilotProvider(BaseLLMProvider):
         temperature: float,
         *,
         tools: list[dict[str, Any]] | None = None,
+        thinking_level: str | None = None,
         **kwargs: Any,
     ) -> LLMRequest:
         base_url = get_copilot_base_url(
@@ -79,6 +80,11 @@ class CopilotProvider(BaseLLMProvider):
         if tools:
             body["tools"] = tools
             body["tool_choice"] = "auto"
+        # Copilot accepts ``reasoning_effort`` on its OpenAI-compatible chat
+        # completions endpoint for GPT-5 / Claude models. Mirrors opencode's
+        # github-copilot variant payload (see tmp/opencode transform.ts).
+        if thinking_level:
+            body["reasoning_effort"] = thinking_level
 
         # Use agent headers when tool calling, standard headers otherwise
         extra_headers = COPILOT_AGENT_HEADERS if tools else COPILOT_HEADERS
@@ -199,7 +205,11 @@ class CopilotProvider(BaseLLMProvider):
             try:
                 converted_tools = self.convert_tools(tools) if tools else None
                 req = self.build_request(
-                    messages, candidate, temperature, tools=converted_tools
+                    messages,
+                    candidate,
+                    temperature,
+                    tools=converted_tools,
+                    thinking_level=thinking_level,
                 )
                 return await self._stream_turn_with_retry(req)
             except (httpx.HTTPStatusError, RuntimeError) as exc:

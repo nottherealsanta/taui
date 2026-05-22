@@ -36,6 +36,7 @@ class Config:
     # LLM
     provider: str = "copilot"
     model: str = ""
+    model_variant: str = ""  # e.g. "high", "minimal" — reasoning effort/thinking variant
 
     # Agent
     system_prompt: str = DEFAULT_SYSTEM_PROMPT
@@ -74,7 +75,7 @@ class Config:
         taui_cfg = file_cfg.get("taui", {})
 
         kwargs: dict = {}
-        for fld in ("provider", "model", "system_prompt", "max_turns"):
+        for fld in ("provider", "model", "model_variant", "system_prompt", "max_turns"):
             if fld in taui_cfg:
                 kwargs[fld] = taui_cfg[fld]
 

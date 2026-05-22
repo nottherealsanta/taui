@@ -368,6 +368,20 @@ class TestSessionMetadata:
         sessions = await store.list_sessions()
         assert sessions[0]["stream_id"] == "agents/ses-1"
 
+    async def test_session_model_variant_metadata(self, store: Store):
+        await store.create_session(
+            "ses-1",
+            stream_id="agents/ses-1",
+            model="gpt-5.3-codex",
+            model_variant="high",
+        )
+        meta = await store.get_session("ses-1")
+        assert meta["model_variant"] == "high"
+
+        await store.update_session("ses-1", model_variant="none")
+        meta = await store.get_session("ses-1")
+        assert meta["model_variant"] == "none"
+
     async def test_create_session_extensions(self, store: Store):
         await store.create_session("ses-2", mode="extensions")
         meta = await store.get_session("ses-2")

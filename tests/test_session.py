@@ -145,6 +145,53 @@ class TestSessionWiring:
 
         await session.close()
 
+    async def test_resume_restores_model_variant_from_metadata(self, tmp_path):
+        from taui.agent.loop import AgentLoop
+        from taui.store.store import Store
+        from taui.store.stream import StreamClient
+        from taui.tools.executor import ToolExecutor, ToolPolicy
+
+        config = Config(working_dir=tmp_path, model="current", model_variant="low")
+        provider = MockProvider()
+        registry = ToolRegistry()
+        executor = ToolExecutor(registry=registry, policy=ToolPolicy())
+        store = Store(tmp_path)
+        await store.connect()
+        stream = StreamClient(store)
+
+        await store.create_stream("agents/ses-variant")
+        await store.create_session(
+            "ses-variant",
+            stream_id="agents/ses-variant",
+            model="saved-model",
+            model_variant="high",
+        )
+
+        session = Session(
+            config=config,
+            provider=provider,
+            registry=registry,
+            executor=executor,
+            store=store,
+            stream=stream,
+            loop=AgentLoop(
+                llm=provider,
+                executor=executor,
+                stream=stream,
+                model="current",
+                model_variant="low",
+            ),
+        )
+        session._system_prompt = "system"
+
+        assert await session.resume_session("ses-variant") is True
+        assert session.config.model == "saved-model"
+        assert session.config.model_variant == "high"
+        assert session._loop._model == "saved-model"
+        assert session._loop._model_variant == "high"
+
+        await session.close()
+
     async def test_replay_items_preserve_footer_model(self, tmp_path):
         from taui.store.store import Store
         from taui.store.stream import StreamClient

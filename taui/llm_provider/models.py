@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from pathlib import Path
 
@@ -81,7 +82,10 @@ def fetch_models(*, force: bool = False) -> dict:
 def list_models(provider: str, *, force_refresh: bool = False) -> list[dict]:
     """Return available models for a taui provider.
 
-    Each entry: {"id": str, "name": str, "family": str, "context": int, ...}
+    Each entry: {"id": str, "name": str, "family": str, "context": int,
+    "variants": list[str], ...}. ``variants`` is the list of reasoning-effort
+    tiers the model accepts (e.g. ``["low", "medium", "high"]``); empty when
+    the model has no reasoning controls.
     """
     api_provider = PROVIDER_MAP.get(provider)
     if not api_provider:
@@ -97,18 +101,157 @@ def list_models(provider: str, *, force_refresh: bool = False) -> list[dict]:
         if not info.get("tool_call", False):
             continue
         context = info.get("limit", {}).get("context", 0)
+        reasoning = bool(info.get("reasoning", False))
         models.append({
             "id": model_id,
             "name": info.get("name", model_id),
             "family": info.get("family", ""),
             "context": context,
             "output": info.get("limit", {}).get("output", 0),
-            "reasoning": info.get("reasoning", False),
+            "reasoning": reasoning,
+            "variants": compute_variants(
+                provider,
+                model_id,
+                release_date=str(info.get("release_date", "") or ""),
+                reasoning=reasoning,
+            ),
         })
 
     # Sort: reasoning models first, then by context window descending
     models.sort(key=lambda m: (not m["reasoning"], -m["context"]))
     return models
+
+
+def get_model_variants(provider: str, model_id: str) -> list[str]:
+    """Return the variant list for a single model (empty if unknown)."""
+    for entry in list_models(provider):
+        if entry["id"] == model_id:
+            return list(entry.get("variants") or [])
+    return []
+
+
+# ── Variant computation (ported from opencode/transform.ts) ──────────────
+# Source: tmp/opencode/packages/opencode/src/provider/transform.ts. Only the
+# branches relevant to taui's two providers (copilot, codex) are reproduced.
+
+_WIDELY_SUPPORTED_EFFORTS = ["low", "medium", "high"]
+_OPENAI_GPT5_1_EFFORTS = ["none", *_WIDELY_SUPPORTED_EFFORTS]
+_OPENAI_GPT5_2_PLUS_EFFORTS = [*_OPENAI_GPT5_1_EFFORTS, "xhigh"]
+_OPENAI_GPT5_PRO_EFFORTS = ["high"]
+_OPENAI_GPT5_PRO_2_PLUS_EFFORTS = ["medium", "high", "xhigh"]
+_OPENAI_GPT5_CHAT_EFFORTS = ["medium"]
+_OPENAI_GPT5_CODEX_XHIGH_EFFORTS = [*_WIDELY_SUPPORTED_EFFORTS, "xhigh"]
+_OPENAI_GPT5_CODEX_3_PLUS_EFFORTS = ["none", *_OPENAI_GPT5_CODEX_XHIGH_EFFORTS]
+
+_OPENAI_NONE_EFFORT_RELEASE_DATE = "2025-11-13"
+_OPENAI_XHIGH_EFFORT_RELEASE_DATE = "2025-12-04"
+
+_GPT5_FAMILY_RE = re.compile(r"(?:^|/)gpt-5(?:[.-]|$)")
+_GPT5_VERSION_RE = re.compile(r"(?:^|/)gpt-5[.-](\d+)(?:[.-]|$)")
+_GPT5_PRO_RE = re.compile(r"(?:^|/)gpt-5[.-]?pro(?:[.-]|$)")
+_GPT5_VERSIONED_PRO_RE = re.compile(r"(?:^|/)gpt-5[.-]\d+[.-]pro(?:[.-]|$)")
+
+
+def _gpt5_version(api_id: str) -> int | None:
+    m = _GPT5_VERSION_RE.search(api_id)
+    if not m:
+        return None
+    try:
+        return int(m.group(1))
+    except ValueError:
+        return None
+
+
+def _versioned_gpt5_efforts(api_id: str) -> list[str] | None:
+    if _GPT5_VERSIONED_PRO_RE.search(api_id):
+        return list(_OPENAI_GPT5_PRO_2_PLUS_EFFORTS)
+    v = _gpt5_version(api_id)
+    if v is None:
+        return None
+    if v == 1:
+        return list(_OPENAI_GPT5_1_EFFORTS)
+    return list(_OPENAI_GPT5_2_PLUS_EFFORTS)
+
+
+def _gpt5_codex_efforts(api_id: str) -> list[str] | None:
+    if not _GPT5_FAMILY_RE.search(api_id) or "codex" not in api_id:
+        return None
+    v = _gpt5_version(api_id)
+    if v is not None and v >= 3:
+        return list(_OPENAI_GPT5_CODEX_3_PLUS_EFFORTS)
+    if "codex-max" in api_id or (v is not None and v >= 2):
+        return list(_OPENAI_GPT5_CODEX_XHIGH_EFFORTS)
+    return list(_WIDELY_SUPPORTED_EFFORTS)
+
+
+def _gpt5_chat_efforts(api_id: str) -> list[str] | None:
+    if not _GPT5_FAMILY_RE.search(api_id) or "-chat" not in api_id:
+        return None
+    return [] if _gpt5_version(api_id) is None else list(_OPENAI_GPT5_CHAT_EFFORTS)
+
+
+def _openai_reasoning_efforts(api_id: str, release_date: str) -> list[str]:
+    """Port of openaiReasoningEfforts() — used by the codex provider."""
+    api_id = api_id.lower()
+    if "deep-research" in api_id:
+        return ["medium"]
+    chat = _gpt5_chat_efforts(api_id)
+    if chat is not None:
+        return chat
+    if _GPT5_PRO_RE.search(api_id):
+        return list(_OPENAI_GPT5_PRO_EFFORTS)
+    codex = _gpt5_codex_efforts(api_id)
+    if codex is not None:
+        return codex
+    versioned = _versioned_gpt5_efforts(api_id)
+    if versioned is not None:
+        return versioned
+    efforts = list(_WIDELY_SUPPORTED_EFFORTS)
+    if _GPT5_FAMILY_RE.search(api_id):
+        efforts.insert(0, "minimal")
+    if release_date >= _OPENAI_NONE_EFFORT_RELEASE_DATE:
+        efforts.insert(0, "none")
+    if release_date >= _OPENAI_XHIGH_EFFORT_RELEASE_DATE:
+        efforts.append("xhigh")
+    return efforts
+
+
+def _copilot_reasoning_efforts(model_id: str, release_date: str) -> list[str]:
+    """Port of the ``@ai-sdk/github-copilot`` branch in opencode transform."""
+    mid = model_id.lower()
+    if "gemini" in mid:
+        # Copilot's gemini endpoint only exposes thinking (not effort tiers).
+        return []
+    if "claude" in mid:
+        return list(_WIDELY_SUPPORTED_EFFORTS)
+    # GPT-5 family on copilot
+    if "5.1-codex-max" in mid or "5.2" in mid or "5.3" in mid:
+        return [*_WIDELY_SUPPORTED_EFFORTS, "xhigh"]
+    efforts = list(_WIDELY_SUPPORTED_EFFORTS)
+    if "gpt-5" in mid and release_date >= _OPENAI_XHIGH_EFFORT_RELEASE_DATE:
+        efforts.append("xhigh")
+    return efforts
+
+
+def compute_variants(
+    provider: str,
+    model_id: str,
+    *,
+    release_date: str = "",
+    reasoning: bool = True,
+) -> list[str]:
+    """Return the variant (reasoning effort) list a model accepts.
+
+    Empty list means the model has no variant axis — UI should hide the
+    picker in that case.
+    """
+    if not reasoning or not model_id:
+        return []
+    if provider == "copilot":
+        return _copilot_reasoning_efforts(model_id, release_date)
+    if provider == "codex":
+        return _openai_reasoning_efforts(model_id, release_date)
+    return []
 
 
 # Preferred model patterns per provider (first match wins)

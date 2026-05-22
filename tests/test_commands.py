@@ -3,6 +3,7 @@
 import json
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -350,6 +351,50 @@ class TestBuiltinCommands:
         assert session.new_session_called is False
         assert result.metadata["action"] == "model_changed"
         assert result.metadata["model"] == "claude-haiku-4.5"
+
+    async def test_variant_accepts_explicit_none_when_model_supports_it(self, monkeypatch):
+        from taui.commands.builtins import register_builtins
+
+        session = SimpleNamespace(
+            config=SimpleNamespace(provider="codex", model="gpt-5.3-codex", model_variant=""),
+            _loop=SimpleNamespace(_model_variant=""),
+        )
+        monkeypatch.setattr(
+            "taui.llm_provider.models.get_model_variants",
+            lambda provider, model: ["none", "low", "medium", "high"],
+        )
+
+        reg = CommandRegistry()
+        register_builtins(reg, get_session=lambda: session)
+        result = await reg.execute("/variant none")
+
+        assert not result.error
+        assert session.config.model_variant == "none"
+        assert session._loop._model_variant == "none"
+        assert result.metadata["variant"] == "none"
+
+    async def test_variant_clear_alias_still_clears(self, monkeypatch):
+        from taui.commands.builtins import register_builtins
+
+        session = SimpleNamespace(
+            config=SimpleNamespace(
+                provider="codex", model="gpt-5.3-codex", model_variant="high"
+            ),
+            _loop=SimpleNamespace(_model_variant="high"),
+        )
+        monkeypatch.setattr(
+            "taui.llm_provider.models.get_model_variants",
+            lambda provider, model: ["none", "low", "medium", "high"],
+        )
+
+        reg = CommandRegistry()
+        register_builtins(reg, get_session=lambda: session)
+        result = await reg.execute("/variant clear")
+
+        assert not result.error
+        assert session.config.model_variant == ""
+        assert session._loop._model_variant == ""
+        assert result.metadata["variant"] == ""
 
     async def test_model_rejects_other_provider_model_value(self):
         from taui.commands.builtins import register_builtins

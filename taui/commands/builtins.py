@@ -125,6 +125,7 @@ class ModelCommand:
 
         session.config.model = model
         session._loop._model = model
+        _reset_variant_if_unsupported(session)
         return CommandResult.ok(
             f"Model set to {model}",
             action="model_changed",
@@ -167,11 +168,35 @@ class ModelCommand:
         selected = prompt_model_selection(provider)
         session.config.model = selected
         session._loop._model = selected
+        _reset_variant_if_unsupported(session)
         return CommandResult.ok(
             f"Model set to {selected}",
             action="model_changed",
             model=selected,
         )
+
+
+def _reset_variant_if_unsupported(session: Any) -> None:
+    """Clear ``model_variant`` if the new model does not accept it.
+
+    Called after a model switch — keeps the persisted variant from leaking
+    into a model that 400s on it.
+    """
+    current = str(getattr(session.config, "model_variant", "") or "")
+    if not current:
+        return
+    try:
+        from taui.llm_provider.models import get_model_variants
+
+        allowed = get_model_variants(session.config.provider, session.config.model)
+    except Exception:
+        return
+    if current not in allowed:
+        session.config.model_variant = ""
+        try:
+            session._loop._model_variant = ""
+        except Exception:
+            pass
 
 
 @dataclass(slots=True)
@@ -845,6 +870,78 @@ class UpdateProvidersModelsCommand:
 
 
 @dataclass(slots=True)
+class VariantCommand:
+    """Show, set, or pick the model variant (reasoning effort)."""
+
+    name: str = "variant"
+    description: str = (
+        "Show, set, or pick model variant — e.g. /variant high · /variant clear"
+    )
+    accepts_args: bool = True
+    _get_session: Any = None
+
+    # Words that clear the variant. Variant *values* themselves are looked up
+    # per-model via taui.llm_provider.models.get_model_variants().
+    _CLEAR = {"", "default", "clear", "off"}
+
+    async def execute(self, ctx: CommandContext) -> CommandResult:
+        if not self._get_session:
+            return CommandResult.fail("No session.")
+        session = self._get_session()
+
+        if not ctx.args:
+            return CommandResult.ok("", action="open_variant_picker")
+
+        target = ctx.args[0].lower()
+        from taui.llm_provider.models import get_model_variants
+
+        allowed = get_model_variants(session.config.provider, session.config.model)
+        if target in self._CLEAR:
+            session.config.model_variant = ""
+            session._loop._model_variant = ""
+            await _persist_session_variant(session, "")
+            return CommandResult.ok(
+                "Model variant cleared.",
+                action="variant_changed",
+                variant="",
+            )
+
+        if not allowed:
+            return CommandResult.fail(
+                f"{session.config.model} does not expose reasoning variants."
+            )
+        if target not in allowed:
+            options = ", ".join(allowed)
+            return CommandResult.fail(
+                f"Unsupported variant for {session.config.model}: {target}. "
+                f"Options: {options} (or 'clear' to clear)."
+            )
+
+        session.config.model_variant = target
+        session._loop._model_variant = target
+        await _persist_session_variant(session, target)
+        return CommandResult.ok(
+            f"Model variant set to {target}",
+            action="variant_changed",
+            variant=target,
+        )
+
+
+async def _persist_session_variant(session: Any, variant: str) -> None:
+    """Best-effort metadata update for already-persisted sessions."""
+    if not getattr(session, "_session_persisted", False):
+        return
+    store = getattr(session, "_store", None)
+    session_id = getattr(session, "session_id", "")
+    if store is None or not session_id:
+        return
+    try:
+        await store.update_session(session_id, model_variant=variant)
+    except Exception:
+        pass
+
+
+@dataclass(slots=True)
 class ThemeCommand:
     """Switch between taui themes.
 
@@ -925,6 +1022,7 @@ def register_builtins(
     verbose_cmd = VerboseCommand()
     debug_cmd = DebugCommand()
     diff_cmd = GitDiffCommand()
+    variant_cmd = VariantCommand()
 
     if get_session:
         clear_cmd._get_loop = lambda: get_session()._loop
@@ -939,6 +1037,7 @@ def register_builtins(
         export_cmd._get_session = get_session
         verbose_cmd._get_session = get_session
         diff_cmd._get_session = get_session
+        variant_cmd._get_session = get_session
 
     if get_store:
         agents_cmd._get_store = get_store
@@ -957,6 +1056,7 @@ def register_builtins(
     registry.register(ContextCommand())
     registry.register(clear_cmd)
     registry.register(model_cmd)
+    registry.register(variant_cmd)
     registry.register(agents_cmd)
     registry.register(provider_cmd)
     registry.register(ext_list_cmd)

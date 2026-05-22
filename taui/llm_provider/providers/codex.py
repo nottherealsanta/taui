@@ -57,6 +57,7 @@ class CodexProvider(BaseLLMProvider):
         *,
         tools: list[dict[str, Any]] | None = None,
         previous_response_id: str | None = None,
+        thinking_level: str | None = None,
         **kwargs: Any,
     ) -> LLMRequest:
         system, input_items = self._convert_messages(messages)
@@ -74,6 +75,12 @@ class CodexProvider(BaseLLMProvider):
         }
         if previous_response_id:
             body["previous_response_id"] = previous_response_id
+        # OpenAI Responses API takes ``reasoning.effort`` (e.g. "minimal" /
+        # "low" / "medium" / "high" / "xhigh" / "none") — supported set is
+        # model-specific (see compute_variants for codex). Mirrors opencode's
+        # openaiReasoningEfforts() variant payload.
+        if thinking_level:
+            body["reasoning"] = {"effort": thinking_level}
 
         return LLMRequest(
             url=f"{self.BASE_URL}/codex/responses",

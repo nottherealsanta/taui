@@ -40,6 +40,7 @@ from taui.tui.screens.context_breakdown import ContextBreakdownScreen
 from taui.tui.screens.git_diff import GitDiffScreen
 from taui.tui.screens.pasted_content import PastedContentScreen, PasteResult
 from taui.tui.screens.theme_picker import ThemePickerScreen
+from taui.tui.screens.variant_picker import VariantPickerScreen
 from taui.tui.session_state import SessionManager, SessionState
 from taui.tui.theme import ALL_THEMES, TAUI_DARK
 from taui.tui.tool_controller import ToolController
@@ -108,6 +109,12 @@ class TauiApp(App[None]):
     }
     #chat-log-container > .hidden-chat-log {
         display: none;
+    }
+    .session-splash {
+        width: 1fr;
+        height: 1fr;
+        content-align: center middle;
+        color: #555555;
     }
     #activity-progress {
         dock: bottom;
@@ -573,6 +580,7 @@ class TauiApp(App[None]):
         self.query_one(InfoBar).update_info(
             provider=self._config.provider,
             model=self._config.model,
+            variant=self._config.model_variant,
             agent_id="" if self._config.session_id else "DEF",
         )
         self._set_chat_panel_visible(False)
@@ -671,6 +679,7 @@ class TauiApp(App[None]):
 
         await container.mount(chat_log)
         chat_log.anchor()
+        await self._mount_splash(chat_log)
 
         self._sessions.add(state)
         self._sessions.active_id = sid
@@ -1174,6 +1183,7 @@ class TauiApp(App[None]):
         info_bar.update_info(
             provider=self._session.provider_name,
             model=self._session.model_name,
+            variant=self._session.model_variant,
             tokens=tokens,
             max_tokens=DEFAULT_MAX_INPUT_TOKENS,
             extensions_mode=self._session.extensions_mode,
@@ -1324,6 +1334,10 @@ class TauiApp(App[None]):
         cmd_pfx = self._config.prefixes.get("command", "/")
         self._refill_input(f"{cmd_pfx}model ")
 
+    @on(InfoBar.VariantBadgeClicked)
+    def handle_variant_badge_clicked(self, event: InfoBar.VariantBadgeClicked) -> None:
+        self._open_variant_picker()
+
     @on(InfoBar.ContextBadgeClicked)
     def handle_context_badge_clicked(self, event: InfoBar.ContextBadgeClicked) -> None:
         self._open_context_tree()
@@ -1424,6 +1438,44 @@ class TauiApp(App[None]):
             ThemePickerScreen(current=current),
             self._apply_theme,
         )
+
+    def _open_variant_picker(self) -> None:
+        """Open the modal model-variant picker, scoped to the current model."""
+        from taui.llm_provider.models import get_model_variants
+
+        if self._session is not None:
+            current = self._session.model_variant or ""
+            provider = self._session.provider_name
+            model = self._session.model_name
+        else:
+            current = self._config.model_variant or ""
+            provider = self._config.provider
+            model = self._config.model
+
+        variants = get_model_variants(provider, model) if model else []
+        if not variants:
+            self.notify(
+                f"{model or 'Current model'} has no reasoning variants.",
+                severity="information",
+            )
+            return
+
+        self.push_screen(
+            VariantPickerScreen(variants, current=current, model=model),
+            self._apply_variant,
+        )
+
+    def _apply_variant(self, variant: str | None) -> None:
+        if variant is None:
+            return
+        if self._session is not None:
+            self._session.config.model_variant = variant
+            try:
+                self._session._loop._model_variant = variant
+            except Exception:
+                pass
+        self._config.model_variant = variant
+        self._update_status()
 
     def _apply_theme(self, theme: str | None) -> None:
         if not theme:
@@ -2267,6 +2319,30 @@ class TauiApp(App[None]):
         except Exception:
             pass
 
+    # ── Splash art ─────────────────────────────────────────────────────
+
+    _SPLASH_ART = (
+        "  .::                             \n"
+        "  .::                     .:      \n"
+        ".:.: .:   .::    .::  .::         \n"
+        "  .::   .::  .:: .::  .::.::      \n"
+        "  .::  .::   .:: .::  .::.::      \n"
+        "  .::  .::   .:: .::  .::.::      \n"
+        "   .::   .:: .:::  .::.::.::      \n"
+        "                            .:::::"  # noqa: E501
+    )
+
+    async def _mount_splash(self, chat_log: VerticalScroll) -> None:
+        """Mount the splash art widget into an empty chat log."""
+        await chat_log.mount(
+            Static(self._SPLASH_ART, classes="session-splash")
+        )
+
+    async def _remove_splash(self, chat_log: VerticalScroll) -> None:
+        """Remove the splash art if present."""
+        for widget in chat_log.query(".session-splash"):
+            await widget.remove()
+
     # ── Per-turn container ────────────────────────────────────────────
 
     async def _begin_turn(
@@ -2280,6 +2356,7 @@ class TauiApp(App[None]):
         """Create and mount a new turn container, run autocollapse, return it."""
         st = state or self._sessions.active
         log = chat_log or (st.chat_log if st is not None else None) or self._get_active_chat_log()
+        await self._remove_splash(log)
         turn_id = len(st.turns) if st is not None else 0
         turn = TurnContainer(user_text, image_note, turn_id=turn_id)
         if st is not None:
@@ -2567,6 +2644,9 @@ class TauiApp(App[None]):
         if action == "open_theme_picker":
             self._open_theme_picker()
             return
+        if action == "open_variant_picker":
+            self._open_variant_picker()
+            return
         if action == "theme_changed":
             theme = str(result.metadata.get("theme") or "")
             if theme:
@@ -2625,6 +2705,7 @@ class TauiApp(App[None]):
             "extensions_off",
             "agent_activated",
             "model_changed",
+            "variant_changed",
             "new_session",
             "session_resumed",
         ):
@@ -2906,6 +2987,7 @@ class TauiApp(App[None]):
         try:
             chat_log = self._get_active_chat_log()
             await chat_log.remove_children()
+            await self._mount_splash(chat_log)
         except Exception:
             pass
         st = self._sessions.active
@@ -3325,6 +3407,7 @@ class TauiApp(App[None]):
             stream=self._session._stream,
             system_prompt=profile.prompt,
             model=self._config.model,
+            model_variant=self._config.model_variant,
             max_turns=self._config.max_turns,
             provider_name=self._config.provider,
         )

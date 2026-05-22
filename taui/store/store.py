@@ -58,6 +58,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     last_active  REAL NOT NULL,
     message_count INTEGER NOT NULL DEFAULT 0,
     model        TEXT NOT NULL DEFAULT '',
+    model_variant TEXT NOT NULL DEFAULT '',
     first_message TEXT NOT NULL DEFAULT ''
 );
 """
@@ -167,6 +168,10 @@ class Store:
         if "model" not in columns:
             await self.db.execute(
                 "ALTER TABLE sessions ADD COLUMN model TEXT NOT NULL DEFAULT ''"
+            )
+        if "model_variant" not in columns:
+            await self.db.execute(
+                "ALTER TABLE sessions ADD COLUMN model_variant TEXT NOT NULL DEFAULT ''"
             )
         if "first_message" not in columns:
             await self.db.execute(
@@ -395,15 +400,16 @@ class Store:
         mode: str = "normal",
         stream_id: str | None = None,
         model: str | None = None,
+        model_variant: str | None = None,
     ) -> None:
         """Create a session metadata record."""
         now = time.time()
         await self.db.execute(
             "INSERT OR IGNORE INTO sessions"
             "(session_id, stream_id, description, mode, created_at, last_active, "
-            "message_count, model)"
-            " VALUES (?, ?, '', ?, ?, ?, 0, ?)",
-            (session_id, stream_id or "", mode, now, now, model or ""),
+            "message_count, model, model_variant)"
+            " VALUES (?, ?, '', ?, ?, ?, 0, ?, ?)",
+            (session_id, stream_id or "", mode, now, now, model or "", model_variant or ""),
         )
         if stream_id:
             await self.db.execute(
@@ -421,6 +427,7 @@ class Store:
         mode: str | None = None,
         stream_id: str | None = None,
         model: str | None = None,
+        model_variant: str | None = None,
         first_message: str | None = None,
     ) -> None:
         """Update session metadata fields."""
@@ -441,6 +448,9 @@ class Store:
         if model is not None:
             sets.append("model = ?")
             params.append(model)
+        if model_variant is not None:
+            sets.append("model_variant = ?")
+            params.append(model_variant)
         if first_message is not None:
             sets.append("first_message = ?")
             params.append(first_message)
