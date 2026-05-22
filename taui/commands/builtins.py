@@ -126,6 +126,11 @@ class ModelCommand:
         session.config.model = model
         session._loop._model = model
         _reset_variant_if_unsupported(session)
+        try:
+            from taui.llm_provider.config import save_last_model
+            save_last_model(session.config.provider, model)
+        except Exception:
+            pass
         return CommandResult.ok(
             f"Model set to {model}",
             action="model_changed",
@@ -169,6 +174,11 @@ class ModelCommand:
         session.config.model = selected
         session._loop._model = selected
         _reset_variant_if_unsupported(session)
+        try:
+            from taui.llm_provider.config import save_last_model
+            save_last_model(provider, selected)
+        except Exception:
+            pass
         return CommandResult.ok(
             f"Model set to {selected}",
             action="model_changed",

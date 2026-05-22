@@ -115,10 +115,14 @@ class Config:
 
         cfg = cls(**kwargs)
 
-        # If no model was set from any source, pick the best for this provider
+        # If no model was set from any source, use last-used or pick default
         if not cfg.model:
-            from taui.llm_provider.models import get_default_model
-
-            cfg.model = get_default_model(cfg.provider)
+            from taui.llm_provider.config import load_last_model
+            last = load_last_model(cfg.provider)
+            if last:
+                cfg.model = last
+            else:
+                from taui.llm_provider.models import get_default_model
+                cfg.model = get_default_model(cfg.provider)
 
         return cfg

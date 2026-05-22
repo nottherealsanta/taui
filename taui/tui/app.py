@@ -1325,6 +1325,12 @@ class TauiApp(App[None]):
                 self.run_worker(_persist(), exclusive=False)
             except Exception:
                 pass
+            # Remember as last-used model for this provider
+            try:
+                from taui.llm_provider.config import save_last_model
+                save_last_model(self._session.config.provider, selected)
+            except Exception:
+                pass
 
     @on(Info2.ModelSelected)
     def handle_info2_model_selected(self, event: Info2.ModelSelected) -> None:
@@ -2121,14 +2127,13 @@ class TauiApp(App[None]):
     # ── Splash art ─────────────────────────────────────────────────────
 
     _SPLASH_ART = (
-        "  .::                             \n"
-        "  .::                     .:      \n"
-        ".:.: .:   .::    .::  .::         \n"
-        "  .::   .::  .:: .::  .::.::      \n"
-        "  .::  .::   .:: .::  .::.::      \n"
-        "  .::  .::   .:: .::  .::.::      \n"
-        "   .::   .:: .:::  .::.::.::      \n"
-        "                            .:::::"  # noqa: E501
+        "  .::                      .:      \n"
+        "  .::                              \n"
+        ".:.: .:   .::    .::  .:: .::      \n"
+        "  .::   .::  .:: .::  .:: .::      \n"
+        "  .::  .::   .:: .::  .:: .::      \n"
+        "  .::  .::   .:: .::  .:: .::      \n"
+        "   .::   .:: .:::  .::.:: .:: .:::::\n"# noqa: E501
     )
 
     async def _mount_splash(self, chat_log: VerticalScroll) -> None:

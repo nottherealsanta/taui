@@ -32,6 +32,21 @@ def save_provider_config(provider: str, data: dict) -> None:
     CONFIG_PATH.write_text(_dict_to_toml(existing), encoding="utf-8")
 
 
+def save_last_model(provider: str, model: str) -> None:
+    """Persist the last-used model for a provider to config.toml."""
+    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    existing = load_config()
+    last = existing.setdefault("last_model", {})
+    last[provider] = model
+    CONFIG_PATH.write_text(_dict_to_toml(existing), encoding="utf-8")
+
+
+def load_last_model(provider: str) -> str | None:
+    """Return the last-used model for a provider, or None."""
+    config = load_config()
+    return config.get("last_model", {}).get(provider) or None
+
+
 def load_provider_config(provider: str) -> dict | None:
     """Return config["providers"][provider], or None if not present."""
     config = load_config()
