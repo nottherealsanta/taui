@@ -1,4 +1,8 @@
 - questions should not be notification
-- fix order when tool calling and thoughts appear. 
-- context meter needs to update in near real time 
+- fix order when tool calling and thoughts appear.
+- context meter needs to update in near real time
 - maybe tools need not have two scopes
+- monty
+- remember the last selected model by user.( for a particular agent and in general)
+- add a "/skills" and "/tools" and "/prompts" to list them like agents and models
+- maybe worktree should not be a tool, just bash it
