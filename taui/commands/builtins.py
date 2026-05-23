@@ -127,8 +127,14 @@ class ModelCommand:
         session._loop._model = model
         _reset_variant_if_unsupported(session)
         try:
-            from taui.llm_provider.config import save_last_model
+            from taui.llm_provider.config import (
+                save_last_agent_model,
+                save_last_model,
+            )
             save_last_model(session.config.provider, model)
+            agent_id = str(getattr(session._loop, "agent_id", "") or "").upper()
+            if agent_id:
+                save_last_agent_model(agent_id, session.config.provider, model)
         except Exception:
             pass
         return CommandResult.ok(
@@ -175,8 +181,14 @@ class ModelCommand:
         session._loop._model = selected
         _reset_variant_if_unsupported(session)
         try:
-            from taui.llm_provider.config import save_last_model
+            from taui.llm_provider.config import (
+                save_last_agent_model,
+                save_last_model,
+            )
             save_last_model(provider, selected)
+            agent_id = str(getattr(session._loop, "agent_id", "") or "").upper()
+            if agent_id:
+                save_last_agent_model(agent_id, provider, selected)
         except Exception:
             pass
         return CommandResult.ok(

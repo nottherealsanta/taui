@@ -180,6 +180,13 @@ class Info2(ScrollableContainer):
         self._approval_pattern: str = ""
         self._approval_future: asyncio.Future | None = None
         self._questions_panel: QuestionsPanel | None = None
+        # Fuzzy-search filter state for inline pickers (models/agents). The
+        # ``_all`` lists hold the unfiltered source; ``_filter_query`` is the
+        # current search string; the per-mode ``_items`` lists hold the
+        # filtered view that's actually rendered.
+        self._models_all: list[dict] = []
+        self._agents_all: list = []
+        self._filter_query: str = ""
 
     def compose(self) -> ComposeResult:
         return iter(())
@@ -213,7 +220,9 @@ class Info2(ScrollableContainer):
         if not models:
             return
         self._mode = Info2Mode.MODELS
-        self._model_items = models[:50]
+        self._models_all = list(models)
+        self._filter_query = ""
+        self._model_items = self._models_all[:50]
         self._current_marker = current
         self.selected_index = 0
         # Try to pre-select current model
@@ -229,7 +238,9 @@ class Info2(ScrollableContainer):
         if not agents:
             return
         self._mode = Info2Mode.AGENTS
-        self._agent_items = agents[:50]
+        self._agents_all = list(agents)
+        self._filter_query = ""
+        self._agent_items = self._agents_all[:50]
         self._current_marker = current.upper()
         self.selected_index = 0
         for i, a in enumerate(self._agent_items):
@@ -321,11 +332,55 @@ class Info2(ScrollableContainer):
         self._session_items = []
         self._skill_items = []
         self._prompt_items = []
+        self._models_all = []
+        self._agents_all = []
+        self._filter_query = ""
         self._context_tree = None
         self._questions_panel = None
         self.remove_children()
         self.remove_class("active")
         self.remove_class("questions")
+
+    # ── Filter (used by inline model/agent picker fuzzy search) ────────
+
+    @property
+    def supports_filter(self) -> bool:
+        return self._mode in (Info2Mode.MODELS, Info2Mode.AGENTS)
+
+    @property
+    def filter_query(self) -> str:
+        return self._filter_query
+
+    def append_filter_char(self, ch: str) -> None:
+        if not self.supports_filter or len(ch) != 1:
+            return
+        self._filter_query += ch
+        self._apply_filter()
+
+    def pop_filter_char(self) -> None:
+        if not self.supports_filter or not self._filter_query:
+            return
+        self._filter_query = self._filter_query[:-1]
+        self._apply_filter()
+
+    def _apply_filter(self) -> None:
+        query = self._filter_query.lower().strip()
+        if self._mode == Info2Mode.MODELS:
+            self._model_items = _rank_by_query(
+                self._models_all,
+                query,
+                key=lambda m: str(m.get("id", "")).lower(),
+            )[:50]
+            self.selected_index = 0
+            self._rebuild_models()
+        elif self._mode == Info2Mode.AGENTS:
+            self._agent_items = _rank_by_query(
+                self._agents_all,
+                query,
+                key=lambda a: f"{a.id} {a.name}".lower(),
+            )[:50]
+            self.selected_index = 0
+            self._rebuild_agents()
 
     # ── Navigation ─────────────────────────────────────────────────────
 
@@ -482,6 +537,7 @@ class Info2(ScrollableContainer):
 
     def _rebuild_models(self) -> None:
         self.remove_children()
+        self._mount_filter_header()
         for i, model in enumerate(self._model_items):
             item = Info2Item(self._model_label(model))
             if i == self.selected_index:
@@ -490,11 +546,23 @@ class Info2(ScrollableContainer):
 
     def _rebuild_agents(self) -> None:
         self.remove_children()
+        self._mount_filter_header()
         for i, agent in enumerate(self._agent_items):
             item = Info2Item(self._agent_label(agent))
             if i == self.selected_index:
                 item.add_class("highlighted")
             self.mount(item)
+
+    def _mount_filter_header(self) -> None:
+        if not self._filter_query:
+            return
+        header = Static(
+            Text.assemble(
+                ("> ", "dim"),
+                (self._filter_query, "bold cyan"),
+            )
+        )
+        self.mount(header)
 
     def _rebuild_sessions(self) -> None:
         self.remove_children()
@@ -612,6 +680,29 @@ class Info2(ScrollableContainer):
             self.scroll_to_widget(highlighted, animate=False)
         except (IndexError, Exception):
             pass
+
+
+def _rank_by_query(items, query: str, key) -> list:
+    """Substring matches first, then subsequence matches. Empty query → all."""
+    if not query:
+        return list(items)
+    substring: list = []
+    subseq: list = []
+    for item in items:
+        target = key(item)
+        if query in target:
+            substring.append(item)
+        elif _subseq_match(query, target):
+            subseq.append(item)
+    return substring + subseq
+
+
+def _subseq_match(query: str, target: str) -> bool:
+    i = 0
+    for ch in target:
+        if i < len(query) and ch == query[i]:
+            i += 1
+    return i == len(query)
 
 
 def _fallback_session_name(session: dict) -> str:

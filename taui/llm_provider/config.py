@@ -47,6 +47,27 @@ def load_last_model(provider: str) -> str | None:
     return config.get("last_model", {}).get(provider) or None
 
 
+def save_last_agent_model(agent_id: str, provider: str, model: str) -> None:
+    """Persist the last-used (provider, model) pair for a specific agent."""
+    if not agent_id:
+        return
+    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    existing = load_config()
+    last = existing.setdefault("last_agent_model", {})
+    last[agent_id] = {"provider": provider, "model": model}
+    CONFIG_PATH.write_text(_dict_to_toml(existing), encoding="utf-8")
+
+
+def load_last_agent_model(agent_id: str) -> tuple[str, str] | None:
+    """Return (provider, model) last used for the given agent, or None."""
+    if not agent_id:
+        return None
+    entry = load_config().get("last_agent_model", {}).get(agent_id)
+    if not entry:
+        return None
+    return (str(entry.get("provider", "")), str(entry.get("model", "")))
+
+
 def load_provider_config(provider: str) -> dict | None:
     """Return config["providers"][provider], or None if not present."""
     config = load_config()

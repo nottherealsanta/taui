@@ -2999,13 +2999,23 @@ class SelfEditModal(ModalScreen[str | None]):
 
     def _render_item_row(self, item: inventory.Item) -> Text:
         text = Text()
-        label_style = f"bold {ACCENT_SOFT}" if item.builtin else f"bold {ACCENT}"
+        # Sub-only agents have no accent color (the picker doesn't expose
+        # them and the COLOR option is hidden in the editor), so render
+        # them gray to signal that the colour slot is unused.
+        usage = ""
+        if item.category == "agents":
+            usage = str(item.extra.get("usage", "") or "").strip().lower()
+        if item.builtin:
+            label_style = f"bold {ACCENT_SOFT}"
+        elif usage == "sub":
+            label_style = "bold #777777"
+        else:
+            label_style = f"bold {ACCENT}"
         text.append(" ", style=ACCENT)
         text.append(f"{item.label:<22s}", style=label_style)
 
         # Agents: id + usage badge only (no name / model summary).
         if item.category == "agents":
-            usage = str(item.extra.get("usage", "") or "").strip().lower()
             color = str(item.extra.get("color", "") or "").strip()
             if usage in ("main", "sub", "both"):
                 badge_style = f"dim {color}" if color else "dim"

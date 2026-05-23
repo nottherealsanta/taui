@@ -1368,10 +1368,21 @@ class TauiApp(App[None]):
                 self.run_worker(_persist(), exclusive=False)
             except Exception:
                 pass
-            # Remember as last-used model for this provider
+            # Remember as last-used model for this provider, and also for
+            # the active agent so the choice survives agent switches.
             try:
-                from taui.llm_provider.config import save_last_model
+                from taui.llm_provider.config import (
+                    save_last_agent_model,
+                    save_last_model,
+                )
                 save_last_model(self._session.config.provider, selected)
+                agent_id = str(
+                    getattr(self._session._loop, "agent_id", "") or ""
+                ).upper()
+                if agent_id:
+                    save_last_agent_model(
+                        agent_id, self._session.config.provider, selected
+                    )
             except Exception:
                 pass
 
@@ -3245,6 +3256,20 @@ class TauiApp(App[None]):
             self._config.provider = profile.provider
         if profile.model:
             self._config.model = profile.model
+        else:
+            # Profile doesn't pin a model — restore the last model the user
+            # picked while this agent was active, if we have one.
+            try:
+                from taui.llm_provider.config import load_last_agent_model
+                remembered = load_last_agent_model(profile.id)
+            except Exception:
+                remembered = None
+            if remembered:
+                prov, mdl = remembered
+                if prov:
+                    self._config.provider = prov
+                if mdl:
+                    self._config.model = mdl
         self._config.system_prompt = profile.prompt
         self._session.config = self._config
         self._session._system_prompt = profile.prompt

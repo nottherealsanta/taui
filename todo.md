@@ -3,11 +3,10 @@
 - maybe tools need not have two scopes
 - monty
 - remember the last selected model by user.( for a particular agent and in general)
-- add a "/skills" and "/tools" and "/prompts" to list them like agents and models
+- add a "/skills" and "/prompts" to list them like agents and models
 - maybe worktree should not be a tool, just bash it
 - multi line (more than x) input needs to have scroll to let user know
 - in agent - self-edit - toggle for edit requires user permission 
-- ctrl+i to open self-edit modal
 - each tools (builtin and user's) should start with multiline comment explaining what it does.
 - in self-edit, sub model are gray color as color option is not needed. 
 - tasks should not be a json file, it should just exist in context. 

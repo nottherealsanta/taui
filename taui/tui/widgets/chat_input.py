@@ -1118,6 +1118,29 @@ class ChatInput(TextArea):
             except Exception:
                 pass
 
+        # ── Inline picker fuzzy search (models / agents) ────────────────
+        # When Info2 is showing the model or agent picker, route printable
+        # keystrokes and backspace into its filter so the user can search
+        # without touching their draft message in the chat input.
+        try:
+            from taui.tui.widgets.info2 import Info2
+
+            info2 = self.app.query_one(Info2)
+            if info2.supports_filter:
+                if event.key == "backspace":
+                    event.prevent_default()
+                    event.stop()
+                    info2.pop_filter_char()
+                    return
+                ch = event.character
+                if ch and len(ch) == 1 and ch.isprintable() and not ch.isspace():
+                    event.prevent_default()
+                    event.stop()
+                    info2.append_filter_char(ch)
+                    return
+        except Exception:
+            pass
+
         # ── Completion keys ──────────────────────────────────────────
         if self._completion_active:
             at_active = self._at_range is not None
