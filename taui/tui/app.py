@@ -1118,13 +1118,11 @@ class TauiApp(App[None]):
     def handle_agent_badge_clicked(
         self, event: InfoBar.AgentBadgeClicked | None = None
     ) -> None:
-        cmd_pfx = self._config.prefixes.get("command", "/")
-        self._refill_input(f"{cmd_pfx}agents ")
+        self._open_agent_picker_inline()
 
     @on(InfoBar.ModelBadgeClicked)
     def handle_model_badge_clicked(self, event: InfoBar.ModelBadgeClicked) -> None:
-        cmd_pfx = self._config.prefixes.get("command", "/")
-        self._refill_input(f"{cmd_pfx}model ")
+        self._open_model_picker_inline()
 
     @on(InfoBar.VariantBadgeClicked)
     def handle_variant_badge_clicked(self, event: InfoBar.VariantBadgeClicked) -> None:
@@ -1230,6 +1228,51 @@ class TauiApp(App[None]):
             ThemePickerScreen(current=current),
             self._apply_theme,
         )
+
+    def _open_model_picker_inline(self) -> None:
+        """Show the inline Info2 model picker without clobbering chat input."""
+        from taui.llm_provider.models import list_models
+
+        if self._session is not None:
+            provider = self._session.config.provider
+            current = self._session.model_name or self._session.config.model or ""
+        else:
+            provider = self._config.provider
+            current = self._config.model or ""
+
+        models = list_models(provider) if provider else []
+        if not models:
+            cmd_pfx = self._config.prefixes.get("command", "/")
+            self._refill_input(f"{cmd_pfx}model ")
+            return
+
+        try:
+            info2 = self.query_one(Info2)
+        except Exception:
+            return
+        info2.show_models(models, current=current)
+
+    def _open_agent_picker_inline(self) -> None:
+        """Show the inline Info2 agent picker without clobbering chat input."""
+        agents = SelfEditStore(self._config.working_dir).load_agents()
+        profiles = sorted(
+            (p for p in agents.values() if not p.subagent_only),
+            key=lambda item: item.id,
+        )
+        if not profiles:
+            cmd_pfx = self._config.prefixes.get("command", "/")
+            self._refill_input(f"{cmd_pfx}agents ")
+            return
+
+        current = ""
+        if self._session is not None:
+            current = str(getattr(self._session._loop, "agent_id", "") or "")
+
+        try:
+            info2 = self.query_one(Info2)
+        except Exception:
+            return
+        info2.show_agents(profiles, current=current)
 
     def _open_variant_picker(self) -> None:
         """Open the modal model-variant picker, scoped to the current model."""
@@ -1571,6 +1614,14 @@ class TauiApp(App[None]):
             self._pending_files.append(path)
             chat_input.insert_attachment_marker(idx + 1)
 
+    @on(ChatInput.CommandInvoked)
+    async def handle_command_invoked(
+        self,
+        event: ChatInput.CommandInvoked,
+    ) -> None:
+        """Run a slash command picked via mid-sentence alt+/ completion."""
+        await self._handle_command(event.command)
+
     @on(ChatInput.ImageAttached)
     async def handle_image_attached(
         self,
@@ -1790,8 +1841,8 @@ class TauiApp(App[None]):
 
         if sp:
             lines = sp.splitlines()
-            preview = lines[:3]
-            if len(lines) > 3:
+            preview = lines[:100]
+            if len(lines) > 100:
                 preview.append("...")
             safe_sp = "\n".join(preview).replace("[", "\\[")
             parts.append(
@@ -2429,12 +2480,10 @@ class TauiApp(App[None]):
             return
 
         if action == "open_model_picker":
-            cmd_pfx = self._config.prefixes.get("command", "/")
-            self._refill_input(f"{cmd_pfx}model ")
+            self._open_model_picker_inline()
             return
         if action == "open_agent_picker":
-            cmd_pfx = self._config.prefixes.get("command", "/")
-            self._refill_input(f"{cmd_pfx}agents ")
+            self._open_agent_picker_inline()
             return
         if action == "open_skill_picker":
             self._refill_input(self._config.prefixes.get("skills", "!"))

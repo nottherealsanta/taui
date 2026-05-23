@@ -180,6 +180,13 @@ class ChatInput(TextArea):
             self.path = path
             self.is_dir = is_dir
 
+    class CommandInvoked(Message):
+        """Posted when the user picks a command mid-sentence via alt+/."""
+
+        def __init__(self, command: str) -> None:
+            super().__init__()
+            self.command = command
+
     class CancelRequested(Message):
         """Posted when user presses Escape with empty input to cancel streaming."""
 
@@ -225,6 +232,13 @@ class ChatInput(TextArea):
         self._prompt_completer: Callable[
             [str], list[Completion]
         ] | None = None
+        # Mid-sentence prefix completion (alt+/, alt+!, alt+#). The user
+        # opts in explicitly via the alt-modifier so a bare `/`, `!`, or
+        # `#` typed mid-sentence does *not* pop the dropdown. ``@`` keeps
+        # working both ways — bare and alt+@ — via the separate at-range
+        # tracking above.
+        self._mid_prefix_char: str | None = None
+        self._mid_prefix_range: tuple[int, int] | None = None
 
     def set_completions(self, completions: list[tuple[str, str] | Completion]) -> None:
         """Set available completions.
@@ -302,26 +316,28 @@ class ChatInput(TextArea):
         return min(offset, len(text))
 
     def _at_token_at_cursor(self) -> tuple[int, int, str] | None:
-        """Return ``(start, end, prefix)`` for the `@token` containing the cursor.
+        """Return ``(start, end, prefix)`` for the `@token` containing the cursor."""
+        return self._prefix_token_at_cursor(self._file_attach_prefix)
+
+    def _prefix_token_at_cursor(
+        self, prefix_char: str
+    ) -> tuple[int, int, str] | None:
+        """Return ``(start, end, query)`` for a `<prefix><word>` containing the cursor.
 
         The cursor must be inside (or at the right edge of) a contiguous run
-        of non-whitespace characters that begins with `@`. The `@` itself must
-        be at the start of the text or be immediately preceded by whitespace.
-        Returns ``None`` when no such token exists.
+        of non-whitespace characters that begins with *prefix_char*. The prefix
+        itself must be at the start of the text or immediately preceded by
+        whitespace. Returns ``None`` when no such token exists.
         """
         text = self.text
         offset = self._cursor_text_offset()
-        # Walk backwards from cursor to find the start of the current token.
         i = offset
         while i > 0 and not text[i - 1].isspace():
             i -= 1
-        # i is now the start of the token.
-        if i >= len(text) or text[i] != self._file_attach_prefix:
+        if i >= len(text) or text[i] != prefix_char:
             return None
-        # The `@` must be at start-of-text or preceded by whitespace.
         if i > 0 and not text[i - 1].isspace():
             return None
-        # Walk forward from offset to find the end of the token.
         j = offset
         while j < len(text) and not text[j].isspace():
             j += 1
@@ -807,6 +823,81 @@ class ChatInput(TextArea):
         except Exception:
             pass
 
+    def _show_mid_completion(self) -> bool:
+        """Show mid-sentence completion for the active alt+/ command prefix.
+
+        Returns True when the dropdown was shown or the prefix is still being
+        tracked (so the at-start completion path should be skipped). Returns
+        False when the cursor has left the prefix token, clearing state.
+        """
+        from taui.tui.widgets.info2 import Info2
+
+        pfx = self._mid_prefix_char
+        if pfx is None:
+            return False
+        token = self._prefix_token_at_cursor(pfx)
+        if token is None:
+            self._mid_prefix_char = None
+            self._mid_prefix_range = None
+            self._dismiss_completion()
+            return False
+        start, end, query = token
+        self._mid_prefix_range = (start, end)
+
+        matches = self._get_matching_commands(query)
+        if not matches:
+            self._dismiss_completion()
+            return True
+
+        try:
+            info2 = self.app.query_one(Info2)
+            info2.show_completions(matches, prefix=pfx)
+            self._completion_active = True
+        except Exception:
+            pass
+        return True
+
+    def _accept_mid_completion(self) -> bool:
+        """Accept the selected mid-sentence command completion.
+
+        Removes the `<prefix><token>` span from the buffer (preserving the
+        rest of the user's text) and dispatches CommandInvoked so the host
+        can run the slash command.
+        """
+        from taui.tui.widgets.info2 import Info2
+
+        pfx = self._mid_prefix_char
+        rng = self._mid_prefix_range
+        if pfx is None or rng is None:
+            return False
+        try:
+            info2 = self.app.query_one(Info2)
+            value = info2.current_value
+        except Exception:
+            value = None
+        if not value:
+            return False
+
+        start, end = rng
+        text = self.text
+        cut_end = end
+        if cut_end < len(text) and text[cut_end] == " ":
+            cut_end += 1
+        new_text = text[:start] + text[cut_end:]
+        self._updating_completion_text = True
+        try:
+            self.clear()
+            self.insert(new_text)
+            self._move_cursor_to_offset(start)
+        finally:
+            self._updating_completion_text = False
+        self._mid_prefix_char = None
+        self._mid_prefix_range = None
+        self._dismiss_completion()
+
+        self.post_message(self.CommandInvoked(f"{pfx}{value}"))
+        return True
+
     def _dismiss_completion(self) -> None:
         """Hide the completion dropdown."""
         from taui.tui.widgets.info2 import Info2
@@ -991,6 +1082,18 @@ class ChatInput(TextArea):
             return False
 
     async def _on_key(self, event: Key) -> None:
+        # ── Mid-sentence command trigger (alt+/) ────────────────────────
+        # Inserts the configured command prefix at the cursor and arms
+        # mid-sentence completion. ``!`` / ``#`` / ``@`` are not bound here
+        # because they sit behind shift on most layouts — ``@`` already
+        # works mid-sentence on its own via the at-completion handler.
+        if event.key == "alt+slash":
+            event.prevent_default()
+            event.stop()
+            self._mid_prefix_char = self._command_prefix
+            self.insert(self._command_prefix)
+            return
+
         # ── Info2 panel keys (approval/model/agent/context/sessions) ──
         if event.key in ("up", "down", "enter", "space", "escape"):
             from taui.tui.widgets.info2 import Info2, Info2Mode
@@ -1033,11 +1136,15 @@ class ChatInput(TextArea):
                     pass
                 return
 
+            mid_active = self._mid_prefix_char is not None
+
             if event.key == "enter":
                 event.prevent_default()
                 event.stop()
                 if at_active:
                     self._accept_at_completion()
+                elif mid_active:
+                    self._accept_mid_completion()
                 else:
                     self._submit_selected_completion()
                 return
@@ -1049,6 +1156,9 @@ class ChatInput(TextArea):
                 event.stop()
                 if at_active:
                     self._accept_at_completion()
+                    return
+                if mid_active:
+                    self._accept_mid_completion()
                     return
                 try:
                     info2 = self.app.query_one(Info2)
@@ -1064,6 +1174,8 @@ class ChatInput(TextArea):
                 event.prevent_default()
                 event.stop()
                 self._at_range = None
+                self._mid_prefix_char = None
+                self._mid_prefix_range = None
                 self._dismiss_completion()
                 return
 
@@ -1218,6 +1330,12 @@ class ChatInput(TextArea):
         """Show or hide the completion dropdown as the text changes."""
         if self._updating_completion_text:
             return
+        # Mid-sentence prefix completion (alt+/, alt+!, alt+#) — explicitly
+        # opted in via alt-modifier so it has priority over the bare prefix
+        # paths while the cursor is still inside the token.
+        if self._mid_prefix_char is not None:
+            if self._show_mid_completion():
+                return
         # `@` completion takes priority over slash completion so users can
         # type `@<file>` while still composing a message.
         if self._show_at_completion():
