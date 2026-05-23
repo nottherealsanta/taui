@@ -265,20 +265,23 @@ class TestRegisterBuiltins:
         assert "peek" in reg
         assert "lsp" in reg
         assert "worktree" in reg
+        assert "bash_status" in reg
+        assert "bash_kill" in reg
         assert "notebook_edit" not in reg
-        assert len(reg) == 20
+        assert len(reg) == 22
 
     def test_schemas_exported(self):
         reg = ToolRegistry()
         register_builtins(reg)
         schemas = reg.schemas()
-        assert len(schemas) == 20
+        assert len(schemas) == 22
         names = {s["function"]["name"] for s in schemas}
         assert names == {
             "read", "write", "edit", "glob", "grep", "bash", "git",
             "question", "memory", "skills", "sub_agent", "mcp",
             "session_name", "peek", "task", "webfetch", "apply_patch",
             "lsp", "repo_overview", "worktree",
+            "bash_status", "bash_kill",
         }
 
 

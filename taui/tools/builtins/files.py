@@ -13,6 +13,7 @@ from typing import Any
 from taui.tools.base import ToolCategory, ToolResult
 from taui.tools.builtins.common import (
     SKIP_DIRS,
+    TruncationEnvelope,
     is_binary,
     resolve_path,
     suggest_similar,
@@ -235,6 +236,7 @@ class GlobTool:
         "Use glob to discover files by extension or name pattern. "
         "Common patterns: '**/*.py', 'src/**/*.ts', '**/test_*.py'."
     )
+    _truncation_store: Any = field(default=None, repr=False)
     schema: dict[str, Any] = field(default=None)  # type: ignore[assignment]
 
     def __post_init__(self):
@@ -280,12 +282,29 @@ class GlobTool:
         if not matches:
             return ToolResult.ok(f"No matches for pattern {pattern!r} in {base}")
 
-        lines = [str(p.relative_to(self.working_dir)) for p in matches[:200]]
-        result = "\n".join(lines)
-        if len(matches) > 200:
-            result += f"\n\n({len(matches) - 200} more matches not shown)"
+        max_shown = 200
+        all_lines = [str(p.relative_to(self.working_dir)) for p in matches]
+        shown_lines = all_lines[:max_shown]
+        result = "\n".join(shown_lines)
+        meta: dict[str, Any] = {"count": len(matches), "pattern": pattern}
 
-        return ToolResult.ok(result, count=len(matches), pattern=pattern)
+        if len(matches) > max_shown:
+            handle: str | None = None
+            if self._truncation_store is not None:
+                handle = self._truncation_store.store(
+                    "\n".join(all_lines), tool_name="glob"
+                )
+            envelope = TruncationEnvelope(
+                truncated_at=max_shown,
+                unit="files",
+                total_hint=len(matches),
+                peek_handle=handle,
+                next_hint="narrow the pattern or add a `path` to focus the search",
+            )
+            result += envelope.format_footer()
+            meta.update(envelope.to_metadata())
+
+        return ToolResult.ok(result, **meta)
 
 
 # ── GrepTool ──────────────────────────────────────────────────────────────────
@@ -306,6 +325,7 @@ class GrepTool:
         "Use grep to find where something is defined or used. "
         "Use `include` to limit to specific file types (e.g. '*.py')."
     )
+    _truncation_store: Any = field(default=None, repr=False)
     schema: dict[str, Any] = field(default=None)  # type: ignore[assignment]
 
     def __post_init__(self):
@@ -351,6 +371,10 @@ class GrepTool:
         matches: list[str] = []
         files_matched: set[str] = set()
         max_matches = 500
+        # Keep scanning briefly past the cap so we can hint at `total_hint`
+        # without unbounded memory blow-up.
+        overflow_cap = max_matches * 4
+        truncated = False
 
         if single_file:
             candidates = iter([base])
@@ -380,10 +404,15 @@ class GrepTool:
                         display = display[:200] + "…"
                     matches.append(f"{rel}:{lineno}| {display}")
                     files_matched.add(rel)
-                    if len(matches) >= max_matches:
+                    if len(matches) >= overflow_cap:
+                        truncated = True
                         break
-            if len(matches) >= max_matches:
+            if len(matches) >= overflow_cap:
+                truncated = True
                 break
+
+        if len(matches) > max_matches:
+            truncated = True
 
         if not matches:
             return ToolResult.ok(
@@ -391,12 +420,32 @@ class GrepTool:
                 match_count=0,
             )
 
-        result = "\n".join(matches)
-        if len(matches) >= max_matches:
-            result += f"\n\n(truncated at {max_matches} matches)"
+        shown = matches[:max_matches]
+        result = "\n".join(shown)
+        meta: dict[str, Any] = {
+            "match_count": len(shown),
+            "file_count": len(files_matched),
+        }
 
-        return ToolResult.ok(
-            result,
-            match_count=len(matches),
-            file_count=len(files_matched),
-        )
+        if truncated:
+            handle: str | None = None
+            if self._truncation_store is not None:
+                handle = self._truncation_store.store(
+                    "\n".join(matches), tool_name="grep"
+                )
+            envelope = TruncationEnvelope(
+                truncated_at=max_matches,
+                unit="matches",
+                total_hint=len(matches) if len(matches) < overflow_cap else None,
+                peek_handle=handle,
+                next_hint=(
+                    "narrow with `include` or a tighter pattern; "
+                    "scan stopped early — true total may be higher"
+                    if len(matches) >= overflow_cap
+                    else "narrow with `include` or a tighter pattern"
+                ),
+            )
+            result += envelope.format_footer()
+            meta.update(envelope.to_metadata())
+
+        return ToolResult.ok(result, **meta)

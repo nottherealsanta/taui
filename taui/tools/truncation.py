@@ -26,6 +26,21 @@ class TruncationStore:
         self._max_inline_bytes = max_inline_bytes
         self._store: dict[str, TruncatedOutput] = {}
 
+    def store(self, content: str, tool_name: str = "") -> str:
+        """Store full content behind a fresh handle. Returns the handle.
+
+        Use this when a tool has already produced a user-facing summary but
+        wants the agent to be able to peek into the full underlying output.
+        """
+        handle = f"tr_{uuid.uuid4().hex[:8]}"
+        self._store[handle] = TruncatedOutput(
+            handle=handle,
+            tool_name=tool_name,
+            full_content=content,
+            truncated_preview="",
+        )
+        return handle
+
     def maybe_truncate(self, content: str, tool_name: str = "") -> str:
         """Truncate content if over the limit. Returns possibly truncated string.
 
