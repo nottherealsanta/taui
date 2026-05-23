@@ -288,6 +288,110 @@ class AgentsCommand:
         return CommandResult.ok("\n".join(lines))
 
 
+@dataclass(slots=True)
+class SkillsCommand:
+    """Open the inline skill picker, or list/toggle skills."""
+
+    name: str = "skills"
+    description: str = "List or toggle skills (/skills [name])"
+    accepts_args: bool = True
+    _get_session: Any = None
+
+    async def execute(self, ctx: CommandContext) -> CommandResult:
+        if self._get_session is None:
+            return CommandResult.fail("No session.")
+        session = self._get_session()
+        reg = getattr(session, "_skill_registry", None)
+        if reg is None:
+            return CommandResult.fail("Skill registry not available.")
+        skills = reg.list_all()
+
+        if not ctx.args:
+            return CommandResult.ok("", action="open_skill_picker_inline")
+        if ctx.args[0].lower() in ("list", "ls"):
+            return self._list_skills(skills)
+
+        name = ctx.args[0]
+        if reg.get(name) is None:
+            available = ", ".join(s.name for s in skills) or "(none)"
+            return CommandResult.fail(
+                f"Unknown skill: {name}. Available: {available}"
+            )
+        return CommandResult.ok(
+            "", action="skill_selected", skill_name=name,
+        )
+
+    @staticmethod
+    def _list_skills(skills: list) -> CommandResult:
+        if not skills:
+            return CommandResult.ok("No skills found.")
+        lines = ["Skills:"]
+        for s in skills:
+            marker = " ◀" if s.loaded else ""
+            lines.append(f"  {s.name:<30s}  {s.scope}{marker}")
+        lines.append("")
+        lines.append("Toggle: /skills <name>")
+        return CommandResult.ok("\n".join(lines))
+
+
+@dataclass(slots=True)
+class PromptsCommand:
+    """Open the inline prompt picker, or list/run prompts."""
+
+    name: str = "prompts"
+    description: str = "List or run prompts (/prompts [identifier])"
+    accepts_args: bool = True
+    _get_session: Any = None
+    _get_working_dir: Any = None
+
+    async def execute(self, ctx: CommandContext) -> CommandResult:
+        from taui.self_edit.inventory import list_items
+
+        wd = self._get_working_dir() if self._get_working_dir else None
+        if wd is None and self._get_session is not None:
+            wd = self._get_session().working_dir
+        if wd is None:
+            return CommandResult.fail("Working directory not available.")
+
+        try:
+            prompts = (
+                list_items(wd, "prompts", "project")
+                + list_items(wd, "prompts", "global")
+            )
+        except Exception as exc:
+            return CommandResult.fail(f"Failed to load prompts: {exc}")
+
+        if not ctx.args:
+            return CommandResult.ok("", action="open_prompt_picker_inline")
+        if ctx.args[0].lower() in ("list", "ls"):
+            return self._list_prompts(prompts)
+
+        identifier = ctx.args[0]
+        if not any(getattr(p, "identifier", "") == identifier for p in prompts):
+            available = ", ".join(
+                getattr(p, "identifier", "") for p in prompts
+            ) or "(none)"
+            return CommandResult.fail(
+                f"Unknown prompt: {identifier}. Available: {available}"
+            )
+        return CommandResult.ok(
+            "", action="prompt_selected", prompt_id=identifier,
+        )
+
+    @staticmethod
+    def _list_prompts(prompts: list) -> CommandResult:
+        if not prompts:
+            return CommandResult.ok("No prompts found.")
+        lines = ["Prompts:"]
+        for p in prompts:
+            ident = getattr(p, "identifier", "") or ""
+            summary = (getattr(p, "summary", "") or "")[:60]
+            lines.append(f"  {ident:<30s}  {summary}")
+        lines.append("")
+        lines.append("Run: /prompts <identifier>")
+        return CommandResult.ok("\n".join(lines))
+
+
 def _profile_provider_model(profile: Any) -> str:
     provider = str(getattr(profile, "provider", "") or "")
     model = str(getattr(profile, "model", "") or "")
@@ -1045,6 +1149,8 @@ def register_builtins(
     debug_cmd = DebugCommand()
     diff_cmd = GitDiffCommand()
     variant_cmd = VariantCommand()
+    skills_cmd = SkillsCommand()
+    prompts_cmd = PromptsCommand()
 
     if get_session:
         clear_cmd._get_loop = lambda: get_session()._loop
@@ -1060,6 +1166,8 @@ def register_builtins(
         verbose_cmd._get_session = get_session
         diff_cmd._get_session = get_session
         variant_cmd._get_session = get_session
+        skills_cmd._get_session = get_session
+        prompts_cmd._get_session = get_session
 
     if get_store:
         agents_cmd._get_store = get_store
@@ -1099,6 +1207,8 @@ def register_builtins(
     registry.register(debug_cmd)
     registry.register(ThemeCommand())
     registry.register(UpdateProvidersModelsCommand())
+    registry.register(skills_cmd)
+    registry.register(prompts_cmd)
 
     registry.alias("h", "help")
     registry.alias("?", "help")

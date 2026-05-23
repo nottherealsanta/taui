@@ -1274,6 +1274,46 @@ class TauiApp(App[None]):
             return
         info2.show_agents(profiles, current=current)
 
+    def _open_skill_picker_inline(self) -> None:
+        """Show the inline Info2 skill picker."""
+        if self._session is None:
+            return
+        reg = getattr(self._session, "_skill_registry", None)
+        if reg is None:
+            self.notify("Skill registry not available.", severity="warning")
+            return
+        skills = reg.list_all()
+        if not skills:
+            self.notify("No skills found.", severity="information")
+            return
+        try:
+            info2 = self.query_one(Info2)
+        except Exception:
+            return
+        info2.show_skills(skills)
+
+    def _open_prompt_picker_inline(self) -> None:
+        """Show the inline Info2 prompt picker."""
+        from taui.self_edit.inventory import list_items
+
+        wd = self._config.working_dir
+        try:
+            prompts = (
+                list_items(wd, "prompts", "project")
+                + list_items(wd, "prompts", "global")
+            )
+        except Exception as exc:
+            self.notify(f"Failed to load prompts: {exc}", severity="error")
+            return
+        if not prompts:
+            self.notify("No prompts found.", severity="information")
+            return
+        try:
+            info2 = self.query_one(Info2)
+        except Exception:
+            return
+        info2.show_prompts(prompts)
+
     def _open_variant_picker(self) -> None:
         """Open the modal model-variant picker, scoped to the current model."""
         from taui.llm_provider.models import get_model_variants
@@ -2501,6 +2541,26 @@ class TauiApp(App[None]):
             return
         if action == "open_prompt_picker":
             self._refill_input(self._config.prefixes.get("prompts", "#"))
+            return
+        if action == "open_skill_picker_inline":
+            self._open_skill_picker_inline()
+            return
+        if action == "open_prompt_picker_inline":
+            self._open_prompt_picker_inline()
+            return
+        if action == "skill_selected":
+            name = str(result.metadata.get("skill_name") or "")
+            if name:
+                self._apply_selected_skill(name)
+            return
+        if action == "prompt_selected":
+            pid = str(result.metadata.get("prompt_id") or "")
+            if pid:
+                self.run_worker(
+                    self._apply_selected_prompt(pid),
+                    name="apply_prompt",
+                    exclusive=False,
+                )
             return
         if action == "open_context_tree":
             self._open_context_tree()
