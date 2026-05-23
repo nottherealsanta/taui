@@ -33,6 +33,7 @@ from taui.prompt_builder import ProjectContext, SystemPromptBuilder
 from taui.session_replay import ReplayItem
 from taui.store.store import Store
 from taui.store.stream import StreamClient
+from taui.tools.background import BackgroundProcessRegistry
 from taui.tools.base import ToolResult
 from taui.tools.builtins import register_builtins
 from taui.tools.executor import PolicyDecision, ToolExecutor, ToolPolicy
@@ -209,6 +210,27 @@ class Session:
             peek_tool._truncation_store = truncation_store
         except ValueError:
             pass
+        # Also wire the truncation store into tools that produce their own
+        # peek-friendly envelopes (bash, grep, glob).
+        for tool_name in ("bash", "grep", "glob"):
+            try:
+                t = registry.get(tool_name)
+            except ValueError:
+                continue
+            if hasattr(t, "_truncation_store"):
+                t._truncation_store = truncation_store
+
+        # Background process registry — shared between bash / bash_status /
+        # bash_kill so a job started by one tool is visible to the others.
+        bg_registry = BackgroundProcessRegistry()
+        executor._bg_registry = bg_registry  # used by Session.close
+        for tool_name in ("bash", "bash_status", "bash_kill"):
+            try:
+                t = registry.get(tool_name)
+            except ValueError:
+                continue
+            if hasattr(t, "_bg_registry"):
+                t._bg_registry = bg_registry
 
         # Build system prompt
         builder = SystemPromptBuilder()
@@ -923,6 +945,12 @@ class Session:
                 await self._lsp_manager.stop_all()
             except Exception:
                 logger.debug("Error stopping LSP manager", exc_info=True)
+        bg_registry = getattr(self._executor, "_bg_registry", None)
+        if bg_registry is not None:
+            try:
+                await bg_registry.shutdown()
+            except Exception:
+                logger.debug("Error shutting down bg processes", exc_info=True)
         try:
             await self._store.close()
         except Exception:

@@ -6,7 +6,7 @@ implementing the Tool protocol from taui.tools.base.
 """
 
 from taui.tools.builtins.apply_patch import ApplyPatchTool
-from taui.tools.builtins.bash import BashTool
+from taui.tools.builtins.bash import BashKillTool, BashStatusTool, BashTool
 from taui.tools.builtins.edit import EditTool
 from taui.tools.builtins.files import GlobTool, GrepTool, ReadTool, WriteTool
 from taui.tools.builtins.git import GitTool
@@ -34,6 +34,8 @@ def register_builtins(registry: ToolRegistry) -> None:
         GlobTool(),
         GrepTool(),
         BashTool(),
+        BashStatusTool(),
+        BashKillTool(),
         GitTool(),
         McpTool(),
         MemoryTool(),
@@ -55,6 +57,8 @@ def register_builtins(registry: ToolRegistry) -> None:
 __all__ = [
     "ApplyPatchTool",
     "LspTool",
+    "BashKillTool",
+    "BashStatusTool",
     "BashTool",
     "EditTool",
     "GitTool",

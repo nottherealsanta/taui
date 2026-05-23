@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import difflib
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 # Directories to skip during recursive operations
 SKIP_DIRS = frozenset({
@@ -94,3 +96,55 @@ def truncate(
         remaining = len(lines) - len(result_lines)
         result += f"\n\n… ({remaining} more lines truncated)"
     return result, truncated
+
+
+# ── Truncation envelope ───────────────────────────────────────────────────────
+
+
+@dataclass(slots=True)
+class TruncationEnvelope:
+    """Structured info about a partial-data tool result.
+
+    Tools that hit a size or count limit return this so the agent knows it has
+    incomplete data — and how to ask for the rest (via `peek_handle` when the
+    full content was preserved, otherwise just by re-running with narrower
+    arguments).
+    """
+
+    truncated_at: int           # what we cut at — bytes, matches, lines, etc.
+    unit: str                   # "bytes", "lines", "matches", "files"
+    total_hint: int | None = None   # full count when known
+    peek_handle: str | None = None  # handle into TruncationStore, when stored
+    next_hint: str | None = None    # human hint for how to fetch more
+
+    def format_footer(self) -> str:
+        if self.total_hint is not None and self.total_hint > self.truncated_at:
+            shown = (
+                f"showing {self.truncated_at} of {self.total_hint} {self.unit}"
+            )
+        else:
+            shown = f"showing first {self.truncated_at} {self.unit}; total unknown"
+        parts = [f"[truncated: {shown}"]
+        if self.peek_handle:
+            parts.append(
+                f'; peek(handle="{self.peek_handle}") to read full output'
+            )
+        if self.next_hint:
+            parts.append(f"; {self.next_hint}")
+        parts.append("]")
+        return "\n\n" + "".join(parts)
+
+    def to_metadata(self) -> dict[str, Any]:
+        """Render as a metadata sub-dict the agent / UI can introspect."""
+        out: dict[str, Any] = {
+            "truncated": True,
+            "truncated_at": self.truncated_at,
+            "unit": self.unit,
+        }
+        if self.total_hint is not None:
+            out["total_hint"] = self.total_hint
+        if self.peek_handle:
+            out["peek_handle"] = self.peek_handle
+        if self.next_hint:
+            out["next_hint"] = self.next_hint
+        return out
