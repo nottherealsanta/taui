@@ -1103,6 +1103,8 @@ class TauiApp(App[None]):
         )
         if st is not None and st.tool_ctrl is not None:
             await st.tool_ctrl.handle_tool_started(event)
+        if st is not None and st is self._sessions.active:
+            self._update_status()
 
     @on(ToolEnded)
     async def handle_tool_ended(self, event: ToolEnded) -> None:
@@ -1113,6 +1115,8 @@ class TauiApp(App[None]):
         )
         if st is not None and st.tool_ctrl is not None:
             await st.tool_ctrl.handle_tool_ended(event)
+        if st is not None and st is self._sessions.active:
+            self._update_status()
 
     @on(InfoBar.AgentBadgeClicked)
     def handle_agent_badge_clicked(
