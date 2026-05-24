@@ -1439,15 +1439,15 @@ def _resolve_image_path(text: str) -> Path | None:
     candidates.append(text)
 
     for raw in candidates:
-        path = Path(raw).expanduser()
         try:
+            path = Path(raw).expanduser()
             if (
                 path.suffix.lower() in _IMAGE_EXTENSIONS
                 and path.is_file()
                 and path.stat().st_size <= _MAX_IMAGE_SIZE
             ):
                 return path
-        except OSError:
+        except (OSError, RuntimeError, ValueError):
             continue
     return None
 
