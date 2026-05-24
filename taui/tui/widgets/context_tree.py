@@ -6,6 +6,7 @@ from typing import Any
 
 from rich.text import Text
 from textual.widgets import Tree
+from textual.widgets.tree import TreeNode
 
 from taui.agent.context import estimate_message_tokens, estimate_total_tokens
 
@@ -28,9 +29,19 @@ def build_context_tree(messages: list[Any], max_tokens: int) -> Tree[str]:
     )
     tree.root.expand()
 
-    current_user = None
-    current_reply = None
-    user_count = 0
+    current_user: TreeNode | None = None
+    current_user_tokens: int = 0
+    current_user_preview: str = ""
+    current_reply: TreeNode | None = None
+
+    def _finalize_user() -> None:
+        """Update the current user node's label with cumulative tokens."""
+        if current_user is None:
+            return
+        current_user.set_label(
+            _user_message_label(current_user_preview, current_user_tokens)
+        )
+
     for message in messages:
         role = str(getattr(message, "role", "unknown") or "unknown")
         content = _message_content(message)
@@ -39,40 +50,50 @@ def build_context_tree(messages: list[Any], max_tokens: int) -> Tree[str]:
             if system_content:
                 system_tokens = _estimate_text_tokens("system", system_content)
                 system_node = tree.root.add(
-                    _context_message_label("system", system_tokens, user_count),
+                    _context_message_label("system", system_tokens),
                     expand=False,
                 )
                 _add_context_message_details(system_node, message, system_content)
             if tool_def_content:
                 tool_def_tokens = _estimate_text_tokens("tool def", tool_def_content)
                 tool_def_node = tree.root.add(
-                    _context_message_label("tool def", tool_def_tokens, user_count),
+                    _context_message_label("tool def", tool_def_tokens),
                     expand=False,
                 )
                 _add_context_message_details(
                     tool_def_node, message, tool_def_content
                 )
             continue
-        if role == "user":
-            user_count += 1
         message_tokens = estimate_message_tokens(message)
-        label = _context_message_label(role, message_tokens, user_count)
         if role == "user":
-            current_user = tree.root.add(label, expand=False)
+            _finalize_user()
+            current_user_preview = _user_preview(content)
+            current_user_tokens = message_tokens
+            current_user = tree.root.add(
+                _user_message_label(current_user_preview, current_user_tokens),
+                expand=False,
+            )
             current_reply = None
             _add_context_message_details(current_user, message, content)
             continue
+        label = _context_message_label(role, message_tokens)
         if role == "assistant":
             parent = current_user or tree.root
             current_reply = parent.add(label, expand=False)
             _add_context_message_details(current_reply, message, content)
+            if current_user is not None:
+                current_user_tokens += message_tokens
             continue
         if role == "tool":
             parent = current_reply or current_user or tree.root
+            if current_user is not None:
+                current_user_tokens += message_tokens
         else:
             parent = tree.root
         group = parent.add(label, expand=False)
         _add_context_message_details(group, message, content)
+
+    _finalize_user()
     return tree
 
 
@@ -108,13 +129,31 @@ def _estimate_text_tokens(role: str, content: str) -> int:
     return max(1, (len(role) + len(content)) // 4 + 1)
 
 
-def _context_message_label(role: str, message_tokens: int, user_count: int) -> Text:
+def _user_preview(content: str) -> str:
+    """One-line preview of user content, trimmed to 30 chars."""
+    first_line = next((line for line in content.splitlines() if line.strip()), content)
+    first_line = first_line.strip()
+    if len(first_line) > 30:
+        first_line = first_line[:30]
+    return first_line or "(empty)"
+
+
+def _format_tokens(message_tokens: int) -> str:
+    return f"[{message_tokens:,}]"
+
+
+def _context_message_label(role: str, message_tokens: int) -> Text:
     text = Text()
-    if role == "user":
-        text.append(f"user {user_count}", style=f"bold {ROLE_STYLES['user']}")
-    else:
-        text.append(role, style=f"bold {ROLE_STYLES.get(role, '#c9d1d9')}")
-    text.append(f"  {message_tokens:,}t", style="italic dim")
+    text.append(role, style=f"bold {ROLE_STYLES.get(role, '#c9d1d9')}")
+    text.append(f"  {_format_tokens(message_tokens)}", style="italic dim")
+    return text
+
+
+def _user_message_label(preview: str, cumulative_tokens: int) -> Text:
+    text = Text()
+    text.append("user: ", style=f"bold {ROLE_STYLES['user']}")
+    text.append(preview, style=ROLE_STYLES["user"])
+    text.append(f"  {_format_tokens(cumulative_tokens)}", style="italic dim")
     return text
 
 

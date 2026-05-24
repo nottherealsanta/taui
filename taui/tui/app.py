@@ -206,12 +206,12 @@ class TauiApp(App[None]):
             state.current_response = value
 
     @property
-    def _current_reasoning(self) -> Static | None:
+    def _current_reasoning(self):
         state = self._sessions.active
         return state.current_reasoning if state else None
 
     @_current_reasoning.setter
-    def _current_reasoning(self, value: Static | None) -> None:
+    def _current_reasoning(self, value) -> None:
         state = self._sessions.active
         if state is not None:
             state.current_reasoning = value
@@ -1492,7 +1492,9 @@ class TauiApp(App[None]):
 
     @on(StreamReasoningDelta)
     async def handle_stream_reasoning(self, event: StreamReasoningDelta) -> None:
-        """Handle incoming reasoning deltas — stream into a dimmed Static widget."""
+        """Handle incoming reasoning deltas — stream into a ReasoningWidget."""
+        from taui.tui.widgets.reasoning import ReasoningWidget
+
         st = (
             self._sessions.get(event.session_id)
             if event.session_id
@@ -1502,12 +1504,10 @@ class TauiApp(App[None]):
             return
         st.reasoning_buf += event.text
         if st.current_reasoning is None:
-            st.current_reasoning = Static(
-                f"[dim italic]{escape(st.reasoning_buf)}[/dim italic]",
-                classes="reasoning-text",
-                markup=True,
-            )
+            st.current_reasoning = ReasoningWidget()
             await self._mount_in_reply(st.current_reasoning, state=st)
+            # Initial paint of whatever has already accumulated.
+            st.current_reasoning.update_text(st.reasoning_buf)
             st._reasoning_render_pending = False
         elif not st._reasoning_render_pending:
             st._reasoning_render_pending = True
@@ -1515,9 +1515,7 @@ class TauiApp(App[None]):
             def _flush_reasoning() -> None:
                 st._reasoning_render_pending = False
                 if st.current_reasoning is not None:
-                    st.current_reasoning.update(
-                        f"[dim italic]{escape(st.reasoning_buf)}[/dim italic]"
-                    )
+                    st.current_reasoning.update_text(st.reasoning_buf)
 
             self.call_after_refresh(_flush_reasoning)
         self._smart_scroll()
@@ -1887,18 +1885,10 @@ class TauiApp(App[None]):
 
     # ── Context banner ─────────────────────────────────────────────────
 
-    def _build_context_banner_markup(self) -> str:
-        """Render the context-start block (system prompt + tool list) for the active session.
-
-        This is referred to as the "context-start" banner. Tools are shown as
-        a 3-column table: active tools (in the loop's effective registry) are
-        light gray; tools that are available but not active for the current
-        variant are dark gray.
-        """
+    def _build_context_banner_parts(self) -> tuple[str, str, str]:
+        """Resolve (system_prompt, tools_markup, label_style) for the banner."""
         if self._session is None:
-            return ""
-
-        parts: list[str] = []
+            return "", "", ""
 
         sp = getattr(self._session, "_system_prompt", "") or ""
         if self._session.self_edit_mode:
@@ -1910,16 +1900,6 @@ class TauiApp(App[None]):
         bg_clr = "#070707" if self.theme == TAUI_DARK.name else "#ffffff"
         label_style = f"bold {bg_clr} on {agent_clr}"
 
-        if sp:
-            lines = sp.splitlines()
-            preview = lines[:100]
-            if len(lines) > 100:
-                preview.append("...")
-            safe_sp = "\n".join(preview).replace("[", "\\[")
-            parts.append(
-                f"[{label_style}]System prompt[/{label_style}]\n[dim]{safe_sp}[/dim]"
-            )
-
         available: list[str] = []
         if hasattr(self._session, "_registry"):
             available = list(getattr(self._session._registry, "names", []) or [])
@@ -1930,29 +1910,39 @@ class TauiApp(App[None]):
         except AttributeError:
             active = set(available)
 
+        tools_markup = ""
         if available:
-            if parts:
-                parts.append("")
-            parts.append(f"[{label_style}]Tools[/{label_style}]")
-            parts.append(_render_tools_table(available, active, columns=3))
-            parts.append("")
+            tools_markup = (
+                f"[{label_style}]Tools[/{label_style}]\n"
+                + _render_tools_table(available, active, columns=3)
+            )
 
-        return "\n".join(parts)
+        return sp, tools_markup, label_style
 
     async def _maybe_show_context_banner(self, chat_log) -> None:
-        """Show system prompt + tool list once, before the first user message."""
+        """Show system prompt widget + tool list once, before the first user message."""
+        from taui.tui.widgets.system_prompt import SystemPromptWidget
+
         if self._context_banner_shown or self._session is None:
             return
         self._context_banner_shown = True
 
-        banner = self._build_context_banner_markup()
-        if banner:
+        sp, tools_markup, label_style = self._build_context_banner_parts()
+        if sp:
             await chat_log.mount(
-                Static(banner, classes="context-banner", markup=True)
+                SystemPromptWidget(
+                    sp, label="System prompt", label_style=label_style,
+                )
+            )
+        if tools_markup:
+            await chat_log.mount(
+                Static(tools_markup, classes="context-banner", markup=True)
             )
 
     def _refresh_context_banner(self, session_id: str = "") -> None:
         """Re-render the context-start banner when agent config changes."""
+        from taui.tui.widgets.system_prompt import SystemPromptWidget
+
         state = self._sessions.get(session_id) if session_id else self._sessions.active
         if state is None or state.session is None:
             return
@@ -1964,12 +1954,21 @@ class TauiApp(App[None]):
             return
         try:
             chat_log = self._get_active_chat_log()
-            banner_widget = chat_log.query_one(".context-banner", Static)
-        except (NoMatches, Exception):
+        except Exception:
             return
-        markup = self._build_context_banner_markup()
-        if markup:
-            banner_widget.update(markup)
+        sp, tools_markup, label_style = self._build_context_banner_parts()
+        try:
+            sp_widget = chat_log.query_one(SystemPromptWidget)
+            if sp:
+                sp_widget.set_prompt(sp, label_style=label_style)
+        except Exception:
+            pass
+        try:
+            tools_widget = chat_log.query_one(".context-banner", Static)
+            if tools_markup:
+                tools_widget.update(tools_markup)
+        except Exception:
+            pass
 
     @on(AgentConfigChanged)
     def handle_agent_config_changed(self, event: AgentConfigChanged) -> None:
@@ -2192,18 +2191,19 @@ class TauiApp(App[None]):
             # safely past any in-flight callbacks from the prior turn.
 
     def _flush_and_detach_reasoning(self, st: SessionState) -> None:
-        """Flush any pending reasoning update, then detach the widget ref.
+        """Flush any pending reasoning update, finalize the widget, detach.
 
-        The widget stays in the DOM with its final content — we just stop
-        appending to it.  This avoids the race where a deferred
-        ``call_after_refresh`` flush runs *after* the state has been
-        cleared, silently dropping the last batch of reasoning text.
+        Calling ``finalize()`` collapses the widget to a single clickable
+        summary line; the full content stays inside the widget so the
+        modal can show it on click.
         """
         if st.current_reasoning is not None:
-            if st.reasoning_buf:
-                st.current_reasoning.update(
-                    f"[dim italic]{escape(st.reasoning_buf)}[/dim italic]"
-                )
+            try:
+                if st.reasoning_buf:
+                    st.current_reasoning.update_text(st.reasoning_buf)
+                st.current_reasoning.finalize()
+            except Exception:
+                pass
             st._reasoning_render_pending = False
             st.current_reasoning = None
         st.reasoning_buf = ""
@@ -2889,27 +2889,23 @@ class TauiApp(App[None]):
             await _flush_turn_footer()
         if st is not None:
             self._autocollapse_old_turns(st)
-        # AgentResponse (Markdown) widgets render asynchronously, so the
-        # chat-log's virtual size keeps growing for several refresh cycles
-        # after the last mount returns. Poll scroll_end on a short worker
-        # until the scroll position settles, so the user lands at the end
-        # of the transcript rather than mid-history.
-        self._pin_replay_to_end()
+        # On session start, land the user at the top of the transcript
+        # (system prompt + tools + first user message) rather than the
+        # bottom — they can scroll down to catch up on assistant replies.
+        self._pin_replay_to_top()
 
     @work(exclusive=True, group="replay_scroll")
-    async def _pin_replay_to_end(self) -> None:
+    async def _pin_replay_to_top(self) -> None:
         try:
             chat_log = self._get_active_chat_log()
         except NoMatches:
             return
-        # Re-engage anchor so any subsequent content growth also sticks.
-        chat_log.anchor()
         last_y = -1.0
         stable_passes = 0
         for _ in range(40):  # up to ~2s
             await asyncio.sleep(0.05)
             try:
-                chat_log.scroll_end(animate=False, immediate=True, force=True)
+                chat_log.scroll_home(animate=False, immediate=True)
             except Exception:
                 return
             y = float(chat_log.scroll_y)

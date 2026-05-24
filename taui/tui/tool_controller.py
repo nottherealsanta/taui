@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 from textual.containers import Vertical
 
 from taui.tui.messages import ToolEnded, ToolStarted
+from taui.tui.widgets.sub_agent_widget import SubAgentWidget
 from taui.tui.widgets.tool_status import ToolStatusWidget
 
 if TYPE_CHECKING:
@@ -17,6 +18,17 @@ def _trunc(s: str, n: int = 40) -> str:
     return s[: n - 3] + "..." if len(s) > n else s
 
 
+def _format_activity(tool_name: str, arguments: dict | None, is_result: bool = False) -> str:
+    args = arguments or {}
+    args_short = ", ".join(
+        f"{k}={_trunc(str(v))}" for k, v in args.items()
+    )
+    prefix = "✓" if is_result else "▸"
+    if args_short:
+        return f"{prefix} {tool_name}  {args_short}"
+    return f"{prefix} {tool_name}"
+
+
 class ToolController:
     def __init__(self, app: TauiApp) -> None:
         self._app = app
@@ -24,6 +36,14 @@ class ToolController:
         self._pending_tool_keys: dict[str, list[str]] = {}
         self._active_tool_widgets: dict[str, ToolStatusWidget] = {}
         self._current_tool_section: Vertical | None = None
+        # Stack of active SubAgentWidgets. While non-empty, inner tool
+        # events (those that were forwarded by SubAgentTool from the
+        # child loop) are recorded on the top widget instead of being
+        # mounted inline as new ToolStatusWidgets.
+        self._active_sub_agents: list[SubAgentWidget] = []
+        # Track which inner tool_keys are recorded against a sub-agent
+        # so the matching result event also routes to it.
+        self._inner_to_sub_agent: dict[str, SubAgentWidget] = {}
 
     def reset_section(self) -> None:
         self._current_tool_section = None
@@ -39,6 +59,8 @@ class ToolController:
         widgets = list(self._active_tool_widgets.items())
         self._active_tool_widgets.clear()
         self._pending_tool_keys.clear()
+        self._active_sub_agents.clear()
+        self._inner_to_sub_agent.clear()
         for _, widget in widgets:
             try:
                 await widget.fail(reason)
@@ -53,6 +75,8 @@ class ToolController:
         self._pending_tool_keys.clear()
         self._active_tool_widgets.clear()
         self._current_tool_section = None
+        self._active_sub_agents.clear()
+        self._inner_to_sub_agent.clear()
 
     async def on_tool_call(
         self, call_id: str, name: str, arguments: dict
@@ -123,23 +147,55 @@ class ToolController:
             if st is not None:
                 st = st.active
 
+        arguments = getattr(event, "arguments", None) or None
+
+        # When a sub-agent is running, route inner tool events into its
+        # widget rather than mounting a new ToolStatusWidget inline.
+        if self._active_sub_agents and event.tool_name != "sub_agent":
+            sub = self._active_sub_agents[-1]
+            sub.record_activity(_format_activity(event.tool_name, arguments))
+            self._inner_to_sub_agent[event.tool_key] = sub
+            return
+
         await self._app._finalize_response(st)
 
         if self._current_tool_section is None:
             self._current_tool_section = Vertical(classes="tool-section")
             await self._app._mount_in_reply(self._current_tool_section, state=st)
 
-        widget = ToolStatusWidget(
-            event.tool_name,
-            event.args_str,
-            arguments=getattr(event, "arguments", None) or None,
-        )
+        if event.tool_name == "sub_agent":
+            widget = SubAgentWidget(
+                event.tool_name,
+                event.args_str,
+                arguments=arguments,
+            )
+            self._active_sub_agents.append(widget)
+        else:
+            widget = ToolStatusWidget(
+                event.tool_name,
+                event.args_str,
+                arguments=arguments,
+            )
         await self._current_tool_section.mount(widget)
         self._active_tool_widgets[event.tool_key] = widget
 
     async def handle_tool_ended(self, event: ToolEnded) -> None:
+        # Inner tool results from a sub-agent are recorded on the sub-agent
+        # widget rather than completing a top-level ToolStatusWidget.
+        sub = self._inner_to_sub_agent.pop(event.tool_key, None)
+        if sub is not None:
+            preview = (event.result or "").strip().splitlines()
+            first = preview[0] if preview else ""
+            sub.record_activity(
+                _format_activity(event.tool_name, None, is_result=True)
+                + (f"  {first}" if first else "")
+            )
+            return
+
         widget = self._active_tool_widgets.pop(event.tool_key, None)
         if widget:
+            if isinstance(widget, SubAgentWidget) and widget in self._active_sub_agents:
+                self._active_sub_agents.remove(widget)
             if event.is_error:
                 await widget.fail(event.result)
             else:

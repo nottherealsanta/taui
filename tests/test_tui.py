@@ -1214,9 +1214,11 @@ class TestInfo2:
             labels = [str(child.label) for child in tree.root.children]
             assert "system" in labels[0]
             assert "tool def" in labels[1]
-            assert "user 1" in labels[2]
+            assert "user: " in labels[2]
+            # Preview text from first 30 chars of long_user_content
+            assert long_user_content[:30] in labels[2]
             assert "tokens" not in labels[2]
-            assert "t" in labels[2]
+            assert "[" in labels[2] and "]" in labels[2]
             assert tree.root.children[2].label.spans
             assert all(not child.is_expanded for child in tree.root.children)
             tool_def_labels = [
@@ -1762,7 +1764,7 @@ class TestActivityProgress:
 
 class TestContextStartBanner:
     def test_banner_reflects_agent_system_prompt(self, tmp_path):
-        """_build_context_banner_markup must reflect current _system_prompt and agent_id."""
+        """_build_context_banner_parts must reflect current _system_prompt and agent_id."""
         from taui.config import Config
         from taui.tools.executor import ToolExecutor, ToolPolicy
         from taui.tools.registry import ToolRegistry
@@ -1784,16 +1786,17 @@ class TestContextStartBanner:
         app = TauiApp(Config(working_dir=tmp_path))
         app._session = FakeSession()
 
-        banner1 = app._build_context_banner_markup()
-        assert "Default agent prompt" in banner1
+        sp1, _tools1, _style1 = app._build_context_banner_parts()
+        assert "Default agent prompt" in sp1
 
         # Simulate agent switch — update prompt and agent_id
         FakeSession._system_prompt = "You are PLN, a planning agent."
         FakeLoop.agent_id = "PLN"
 
-        banner2 = app._build_context_banner_markup()
-        assert "PLN" in banner2 or "planning agent" in banner2
-        assert banner1 != banner2, "Context-start banner did not change after agent switch"
+        sp2, _tools2, style2 = app._build_context_banner_parts()
+        assert "planning agent" in sp2
+        assert sp1 != sp2, "System prompt did not change after agent switch"
+        assert style2  # label style should be present
 
     def test_apply_profile_calls_notify_config_changed(self, tmp_path):
         """_apply_self_edit_profile must call _notify_config_changed."""
