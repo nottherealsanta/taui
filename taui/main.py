@@ -67,6 +67,17 @@ def parse_args(argv: list[str] | None = None) -> dict:
         default=False,
         help="Show version and exit",
     )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        default=False,
+        help="Start with embedded MCP debug server for external control",
+    )
+    parser.add_argument(
+        "--debug-socket",
+        default=None,
+        help="Path for the debug server's Unix socket (default: /tmp/taui-debug-{pid}.sock)",
+    )
 
     args = parser.parse_args(argv)
     result: dict = {}
@@ -83,6 +94,10 @@ def parse_args(argv: list[str] | None = None) -> dict:
         result["session_id"] = args.session
     if args.login:
         result["login"] = True
+    if args.debug:
+        result["debug"] = True
+    if args.debug_socket:
+        result["debug_socket"] = args.debug_socket
 
     return result
 
@@ -110,11 +125,14 @@ def main(argv: list[str] | None = None) -> None:
         else:
             parsed["provider"] = prompt_provider_selection()
 
+    debug = parsed.pop("debug", False)
+    debug_socket = parsed.pop("debug_socket", None)
+
     from taui.config import Config
     config = Config.load(**parsed)
 
     from taui.tui import run_tui
-    session_id = run_tui(config)
+    session_id = run_tui(config, debug=debug, debug_socket=debug_socket)
     if session_id:
         from rich.console import Console
 
