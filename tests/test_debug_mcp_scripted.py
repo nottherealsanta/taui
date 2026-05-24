@@ -245,7 +245,11 @@ async def main() -> None:
             short = content[:120].replace("\n", " ")
             print(f"  [{role}] {short}{'...' if len(content) > 120 else ''}")
             if tcs:
-                print(f"    tool_calls: {[(t['name'], list((t.get('arguments') or {}).keys())) for t in tcs]}")
+                summary = [
+                    (t["name"], list((t.get("arguments") or {}).keys()))
+                    for t in tcs
+                ]
+                print(f"    tool_calls: {summary}")
         any_tool_call = any(
             (m.get("tool_calls") or [])
             and any(tc["name"] == "read" for tc in m["tool_calls"])

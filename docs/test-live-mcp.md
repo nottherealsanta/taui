@@ -16,6 +16,29 @@ This is the path to use when:
   reproduce a tricky scenario (context overflow, quota error, slow
   streaming, mid-turn tool failure) on demand.
 
+## Rule: Never Call a Real LLM During Testing
+
+**The first thing every test driver must do after handshake is
+`set_provider_mode("scripted")`.**  Do not send a user message while
+the provider is in `real` mode.  The scripted provider controls both
+input (what the user types) and output (what the "LLM" returns), so
+tests are deterministic, offline, and free.
+
+A test that forgets this step will call the real provider, spend
+tokens, hang on auth prompts, and produce non-reproducible results.
+The pattern is always:
+
+1. `initialize` — MCP handshake.
+2. `set_provider_mode("scripted")` — replace the LLM.
+3. `script_push_turn(...)` — queue the response the agent will see.
+4. `send_message(...)` — inject the user prompt.
+5. Assert on `get_state`, `get_messages`, `script_status`, `screenshot`.
+
+Every recipe in this document follows this pattern.  If you need the
+real provider for a specific exploration step, switch back with
+`set_provider_mode("real")` explicitly and switch to scripted again
+before the next test sequence.
+
 ## Architecture
 
 ```
@@ -89,32 +112,50 @@ subprocess and drive it from the parent.
 ## Connecting a Client
 
 The protocol is the same MCP JSON-RPC handshake taui uses for outbound
-MCP servers. A minimal client:
+MCP servers. A minimal client that immediately enters scripted mode:
 
 ```python
 import asyncio, json
-from pathlib import Path
 
 async def main():
     reader, writer = await asyncio.open_unix_connection(
         "/tmp/taui-live.sock", limit=16 * 1024 * 1024,
     )
 
+    _id = 0
+
     async def call(method, params=None):
-        msg = {"jsonrpc": "2.0", "id": 1, "method": method, "params": params or {}}
+        nonlocal _id; _id += 1
+        msg = {"jsonrpc": "2.0", "id": _id, "method": method, "params": params or {}}
         writer.write((json.dumps(msg) + "\n").encode())
         await writer.drain()
         line = await reader.readline()
-        return json.loads(line)["result"]
+        resp = json.loads(line)
+        if "error" in resp:
+            raise RuntimeError(f"{method}: {resp['error']}")
+        return resp["result"]
 
+    async def tool(name, **kwargs):
+        r = await call("tools/call", {"name": name, "arguments": kwargs})
+        return r.get("structuredContent") or json.loads(r["content"][0]["text"])
+
+    # 1. Handshake
     await call("initialize", {
         "protocolVersion": "2024-11-05",
         "capabilities": {},
         "clientInfo": {"name": "demo", "version": "0.1"},
     })
 
-    tools = await call("tools/list")
-    print([t["name"] for t in tools["tools"]])
+    # 2. IMMEDIATELY switch to scripted — never send messages in real mode
+    await tool("set_provider_mode", mode="scripted")
+
+    # 3. Queue a response, then send a message
+    await tool("script_push_turn", text_deltas=["Hello!"], delta_delay=0.05)
+    await tool("send_message", text="hi")
+
+    # 4. Inspect results
+    status = await tool("script_status")
+    print(f"call_count={status['call_count']}, last_user={status['last_call']['last_user']}")
 
 asyncio.run(main())
 ```
@@ -204,15 +245,16 @@ Anything not in this list becomes a `RuntimeError("Simulated error: <name>")`.
 
 ## End-to-End Recipes
 
+Every recipe assumes you have already called `set_provider_mode("scripted")`
+after the handshake. The driver controls both sides of the conversation:
+it pushes turns (the "LLM output") and sends messages (the "user input").
+
 ### Replay a deterministic turn with streaming
 
 ```python
-await call("tools/call", {"name": "set_provider_mode", "arguments": {"mode": "scripted"}})
-await call("tools/call", {"name": "script_push_turn", "arguments": {
-    "text_deltas": ["Hi", " there!", " How", " can", " I", " help?"],
-    "delta_delay": 0.1,
-}})
-await call("tools/call", {"name": "send_message", "arguments": {"text": "hello"}})
+await tool("script_push_turn", text_deltas=["Hi", " there!", " How", " can", " I", " help?"],
+    delta_delay=0.1)
+await tool("send_message", text="hello")
 ```
 
 You'll watch the deltas land one chunk at a time in the live TUI.
@@ -220,15 +262,14 @@ You'll watch the deltas land one chunk at a time in the live TUI.
 ### Force a tool call without an LLM
 
 ```python
-await call("tools/call", {"name": "script_push_turn", "arguments": {
-    "tool_calls": [{"name": "read", "arguments": {"path": "README.md"}}],
-    "stop_reason": "tool_use",
-}})
-await call("tools/call", {"name": "script_push_turn", "arguments": {
-    "text_deltas": ["Read", " the", " README!"],
-    "delta_delay": 0.05,
-}})
-await call("tools/call", {"name": "send_message", "arguments": {"text": "summarize"}})
+# Turn 1: agent issues a tool call, loop executes it for real
+await tool("script_push_turn",
+    tool_calls=[{"name": "read", "arguments": {"path": "README.md"}}],
+    stop_reason="tool_use")
+# Turn 2: after the tool result, agent streams the final reply
+await tool("script_push_turn",
+    text_deltas=["Read", " the", " README!"], delta_delay=0.05)
+await tool("send_message", text="summarize")
 ```
 
 The agent issues the tool call, executes it for real against the
@@ -238,20 +279,17 @@ which then streams the final reply.
 ### Trigger the question tool
 
 ```python
-await call("tools/call", {"name": "script_push_turn", "arguments": {
-    "tool_calls": [{"name": "question", "arguments": {
+await tool("script_push_turn",
+    tool_calls=[{"name": "question", "arguments": {
         "question": "Where should I deploy first?",
         "options": ["Staging (Recommended)", "Production", "Skip"],
     }}],
-    "stop_reason": "tool_use",
-}})
-await call("tools/call", {"name": "script_push_turn", "arguments": {
-    "text_deltas": ["Got", " it —", " proceeding."],
-    "delta_delay": 0.05,
-}})
-await call("tools/call", {"name": "send_message", "arguments": {
-    "text": "deploy", "wait_for_response": False,
-}})
+    stop_reason="tool_use")
+await tool("script_push_turn",
+    text_deltas=["Got", " it --", " proceeding."], delta_delay=0.05)
+# Don't wait -- question blocks until the user answers in the TUI
+await tool("send_message", text="deploy", wait_for_response=False)
+# Poll until the user picks an option (call_count increments)
 ```
 
 Important: use `wait_for_response: false` for any turn that ends on an
@@ -262,9 +300,7 @@ in the TUI.
 ### Assert what the agent sent
 
 ```python
-status = (await call("tools/call",
-    {"name": "script_status", "arguments": {}}))["structuredContent"]
-
+status = await tool("script_status")
 assert status["last_call"]["message_count"] == 2
 assert status["last_call"]["last_user"] == "deploy"
 assert "read" in status["last_call"]["tool_names"]
@@ -276,21 +312,69 @@ the LLM request without monkey-patching anything.
 ### Simulate an error mid-conversation
 
 ```python
-await call("tools/call", {"name": "script_push_turn",
-    "arguments": {"raises": "ContextOverflowError"}})
-await call("tools/call", {"name": "send_message",
-    "arguments": {"text": "overflow please"}})
+await tool("script_push_turn", raises="ContextOverflowError")
+await tool("send_message", text="overflow please")
 ```
 
 The TUI will run its auto-compact path and (if still over) surface
 the overflow message to the user. UI behavior is identical to a real
 provider raising the same error.
 
-### Mix scripted + real
+### Drive approval-gated tools
 
-`set_provider_mode("scripted")` and `set_provider_mode("real")` can be
-called any number of times during one session. Useful for tests that
-want a few canned interactions then real follow-up exploration.
+Tools like `bash`, `write`, and `edit` require approval even in
+scripted mode. The driver must handle the approval prompt with
+`press_key`:
+
+```python
+await tool("script_push_turn",
+    tool_calls=[{"name": "bash", "arguments": {"command": "echo hello"}}],
+    stop_reason="tool_use")
+await tool("script_push_turn",
+    text_deltas=["Done."], delta_delay=0.01)
+# Don't wait -- approval blocks the loop
+await tool("send_message", text="run echo", wait_for_response=False)
+await asyncio.sleep(1)
+# Approve
+await tool("press_key", key="y")
+await tool("wait_idle", timeout=10)
+```
+
+To deny, press `n` instead. The agent receives the denial as a tool
+failure and uses the second queued turn to respond.
+
+### Test slash commands and key bindings
+
+Slash commands and key bindings work without the LLM, so they can be
+tested in scripted mode without pushing any turns:
+
+```python
+# Slash commands
+await tool("run_command", command="/help")
+await tool("run_command", command="/cost")
+await tool("run_command", command="/context")
+await tool("run_command", command="/clear")
+await tool("run_command", command="/hotkeys")
+
+# Toggle sidebar
+await tool("press_key", key="ctrl+b")
+await asyncio.sleep(0.3)
+state = await tool("query_widget", selector="Sidebar")
+await tool("press_key", key="ctrl+b")  # toggle back
+
+# Context breakdown
+await tool("press_key", key="ctrl+x")
+await asyncio.sleep(0.3)
+await tool("press_key", key="escape")
+```
+
+### Mix scripted + real (rare)
+
+`set_provider_mode("real")` and `set_provider_mode("scripted")` can be
+called any number of times during one session. This is only useful when
+you intentionally want to spend tokens for a specific exploration step.
+**Switch back to scripted immediately after.**  Do not leave the
+provider in real mode between test steps.
 
 ## File Map
 
@@ -306,6 +390,15 @@ want a few canned interactions then real follow-up exploration.
 
 ## Pitfalls
 
+- **Always start in scripted mode.** The single most common test
+  failure is sending a message while the provider is still `real`.
+  The test hangs waiting for an LLM that may not be authenticated,
+  spends real tokens, or produces non-deterministic output. Call
+  `set_provider_mode("scripted")` immediately after `initialize`.
+- **Push turns before sending messages.** The scripted provider
+  blocks for ~5 seconds when its queue is empty. Always
+  `script_push_turn` before `send_message`. For multi-turn
+  sequences (tool call + final reply), push all turns first.
 - **TUI process predates the code.** If you add a tool to
   `taui/debug/tools.py` or change `ScriptedProvider`, you have to
   restart `taui --debug` for the changes to load — the process
@@ -321,10 +414,9 @@ want a few canned interactions then real follow-up exploration.
 - **Approval-gated tools still ask.** Scripting the LLM doesn't bypass
   approval flow — if a tool requires approval, the TUI prompts the
   user the same way it would for a real LLM-issued call. Use
-  `press_key` or `approve` (if/when wired) to drive the prompt.
-- **Empty scripted queue waits ~5s.** Push your next turn before the
-  agent's next `create_turn`, or expect a settle-with-empty-turn
-  fallback after the grace period.
+  `press_key("y")` to approve or `press_key("n")` to deny. Use
+  `wait_for_response=False` on `send_message` so the driver doesn't
+  block on the approval prompt.
 - **Streaming callbacks are attached per-call.** The agent loop wires
   `on_text_delta` / `on_reasoning_delta` on the active provider before
   each turn. `set_provider_mode` preserves the wiring across the swap,

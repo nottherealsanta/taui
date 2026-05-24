@@ -20,7 +20,6 @@ import asyncio
 import json
 import logging
 import os
-import socket
 import sys
 import threading
 from pathlib import Path
@@ -54,7 +53,7 @@ class DebugServer:
 
     def __init__(
         self,
-        app: "TauiApp",
+        app: TauiApp,
         *,
         socket_path: str | os.PathLike[str] | None = None,
         announce_to_stderr: bool = True,
@@ -247,8 +246,12 @@ class DebugServer:
         try:
             result = await loop.run_in_executor(None, handler, self._app, arguments)
         except Exception as exc:
+            result = {"error": str(exc)}
             return {
-                "content": [{"type": "text", "text": f"Error: {exc}"}],
+                "content": [
+                    {"type": "text", "text": json.dumps(result, default=str)}
+                ],
+                "structuredContent": result,
                 "isError": True,
             }
 

@@ -56,6 +56,10 @@ TAUI_LIGHT = Theme(
         "footer-key-foreground": "#1f2328",
         "footer-description-foreground": "#656d76",
         "input-selection-background": "#0969da 25%",
+        "scrollbar-color": "#d0d7de",
+        "scrollbar-color-hover": "#afb8c1",
+        "scrollbar-color-active": "#8c959f",
+        "scrollbar-background": "#ffffff",
     },
 )
 

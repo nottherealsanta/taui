@@ -12,7 +12,6 @@ from pathlib import Path
 from rich.markup import escape
 from textual import on, work
 from textual.app import App, ComposeResult, SystemCommand
-from textual.binding import Binding
 from textual.command import CommandInput, CommandPalette
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.css.query import NoMatches
@@ -107,6 +106,9 @@ class TauiApp(App[None]):
         self._pending_files: list[Path] = []
         # Folders attached the same way — expanded as a tree listing.
         self._pending_folders: list[Path] = []
+        # Backing state for tests and early UI code that touch edit counters
+        # before a real session has been created.
+        self._fallback_edited_files: dict[str, dict[str, int]] = {}
 
         # Window focus state — terminals send AppFocus/AppBlur via DEC
         # mode 1004 (Textual enables this by default). Assume focused at
@@ -272,13 +274,15 @@ class TauiApp(App[None]):
     @property
     def _edited_files(self) -> dict[str, dict[str, int]]:
         state = self._sessions.active
-        return state.edited_files if state else {}
+        return state.edited_files if state else self._fallback_edited_files
 
     @_edited_files.setter
     def _edited_files(self, value: dict) -> None:
         state = self._sessions.active
         if state is not None:
             state.edited_files = value
+        else:
+            self._fallback_edited_files = value
 
     @property
     def _context_banner_shown(self) -> bool:
@@ -460,12 +464,20 @@ class TauiApp(App[None]):
             approval_ctrl=ApprovalController(self),
         )
 
-        # Create a per-session chat log widget
-        chat_log = VerticalScroll(id=f"chat-log-{sid}")
+        container = self.query_one("#chat-log-container", Vertical)
+        first_session = self._sessions.active is None
+        if first_session:
+            for child in list(container.children):
+                if isinstance(child, VerticalScroll) and child.id == "chat-log":
+                    await child.remove()
+
+        # Create a per-session chat log widget. The first active log keeps the
+        # legacy id used by older tests and extensions; additional tabs use a
+        # session-scoped id to avoid collisions.
+        chat_log = VerticalScroll(id="chat-log" if first_session else f"chat-log-{sid}")
         state.chat_log = chat_log
 
         # Hide all existing chat logs
-        container = self.query_one("#chat-log-container", Vertical)
         for child in container.children:
             if isinstance(child, VerticalScroll):
                 child.add_class("hidden-chat-log")
@@ -493,8 +505,12 @@ class TauiApp(App[None]):
         for child in container.children:
             if isinstance(child, VerticalScroll):
                 return child
-        # Last resort: create one
-        raise NoMatches("No chat log found")
+        # Last resort: create a temporary log so early commands and tests do
+        # not crash before session initialization mounts the real per-session log.
+        logger.warning("_get_active_chat_log fallback: no session log mounted, creating one")
+        chat_log = VerticalScroll(id="chat-log")
+        container.mount(chat_log)
+        return chat_log
 
     def _configure_chat_input(self) -> None:
         """Load input history and command completions."""
@@ -2479,6 +2495,24 @@ class TauiApp(App[None]):
                 category = parts[1].strip() if len(parts) > 1 else None
                 await self._show_self_edit_list_text(category)
                 return
+            if subcommand:
+                if self._session is None:
+                    await chat_log.mount(
+                        Static("[red]No active session.[/red]", markup=True)
+                    )
+                    return
+                if not self._session.self_edit_mode:
+                    entered = await self._session.toggle_self_edit_mode()
+                    if not entered:
+                        await chat_log.mount(
+                            Static("[red]Could not enter self-edit mode.[/red]", markup=True)
+                        )
+                        return
+                    self._wire_callbacks()
+                    self._update_status()
+                self._send_and_drain(subcommand)
+                self._snap_to_bottom()
+                return
             await self.action_enter_self_edit()
             return
 
@@ -3223,13 +3257,13 @@ class TauiApp(App[None]):
         added = 0
         removed = 0
         if name == "edit":
-            path = str(arguments.get("file_path", ""))
+            path = str(arguments.get("path") or arguments.get("file_path", ""))
             old_s = str(arguments.get("old_string", "") or "")
             new_s = str(arguments.get("new_string", "") or "")
             removed = old_s.count("\n") + (1 if old_s else 0)
             added = new_s.count("\n") + (1 if new_s else 0)
         elif name == "write":
-            path = str(arguments.get("file_path", ""))
+            path = str(arguments.get("path") or arguments.get("file_path", ""))
             content = str(arguments.get("content", "") or "")
             added = content.count("\n") + (1 if content else 0)
         else:
@@ -3297,6 +3331,13 @@ class TauiApp(App[None]):
         from taui.agent.loop import AgentLoop
         from taui.agent.types import Message
         from taui.tools.executor import PolicyDecision, ToolExecutor
+
+        # Agent profile policy is not cumulative. DEF may set every tool to
+        # AUTO, while a later profile may intentionally rely on builtin
+        # defaults such as bash/write/edit requiring confirmation.
+        self._session._executor.policy.set_overrides(
+            getattr(self._session, "_base_policy_overrides", {})
+        )
 
         registry = self._session._registry
         if profile.allowed_tools:

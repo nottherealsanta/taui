@@ -134,8 +134,18 @@ class TestApprovalFlow:
         """A `bash` tool call should pause execution and open Info2 in APPROVAL mode."""
         from taui.tui.widgets.info2 import Info2, Info2Mode
 
-        # bash defaults to CONFIRM, so this exercises the approval path without
-        # any custom policy plumbing in the test.
+        # DEF auto-approves all tools by default. Use an explicit profile that
+        # keeps the full tool set but relies on builtin confirmation defaults.
+        agents_dir = tmp_path / ".taui" / "agents"
+        agents_dir.mkdir(parents=True)
+        (agents_dir / "CNF.md").write_text(
+            "---\n"
+            "name: Confirm Test\n"
+            "usage: both\n"
+            "allowed_tools: []\n"
+            "---\n"
+            "Approval-focused test profile.\n"
+        )
         provider = ScriptedProvider(
             [
                 Turn(
@@ -150,6 +160,9 @@ class TestApprovalFlow:
         app = use_scripted_provider(monkeypatch, tmp_path, provider)
         async with app.run_test() as pilot:
             await _ready(app, pilot)
+            await app._handle_command("/agents CNF")
+            assert str(getattr(app._session._loop, "agent_id", "")).upper() == "CNF"
+
             from taui.tui.widgets.chat_input import ChatInput
 
             chat_input = app.query_one("#chat-input", ChatInput)

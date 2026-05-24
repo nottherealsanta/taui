@@ -116,6 +116,7 @@ class Store:
         self.db_path = db_path or (workspace / ".taui" / "store.db")
         self._db: aiosqlite.Connection | None = None
         self._waiters: dict[str, list[asyncio.Event]] = {}
+        self._append_lock = asyncio.Lock()
         self._write_count: int = 0
 
     # ── Lifecycle ─────────────────────────────────────────────────────────
@@ -280,39 +281,40 @@ class Store:
         now = time.time()
         json_data = json.dumps(data, separators=(",", ":"))
 
-        try:
-            await self.db.execute("BEGIN IMMEDIATE")
-            await self._check_writable(stream_id)
+        async with self._append_lock:
+            try:
+                await self.db.execute("BEGIN IMMEDIATE")
+                await self._check_writable(stream_id)
 
-            if offset is None:
-                async with self.db.execute(
-                    "SELECT COALESCE(MAX(offset) + 1, 0) FROM events WHERE stream_id = ?",
-                    (stream_id,),
-                ) as cur:
-                    row = await cur.fetchone()
-                    write_offset = row[0] if row else 0
-            else:
-                write_offset = offset
-                async with self.db.execute(
-                    "SELECT type, data FROM events WHERE stream_id = ? AND offset = ?",
-                    (stream_id, write_offset),
-                ) as cur:
-                    existing = await cur.fetchone()
-                    if existing is not None:
-                        if existing[0] == event_type.value and existing[1] == json_data:
-                            await self.db.commit()
-                            return write_offset  # Idempotent
-                        raise OffsetConflictError(stream_id, write_offset)
+                if offset is None:
+                    async with self.db.execute(
+                        "SELECT COALESCE(MAX(offset) + 1, 0) FROM events WHERE stream_id = ?",
+                        (stream_id,),
+                    ) as cur:
+                        row = await cur.fetchone()
+                        write_offset = row[0] if row else 0
+                else:
+                    write_offset = offset
+                    async with self.db.execute(
+                        "SELECT type, data FROM events WHERE stream_id = ? AND offset = ?",
+                        (stream_id, write_offset),
+                    ) as cur:
+                        existing = await cur.fetchone()
+                        if existing is not None:
+                            if existing[0] == event_type.value and existing[1] == json_data:
+                                await self.db.commit()
+                                return write_offset  # Idempotent
+                            raise OffsetConflictError(stream_id, write_offset)
 
-            await self.db.execute(
-                "INSERT INTO events(stream_id, offset, type, data, created_at) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (stream_id, write_offset, event_type.value, json_data, now),
-            )
-            await self.db.commit()
-        except Exception:
-            await self.db.rollback()
-            raise
+                await self.db.execute(
+                    "INSERT INTO events(stream_id, offset, type, data, created_at) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (stream_id, write_offset, event_type.value, json_data, now),
+                )
+                await self.db.commit()
+            except Exception:
+                await self.db.rollback()
+                raise
 
         self._write_count += 1
         if self._write_count % 100 == 0:

@@ -205,12 +205,12 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
 # ── Tool implementations ────────────────────────────────────────────────
 
 
-def _await(app: "TauiApp", coro_or_callable, *args, **kwargs):
+def _await(app: TauiApp, coro_or_callable, *args, **kwargs):
     """Run a coroutine factory on Textual's loop and block for the result."""
     return app.call_from_thread(coro_or_callable, *args, **kwargs)
 
 
-def send_message(app: "TauiApp", args: dict[str, Any]) -> dict[str, Any]:
+def send_message(app: TauiApp, args: dict[str, Any]) -> dict[str, Any]:
     from taui.tui.widgets.chat_input import ChatInput
 
     text = args.get("text", "")
@@ -247,7 +247,7 @@ def send_message(app: "TauiApp", args: dict[str, Any]) -> dict[str, Any]:
     return {"status": "sent", "text": text, "waited": True}
 
 
-def screenshot(app: "TauiApp", args: dict[str, Any]) -> dict[str, Any]:
+def screenshot(app: TauiApp, args: dict[str, Any]) -> dict[str, Any]:
     title = args.get("title")
 
     def _grab() -> str:
@@ -279,7 +279,7 @@ def _message_to_dict(msg) -> dict[str, Any]:
     return out
 
 
-def get_state(app: "TauiApp", args: dict[str, Any]) -> dict[str, Any]:
+def get_state(app: TauiApp, args: dict[str, Any]) -> dict[str, Any]:
     include = args.get("include") or ["session", "agent"]
     include = set(include)
 
@@ -348,7 +348,7 @@ def get_state(app: "TauiApp", args: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def get_messages(app: "TauiApp", args: dict[str, Any]) -> dict[str, Any]:
+def get_messages(app: TauiApp, args: dict[str, Any]) -> dict[str, Any]:
     session = app._session
     if session is None:
         return {"messages": []}
@@ -366,7 +366,7 @@ def get_messages(app: "TauiApp", args: dict[str, Any]) -> dict[str, Any]:
     return {"messages": msgs, "count": len(msgs)}
 
 
-def press_key(app: "TauiApp", args: dict[str, Any]) -> dict[str, Any]:
+def press_key(app: TauiApp, args: dict[str, Any]) -> dict[str, Any]:
     key = args.get("key", "")
 
     async def _press() -> None:
@@ -377,7 +377,7 @@ def press_key(app: "TauiApp", args: dict[str, Any]) -> dict[str, Any]:
     return {"status": "pressed", "key": key}
 
 
-def run_command(app: "TauiApp", args: dict[str, Any]) -> dict[str, Any]:
+def run_command(app: TauiApp, args: dict[str, Any]) -> dict[str, Any]:
     from taui.tui.widgets.chat_input import ChatInput
 
     command = args.get("command", "")
@@ -394,7 +394,7 @@ def run_command(app: "TauiApp", args: dict[str, Any]) -> dict[str, Any]:
     return {"status": "submitted", "command": command}
 
 
-def query_widget(app: "TauiApp", args: dict[str, Any]) -> dict[str, Any]:
+def query_widget(app: TauiApp, args: dict[str, Any]) -> dict[str, Any]:
     selector = args["selector"]
     prop = args.get("property")
 
@@ -437,7 +437,7 @@ def _safe_repr(value: Any) -> Any:
 # ── Provider mocking ────────────────────────────────────────────────────
 
 
-def _provider_state(app: "TauiApp") -> dict[str, Any]:
+def _provider_state(app: TauiApp) -> dict[str, Any]:
     """Lazy slot on the app for the debug server's provider bookkeeping."""
     state = getattr(app, "_debug_provider_state", None)
     if state is None:
@@ -446,7 +446,7 @@ def _provider_state(app: "TauiApp") -> dict[str, Any]:
     return state
 
 
-def _install_provider(app: "TauiApp", provider: Any) -> None:
+def _install_provider(app: TauiApp, provider: Any) -> None:
     """Wire *provider* into the live session and current agent loop."""
     session = app._session
     if session is None:
@@ -466,7 +466,7 @@ def _install_provider(app: "TauiApp", provider: Any) -> None:
     provider.on_reasoning_delta = prev_reasoning
 
 
-def set_provider_mode(app: "TauiApp", args: dict[str, Any]) -> dict[str, Any]:
+def set_provider_mode(app: TauiApp, args: dict[str, Any]) -> dict[str, Any]:
     from taui.debug.scripted import ScriptedProvider
 
     mode = args.get("mode", "real")
@@ -546,7 +546,7 @@ def _build_exception(name: str) -> BaseException:
         return cls(*default_args)
 
 
-def script_push_turn(app: "TauiApp", args: dict[str, Any]) -> dict[str, Any]:
+def script_push_turn(app: TauiApp, args: dict[str, Any]) -> dict[str, Any]:
     from taui.debug.scripted import ScriptedToolCall, Turn
     from taui.llm_provider.types import Usage
 
@@ -594,7 +594,7 @@ def script_push_turn(app: "TauiApp", args: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def script_status(app: "TauiApp", args: dict[str, Any]) -> dict[str, Any]:
+def script_status(app: TauiApp, args: dict[str, Any]) -> dict[str, Any]:
     state = _provider_state(app)
     scripted = state.get("scripted")
     out: dict[str, Any] = {"mode": state.get("mode", "real")}
@@ -628,7 +628,7 @@ def script_status(app: "TauiApp", args: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def wait_idle(app: "TauiApp", args: dict[str, Any]) -> dict[str, Any]:
+def wait_idle(app: TauiApp, args: dict[str, Any]) -> dict[str, Any]:
     timeout = float(args.get("timeout", 30.0))
     deadline = time.monotonic() + timeout
     while app._is_processing:
