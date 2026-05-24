@@ -14,6 +14,7 @@ header row are ignored, leaving that area free for future affordances.
 from __future__ import annotations
 
 from rich.markup import escape
+from rich.text import Text
 from textual import events
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
@@ -217,33 +218,46 @@ def _format_summary(
     model: str,
     duration_s: float,
     agent_id: str = "",
-) -> tuple[str, str]:
+) -> tuple[Text, Text]:
     """Return (left, right) summary halves for the collapsed turn footer.
 
     Left: agent · model · time   (identity / metadata)
     Right: tokens · tools         (volume metrics)
-    """
-    left_parts: list[str] = []
-    if agent_id:
-        left_parts.append(agent_id)
-    if model:
-        left_parts.append(model)
-    if duration_s > 0:
-        if duration_s >= 60:
-            mins = int(duration_s // 60)
-            secs = int(duration_s % 60)
-            left_parts.append(f"{mins}m{secs}s")
-        else:
-            left_parts.append(f"{duration_s:.1f}s")
 
+    The agent_id is rendered in the agent's brand color so the collapsed
+    summary still carries the same color identity as the expanded turn.
+    """
     if tokens >= 1000:
         tok_str = f"{tokens / 1000:.1f}k tok"
     else:
         tok_str = f"{tokens} tok"
     tool_str = f"{tools} tool{'s' if tools != 1 else ''}"
-    right_parts = [tok_str, tool_str]
 
-    left = " · ".join(left_parts)
-    if left:
-        left = "└ " + left
-    return left, " · ".join(right_parts)
+    right = Text(" · ".join([tok_str, tool_str]), style="#6e7681")
+
+    left = Text(style="#8b949e")
+    if agent_id:
+        try:
+            from taui.tui.widgets.info_bar import _agent_color
+            agent_style = f"bold {_agent_color(agent_id)}"
+        except Exception:
+            agent_style = "bold #8b949e"
+        left.append("└ ")
+        left.append(agent_id, style=agent_style)
+    extra_parts: list[str] = []
+    if model:
+        extra_parts.append(model)
+    if duration_s > 0:
+        if duration_s >= 60:
+            mins = int(duration_s // 60)
+            secs = int(duration_s % 60)
+            extra_parts.append(f"{mins}m{secs}s")
+        else:
+            extra_parts.append(f"{duration_s:.1f}s")
+    if extra_parts:
+        if agent_id:
+            left.append(" · ", style="#8b949e")
+        else:
+            left.append("└ ", style="#8b949e")
+        left.append(" · ".join(extra_parts), style="#8b949e")
+    return left, right
