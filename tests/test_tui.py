@@ -1241,9 +1241,10 @@ class TestInfo2:
             assert not assistant.is_expanded
             assert not any("role:" in str(child.label) for child in assistant.children)
             assert not any("tokens:" in str(child.label) for child in assistant.children)
-            assert any(
-                "tool_call: read call_1" in str(child.label)
-                for child in assistant.children
+            # tool_call: ... leaf lines were removed — tool messages already
+            # appear as separate child nodes under the assistant turn.
+            assert not any(
+                "tool_call:" in str(child.label) for child in assistant.children
             )
             assert any("tool" in str(child.label) for child in assistant.children)
 

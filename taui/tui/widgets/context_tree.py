@@ -33,13 +33,20 @@ def build_context_tree(messages: list[Any], max_tokens: int) -> Tree[str]:
     current_user_tokens: int = 0
     current_user_preview: str = ""
     current_reply: TreeNode | None = None
+    current_reply_tokens: int = 0
 
     def _finalize_user() -> None:
-        """Update the current user node's label with cumulative tokens."""
         if current_user is None:
             return
         current_user.set_label(
             _user_message_label(current_user_preview, current_user_tokens)
+        )
+
+    def _finalize_reply() -> None:
+        if current_reply is None:
+            return
+        current_reply.set_label(
+            _context_message_label("assistant", current_reply_tokens)
         )
 
     for message in messages:
@@ -53,7 +60,9 @@ def build_context_tree(messages: list[Any], max_tokens: int) -> Tree[str]:
                     _context_message_label("system", system_tokens),
                     expand=False,
                 )
-                _add_context_message_details(system_node, message, system_content)
+                _add_context_message_details(
+                    system_node, message, system_content, system_tokens
+                )
             if tool_def_content:
                 tool_def_tokens = _estimate_text_tokens("tool def", tool_def_content)
                 tool_def_node = tree.root.add(
@@ -61,11 +70,14 @@ def build_context_tree(messages: list[Any], max_tokens: int) -> Tree[str]:
                     expand=False,
                 )
                 _add_context_message_details(
-                    tool_def_node, message, tool_def_content
+                    tool_def_node, message, tool_def_content, tool_def_tokens
                 )
             continue
         message_tokens = estimate_message_tokens(message)
         if role == "user":
+            _finalize_reply()
+            current_reply = None
+            current_reply_tokens = 0
             _finalize_user()
             current_user_preview = _user_preview(content)
             current_user_tokens = message_tokens
@@ -73,14 +85,21 @@ def build_context_tree(messages: list[Any], max_tokens: int) -> Tree[str]:
                 _user_message_label(current_user_preview, current_user_tokens),
                 expand=False,
             )
-            current_reply = None
-            _add_context_message_details(current_user, message, content)
+            _add_context_message_details(
+                current_user, message, content, message_tokens
+            )
             continue
-        label = _context_message_label(role, message_tokens)
         if role == "assistant":
+            _finalize_reply()
             parent = current_user or tree.root
-            current_reply = parent.add(label, expand=False)
-            _add_context_message_details(current_reply, message, content)
+            current_reply = parent.add(
+                _context_message_label("assistant", message_tokens),
+                expand=False,
+            )
+            current_reply_tokens = message_tokens
+            _add_context_message_details(
+                current_reply, message, content, message_tokens
+            )
             if current_user is not None:
                 current_user_tokens += message_tokens
             continue
@@ -88,11 +107,16 @@ def build_context_tree(messages: list[Any], max_tokens: int) -> Tree[str]:
             parent = current_reply or current_user or tree.root
             if current_user is not None:
                 current_user_tokens += message_tokens
+            if current_reply is not None:
+                current_reply_tokens += message_tokens
         else:
             parent = tree.root
-        group = parent.add(label, expand=False)
-        _add_context_message_details(group, message, content)
+        group = parent.add(
+            _context_message_label(role, message_tokens), expand=False
+        )
+        _add_context_message_details(group, message, content, message_tokens)
 
+    _finalize_reply()
     _finalize_user()
     return tree
 
@@ -157,8 +181,16 @@ def _user_message_label(preview: str, cumulative_tokens: int) -> Text:
     return text
 
 
-def _add_context_message_details(node: Any, message: Any, content: str) -> None:
-    content_node = node.add(Text("content", style="dim"), expand=True)
+def _content_label(content_tokens: int) -> Text:
+    text = Text("content", style="dim")
+    text.append(f"  {_format_tokens(content_tokens)}", style="italic dim")
+    return text
+
+
+def _add_context_message_details(
+    node: Any, message: Any, content: str, message_tokens: int,
+) -> None:
+    content_node = node.add(_content_label(message_tokens), expand=True)
     for line in content.splitlines() or [content]:
         content_node.add_leaf(Text(line if line else " ", style="#c9d1d9"))
     if getattr(message, "name", None):
@@ -166,10 +198,4 @@ def _add_context_message_details(node: Any, message: Any, content: str) -> None:
     if getattr(message, "tool_call_id", None):
         node.add_leaf(
             Text(f"tool_call_id: {getattr(message, 'tool_call_id')}", style="dim")
-        )
-    for call in getattr(message, "tool_calls", None) or []:
-        name = str(getattr(call, "name", "tool"))
-        call_id = str(getattr(call, "call_id", ""))
-        node.add_leaf(
-            Text(f"tool_call: {name} {call_id}".rstrip(), style="#ffa657")
         )
