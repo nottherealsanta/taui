@@ -77,7 +77,7 @@ class SystemPromptWidget(Static):
     SystemPromptWidget {
         width: 100%;
         height: auto;
-        padding: 0 1;
+        padding: 0 1 0 2;
         margin: 0 1;
         color: #a0a0a0;
     }
