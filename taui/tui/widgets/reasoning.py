@@ -88,8 +88,6 @@ class ReasoningWidget(Container):
     ReasoningWidget .reasoning-scroll {
         height: 5;
         padding: 0 1;
-        background: $surface 5%;
-        border-left: thick $secondary 40%;
         color: $text-muted;
         scrollbar-size-vertical: 1;
     }
