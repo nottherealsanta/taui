@@ -1039,7 +1039,7 @@ class TauiApp(App[None]):
 
         loop._on_tool_call = state.tool_ctrl.on_tool_call
         loop._on_tool_result = state.tool_ctrl.on_tool_result
-        loop._on_text = self._on_text
+        loop._on_text = lambda text: self._on_text(text, session_id=sid)
         loop._on_text_delta = lambda frag: self._on_text_delta_sync(frag, session_id=sid)
         loop._on_reasoning_delta = (
             lambda frag: self._on_reasoning_delta_sync(frag, session_id=sid)
@@ -1084,11 +1084,12 @@ class TauiApp(App[None]):
         """Handle real-time streaming reasoning token from the LLM provider."""
         self.post_message(StreamReasoningDelta(fragment, session_id=session_id))
 
-    async def _on_text(self, text: str) -> None:
+    async def _on_text(self, text: str, *, session_id: str = "") -> None:
         """Handle full text after turn — only used if no streaming occurred."""
-        state = self._sessions.active
+        state = self._sessions.get(session_id) if session_id else self._sessions.active
         if state is None or not state.streamed_text:
-            self.post_message(StreamTextDelta(text))
+            state.streamed_text = True
+            self.post_message(StreamTextDelta(text, session_id=session_id))
 
     def _on_compact_sync(
         self, removed: int, before: int, after: int, *, session_id: str = "",

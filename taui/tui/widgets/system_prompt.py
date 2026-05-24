@@ -77,7 +77,6 @@ class SystemPromptWidget(Container):
     SystemPromptWidget {
         width: 100%;
         height: auto;
-        margin: 0 1;
         color: #a0a0a0;
     }
     SystemPromptWidget:hover {
@@ -87,12 +86,14 @@ class SystemPromptWidget(Container):
     SystemPromptWidget .sp-label {
         width: 100%;
         height: auto;
-        padding: 0 1 0 0;
+        padding: 0;
+        margin: 0 1;
     }
     SystemPromptWidget .sp-body {
         width: 100%;
         height: auto;
         padding: 0 1 0 2;
+        margin: 0 1 0 1;
     }
     """
 
