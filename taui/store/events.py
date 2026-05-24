@@ -40,6 +40,9 @@ class EventType(StrEnum):
     USAGE = "usage"
     ERROR = "error"
 
+    # Background tasks
+    TASK = "task"
+
 
 @dataclass(frozen=True, slots=True)
 class Event:

@@ -860,6 +860,47 @@ class DebugCommand:
         return CommandResult.fail("Usage: /debug questions")
 
 
+@dataclass(slots=True)
+class TasksCommand:
+    """List background tasks. `/tasks stop <id>` cancels a running task."""
+
+    name: str = "tasks"
+    description: str = "List background sub-agent tasks; `/tasks stop <id>` cancels"
+    accepts_args: bool = True
+    _get_session: Any = None
+
+    async def execute(self, ctx: CommandContext) -> CommandResult:
+        if not self._get_session:
+            return CommandResult.fail("No session.")
+        session = self._get_session()
+        mgr = getattr(session, "task_manager", None)
+        if mgr is None:
+            return CommandResult.fail("Background tasks are not configured.")
+
+        args = ctx.args or []
+        if args and args[0].lower() == "stop":
+            if len(args) < 2:
+                return CommandResult.fail("Usage: /tasks stop <task_id>")
+            ok = await mgr.stop(args[1])
+            if not ok:
+                return CommandResult.fail(
+                    f"Task {args[1]} is not running or does not exist."
+                )
+            return CommandResult.ok(f"Cancellation requested for task {args[1]}.")
+
+        records = mgr.list()
+        if not records:
+            return CommandResult.ok("No background tasks.")
+        lines = []
+        for r in records:
+            label = f"[{r.id}] {r.state.value:>9} · {r.title}"
+            if r.last_output and r.state.value == "running":
+                snippet = r.last_output.strip().splitlines()[-1][:80]
+                label += f"\n          → {snippet}"
+            lines.append(label)
+        return CommandResult.ok("\n".join(lines))
+
+
 def register_builtins(
     registry: CommandRegistry,
     *,
@@ -889,6 +930,7 @@ def register_builtins(
     verbose_cmd = VerboseCommand()
     debug_cmd = DebugCommand()
     diff_cmd = GitDiffCommand()
+    tasks_cmd = TasksCommand()
 
     if get_session:
         clear_cmd._get_loop = lambda: get_session()._loop
@@ -903,6 +945,7 @@ def register_builtins(
         export_cmd._get_session = get_session
         verbose_cmd._get_session = get_session
         diff_cmd._get_session = get_session
+        tasks_cmd._get_session = get_session
 
     if get_store:
         agents_cmd._get_store = get_store
@@ -939,6 +982,7 @@ def register_builtins(
     registry.register(HotkeysCommand())
     registry.register(verbose_cmd)
     registry.register(debug_cmd)
+    registry.register(tasks_cmd)
     registry.register(UpdateProvidersModelsCommand())
 
     registry.alias("h", "help")

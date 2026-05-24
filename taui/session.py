@@ -33,6 +33,7 @@ from taui.prompt_builder import ProjectContext, SystemPromptBuilder
 from taui.session_replay import ReplayItem
 from taui.store.store import Store
 from taui.store.stream import StreamClient
+from taui.tasks import TaskManager, TaskRecord, TaskState
 from taui.tools.base import ToolResult
 from taui.tools.builtins import register_builtins
 from taui.tools.executor import PolicyDecision, ToolExecutor, ToolPolicy
@@ -118,6 +119,8 @@ class Session:
         self._pre_self_edit_state: _SessionSnapshot | None = None
         self._variant_registry: AgentVariantRegistry = AgentVariantRegistry()
         self._config_change_listeners: list[Callable[[], None]] = []
+        self._task_manager: TaskManager = TaskManager()
+        self._task_listeners: list[Callable[[TaskRecord], Any]] = []
 
     def add_config_change_listener(self, callback: Callable[[], None]) -> None:
         """Register a callback fired when the agent's prompt/tools/policy change.
@@ -308,6 +311,7 @@ class Session:
         session._context_strategy_registry = context_strategy_registry
         configure_builtin_extensions(session)
         session._wire_session_name_tool()
+        session._wire_task_manager()
         session._refresh_loop_integrations()
 
         # Wire skill paths bundled by extensions into the skill registry.
@@ -891,6 +895,10 @@ class Session:
 
     async def close(self) -> None:
         """Clean up resources."""
+        try:
+            await self._task_manager.shutdown()
+        except Exception:
+            logger.debug("Error shutting down task manager", exc_info=True)
         await close_builtin_extensions(self)
         if hasattr(self, "_lsp_manager"):
             try:
@@ -1033,6 +1041,98 @@ class Session:
     def replay_items(self) -> list[ReplayItem]:
         """Transcript items from the most recent successful resume."""
         return list(self._last_replay_items)
+
+    @property
+    def task_manager(self) -> TaskManager:
+        """Per-session background TaskManager."""
+        return self._task_manager
+
+    def add_task_listener(self, cb: Callable[[TaskRecord], Any]) -> None:
+        """Register a callback invoked on every background task state change.
+
+        Used by the TUI sidebar / desktop notification extensions to surface
+        progress and completion without polling.
+        """
+        self._task_listeners.append(cb)
+
+    async def _on_task_state_change(self, record: TaskRecord) -> None:
+        # Fan-out to in-process listeners (TUI sidebar, etc.)
+        for cb in list(self._task_listeners):
+            try:
+                result = cb(record)
+                if asyncio.iscoroutine(result):
+                    await result
+            except Exception:
+                logger.debug("Task listener raised", exc_info=True)
+        # Fire the extension hook on terminal transitions so desktop-notify
+        # extensions can surface "task done" to the operator.
+        if record.state in (TaskState.DONE, TaskState.FAILED, TaskState.CANCELLED):
+            try:
+                await self.hooks.run("on_task_done", record, self)
+            except Exception:
+                logger.debug("on_task_done hook raised", exc_info=True)
+
+    def _wire_task_manager(self) -> None:
+        """Inject the TaskManager into task_* tools and configure its runner."""
+        # The manager is created in __init__ as a stable reference; here we
+        # wire it up to the stream + runner once we have all the dependencies.
+        mgr = self._task_manager
+        mgr.set_stream(self._stream, self._loop.stream_id)
+        mgr.set_state_listener(self._on_task_state_change)
+
+        async def runner(record: TaskRecord, cancel_event: asyncio.Event) -> None:
+            """Spawn a sub-session for this task and shuttle its result back."""
+            sub = await self.create_sub_session(
+                name=f"task-{record.id}",
+                tools=record.tools,
+                model=record.model,
+                max_turns=record.max_turns,
+            )
+            record.stream_id = sub._loop.stream_id
+            # Race the sub-agent's run against the cancel signal.
+            run_task = asyncio.create_task(sub.send(record.prompt))
+            cancel_task = asyncio.create_task(cancel_event.wait())
+            try:
+                done, _ = await asyncio.wait(
+                    {run_task, cancel_task},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if cancel_task in done and not run_task.done():
+                    run_task.cancel()
+                    try:
+                        await run_task
+                    except (asyncio.CancelledError, Exception):
+                        pass
+                    record.last_output = "(cancelled by operator)"
+                    return
+                result = await run_task
+                record.result = result.text or ""
+                record.turns = result.turns
+            finally:
+                if not cancel_task.done():
+                    cancel_task.cancel()
+                try:
+                    await sub.close()
+                except Exception:
+                    logger.debug("Error closing sub-session", exc_info=True)
+
+        mgr.set_runner(runner)
+
+        # Inject the manager into every task_* tool that has set_manager.
+        for name in (
+            "task_create",
+            "task_get",
+            "task_list",
+            "task_output",
+            "task_stop",
+            "task_update",
+        ):
+            try:
+                tool = self._registry.get(name)
+            except ValueError:
+                continue
+            if hasattr(tool, "set_manager"):
+                tool.set_manager(mgr)
 
     def _wire_session_name_tool(self) -> None:
         """Give the session_name tool a callback that writes the description."""
