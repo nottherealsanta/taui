@@ -10,7 +10,7 @@ from taui.agent.types import Message
 from taui.llm_provider.types import ProviderToolCall
 from taui.store.events import Event, EventType
 
-ReplayKind = Literal["user", "assistant", "tool_call", "tool_result", "error", "usage"]
+ReplayKind = Literal["user", "assistant", "reasoning", "tool_call", "tool_result", "error", "usage"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,6 +87,16 @@ def replay_events(events: list[Event]) -> ReplayTranscript:
             for tc in tool_calls:
                 represented_tool_calls.add(tc.call_id)
                 pending_tool_footer[tc.call_id] = (agent_id, model)
+            reasoning_text = str(data.get("reasoning_text") or "")
+            if reasoning_text:
+                items.append(
+                    ReplayItem(
+                        kind="reasoning",
+                        text=reasoning_text,
+                        agent_id=agent_id,
+                        model=model,
+                    )
+                )
             if text:
                 items.append(
                     ReplayItem(

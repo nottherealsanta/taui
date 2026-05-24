@@ -136,8 +136,13 @@ class SubAgentTool:
                 "return your findings."
             )
 
-        # Model: profile override wins over the parent's model
-        model = (profile.model if profile and profile.model else self._model) or None
+        # Model: profile override wins, then live session model, then cached _model
+        if profile and profile.model:
+            model = profile.model
+        elif self._session is not None:
+            model = self._session.config.model
+        else:
+            model = self._model or None
 
         # Stable name for the sub-session (becomes the agent_id on the loop /
         # the stream id). When spawning a profile, prefix the ID so the

@@ -56,12 +56,17 @@ Screen {
 .tool-section {
     height: auto;
     padding: 0;
-    margin: 1 0;
+    margin: 0 0 1 0;
+}
+.context-banner-label {
+    color: $text-muted;
+    padding: 0;
+    margin: 0 1;
 }
 .context-banner {
     color: $text-muted;
-    padding: 0 2 0 3;
-    margin: 0 0 0 0;
+    padding: 0 1 0 2;
+    margin: 0 1 0 1;
 }
 .steer-indicator {
     color: $text-muted;
@@ -93,7 +98,7 @@ AgentResponse > MarkdownParagraph:last-child {
 }
 MarkdownBlock > .code_inline {
     background: $surface-lighten-1;
-    color: #56d4dd;
+    color: $warning;
 }
 MarkdownBlock > .strong {
     color: $foreground;
@@ -112,15 +117,15 @@ MarkdownH2 {
     text-style: bold;
 }
 MarkdownH3 {
-    color: $warning;
+    color: $success;
     text-style: bold;
 }
 MarkdownH4 {
-    color: $foreground;
+    color: $warning;
     text-style: bold;
 }
 MarkdownH5 {
-    color: $foreground-darken-1;
+    color: $secondary;
     text-style: bold;
 }
 MarkdownH6 {
@@ -128,16 +133,16 @@ MarkdownH6 {
     text-style: bold;
 }
 MarkdownBullet {
-    color: $accent;
+    color: $primary;
 }
 MarkdownBlockQuote {
     background: $panel 45%;
-    border-left: outer $accent;
+    border-left: outer $primary;
     color: $foreground-darken-1;
 }
 MarkdownFence {
-    background: $background;
-    color: $foreground-darken-1;
+    background: $surface;
+    color: $foreground;
 }
 MarkdownTableContent {
     keyline: thin $surface-lighten-1;

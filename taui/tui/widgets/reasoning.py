@@ -82,7 +82,7 @@ class ReasoningWidget(Container):
     DEFAULT_CSS = """
     ReasoningWidget {
         height: auto;
-        margin: 0 1;
+        margin: 0 1 0 0;
         padding: 0;
     }
     ReasoningWidget .reasoning-scroll {

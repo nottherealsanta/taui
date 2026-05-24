@@ -66,7 +66,7 @@ class SystemPromptModal(ModalScreen[None]):
             self.dismiss(None)
 
 
-class SystemPromptWidget(Static):
+class SystemPromptWidget(Container):
     """Compact preview of the system prompt — click to open full modal.
 
     The widget renders ``PREVIEW_LINES`` lines of the prompt, with a hint
@@ -77,13 +77,22 @@ class SystemPromptWidget(Static):
     SystemPromptWidget {
         width: 100%;
         height: auto;
-        padding: 0 1 0 2;
         margin: 0 1;
         color: #a0a0a0;
     }
     SystemPromptWidget:hover {
         color: #d0d0d0;
         background: $surface-lighten-1 10%;
+    }
+    SystemPromptWidget .sp-label {
+        width: 100%;
+        height: auto;
+        padding: 0 1 0 0;
+    }
+    SystemPromptWidget .sp-body {
+        width: 100%;
+        height: auto;
+        padding: 0 1 0 2;
     }
     """
 
@@ -97,17 +106,25 @@ class SystemPromptWidget(Static):
         self._prompt = prompt
         self._label = label
         self._label_style = label_style
-        super().__init__(self._render_preview(), markup=True)
+        super().__init__()
+
+    def compose(self) -> ComposeResult:
+        label_markup, body_markup = self._render_parts()
+        yield Static(label_markup, classes="sp-label", markup=True)
+        yield Static(body_markup, classes="sp-body", markup=True)
 
     def set_prompt(self, prompt: str, *, label_style: str | None = None) -> None:
         self._prompt = prompt
         if label_style is not None:
             self._label_style = label_style
-        self.update(self._render_preview())
+        label_markup, body_markup = self._render_parts()
+        self.query_one(".sp-label", Static).update(label_markup)
+        self.query_one(".sp-body", Static).update(body_markup)
 
-    def _render_preview(self) -> str:
+    def _render_parts(self) -> tuple[str, str]:
+        label_markup = f"[{self._label_style}]{self._label}[/]"
         if not self._prompt:
-            return f"[{self._label_style}]{self._label}[/]\n[dim](empty)[/dim]"
+            return label_markup, "[dim](empty)[/dim]"
         lines = self._prompt.splitlines() or [self._prompt]
         head = lines[:PREVIEW_LINES]
         more = len(lines) - len(head)
@@ -115,8 +132,8 @@ class SystemPromptWidget(Static):
         plural = "s" if more != 1 else ""
         if more > 0:
             hint = f"[dim italic]… +{more} more line{plural}[/dim italic]"
-            return f"[{self._label_style}]{self._label}[/]\n{safe}\n{hint}"
-        return f"[{self._label_style}]{self._label}[/]\n{safe}"
+            return label_markup, f"{safe}\n{hint}"
+        return label_markup, safe
 
     async def on_click(self, event: events.Click) -> None:
         event.stop()

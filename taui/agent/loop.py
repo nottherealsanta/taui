@@ -337,6 +337,9 @@ class AgentLoop:
                     "tool_calls": [
                         _serialize_tool_call(tc) for tc in llm_result.tool_calls
                     ],
+                    **({
+                        "reasoning_text": llm_result.assistant_metadata["reasoning_text"]
+                    } if llm_result.assistant_metadata and llm_result.assistant_metadata.get("reasoning_text") else {}),
                 },
             )
         if llm_result.text:

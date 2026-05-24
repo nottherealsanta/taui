@@ -1885,10 +1885,10 @@ class TauiApp(App[None]):
 
     # ── Context banner ─────────────────────────────────────────────────
 
-    def _build_context_banner_parts(self) -> tuple[str, str, str]:
-        """Resolve (system_prompt, tools_markup, label_style) for the banner."""
+    def _build_context_banner_parts(self) -> tuple[str, str, str, str]:
+        """Resolve (system_prompt, tools_label, tools_body, label_style) for the banner."""
         if self._session is None:
-            return "", "", ""
+            return "", "", "", ""
 
         sp = getattr(self._session, "_system_prompt", "") or ""
         if self._session.self_edit_mode:
@@ -1910,14 +1910,13 @@ class TauiApp(App[None]):
         except AttributeError:
             active = set(available)
 
-        tools_markup = ""
+        tools_label = ""
+        tools_body = ""
         if available:
-            tools_markup = (
-                f"[{label_style}]Tools[/{label_style}]\n"
-                + _render_tools_table(available, active, columns=3)
-            )
+            tools_label = f"[{label_style}]Tools[/{label_style}]"
+            tools_body = _render_tools_table(available, active, columns=3)
 
-        return sp, tools_markup, label_style
+        return sp, tools_label, tools_body, label_style
 
     async def _maybe_show_context_banner(self, chat_log) -> None:
         """Show system prompt widget + tool list once, before the first user message."""
@@ -1927,16 +1926,20 @@ class TauiApp(App[None]):
             return
         self._context_banner_shown = True
 
-        sp, tools_markup, label_style = self._build_context_banner_parts()
+        sp, tools_label, tools_body, label_style = self._build_context_banner_parts()
         if sp:
             await chat_log.mount(
                 SystemPromptWidget(
                     sp, label="System prompt", label_style=label_style,
                 )
             )
-        if tools_markup:
+        if tools_label:
             await chat_log.mount(
-                Static(tools_markup, classes="context-banner", markup=True)
+                Static(tools_label, classes="context-banner-label", markup=True)
+            )
+        if tools_body:
+            await chat_log.mount(
+                Static(tools_body, classes="context-banner", markup=True)
             )
 
     def _refresh_context_banner(self, session_id: str = "") -> None:
@@ -1956,7 +1959,7 @@ class TauiApp(App[None]):
             chat_log = self._get_active_chat_log()
         except Exception:
             return
-        sp, tools_markup, label_style = self._build_context_banner_parts()
+        sp, tools_label, tools_body, label_style = self._build_context_banner_parts()
         try:
             sp_widget = chat_log.query_one(SystemPromptWidget)
             if sp:
@@ -1964,9 +1967,15 @@ class TauiApp(App[None]):
         except Exception:
             pass
         try:
+            label_widget = chat_log.query_one(".context-banner-label", Static)
+            if tools_label:
+                label_widget.update(tools_label)
+        except Exception:
+            pass
+        try:
             tools_widget = chat_log.query_one(".context-banner", Static)
-            if tools_markup:
-                tools_widget.update(tools_markup)
+            if tools_body:
+                tools_widget.update(tools_body)
         except Exception:
             pass
 
@@ -2843,6 +2852,14 @@ class TauiApp(App[None]):
                 await resp.finalize()
                 turn_has_content = True
                 turn_assistant_text += item.text
+                _remember_turn_footer(item)
+            elif item.kind == "reasoning":
+                from taui.tui.widgets.reasoning import ReasoningWidget
+                rw = ReasoningWidget()
+                await self._mount_in_reply(rw, state=st)
+                rw.update_text(item.text)
+                rw.finalize()
+                turn_has_content = True
                 _remember_turn_footer(item)
             elif item.kind == "tool_call":
                 if tool_section is None:
