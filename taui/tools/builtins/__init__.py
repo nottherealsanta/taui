@@ -20,6 +20,14 @@ from taui.tools.builtins.session_name import SessionNameTool
 from taui.tools.builtins.skills import SkillsTool
 from taui.tools.builtins.sub_agent import SubAgentTool
 from taui.tools.builtins.task import TaskTool
+from taui.tools.builtins.tasks import (
+    TaskCreateTool,
+    TaskGetTool,
+    TaskListTool,
+    TaskOutputTool,
+    TaskStopTool,
+    TaskUpdateTool,
+)
 from taui.tools.builtins.webfetch import WebfetchTool
 from taui.tools.builtins.worktree import WorktreeTool
 from taui.tools.registry import ToolRegistry
@@ -45,6 +53,12 @@ def register_builtins(registry: ToolRegistry) -> None:
         SkillsTool(),
         SubAgentTool(),
         TaskTool(),
+        TaskCreateTool(),
+        TaskGetTool(),
+        TaskListTool(),
+        TaskOutputTool(),
+        TaskStopTool(),
+        TaskUpdateTool(),
         WebfetchTool(),
         ApplyPatchTool(),
         LspTool(),
@@ -73,7 +87,13 @@ __all__ = [
     "SessionNameTool",
     "SkillsTool",
     "SubAgentTool",
+    "TaskCreateTool",
+    "TaskGetTool",
+    "TaskListTool",
+    "TaskOutputTool",
+    "TaskStopTool",
     "TaskTool",
+    "TaskUpdateTool",
     "WebfetchTool",
     "WorktreeTool",
     "WriteTool",

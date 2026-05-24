@@ -43,6 +43,9 @@ class EventType(StrEnum):
     # Worktree lifecycle
     WORKTREE = "worktree"
 
+    # Background tasks
+    TASK = "task"
+
 
 @dataclass(frozen=True, slots=True)
 class Event:
