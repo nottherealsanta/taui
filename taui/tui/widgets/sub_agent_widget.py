@@ -13,8 +13,6 @@ from textual.widgets import Button, Static
 from taui.tui.widgets.tool_status import ToolStatusWidget
 
 _LATEST_COLOR = "#6e7681"
-_FINISHED_COLOR = "#3fb950"
-_LABEL_COLOR = "#58a6ff"
 _VALUE_COLOR = "#c9d1d9"
 _MUTED = "#8b949e"
 
@@ -310,17 +308,6 @@ class SubAgentWidget(ToolStatusWidget):
             self._activity_log.append(f"== Finished: {preview}")
         else:
             self._activity_log.append("== Finished")
-        try:
-            body = self.query_one("#body", Static)
-            body.update(
-                Text.from_markup(
-                    f"[{_FINISHED_COLOR}]✓ Finished[/{_FINISHED_COLOR}]  "
-                    f"[{_LATEST_COLOR}]click to view full log[/{_LATEST_COLOR}]"
-                )
-            )
-            body.styles.display = "block"
-        except Exception:
-            pass
 
     async def fail(self, error: str = "") -> None:
         await super().fail(error)
