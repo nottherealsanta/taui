@@ -132,6 +132,73 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "name": "set_provider_mode",
+        "description": (
+            "Swap the live session's LLM provider. mode='scripted' installs a "
+            "ScriptedProvider so the external driver can supply text/tool/error "
+            "responses via script_push_turn. mode='real' restores the original "
+            "provider created at startup. No-op if already in the requested mode."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "mode": {"type": "string", "enum": ["real", "scripted"]},
+            },
+            "required": ["mode"],
+        },
+    },
+    {
+        "name": "script_push_turn",
+        "description": (
+            "Append one scripted LLM turn to the queue. Requires "
+            "set_provider_mode('scripted') first. Fields: text (final text), "
+            "text_deltas (list of strings streamed before the final), "
+            "reasoning_deltas (streamed reasoning chunks), tool_calls "
+            "(list of {name, arguments[, call_id]}), delta_delay (seconds "
+            "between deltas), raises (exception class name like "
+            "'ContextOverflowError' to simulate provider errors), usage "
+            "({input_tokens, output_tokens})."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "text": {"type": "string", "default": ""},
+                "text_deltas": {"type": "array", "items": {"type": "string"}},
+                "reasoning_deltas": {"type": "array", "items": {"type": "string"}},
+                "tool_calls": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string"},
+                            "arguments": {"type": "object"},
+                            "call_id": {"type": "string"},
+                        },
+                        "required": ["name", "arguments"],
+                    },
+                },
+                "delta_delay": {"type": "number", "default": 0.0},
+                "raises": {"type": "string"},
+                "usage": {
+                    "type": "object",
+                    "properties": {
+                        "input_tokens": {"type": "integer"},
+                        "output_tokens": {"type": "integer"},
+                    },
+                },
+                "stop_reason": {"type": "string"},
+            },
+        },
+    },
+    {
+        "name": "script_status",
+        "description": (
+            "Inspect the scripted provider: current mode, turns queued/remaining, "
+            "create_turn call count, and the messages received on the last call."
+        ),
+        "inputSchema": {"type": "object", "properties": {}},
+    },
 ]
 
 
@@ -367,6 +434,200 @@ def _safe_repr(value: Any) -> Any:
     return repr(value)
 
 
+# ── Provider mocking ────────────────────────────────────────────────────
+
+
+def _provider_state(app: "TauiApp") -> dict[str, Any]:
+    """Lazy slot on the app for the debug server's provider bookkeeping."""
+    state = getattr(app, "_debug_provider_state", None)
+    if state is None:
+        state = {"mode": "real", "original": None, "scripted": None}
+        app._debug_provider_state = state  # type: ignore[attr-defined]
+    return state
+
+
+def _install_provider(app: "TauiApp", provider: Any) -> None:
+    """Wire *provider* into the live session and current agent loop."""
+    session = app._session
+    if session is None:
+        raise RuntimeError("No active session yet — wait for startup")
+
+    loop = session._loop
+    prev_text = getattr(loop._llm, "on_text_delta", None) if loop._llm else None
+    prev_reasoning = (
+        getattr(loop._llm, "on_reasoning_delta", None) if loop._llm else None
+    )
+
+    session._provider = provider
+    loop._llm = provider
+    # Preserve any callbacks the loop had wired on the old provider so
+    # streaming deltas keep reaching the TUI.
+    provider.on_text_delta = prev_text
+    provider.on_reasoning_delta = prev_reasoning
+
+
+def set_provider_mode(app: "TauiApp", args: dict[str, Any]) -> dict[str, Any]:
+    from taui.debug.scripted import ScriptedProvider
+
+    mode = args.get("mode", "real")
+    state = _provider_state(app)
+    session = app._session
+    if session is None:
+        return {"error": "No active session"}
+
+    if state["original"] is None:
+        state["original"] = session._provider
+
+    def _switch() -> dict[str, Any]:
+        if mode == "real":
+            if state["mode"] == "real":
+                return {"mode": "real", "changed": False}
+            _install_provider(app, state["original"])
+            state["mode"] = "real"
+            return {"mode": "real", "changed": True}
+        elif mode == "scripted":
+            if state["mode"] == "scripted" and state["scripted"] is not None:
+                return {"mode": "scripted", "changed": False, "queued": state["scripted"].remaining}
+            scripted = ScriptedProvider()
+            state["scripted"] = scripted
+            _install_provider(app, scripted)
+            state["mode"] = "scripted"
+            return {"mode": "scripted", "changed": True, "queued": 0}
+        else:
+            return {"error": f"Unknown mode: {mode}"}
+
+    return _await(app, _switch)
+
+
+_EXCEPTION_MAP = {
+    "ContextOverflowError": (
+        "taui.llm_provider.errors",
+        "ContextOverflowError",
+        ("Simulated context overflow",),
+    ),
+    "QuotaExceededError": (
+        "taui.llm_provider.errors",
+        "QuotaExceededError",
+        ("Simulated quota exceeded",),
+    ),
+    "TransientProviderError": (
+        "taui.llm_provider.errors",
+        "TransientProviderError",
+        ("Simulated transient error",),
+    ),
+    "ProviderError": (
+        "taui.llm_provider.errors",
+        "ProviderError",
+        ("Simulated provider error",),
+    ),
+    "AuthExpiredError": (
+        "taui.llm_provider.errors",
+        "AuthExpiredError",
+        ("Simulated auth expiry",),
+    ),
+    "RuntimeError": (None, "RuntimeError", ("Simulated runtime error",)),
+}
+
+
+def _build_exception(name: str) -> BaseException:
+    spec = _EXCEPTION_MAP.get(name)
+    if spec is None:
+        return RuntimeError(f"Simulated error: {name}")
+    module_path, cls_name, default_args = spec
+    if module_path is None:
+        return RuntimeError(*default_args)
+    import importlib
+
+    mod = importlib.import_module(module_path)
+    cls = getattr(mod, cls_name)
+    try:
+        return cls(*default_args)
+    except TypeError:
+        return cls(*default_args)
+
+
+def script_push_turn(app: "TauiApp", args: dict[str, Any]) -> dict[str, Any]:
+    from taui.debug.scripted import ScriptedToolCall, Turn
+    from taui.llm_provider.types import Usage
+
+    state = _provider_state(app)
+    scripted = state.get("scripted")
+    if state.get("mode") != "scripted" or scripted is None:
+        return {"error": "Not in scripted mode — call set_provider_mode first"}
+
+    raw_calls = args.get("tool_calls") or []
+    tool_calls = [
+        ScriptedToolCall(
+            name=tc["name"],
+            arguments=dict(tc.get("arguments") or {}),
+            call_id=tc.get("call_id"),
+        )
+        for tc in raw_calls
+    ]
+
+    usage_dict = args.get("usage")
+    usage = None
+    if usage_dict:
+        usage = Usage(
+            input_tokens=int(usage_dict.get("input_tokens", 0)),
+            output_tokens=int(usage_dict.get("output_tokens", 0)),
+        )
+
+    raises_name = args.get("raises")
+    raises_exc = _build_exception(raises_name) if raises_name else None
+
+    turn = Turn(
+        text=str(args.get("text", "")),
+        text_deltas=list(args.get("text_deltas") or []),
+        reasoning_deltas=list(args.get("reasoning_deltas") or []),
+        tool_calls=tool_calls,
+        usage=usage,
+        stop_reason=str(args.get("stop_reason", "stop")),
+        delta_delay=float(args.get("delta_delay", 0.0) or 0.0),
+        raises=raises_exc,
+    )
+    scripted.add(turn)
+    return {
+        "queued": 1,
+        "remaining": scripted.remaining,
+        "call_count": scripted.call_count,
+    }
+
+
+def script_status(app: "TauiApp", args: dict[str, Any]) -> dict[str, Any]:
+    state = _provider_state(app)
+    scripted = state.get("scripted")
+    out: dict[str, Any] = {"mode": state.get("mode", "real")}
+    if scripted is not None:
+        out["remaining"] = scripted.remaining
+        out["call_count"] = scripted.call_count
+        if scripted.calls:
+            last = scripted.calls[-1]
+            out["last_call"] = {
+                "model": last.model,
+                "message_count": len(last.messages),
+                "tool_names": (
+                    [t.get("function", {}).get("name") or t.get("name") for t in last.tools]
+                    if last.tools
+                    else []
+                ),
+                "last_user": next(
+                    (
+                        m.get("content")
+                        if isinstance(m, dict)
+                        else getattr(m, "content", None)
+                        for m in reversed(last.messages)
+                        if (
+                            (isinstance(m, dict) and m.get("role") == "user")
+                            or getattr(m, "role", None) == "user"
+                        )
+                    ),
+                    None,
+                ),
+            }
+    return out
+
+
 def wait_idle(app: "TauiApp", args: dict[str, Any]) -> dict[str, Any]:
     timeout = float(args.get("timeout", 30.0))
     deadline = time.monotonic() + timeout
@@ -388,4 +649,7 @@ HANDLERS = {
     "run_command": run_command,
     "query_widget": query_widget,
     "wait_idle": wait_idle,
+    "set_provider_mode": set_provider_mode,
+    "script_push_turn": script_push_turn,
+    "script_status": script_status,
 }
