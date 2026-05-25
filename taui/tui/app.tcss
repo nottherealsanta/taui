@@ -72,6 +72,9 @@ Screen {
     color: $text-muted;
     padding: 0 2;
 }
+TurnContainer.steer-pending {
+    opacity: 40%;
+}
 .queue-indicator {
     color: $warning;
     padding: 0 2;

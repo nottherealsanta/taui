@@ -902,6 +902,8 @@ class TauiApp(App[None]):
         if state.is_processing:
             state.queued.clear()
             old_loop._steering_queue.clear()
+            state.pending_steer_texts.clear()
+            state.pending_steer_widget = None
             # Cancel only this session's workers
             sid = state.session_id
             for worker in list(self.workers):
@@ -1047,6 +1049,7 @@ class TauiApp(App[None]):
         loop._on_approval = state.approval_ctrl.on_approval
         loop._on_questions_batch = state.approval_ctrl.on_questions_batch
         loop._on_compact = lambda r, b, a: self._on_compact_sync(r, b, a, session_id=sid)
+        loop._on_steering_drained = lambda: self._on_steering_drained_sync(session_id=sid)
 
         # Notify the TUI when the agent's prompt/tools/policy change so the
         # rendered context banner can be re-rendered. Idempotent per session —
@@ -1100,6 +1103,37 @@ class TauiApp(App[None]):
         self.post_message(
             CompactionOccurred(removed, before, after, session_id=session_id)
         )
+
+    def _on_steering_drained_sync(self, *, session_id: str = "") -> None:
+        """Called when steering messages are flushed into conversation history.
+
+        Un-grays the pending steer widget, promotes it to ``current_turn``
+        so subsequent assistant output (tool calls, text) is mounted below
+        the steer message, and resets per-session tracking.
+        """
+        st = self._sessions.get(session_id) if session_id else self._sessions.active
+        if st is None:
+            return
+        widget = st.pending_steer_widget
+        if widget is not None:
+            try:
+                widget.remove_class("steer-pending")
+            except Exception:
+                pass
+            # Make this the active turn so new content flows below it
+            st.turns.append(widget)
+            st.current_turn = widget
+            # Reset streaming state so new content is created in the new turn
+            st.current_response = None
+            st.streamed_text = False
+            st.reply_footer = None
+            st.current_reasoning = None
+            st.reasoning_buf = ""
+            # Reset tool controller so new tool sections mount in the new turn
+            if st.tool_ctrl is not None:
+                st.tool_ctrl._current_tool_section = None
+        st.pending_steer_texts.clear()
+        st.pending_steer_widget = None
 
     # ── Tool event handlers ───────────────────────────────────────────
 
@@ -1589,7 +1623,7 @@ class TauiApp(App[None]):
                 assert self._session is not None
                 self._session._loop.steer(send_text)
                 self._pending_indicators.append(("s", send_text))
-                await self._show_indicator("s", send_text)
+                await self._show_steer_message(send_text)
             return
 
         # Normal send
@@ -1869,20 +1903,51 @@ class TauiApp(App[None]):
         await self.action_cancel_request()
 
     async def _show_indicator(self, mode: str, text: str) -> None:
-        """Show a steer/queue indicator in the chat log."""
+        """Show a queue indicator in the chat log."""
         if mode == "s":
-            widget = Static(
-                f"[dim]  s> {escape(text)}[/dim]",
-                classes="steer-indicator",
-                markup=True,
-            )
-        else:
-            widget = Static(
-                f"[#f5a524]  q> {escape(text)}[/#f5a524]",
-                classes="queue-indicator",
-                markup=True,
-            )
+            # Steering uses _show_steer_message now
+            await self._show_steer_message(text)
+            return
+        widget = Static(
+            f"[#f5a524]  q> {escape(text)}[/#f5a524]",
+            classes="queue-indicator",
+            markup=True,
+        )
         await self._mount_in_reply(widget)
+        self._smart_scroll()
+
+    async def _show_steer_message(self, text: str) -> None:
+        """Show a steering message as a regular user bubble (dimmed while pending).
+
+        Multiple consecutive steers (before the next tool call drains them)
+        are consolidated into a single TurnContainer whose user-text is
+        updated to show all accumulated messages.
+        """
+        from taui.tui.widgets.turn_container import TurnContainer
+
+        st = self._sessions.active
+        if st is None:
+            return
+
+        st.pending_steer_texts.append(text)
+        combined = "\n".join(st.pending_steer_texts)
+
+        if st.pending_steer_widget is not None:
+            # Update the existing turn container's user-text
+            try:
+                label = st.pending_steer_widget.query_one("#user-text", Static)
+                label.update(escape(combined))
+            except Exception:
+                pass
+        else:
+            # Create a real TurnContainer — same as a normal user message
+            chat_log = st.chat_log or self._get_active_chat_log()
+            turn_id = len(st.turns)
+            turn = TurnContainer(combined, "", turn_id=turn_id)
+            turn.add_class("steer-pending")
+            st.pending_steer_widget = turn
+            # Mount in chat log (not in the current turn body)
+            await chat_log.mount(turn)
         self._smart_scroll()
 
 
@@ -2243,6 +2308,8 @@ class TauiApp(App[None]):
         if not busy:
             if st is not None:
                 st.pending_indicators.clear()
+                st.pending_steer_texts.clear()
+                st.pending_steer_widget = None
             chat_input.focus()
         self._refresh_tab_bar()
 
@@ -3028,6 +3095,8 @@ class TauiApp(App[None]):
             state.queued.clear()
             if state.session:
                 state.session._loop._steering_queue.clear()
+            state.pending_steer_texts.clear()
+            state.pending_steer_widget = None
             # Cancel only this session's workers
             sid = state.session_id
             for worker in list(self.workers):

@@ -157,6 +157,10 @@ class AgentLoop:
         # Result post-processor callback: (tool_name, call_id, content) -> content
         self._on_result_process: Callable[[str, str, str], str] | None = None
 
+        # Steering-drained callback: called (no args) after steering messages
+        # are flushed into the conversation history, so the UI can update.
+        self._on_steering_drained: Callable[[], None] | None = None
+
         # Tokenizer for token estimation and calibration
         self._tokenizer: Tokenizer = tokenizer or create_tokenizer()
 
@@ -409,10 +413,18 @@ class AgentLoop:
         self._steering_queue.append(message)
 
     def _drain_steering(self) -> None:
-        """Inject any pending steering messages into the conversation."""
-        while self._steering_queue:
-            msg = self._steering_queue.pop(0)
-            self._messages.append(Message(role="user", content=msg, kind="steer"))
+        """Inject any pending steering messages into the conversation.
+
+        Multiple queued messages are consolidated into a single Message so the
+        LLM sees one coherent user turn rather than several tiny ones.
+        """
+        if not self._steering_queue:
+            return
+        combined = "\n\n".join(self._steering_queue)
+        self._steering_queue.clear()
+        self._messages.append(Message(role="user", content=combined, kind="steer"))
+        if self._on_steering_drained:
+            self._on_steering_drained()
 
     async def _execute_tools_with_parallelism(
         self, tool_calls: list[ProviderToolCall]

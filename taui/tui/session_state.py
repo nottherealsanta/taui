@@ -39,6 +39,11 @@ class SessionState:
     queued: list[tuple[str, list[str] | None]] = field(default_factory=list)
     pending_indicators: list[tuple[str, str]] = field(default_factory=list)
 
+    # Steering messages waiting to be drained — displayed as a single
+    # grayed-out user bubble that un-grays once the tool call picks them up.
+    pending_steer_texts: list[str] = field(default_factory=list)
+    pending_steer_widget: object | None = None  # Static widget ref
+
     # Per-session edit tracking for the right sidebar
     edited_files: dict[str, dict[str, int]] = field(default_factory=dict)
 
