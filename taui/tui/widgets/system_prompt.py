@@ -87,13 +87,13 @@ class SystemPromptWidget(Container):
         width: 100%;
         height: auto;
         padding: 0;
-        margin: 0 1;
+        margin: 0 1 1 0;
     }
     SystemPromptWidget .sp-body {
         width: 100%;
         height: auto;
         padding: 0 1 0 2;
-        margin: 0 1 0 1;
+        margin: 0 1 1 1;
     }
     """
 

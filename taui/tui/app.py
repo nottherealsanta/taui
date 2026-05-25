@@ -1998,7 +1998,7 @@ class TauiApp(App[None]):
         if sp:
             await chat_log.mount(
                 SystemPromptWidget(
-                    sp, label=" System promp ", label_style=label_style,
+                    sp, label=" System prompt ", label_style=label_style,
                 )
             )
         if tools_label:

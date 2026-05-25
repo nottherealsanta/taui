@@ -108,7 +108,7 @@ def main(argv: list[str] | None = None) -> None:
     parsed = parse_args(argv)
 
     if parsed.pop("version", False):
-        print("taui 0.6")
+        print("taui 0.8")
         return
 
     if parsed.pop("login", False):
