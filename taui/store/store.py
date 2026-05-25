@@ -46,9 +46,6 @@ CREATE TABLE IF NOT EXISTS events (
     UNIQUE(stream_id, offset)
 );
 
-CREATE INDEX IF NOT EXISTS idx_events_stream_offset
-    ON events(stream_id, offset);
-
 CREATE TABLE IF NOT EXISTS sessions (
     session_id   TEXT PRIMARY KEY,
     stream_id    TEXT NOT NULL DEFAULT '',
@@ -118,6 +115,13 @@ class Store:
         self._waiters: dict[str, list[asyncio.Event]] = {}
         self._append_lock = asyncio.Lock()
         self._write_count: int = 0
+        # In-memory cache of stream state to avoid an extra SELECT per append.
+        # Keyed by stream_id. Value is (next_offset, closed).
+        # Populated lazily on first append/read; invalidated on close_stream.
+        self._stream_state: dict[str, tuple[int, bool]] = {}
+        # Drop legacy duplicate index — UNIQUE(stream_id, offset) already
+        # provides the (stream_id, offset) lookup index for free.
+        self._legacy_index_dropped: bool = False
 
     # ── Lifecycle ─────────────────────────────────────────────────────────
 
@@ -130,6 +134,10 @@ class Store:
         self._db.row_factory = aiosqlite.Row
         await self._db.execute("PRAGMA journal_mode = WAL")
         await self._db.execute("PRAGMA synchronous = NORMAL")
+        # Keep temp tables/indices in memory; speed up sorts and large reads.
+        await self._db.execute("PRAGMA temp_store = MEMORY")
+        # ~20 MB page cache (negative = KiB). Big speedup for replay scans.
+        await self._db.execute("PRAGMA cache_size = -20000")
         await self._db.executescript(_SCHEMA)
         await self._migrate_schema()
         await self._db.commit()
@@ -162,6 +170,7 @@ class Store:
         """Apply small forward-compatible migrations."""
         async with self.db.execute("PRAGMA table_info(sessions)") as cur:
             columns = {row["name"] for row in await cur.fetchall()}
+        added_first_message = False
         if "stream_id" not in columns:
             await self.db.execute(
                 "ALTER TABLE sessions ADD COLUMN stream_id TEXT NOT NULL DEFAULT ''"
@@ -178,17 +187,32 @@ class Store:
             await self.db.execute(
                 "ALTER TABLE sessions ADD COLUMN first_message TEXT NOT NULL DEFAULT ''"
             )
-        # Backfill first_message for sessions that don't have one yet
-        await self.db.execute(
-            "UPDATE sessions SET first_message = COALESCE(("
-            "  SELECT SUBSTR(json_extract(e.data, '$.text'), 1, 60)"
-            "  FROM events e"
-            "  WHERE e.stream_id = sessions.stream_id"
-            "    AND e.type = 'user_message'"
-            "  ORDER BY e.offset ASC LIMIT 1"
-            "), '') WHERE (first_message = '' OR first_message IS NULL)"
-            "  AND stream_id != '' AND description = ''"
-        )
+            added_first_message = True
+        # Drop the legacy duplicate index — UNIQUE(stream_id, offset) already
+        # implicitly creates an index that covers the same lookups.
+        await self.db.execute("DROP INDEX IF EXISTS idx_events_stream_offset")
+        # Backfill first_message only when there are rows that still need it.
+        # Previously this update ran on every connect, scanning all sessions
+        # and (transitively) the events table.
+        needs_backfill = added_first_message
+        if not needs_backfill:
+            async with self.db.execute(
+                "SELECT 1 FROM sessions "
+                "WHERE (first_message = '' OR first_message IS NULL) "
+                "  AND stream_id != '' AND description = '' LIMIT 1"
+            ) as cur:
+                needs_backfill = await cur.fetchone() is not None
+        if needs_backfill:
+            await self.db.execute(
+                "UPDATE sessions SET first_message = COALESCE(("
+                "  SELECT SUBSTR(json_extract(e.data, '$.text'), 1, 60)"
+                "  FROM events e"
+                "  WHERE e.stream_id = sessions.stream_id"
+                "    AND e.type = 'user_message'"
+                "  ORDER BY e.offset ASC LIMIT 1"
+                "), '') WHERE (first_message = '' OR first_message IS NULL)"
+                "  AND stream_id != '' AND description = ''"
+            )
 
     # ── Stream CRUD ───────────────────────────────────────────────────────
 
@@ -237,6 +261,9 @@ class Store:
             (time.time(), stream_id),
         )
         await self.db.commit()
+        state = self._stream_state.get(stream_id)
+        if state is not None:
+            self._stream_state[stream_id] = (state[0], True)
         self._notify(stream_id)
 
     async def is_closed(self, stream_id: str) -> bool:
@@ -251,16 +278,20 @@ class Store:
 
     # ── Append ────────────────────────────────────────────────────────────
 
-    async def _check_writable(self, stream_id: str) -> None:
-        """Raise if the stream doesn't exist or is closed."""
+    async def _load_stream_state(self, stream_id: str) -> tuple[int, bool]:
+        """Fetch and cache (next_offset, closed) for a stream in one query."""
         async with self.db.execute(
-            "SELECT closed FROM streams WHERE stream_id = ?", (stream_id,)
+            "SELECT s.closed, "
+            "       COALESCE((SELECT MAX(offset) + 1 FROM events WHERE stream_id = ?), 0) "
+            "FROM streams s WHERE s.stream_id = ?",
+            (stream_id, stream_id),
         ) as cur:
             row = await cur.fetchone()
             if row is None:
                 raise StreamNotFoundError(stream_id)
-            if row[0]:
-                raise StreamClosedError(stream_id)
+            state = (int(row[1] or 0), bool(row[0]))
+            self._stream_state[stream_id] = state
+            return state
 
     async def append(
         self,
@@ -283,37 +314,94 @@ class Store:
 
         async with self._append_lock:
             try:
-                await self.db.execute("BEGIN IMMEDIATE")
-                await self._check_writable(stream_id)
+                state = self._stream_state.get(stream_id)
+                if state is None:
+                    state = await self._load_stream_state(stream_id)
+                next_offset, closed = state
+                if closed:
+                    raise StreamClosedError(stream_id)
 
-                if offset is None:
-                    async with self.db.execute(
-                        "SELECT COALESCE(MAX(offset) + 1, 0) FROM events WHERE stream_id = ?",
-                        (stream_id,),
-                    ) as cur:
-                        row = await cur.fetchone()
-                        write_offset = row[0] if row else 0
-                else:
+                if offset is not None:
                     write_offset = offset
-                    async with self.db.execute(
-                        "SELECT type, data FROM events WHERE stream_id = ? AND offset = ?",
-                        (stream_id, write_offset),
-                    ) as cur:
-                        existing = await cur.fetchone()
-                        if existing is not None:
-                            if existing[0] == event_type.value and existing[1] == json_data:
-                                await self.db.commit()
-                                return write_offset  # Idempotent
-                            raise OffsetConflictError(stream_id, write_offset)
+                    if write_offset < next_offset:
+                        # Idempotent replay or genuine conflict — disambiguate
+                        # with a single point lookup.
+                        async with self.db.execute(
+                            "SELECT type, data FROM events "
+                            "WHERE stream_id = ? AND offset = ?",
+                            (stream_id, write_offset),
+                        ) as cur:
+                            existing = await cur.fetchone()
+                            if existing is not None:
+                                if (
+                                    existing[0] == event_type.value
+                                    and existing[1] == json_data
+                                ):
+                                    return write_offset  # Idempotent
+                                raise OffsetConflictError(stream_id, write_offset)
+                    try:
+                        await self.db.execute(
+                            "INSERT INTO events(stream_id, offset, type, data, created_at) "
+                            "VALUES (?, ?, ?, ?, ?)",
+                            (stream_id, write_offset, event_type.value, json_data, now),
+                        )
+                    except aiosqlite.IntegrityError as exc:
+                        # Explicit offset collided with a concurrent writer;
+                        # check for idempotency before raising.
+                        self._stream_state.pop(stream_id, None)
+                        async with self.db.execute(
+                            "SELECT type, data FROM events "
+                            "WHERE stream_id = ? AND offset = ?",
+                            (stream_id, write_offset),
+                        ) as cur:
+                            existing = await cur.fetchone()
+                            if existing is not None and (
+                                existing[0] == event_type.value
+                                and existing[1] == json_data
+                            ):
+                                return write_offset
+                        raise OffsetConflictError(stream_id, write_offset) from exc
+                else:
+                    # Auto-offset path: optimistic insert with retry on collision.
+                    # Another process/connection may have advanced MAX(offset),
+                    # so re-read the true tail before giving up.
+                    write_offset = next_offset
+                    while True:
+                        try:
+                            await self.db.execute(
+                                "INSERT INTO events(stream_id, offset, type, data, created_at) "
+                                "VALUES (?, ?, ?, ?, ?)",
+                                (stream_id, write_offset, event_type.value, json_data, now),
+                            )
+                            break
+                        except aiosqlite.IntegrityError:
+                            self._stream_state.pop(stream_id, None)
+                            async with self.db.execute(
+                                "SELECT COALESCE(MAX(offset) + 1, 0) "
+                                "FROM events WHERE stream_id = ?",
+                                (stream_id,),
+                            ) as cur:
+                                row = await cur.fetchone()
+                                fresh_next = int((row[0] if row else 0) or 0)
+                            if fresh_next <= write_offset:
+                                # No forward progress is possible — surface
+                                # the conflict rather than spinning.
+                                raise OffsetConflictError(stream_id, write_offset)
+                            write_offset = fresh_next
+                            next_offset = fresh_next
 
-                await self.db.execute(
-                    "INSERT INTO events(stream_id, offset, type, data, created_at) "
-                    "VALUES (?, ?, ?, ?, ?)",
-                    (stream_id, write_offset, event_type.value, json_data, now),
-                )
                 await self.db.commit()
+                # Update cached next_offset only after a successful commit.
+                new_next = max(next_offset, write_offset + 1)
+                self._stream_state[stream_id] = (new_next, closed)
             except Exception:
-                await self.db.rollback()
+                # On any failure, invalidate the cached state so the next
+                # append re-reads the durable source of truth.
+                self._stream_state.pop(stream_id, None)
+                try:
+                    await self.db.rollback()
+                except Exception:
+                    pass
                 raise
 
         self._write_count += 1
