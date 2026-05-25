@@ -1290,9 +1290,17 @@ class ChatInput(TextArea):
 
         # ── Up arrow (history) ───────────────────────────────────────
         if event.key == "up":
-            cursor_row = self.cursor_location[0]
+            cursor_row, cursor_col = self.cursor_location
             if cursor_row > 0:
                 await super()._on_key(event)
+                return
+            # On first line of a multi-line buffer: first up goes to line
+            # start, only a second up (cursor already at column 0) reaches
+            # history. Prevents losing place in a long draft.
+            if "\n" in self.text and cursor_col > 0:
+                event.prevent_default()
+                event.stop()
+                self.move_cursor((0, 0))
                 return
             event.prevent_default()
             event.stop()

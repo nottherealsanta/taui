@@ -421,6 +421,10 @@ class Session:
         self.first_message = ""
         self._last_replay_items = []
 
+        # Clear per-session shared state so the old session's artefacts
+        # don't leak into the new one.
+        self._clear_shared_state()
+
         if self.self_edit_mode:
             prompt = self._self_edit_prompt
             executor = self._self_edit_executor or self._executor
@@ -473,6 +477,7 @@ class Session:
         self._message_count = 0
         self.first_message = ""
         self._last_replay_items = []
+        self._clear_shared_state()
 
         loop = AgentLoop(
             agent_id=self.session_id,
@@ -1289,6 +1294,33 @@ class Session:
     def _replace_loop(self, loop: AgentLoop) -> None:
         self._loop = loop
         self._refresh_loop_integrations()
+
+    def _clear_shared_state(self) -> None:
+        """Reset mutable state shared across tool invocations.
+
+        Called on new_session() / toggle_extensions_mode() so artefacts from
+        the previous session (file-tracker snapshots, truncation handles,
+        task records) don't bleed into the fresh conversation.
+        """
+        # File tracker — stale snapshots would cause false "modified externally"
+        # warnings or, worse, silently skip the check for files never read in
+        # the new session.
+        for name in ("read", "write", "edit"):
+            if name in self._registry:
+                tool = self._registry.get(name)
+                ft = getattr(tool, "_file_tracker", None)
+                if ft is not None:
+                    ft.clear()
+                    break  # all three share the same FileTracker instance
+
+        # Truncation store — old peek handles are meaningless in a new session.
+        ts = getattr(self._executor, "_truncation_store", None)
+        if ts is not None:
+            ts.clear()
+
+        # Task manager — background tasks belong to the old session.
+        self._task_manager = TaskManager()
+        self._wire_task_manager()
 
     def _refresh_loop_integrations(self) -> None:
         try:

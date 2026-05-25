@@ -136,4 +136,4 @@ def main(argv: list[str] | None = None) -> None:
     if session_id:
         from rich.console import Console
 
-        Console().print(f"[dim]to continue session run:[/dim] taui --session {session_id}")
+        Console().print(f"[dim]to continue session run:[/dim] uv run taui --session {session_id}")

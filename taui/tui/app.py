@@ -1087,7 +1087,9 @@ class TauiApp(App[None]):
     async def _on_text(self, text: str, *, session_id: str = "") -> None:
         """Handle full text after turn — only used if no streaming occurred."""
         state = self._sessions.get(session_id) if session_id else self._sessions.active
-        if state is None or not state.streamed_text:
+        if state is None:
+            return
+        if not state.streamed_text:
             state.streamed_text = True
             self.post_message(StreamTextDelta(text, session_id=session_id))
 
@@ -2546,6 +2548,10 @@ class TauiApp(App[None]):
             prior_agent_id = str(
                 getattr(self._session._loop, "agent_id", "") or ""
             )
+            # Cancel any in-flight agent turn first: null out the old loop's
+            # callbacks and cancel workers so streaming results from the
+            # previous session don't spill into the new one.
+            await self._begin_new_session()
             # In-place reset: keep the provider, tools, extensions and store
             # connection alive and just rotate the session id + loop. Much
             # faster than rebuilding a parallel session via action_new_chat,
@@ -2968,11 +2974,25 @@ class TauiApp(App[None]):
             pass
         st = self._sessions.active
         if st is not None:
+            old_sid = st.session_id
+            new_sid = self._session.session_id
             st.turns = []
             st.current_turn = None
             st.reply_footer = None
-            st.session_id = self._session.session_id
+            st.session_id = new_sid
             st.queued.clear()
+            # Re-key the state in the session manager so lookups by the
+            # new session_id (used by callbacks) find the correct state.
+            if old_sid != new_sid:
+                self._sessions._states.pop(old_sid, None)
+                self._sessions._states[new_sid] = st
+                if self._sessions._active_id == old_sid:
+                    self._sessions._active_id = new_sid
+                try:
+                    idx = self._sessions._order.index(old_sid)
+                    self._sessions._order[idx] = new_sid
+                except ValueError:
+                    pass
         self._context_banner_shown = False
         self._pending_files.clear()
         self._pending_folders.clear()
