@@ -1981,7 +1981,7 @@ class TauiApp(App[None]):
         tools_label = ""
         tools_body = ""
         if available:
-            tools_label = f"[{label_style}]Tools[/{label_style}]"
+            tools_label = f"[{label_style}] Tools [/{label_style}]"
             tools_body = _render_tools_table(available, active, columns=3)
 
         return sp, tools_label, tools_body, label_style
@@ -1998,7 +1998,7 @@ class TauiApp(App[None]):
         if sp:
             await chat_log.mount(
                 SystemPromptWidget(
-                    sp, label="System prompt", label_style=label_style,
+                    sp, label=" System promp ", label_style=label_style,
                 )
             )
         if tools_label:
