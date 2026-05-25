@@ -6,6 +6,4 @@
 - maybe worktree should not be a tool, just bash it
 - multi line (more than x) input needs to have scroll to let user know
 - in agent - self-edit - toggle for edit requires user permission 
-- each tools (builtin and user's) should start with multiline comment explaining what it does.
 - tasks should not be a json file, it should just exist in context. 
-- subagents should in a widget, clickable to open a modal to show live. widget to also show model being used. 
