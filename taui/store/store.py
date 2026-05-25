@@ -119,9 +119,6 @@ class Store:
         # Keyed by stream_id. Value is (next_offset, closed).
         # Populated lazily on first append/read; invalidated on close_stream.
         self._stream_state: dict[str, tuple[int, bool]] = {}
-        # Drop legacy duplicate index — UNIQUE(stream_id, offset) already
-        # provides the (stream_id, offset) lookup index for free.
-        self._legacy_index_dropped: bool = False
 
     # ── Lifecycle ─────────────────────────────────────────────────────────
 

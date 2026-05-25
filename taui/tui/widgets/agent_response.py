@@ -49,6 +49,13 @@ class AgentResponse(Markdown):
                 logger.debug("MarkdownStream initial write failed", exc_info=True)
             self._pending_pre_mount = ""
 
+    async def on_unmount(self) -> None:
+        # Defensive cleanup: if the widget is removed before finalize() is
+        # called (e.g., chat cleared mid-stream), stop the background task
+        # so it can't keep calling append() on a detached widget.
+        if not self._finalized:
+            await self.finalize()
+
     async def append_text(self, fragment: str) -> None:
         """Append a text fragment to the streamed response."""
         if not fragment or self._finalized:
