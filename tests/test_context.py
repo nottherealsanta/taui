@@ -253,6 +253,104 @@ class TestAsyncCompactMessages:
         assert msgs[-1].content == "Query 3"
 
     @pytest.mark.asyncio
+    async def test_iterative_summary_includes_previous(self):
+        """Second compaction must feed the first summary back in as previous-summary.
+
+        Regression guard for the iterative-update wiring: async_compact_messages
+        inserts a ``role="system"`` message containing ``## Goal …``, and a
+        subsequent compaction must locate that via ``find_previous_summary``
+        and pass it through ``build_compaction_prompt``. If either side of that
+        contract drifts (e.g. anchor changes from ``## Goal`` to ``# Goal``),
+        the second call's prompt would lose the previous-summary block and
+        compactions would compound losslessly into each other.
+        """
+        first_summary = (
+            "## Goal\n- Earlier task goal\n\n"
+            "## Constraints & Preferences\n- (none)\n\n"
+            "## Progress\n### Done\n- Step A\n"
+            "### In Progress\n- (none)\n### Blocked\n- (none)\n\n"
+            "## Key Decisions\n- (none)\n\n"
+            "## Next Steps\n- (none)\n\n"
+            "## Critical Context\n- (none)\n\n"
+            "## Relevant Files\n- (none)"
+        )
+        second_summary = first_summary.replace(
+            "Earlier task goal", "Updated task goal"
+        )
+
+        class SequencedLLM:
+            def __init__(self, replies: list[str]) -> None:
+                self.replies = list(replies)
+                self.calls: list[list[dict[str, Any]]] = []
+
+            async def create_turn(
+                self,
+                messages: list[dict[str, Any]],
+                model: str,
+                temperature: float,
+            ) -> ProviderTurnResult:
+                self.calls.append(messages)
+                text = self.replies.pop(0)
+                return ProviderTurnResult(
+                    response_id=f"res_{len(self.calls)}",
+                    text=text,
+                    tool_calls=[],
+                )
+
+        msgs = [
+            Message(role="system", content="System."),
+            Message(role="user", content="Query 1 " * 500),
+            Message(role="assistant", content="Reply 1 " * 500),
+            Message(role="user", content="Query 2 " * 500),
+            Message(role="assistant", content="Reply 2 " * 500),
+            Message(role="user", content="Query 3"),
+        ]
+        tokenizer = Tokenizer()
+        llm = SequencedLLM([first_summary, second_summary])
+
+        removed_first = await async_compact_messages(
+            msgs,
+            tokenizer=tokenizer,
+            llm=llm,
+            model="mock-model",
+            provider_name="copilot",
+            max_input_tokens=1_000,
+        )
+        assert removed_first > 0
+        assert any(
+            m.role == "system" and m.content and "Earlier task goal" in m.content
+            for m in msgs
+        )
+
+        # Pad the list so the second compaction has work to do, then force it
+        # to fire again by extending the head.
+        msgs.extend([
+            Message(role="user", content="Query 4 " * 500),
+            Message(role="assistant", content="Reply 4 " * 500),
+            Message(role="user", content="Query 5 " * 500),
+            Message(role="assistant", content="Reply 5 " * 500),
+            Message(role="user", content="Query 6"),
+        ])
+
+        removed_second = await async_compact_messages(
+            msgs,
+            tokenizer=tokenizer,
+            llm=llm,
+            model="mock-model",
+            provider_name="copilot",
+            max_input_tokens=1_000,
+        )
+        assert removed_second > 0
+        assert len(llm.calls) == 2
+
+        # The second prompt is the user message appended after the head:
+        # it must reference the previous summary via the <previous-summary> tag
+        # AND carry the first summary's anchor text.
+        second_prompt = llm.calls[1][-1]["content"]
+        assert "<previous-summary>" in second_prompt
+        assert "Earlier task goal" in second_prompt
+
+    @pytest.mark.asyncio
     async def test_async_compact_fallback(self):
         # If the LLM fails or doesn't produce a proper summary,
         # it should fall back to sync compaction

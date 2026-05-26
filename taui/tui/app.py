@@ -46,6 +46,7 @@ from taui.tui.tool_controller import ToolController
 from taui.tui.widgets.agent_response import AgentResponse
 from taui.tui.widgets.attachments_bar import AttachmentsBar
 from taui.tui.widgets.chat_input import ChatInput
+from taui.tui.widgets.compaction_marker import CompactionMarker
 from taui.tui.widgets.info2 import Info2
 from taui.tui.widgets.info_bar import InfoBar, _agent_color, sync_agent_colors
 from taui.tui.widgets.reply_footer import ReplyFooter
@@ -1144,11 +1145,14 @@ class TauiApp(App[None]):
     @on(CompactionOccurred)
     async def handle_compaction(self, event: CompactionOccurred) -> None:
         chat_log = self._get_active_chat_log()
-        msg = (
-            f"Context auto-compacted: {event.removed} messages removed, "
-            f"tokens {event.before_tokens:,} → {event.after_tokens:,}"
+        await chat_log.mount(
+            CompactionMarker(
+                event.removed,
+                event.before_tokens,
+                event.after_tokens,
+                kind="auto",
+            )
         )
-        await chat_log.mount(Static(f"[dim]{msg}[/dim]", markup=True))
         chat_log.scroll_end()
 
     @on(ToolStarted)
@@ -2779,14 +2783,16 @@ class TauiApp(App[None]):
         after_tokens = estimate_total_tokens(loop._messages)
 
         if removed:
-            msg = (
-                f"Compacted: removed {removed} messages. "
-                f"Tokens: {before_tokens:,} → {after_tokens:,} "
-                f"(saved {before_tokens - after_tokens:,})"
+            await chat_log.mount(
+                CompactionMarker(removed, before_tokens, after_tokens, kind="manual")
             )
         else:
-            msg = f"No compaction needed. Current tokens: {before_tokens:,}"
-        await chat_log.mount(Static(f"[dim]{msg}[/dim]", markup=True))
+            await chat_log.mount(
+                Static(
+                    f"[dim]No compaction needed. Current tokens: {before_tokens:,}[/dim]",
+                    markup=True,
+                )
+            )
         chat_log.scroll_end()
 
     def _show_session_picker(self, sessions: list[dict]) -> None:

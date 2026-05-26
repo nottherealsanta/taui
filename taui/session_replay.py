@@ -10,7 +10,10 @@ from taui.agent.types import Message
 from taui.llm_provider.types import ProviderToolCall
 from taui.store.events import Event, EventType
 
-ReplayKind = Literal["user", "assistant", "reasoning", "tool_call", "tool_result", "error", "usage"]
+ReplayKind = Literal[
+    "user", "assistant", "reasoning", "tool_call", "tool_result",
+    "error", "usage", "compaction",
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,6 +30,9 @@ class ReplayItem:
     is_error: bool = False
     input_tokens: int = 0
     output_tokens: int = 0
+    removed: int = 0
+    before_tokens: int = 0
+    after_tokens: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -162,6 +168,26 @@ def replay_events(events: list[Event]) -> ReplayTranscript:
                     text=str(data.get("error", "")),
                     agent_id=current_agent_id,
                     model=current_model,
+                )
+            )
+        elif event.type == EventType.COMPACTION:
+            summary_text = data.get("summary_text")
+            removed = int(data.get("removed", 0) or 0)
+            before = int(data.get("before_tokens", 0) or 0)
+            after = int(data.get("after_tokens", 0) or 0)
+            # Restore the structured summary as a system message so the agent
+            # continues with the prior session's compaction context intact.
+            # Drop-oldest (kind="sync") events carry no summary_text and are
+            # purely informational — skip them for message reconstruction.
+            if isinstance(summary_text, str) and summary_text:
+                messages.append(Message(role="system", content=summary_text))
+            items.append(
+                ReplayItem(
+                    kind="compaction",
+                    text=str(summary_text or ""),
+                    removed=removed,
+                    before_tokens=before,
+                    after_tokens=after,
                 )
             )
 

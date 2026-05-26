@@ -39,6 +39,7 @@ class EventType(StrEnum):
     # Tracking
     USAGE = "usage"
     ERROR = "error"
+    COMPACTION = "compaction"
 
     # Worktree lifecycle
     WORKTREE = "worktree"
