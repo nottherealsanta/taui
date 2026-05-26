@@ -1133,6 +1133,9 @@ class TauiApp(App[None]):
             # Reset tool controller so new tool sections mount in the new turn
             if st.tool_ctrl is not None:
                 st.tool_ctrl._current_tool_section = None
+            # Mount a fresh footer for the new turn so the agent/model line
+            # reappears beneath assistant output that follows the steer.
+            self.call_later(self._begin_reply_footer, st)
         st.pending_steer_texts.clear()
         st.pending_steer_widget = None
 
