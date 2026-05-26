@@ -2981,13 +2981,13 @@ class TauiApp(App[None]):
             await _flush_turn_footer()
         if st is not None:
             self._autocollapse_old_turns(st)
-        # On session start, land the user at the top of the transcript
-        # (system prompt + tools + first user message) rather than the
-        # bottom — they can scroll down to catch up on assistant replies.
-        self._pin_replay_to_top()
+        # Land the user at the bottom of the resumed transcript so the most
+        # recent exchange is visible — they can scroll up for earlier turns
+        # or the context banner.
+        self._pin_replay_to_bottom()
 
     @work(exclusive=True, group="replay_scroll")
-    async def _pin_replay_to_top(self) -> None:
+    async def _pin_replay_to_bottom(self) -> None:
         try:
             chat_log = self._get_active_chat_log()
         except NoMatches:
@@ -2997,7 +2997,8 @@ class TauiApp(App[None]):
         for _ in range(40):  # up to ~2s
             await asyncio.sleep(0.05)
             try:
-                chat_log.scroll_home(animate=False, immediate=True)
+                chat_log.anchor()
+                chat_log.scroll_end(animate=False, immediate=True)
             except Exception:
                 return
             y = float(chat_log.scroll_y)

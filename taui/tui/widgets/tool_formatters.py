@@ -33,10 +33,12 @@ def _fmt_args_generic(arguments: dict[str, Any]) -> str:
 def _fmt_args_read(arguments: dict[str, Any]) -> str:
     path = arguments.get("path") or arguments.get("file_path") or ""
     extras = []
-    if "offset" in arguments and arguments["offset"] is not None:
-        extras.append(f"offset={arguments['offset']}")
-    if "limit" in arguments and arguments["limit"] is not None:
-        extras.append(f"limit={arguments['limit']}")
+    offset = arguments.get("offset")
+    if offset is not None:
+        extras.append(f"offset={offset}")
+    limit = arguments.get("limit")
+    if limit is not None:
+        extras.append(f"limit={limit}")
     if extras:
         return f"{path}  ({', '.join(extras)})"
     return str(path)
@@ -177,28 +179,24 @@ def parse_unified_diff(output: str) -> tuple[str, str, int, int]:
 
 def _fmt_out_edit(
     arguments: dict[str, Any], output: str
-) -> tuple[list[str], dict[str, Any] | None]:
-    """Return (summary_lines, diff_data).
+) -> tuple[int, int, dict[str, Any] | None]:
+    """Return (added, removed, diff_data).
 
     diff_data, if present, is a dict with keys: path, before, after.
     The widget uses it to mount a DiffView.
     """
     before, after, added, removed = parse_unified_diff(output)
-    summary = []
-    if added or removed:
-        summary.append(f"+{added} -{removed}")
 
     if not before and not after:
-        return summary, None
+        return added, removed, None
 
     path = str(arguments.get("path") or arguments.get("file_path") or "edit")
-    return summary, {"path": path, "before": before, "after": after}
+    return added, removed, {"path": path, "before": before, "after": after}
 
 
 def _fmt_out_read(arguments: dict[str, Any], output: str) -> list[str]:
-    # No preview — args alone are enough.
-    n_lines = output.count("\n") + 1 if output else 0
-    return [f"{n_lines} lines"] if n_lines else []
+    # No preview — args (limit) alone are enough.
+    return []
 
 
 def _fmt_out_write(arguments: dict[str, Any], output: str) -> list[str]:
@@ -267,13 +265,13 @@ def format_output(
     name = tool_name.lower()
 
     if name == "edit":
-        summary_lines, diff_data = _fmt_out_edit(arguments, output)
-        summary = summary_lines[0] if summary_lines else ""
+        added, removed, diff_data = _fmt_out_edit(arguments, output)
         return {
-            "summary": summary,
+            "summary": "",
             "body": [],
             "diff": None,
             "diff_view": diff_data,
+            "edit_stats": (added, removed),
         }
 
     fn = _OUT_FORMATTERS.get(name, _fmt_out_generic)

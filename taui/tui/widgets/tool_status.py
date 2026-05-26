@@ -84,7 +84,7 @@ class ToolStatusWidget(Widget):
         width: 1fr;
         height: auto;
         max-height: 24;
-        margin: 0 0 0 2;
+        margin: 0 0 1 2;
     }
     ToolStatusWidget .tool-diff-view .title {
         display: none;
@@ -225,7 +225,15 @@ class ToolStatusWidget(Widget):
 
         formatted = format_output(self.tool_name, self.arguments, output)
         suffix = ""
-        if formatted["summary"]:
+        edit_stats = formatted.get("edit_stats")
+        if edit_stats is not None:
+            added, removed = edit_stats
+            if added or removed:
+                suffix = (
+                    f"  [{_DIFF_ADD_COLOR}]+{added}[/{_DIFF_ADD_COLOR}]"
+                    f" [{_DIFF_DEL_COLOR}]-{removed}[/{_DIFF_DEL_COLOR}]"
+                )
+        elif formatted["summary"]:
             suffix = (
                 f"  [{_TOOL_DETAIL_COLOR}]{escape(formatted['summary'])}"
                 f"[/{_TOOL_DETAIL_COLOR}]"
