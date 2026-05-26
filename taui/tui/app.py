@@ -350,6 +350,7 @@ class TauiApp(App[None]):
     def compose(self) -> ComposeResult:
         from taui.tui.widgets.session_info_sidebar import SessionInfoSidebar
 
+        yield Static(str(self._config.working_dir), id="cwd-bar")
         with Horizontal(id="main-layout"):
             yield Sidebar(self._config.working_dir)
             with Vertical(id="chat-area"):

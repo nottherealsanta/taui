@@ -165,8 +165,7 @@ class SessionInfoSidebar(VerticalScroll):
         rows: list[Static] = []
         if session_name:
             rows.append(_SectionRow(Text(session_name, style="#e6edf3")))
-        if session_id:
-            rows.append(_SectionRow(Text(session_id, style="#6e7681")))
+
         self._replace_children("session", rows)
 
     def _render_agent(

@@ -68,7 +68,6 @@ def _build_session_row_text(session: dict, *, is_current: bool) -> Text:
     indicator = "●" if is_current else "○"
     indicator_style = "#3fb950" if is_current else "#6e7681"
     desc = str(session.get("description") or _fallback_name(session))
-    sid = str(session.get("session_id", "") or "")
     msgs = int(session.get("message_count", 0) or 0)
     ago_short = _time_ago_short(float(session.get("last_active", 0) or 0))
 
@@ -83,8 +82,7 @@ def _build_session_row_text(session: dict, *, is_current: bool) -> Text:
     text.append(f"{indicator} ", style=indicator_style)
     text.append(desc, style=name_style)
     text.append("\n  ", style=name_style)
-    sid_short = sid[:12] if sid else "-"
-    text.append(f"{sid_short} · {msgs}m · {ago_short}", style=meta_style)
+    text.append(f"{msgs}m · {ago_short}", style=meta_style)
     return text
 
 
