@@ -89,7 +89,7 @@ class ReasoningWidget(Container):
         height: auto;
         min-height: 1;
         max-height: 5;
-        padding: 0 1;
+        padding: 0 1 0 0;
         color: $text-muted;
         scrollbar-size-vertical: 1;
     }
@@ -103,7 +103,7 @@ class ReasoningWidget(Container):
     ReasoningWidget .reasoning-summary {
         display: none;
         height: 1;
-        padding: 0 1;
+        padding: 0 1 0 0;
         color: $text-muted;
         text-style: italic;
     }

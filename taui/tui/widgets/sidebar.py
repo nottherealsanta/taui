@@ -51,7 +51,7 @@ def _fallback_name(session: dict) -> str:
     return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
 
 
-_ROW_WIDTH = 32  # usable width of a row inside the sidebar (px-ish chars)
+_ROW_WIDTH = 31  # usable width of a row inside the sidebar (px-ish chars)
 
 
 def _build_session_row_text(session: dict, *, is_current: bool) -> Text:
@@ -81,7 +81,7 @@ def _build_session_row_text(session: dict, *, is_current: bool) -> Text:
 
     text.append(f"{indicator} ", style=indicator_style)
     text.append(desc, style=name_style)
-    text.append("\n  ", style=name_style)
+    text.append("\n   ", style=name_style)
     text.append(f"{msgs}m · {ago_short}", style=meta_style)
     return text
 
@@ -157,7 +157,7 @@ class _SessionRow(ListItem):
         self.label_text = _build_session_row_text(session, is_current=is_current)
         super().__init__(Static(self.label_text, markup=False))
         self.session_id = str(session.get("session_id", ""))
-        self.styles.height = 2
+        self.styles.height = 3
 
 
 class Sidebar(Vertical):
@@ -236,7 +236,7 @@ class Sidebar(Vertical):
     }
     Sidebar ListView > ListItem {
         background: $surface;
-        padding: 0 1;
+        padding: 0 1 0 2;
     }
     Sidebar ListView > ListItem.--highlight {
         background: $surface-lighten-1;

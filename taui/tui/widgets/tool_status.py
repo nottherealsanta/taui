@@ -61,7 +61,7 @@ class ToolStatusWidget(Widget):
         width: 100%;
         height: auto;
         layout: vertical;
-        padding: 0 0 0 1;
+        padding: 0;
     }
     ToolStatusWidget #header {
         width: 100%;

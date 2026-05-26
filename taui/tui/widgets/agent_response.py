@@ -20,7 +20,7 @@ class AgentResponse(Markdown):
 
     DEFAULT_CSS = """
     AgentResponse {
-        margin: 0 1;
+        margin: 0 1 0 2;
         padding: 0;
     }
     """
