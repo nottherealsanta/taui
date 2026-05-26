@@ -1,9 +1,10 @@
-- fix order when tool calling and thoughts appear.
-- context meter needs to update in near real time
 - maybe tools need not have two scopes
 - monty
 - add a "/skills" and "/prompts" to list them like agents and models
 - maybe worktree should not be a tool, just bash it
 - multi line (more than x) input needs to have scroll to let user know
 - in agent - self-edit - toggle for edit requires user permission 
-- tasks should not be a json file, it should just exist in context. 
+- ./.taui folder should auto have .gitignore file with "*"
+- group tools: <tool_group_name>[<number_of_tools>] , list only group names (click to show more)
+- add more git tools (with auth access)
+- "/worktree" for user to quickly jump to a worktree (a session cannot change worktree, new session will be created with the worktree)
