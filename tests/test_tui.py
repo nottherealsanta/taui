@@ -211,6 +211,7 @@ class TestTauiApp:
 
         class FakeApp:
             session_id = "abc123"
+            resumable_session_id = "abc123"
 
             def __init__(self, config):
                 self.config = config
@@ -220,6 +221,22 @@ class TestTauiApp:
 
         with patch.object(tui_module, "TauiApp", FakeApp):
             assert run_tui(object()) == "abc123"
+
+    def test_run_tui_skips_unpersisted_session_id(self):
+        import taui.tui as tui_module
+
+        class FakeApp:
+            session_id = "abc123"
+            resumable_session_id = None
+
+            def __init__(self, config):
+                self.config = config
+
+            def run(self):
+                return None
+
+        with patch.object(tui_module, "TauiApp", FakeApp):
+            assert run_tui(object()) is None
 
     def test_initial_queues_empty(self):
         app = TauiApp()
@@ -253,6 +270,7 @@ class TestTauiApp:
             session_id = "new"
             provider_name = "copilot"
             model_name = "claude-haiku-4.5"
+            model_variant = ""
             extensions_mode = False
             self_edit_mode = False
             cost_tracker = FakeTracker()
@@ -262,6 +280,9 @@ class TestTauiApp:
 
             def __init__(self):
                 self.resumed: list[str] = []
+
+            def add_config_change_listener(self, callback):
+                return None
 
             async def resume_session(self, session_id: str) -> bool:
                 self.resumed.append(session_id)

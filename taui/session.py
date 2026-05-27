@@ -58,6 +58,7 @@ class _SessionSnapshot:
     session_id: str
     loop: AgentLoop
     message_count: int
+    session_persisted: bool
     loaded_offset: int
     last_replay_items: list[ReplayItem] = field(default_factory=list)
 
@@ -124,6 +125,31 @@ class Session:
         self.worktree: WorktreeHandle | None = None
         self._task_manager: TaskManager = TaskManager()
         self._task_listeners: list[Callable[[TaskRecord], Any]] = []
+
+    @property
+    def is_persisted(self) -> bool:
+        """Whether this session has a resumable metadata record."""
+        return self._session_persisted
+
+    def _current_mode(self) -> str:
+        if self.self_edit_mode:
+            return "self_edit"
+        if self.extensions_mode:
+            return "extensions"
+        return "normal"
+
+    async def _persist_session_if_needed(self) -> None:
+        """Create the session metadata row once the session has real content."""
+        if self._session_persisted:
+            return
+        await self._store.create_session(
+            self.session_id,
+            mode=self._current_mode(),
+            stream_id=self._loop.stream_id,
+            model=self.config.model,
+            model_variant=self.config.model_variant,
+        )
+        self._session_persisted = True
 
     def add_config_change_listener(self, callback: Callable[[], None]) -> None:
         """Register a callback fired when the agent's prompt/tools/policy change.
@@ -370,15 +396,8 @@ class Session:
         """
         await self._sync_replay_from_store()
 
-        # Lazily persist the session record on first message
-        if not self._session_persisted:
-            await self._store.create_session(
-                self.session_id,
-                stream_id=self._loop.stream_id,
-                model=self.config.model,
-                model_variant=self.config.model_variant,
-            )
-            self._session_persisted = True
+        # Lazily persist the session record on first message.
+        await self._persist_session_if_needed()
 
         # Pipeline hook: let extensions preprocess the message
         message = await self.hooks.transform("before_send", message, self)
@@ -446,17 +465,7 @@ class Session:
         )
         self._replace_loop(loop)
 
-        mode = "self_edit" if self.self_edit_mode else (
-            "extensions" if self.extensions_mode else "normal"
-        )
-        await self._store.create_session(
-            self.session_id,
-            mode=mode,
-            stream_id=self._loop.stream_id,
-            model=self.config.model,
-            model_variant=self.config.model_variant,
-        )
-        self._session_persisted = True
+        self._session_persisted = False
         await self._stream.ensure_stream(self._loop.stream_id)
         self._loaded_offset = await self._stream.get_length(self._loop.stream_id)
 
@@ -492,15 +501,7 @@ class Session:
         )
         self._replace_loop(loop)
 
-        # New session for the new mode
-        await self._store.create_session(
-            self.session_id,
-            mode="extensions" if self.extensions_mode else "normal",
-            stream_id=self._loop.stream_id,
-            model=self.config.model,
-            model_variant=self.config.model_variant,
-        )
-        self._session_persisted = True
+        self._session_persisted = False
         await self._stream.ensure_stream(self._loop.stream_id)
         self._loaded_offset = await self._stream.get_length(self._loop.stream_id)
 
@@ -528,6 +529,7 @@ class Session:
                 session_id=self.session_id,
                 loop=self._loop,
                 message_count=self._message_count,
+                session_persisted=self._session_persisted,
                 loaded_offset=self._loaded_offset,
                 last_replay_items=list(self._last_replay_items),
             )
@@ -569,14 +571,7 @@ class Session:
             )
             self._replace_loop(loop)
 
-            await self._store.create_session(
-                self.session_id,
-                mode="self_edit",
-                stream_id=self._loop.stream_id,
-                model=self.config.model,
-                model_variant=self.config.model_variant,
-            )
-            self._session_persisted = True
+            self._session_persisted = False
             await self._stream.ensure_stream(self._loop.stream_id)
             self._loaded_offset = await self._stream.get_length(self._loop.stream_id)
             self._notify_config_changed()
@@ -607,6 +602,7 @@ class Session:
             self.session_id = snap.session_id
             self._replace_loop(snap.loop)
             self._message_count = snap.message_count
+            self._session_persisted = snap.session_persisted
             self._loop.update_system_prompt(prompt)
             # Rebuild replay items from the stream so the TUI can re-render the
             # transcript. The snapshot's items are typically empty because they
@@ -637,15 +633,7 @@ class Session:
         )
         self._replace_loop(loop)
 
-        mode = "extensions" if self.extensions_mode else "normal"
-        await self._store.create_session(
-            self.session_id,
-            mode=mode,
-            stream_id=self._loop.stream_id,
-            model=self.config.model,
-            model_variant=self.config.model_variant,
-        )
-        self._session_persisted = True
+        self._session_persisted = False
         await self._stream.ensure_stream(self._loop.stream_id)
         self._loaded_offset = await self._stream.get_length(self._loop.stream_id)
         self._notify_config_changed()
@@ -858,6 +846,7 @@ class Session:
             model=self.config.model,
             model_variant=self.config.model_variant,
         )
+        forked._session_persisted = True
         forked._loaded_offset = await self._stream.get_length(fork_stream)
 
         return forked
@@ -929,6 +918,7 @@ class Session:
             model=self.config.model,
             model_variant=self.config.model_variant,
         )
+        sub._session_persisted = True
         sub._loaded_offset = 0
 
         return sub
