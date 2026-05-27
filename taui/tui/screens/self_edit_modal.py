@@ -2065,6 +2065,7 @@ class _InlineEditor(Vertical):
         background: {ACCENT};
         color: {DEEP_BLACK};
         text-style: bold;
+        border: none;
     }}
     _InlineEditor .se-inline-hint {{
         height: 1;
