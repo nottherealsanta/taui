@@ -11,7 +11,7 @@ from pathlib import Path
 
 from rich.markup import escape
 from textual import on, work
-from textual.app import App, ComposeResult, SystemCommand
+from textual.app import App, ComposeResult, ScreenStackError, SystemCommand
 from textual.command import CommandInput, CommandPalette
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.css.query import NoMatches
@@ -26,6 +26,7 @@ from taui.commands.registry import CommandRegistry
 from taui.config import Config
 from taui.self_edit.store import AgentProfile, SelfEditStore
 from taui.session import Session
+from taui.session_replay import ReplayItem
 from taui.tui.approval_controller import ApprovalController
 from taui.tui.messages import (
     AgentConfigChanged,
@@ -1540,6 +1541,7 @@ class TauiApp(App[None]):
         if st.current_response is None:
             st.current_response = AgentResponse()
             await self._mount_in_reply(st.current_response, state=st)
+        st.assistant_text_buf += event.text
         await st.current_response.append_text(event.text)
         self._smart_scroll()
 
@@ -2175,6 +2177,7 @@ class TauiApp(App[None]):
         st.current_response = None
         self._flush_and_detach_reasoning(st)
         st.streamed_text = False
+        st.assistant_text_buf = ""
         st.reply_footer = None
         await self._begin_reply_footer(st)
 
@@ -2213,6 +2216,7 @@ class TauiApp(App[None]):
             # If no streaming happened (fallback), show response as markdown
             if result.text and not st.streamed_text:
                 await self._mount_in_reply(Markdown(result.text), state=st)
+                self._record_assistant_item(st, result.text)
 
             # Per-turn stats for the collapsed header (tokens + tool count)
             if st.current_turn is not None:
@@ -2262,11 +2266,19 @@ class TauiApp(App[None]):
                 Static("[dim]Request cancelled.[/dim]", markup=True),
                 state=st,
             )
+            if st.current_turn is not None:
+                st.current_turn.append_replay_item(
+                    ReplayItem(kind="error", text="Request cancelled.")
+                )
         except Exception as exc:
             await self._mount_in_reply(
                 Static(f"[red]Error: {exc}[/red]", markup=True),
                 state=st,
             )
+            if st.current_turn is not None:
+                st.current_turn.append_replay_item(
+                    ReplayItem(kind="error", text=str(exc))
+                )
         finally:
             if old_loop_executor is not None:
                 session._loop._executor = old_loop_executor
@@ -2283,6 +2295,44 @@ class TauiApp(App[None]):
             # (and `_begin_reply_footer` rebuilds a fresh one) once we're
             # safely past any in-flight callbacks from the prior turn.
 
+    def _turn_agent_and_model(self, st: SessionState) -> tuple[str, str]:
+        session = st.session
+        if session is None:
+            return "", ""
+        agent_id = str(getattr(session._loop, "agent_id", "") or "")
+        model = (
+            getattr(session, "model_name", "")
+            or getattr(session._loop, "_model", "")
+            or ""
+        )
+        return agent_id, model
+
+    def _record_assistant_item(self, st: SessionState, text: str) -> None:
+        if not text or st.current_turn is None:
+            return
+        agent_id, model = self._turn_agent_and_model(st)
+        st.current_turn.append_replay_item(
+            ReplayItem(
+                kind="assistant",
+                text=text,
+                agent_id=agent_id,
+                model=model,
+            )
+        )
+
+    def _record_reasoning_item(self, st: SessionState, text: str) -> None:
+        if not text or st.current_turn is None:
+            return
+        agent_id, model = self._turn_agent_and_model(st)
+        st.current_turn.append_replay_item(
+            ReplayItem(
+                kind="reasoning",
+                text=text,
+                agent_id=agent_id,
+                model=model,
+            )
+        )
+
     def _flush_and_detach_reasoning(self, st: SessionState) -> None:
         """Flush any pending reasoning update, finalize the widget, detach.
 
@@ -2294,6 +2344,7 @@ class TauiApp(App[None]):
             try:
                 if st.reasoning_buf:
                     st.current_reasoning.update_text(st.reasoning_buf)
+                    self._record_reasoning_item(st, st.reasoning_buf)
                 st.current_reasoning.finalize()
             except Exception:
                 pass
@@ -2308,6 +2359,8 @@ class TauiApp(App[None]):
             return
         if st.current_response:
             await st.current_response.finalize()
+            self._record_assistant_item(st, st.assistant_text_buf)
+            st.assistant_text_buf = ""
             st.current_response = None
             st.tool_ctrl.reset_section()
         self._flush_and_detach_reasoning(st)
@@ -2393,14 +2446,15 @@ class TauiApp(App[None]):
         await self._remove_splash(log)
         turn_id = len(st.turns) if st is not None else 0
         turn = TurnContainer(user_text, image_note, turn_id=turn_id)
+        turn.set_lazy_body_renderer(self._materialize_turn_body)
         if st is not None:
             st.turns.append(turn)
             st.current_turn = turn
         await log.mount(turn)
-        self._autocollapse_old_turns(st)
+        await self._autocollapse_old_turns(st)
         return turn
 
-    def _autocollapse_old_turns(self, state: SessionState | None) -> None:
+    async def _autocollapse_old_turns(self, state: SessionState | None) -> None:
         """Keep the current turn and the immediately preceding turn expanded;
         collapse anything older. A user-stickied turn stays open."""
         if state is None or not state.turns:
@@ -2408,9 +2462,9 @@ class TauiApp(App[None]):
         keep = set(state.turns[-2:])
         for t in state.turns:
             if t in keep or t.sticky_expanded:
-                t.expand()
+                await t.expand()
             else:
-                t.collapse()
+                await t.collapse()
 
     # ── Per-reply footer ──────────────────────────────────────────────
 
@@ -2466,6 +2520,81 @@ class TauiApp(App[None]):
             await chat_log.mount(widget, before=footer)
         else:
             await chat_log.mount(widget)
+
+    async def _materialize_turn_body(self, turn: TurnContainer) -> None:
+        """Rebuild a collapsed turn body from its compact replay descriptors."""
+        body = turn.body
+        for child in list(body.children):
+            await child.remove()
+
+        tool_section: Vertical | None = None
+        pending_widgets: dict[str, ToolStatusWidget] = {}
+        pending_order: list[str] = []
+
+        for item in turn.replay_items:
+            if item.kind == "assistant":
+                resp = AgentResponse()
+                await body.mount(resp)
+                await resp.append_text(item.text)
+                await resp.finalize()
+                tool_section = None
+            elif item.kind == "reasoning":
+                from taui.tui.widgets.reasoning import ReasoningWidget
+
+                rw = ReasoningWidget()
+                await body.mount(rw)
+                rw.update_text(item.text)
+                rw.finalize()
+                tool_section = None
+            elif item.kind == "tool_call":
+                if tool_section is None:
+                    tool_section = Vertical(classes="tool-section")
+                    await body.mount(tool_section)
+                args_str = ", ".join(
+                    f"{key}={_trunc(str(value))}"
+                    for key, value in (item.arguments or {}).items()
+                )
+                if item.name == "sub_agent":
+                    from taui.tui.widgets.sub_agent_widget import SubAgentWidget
+
+                    widget = SubAgentWidget(
+                        item.name,
+                        args_str,
+                        arguments=item.arguments,
+                    )
+                else:
+                    widget = ToolStatusWidget(
+                        item.name,
+                        args_str,
+                        arguments=item.arguments,
+                    )
+                await tool_section.mount(widget)
+                key = item.call_id or f"__pos_{len(pending_order)}"
+                pending_widgets[key] = widget
+                pending_order.append(key)
+            elif item.kind == "tool_result":
+                key = item.call_id if item.call_id in pending_widgets else (
+                    pending_order[0] if pending_order else ""
+                )
+                widget = pending_widgets.pop(key, None) if key else None
+                if widget and key in pending_order:
+                    pending_order.remove(key)
+                if widget is not None:
+                    if item.is_error:
+                        await widget.fail(item.text)
+                    else:
+                        await widget.complete(item.text)
+            elif item.kind == "error":
+                await body.mount(
+                    Static(f"[red]Error: {escape(item.text)}[/red]", markup=True)
+                )
+                tool_section = None
+
+        agent_id, model, duration_s = turn.footer_info
+        footer = ReplyFooter(agent_id, model, live=False)
+        if duration_s > 0:
+            footer.finalize(duration_s)
+        await body.mount(footer)
 
     # ── Notifications ─────────────────────────────────────────────────
 
@@ -2955,6 +3084,8 @@ class TauiApp(App[None]):
                 await self._mount_in_reply(resp, state=st)
                 await resp.append_text(item.text)
                 await resp.finalize()
+                if st is not None and st.current_turn is not None:
+                    st.current_turn.append_replay_item(item)
                 turn_has_content = True
                 turn_assistant_text += item.text
                 _remember_turn_footer(item)
@@ -2964,6 +3095,8 @@ class TauiApp(App[None]):
                 await self._mount_in_reply(rw, state=st)
                 rw.update_text(item.text)
                 rw.finalize()
+                if st is not None and st.current_turn is not None:
+                    st.current_turn.append_replay_item(item)
                 turn_has_content = True
                 _remember_turn_footer(item)
             elif item.kind == "tool_call":
@@ -2974,8 +3107,23 @@ class TauiApp(App[None]):
                     f"{key}={_trunc(str(value))}"
                     for key, value in (item.arguments or {}).items()
                 )
-                widget = ToolStatusWidget(item.name, args_str)
+                if item.name == "sub_agent":
+                    from taui.tui.widgets.sub_agent_widget import SubAgentWidget
+
+                    widget = SubAgentWidget(
+                        item.name,
+                        args_str,
+                        arguments=item.arguments,
+                    )
+                else:
+                    widget = ToolStatusWidget(
+                        item.name,
+                        args_str,
+                        arguments=item.arguments,
+                    )
                 await tool_section.mount(widget)
+                if st is not None and st.current_turn is not None:
+                    st.current_turn.append_replay_item(item)
                 key = item.call_id or f"__pos_{len(pending_order)}"
                 pending_widgets[key] = widget
                 pending_order.append(key)
@@ -2994,6 +3142,8 @@ class TauiApp(App[None]):
                         await widget.fail(item.text)
                     else:
                         await widget.complete(item.text)
+                if st is not None and st.current_turn is not None:
+                    st.current_turn.append_replay_item(item)
             elif item.kind == "usage":
                 turn_input_tokens += item.input_tokens
                 turn_output_tokens += item.output_tokens
@@ -3004,13 +3154,15 @@ class TauiApp(App[None]):
                     markup=True,
                 )
                 await self._mount_in_reply(err, state=st)
+                if st is not None and st.current_turn is not None:
+                    st.current_turn.append_replay_item(item)
                 turn_has_content = True
                 _remember_turn_footer(item)
 
         if turn_has_content:
             await _flush_turn_footer()
         if st is not None:
-            self._autocollapse_old_turns(st)
+            await self._autocollapse_old_turns(st)
         # Land the user at the bottom of the resumed transcript so the most
         # recent exchange is visible — they can scroll up for earlier turns
         # or the context banner.
@@ -3227,7 +3379,10 @@ class TauiApp(App[None]):
         """Return the zone currently containing focus, or 'chat-input' as default."""
         from taui.tui.widgets.session_info_sidebar import SessionInfoSidebar
 
-        focused = self.focused
+        try:
+            focused = self.focused
+        except ScreenStackError:
+            return "chat-input"
         if focused is None:
             return "chat-input"
         node = focused

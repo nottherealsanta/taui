@@ -13,6 +13,8 @@ header row are ignored, leaving that area free for future affordances.
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
+
 from rich.markup import escape
 from rich.text import Text
 from textual import events
@@ -20,6 +22,10 @@ from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.widget import Widget
 from textual.widgets import Static
+
+from taui.session_replay import ReplayItem
+
+LazyBodyRenderer = Callable[["TurnContainer"], Awaitable[None]]
 
 
 class _Chevron(Static):
@@ -48,7 +54,7 @@ class _Chevron(Static):
         while parent is not None and not isinstance(parent, TurnContainer):
             parent = parent.parent
         if parent is not None:
-            parent.toggle()
+            await parent.toggle()
 
 
 class TurnContainer(Vertical):
@@ -110,6 +116,9 @@ class TurnContainer(Vertical):
         self._model: str = ""
         self._duration_s: float = 0.0
         self._agent_id: str = ""
+        self._replay_items: list[ReplayItem] = []
+        self._body_materialized = True
+        self._lazy_body_renderer: LazyBodyRenderer | None = None
 
     def compose(self) -> ComposeResult:
         yield Vertical(classes="turn-header")
@@ -165,34 +174,53 @@ class TurnContainer(Vertical):
     def body(self) -> Vertical:
         return self.query_one(".turn-body", Vertical)
 
+    @property
+    def replay_items(self) -> list[ReplayItem]:
+        return list(self._replay_items)
+
+    @property
+    def footer_info(self) -> tuple[str, str, float]:
+        return self._agent_id, self._model, self._duration_s
+
+    def set_lazy_body_renderer(self, renderer: LazyBodyRenderer) -> None:
+        self._lazy_body_renderer = renderer
+
+    def set_replay_items(self, items: list[ReplayItem]) -> None:
+        self._replay_items = list(items)
+
+    def append_replay_item(self, item: ReplayItem) -> None:
+        self._replay_items.append(item)
+
     def is_collapsed(self) -> bool:
         return self.has_class("collapsed")
 
-    def collapse(self) -> None:
+    async def collapse(self) -> None:
         if not self.has_class("collapsed"):
             self.add_class("collapsed")
             try:
                 self.query_one("#chev", Static).update("▶")
             except Exception:
                 pass
+        await self._unmount_lazy_body()
         self._refresh_summary()
 
-    def expand(self, *, sticky: bool = False) -> None:
+    async def expand(self, *, sticky: bool = False) -> None:
         if self.has_class("collapsed"):
             self.remove_class("collapsed")
             try:
                 self.query_one("#chev", Static).update("▼")
             except Exception:
                 pass
+        await self._materialize_lazy_body()
         if sticky:
             self.sticky_expanded = True
         self._refresh_summary()
 
-    def toggle(self) -> None:
+    async def toggle(self) -> None:
         if self.is_collapsed():
-            self.expand(sticky=True)
+            await self.expand(sticky=True)
         else:
-            self.collapse()
+            await self.collapse()
             self.sticky_expanded = False
 
     def set_summary(
@@ -210,6 +238,26 @@ class TurnContainer(Vertical):
         self._duration_s = duration_s
         self._agent_id = agent_id
         self._refresh_summary()
+
+    async def _unmount_lazy_body(self) -> None:
+        if not self._replay_items or not self._body_materialized:
+            return
+        try:
+            body = self.body
+        except Exception:
+            return
+        for child in list(body.children):
+            await child.remove()
+        self._body_materialized = False
+
+    async def _materialize_lazy_body(self) -> None:
+        if self._body_materialized:
+            return
+        if self._lazy_body_renderer is None:
+            self._body_materialized = True
+            return
+        await self._lazy_body_renderer(self)
+        self._body_materialized = True
 
 
 def _format_summary(

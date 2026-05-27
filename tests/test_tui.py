@@ -565,6 +565,157 @@ class TestTauiApp:
                     "new-model",
                 ]
 
+    async def test_collapsed_replay_turn_unmounts_and_remounts_body(self, tmp_path):
+        from taui.config import Config
+        from taui.session_replay import ReplayItem
+        from taui.tui import app as app_module
+        from taui.tui.widgets.reply_footer import ReplyFooter
+        from taui.tui.widgets.turn_container import TurnContainer
+
+        class FakeLoop:
+            _messages = []
+            agent_id = "DEF"
+
+        class FakeTracker:
+            total_cost_usd = 0.0
+
+        class FakeSession:
+            session_id = "current"
+            provider_name = "copilot"
+            model_name = "claude-haiku-4.5"
+            extensions_mode = False
+            self_edit_mode = False
+            cost_tracker = FakeTracker()
+            replay_items = [
+                ReplayItem(kind="user", text="first"),
+                ReplayItem(
+                    kind="tool_call",
+                    name="read",
+                    call_id="t1",
+                    arguments={"path": "x.py"},
+                    agent_id="DEF",
+                    model="old-model",
+                ),
+                ReplayItem(kind="tool_result", name="read", call_id="t1", text="ok"),
+                ReplayItem(
+                    kind="assistant",
+                    text="old reply",
+                    agent_id="DEF",
+                    model="old-model",
+                ),
+                ReplayItem(kind="usage", input_tokens=20, output_tokens=10),
+                ReplayItem(kind="user", text="second"),
+                ReplayItem(
+                    kind="assistant",
+                    text="middle reply",
+                    agent_id="DEF",
+                    model="old-model",
+                ),
+                ReplayItem(kind="usage", input_tokens=20, output_tokens=10),
+                ReplayItem(kind="user", text="third"),
+                ReplayItem(
+                    kind="assistant",
+                    text="new reply",
+                    agent_id="DEF",
+                    model="new-model",
+                ),
+                ReplayItem(kind="usage", input_tokens=20, output_tokens=10),
+            ]
+            _loop = FakeLoop()
+            _ext_registry = None
+
+            def add_config_change_listener(self, callback):
+                return None
+
+        app = TauiApp(Config(working_dir=tmp_path))
+        with patch.object(app_module.Session, "create", AsyncMock(return_value=FakeSession())):
+            async with app.run_test() as pilot:
+                await app._render_replay()
+                await pilot.pause()
+
+                turns = list(app.query(TurnContainer))
+                assert len(turns) == 3
+                oldest = turns[0]
+                assert oldest.is_collapsed()
+                assert list(oldest.body.children) == []
+
+                await oldest.expand(sticky=True)
+                await pilot.pause()
+
+                assert not oldest.is_collapsed()
+                assert list(oldest.body.query(AgentResponse))
+                assert list(oldest.body.query(ToolStatusWidget))
+                assert list(oldest.body.query(ReplyFooter))
+
+                await oldest.collapse()
+                await pilot.pause()
+
+                assert oldest.is_collapsed()
+                assert list(oldest.body.children) == []
+
+    async def test_collapsed_live_turn_remounts_streamed_body(self, tmp_path):
+        from taui.config import Config
+        from taui.tui import app as app_module
+        from taui.tui.widgets.reply_footer import ReplyFooter
+        from taui.tui.widgets.turn_container import TurnContainer
+
+        class FakeLoop:
+            _messages = []
+            agent_id = "DEF"
+            _model = "claude-haiku-4.5"
+
+        class FakeTracker:
+            total_cost_usd = 0.0
+
+        class FakeSession:
+            session_id = "current"
+            provider_name = "copilot"
+            model_name = "claude-haiku-4.5"
+            extensions_mode = False
+            self_edit_mode = False
+            cost_tracker = FakeTracker()
+            replay_items = []
+            _loop = FakeLoop()
+            _ext_registry = None
+
+            def add_config_change_listener(self, callback):
+                return None
+
+        app = TauiApp(Config(working_dir=tmp_path))
+        with patch.object(app_module.Session, "create", AsyncMock(return_value=FakeSession())):
+            async with app.run_test() as pilot:
+                st = app._sessions.active
+                assert st is not None
+                chat_log = app._get_active_chat_log()
+
+                oldest = await app._begin_turn("first", "", chat_log=chat_log, state=st)
+                await app.handle_stream_text(
+                    StreamTextDelta("live reply", session_id=st.session_id)
+                )
+                await app._finalize_response(st)
+                oldest.set_summary(
+                    total_tokens=5,
+                    tool_count=0,
+                    model="claude-haiku-4.5",
+                    agent_id="DEF",
+                )
+
+                await app._begin_turn("second", "", chat_log=chat_log, state=st)
+                await app._begin_turn("third", "", chat_log=chat_log, state=st)
+                await pilot.pause()
+
+                turns = list(app.query(TurnContainer))
+                assert turns[0] is oldest
+                assert oldest.is_collapsed()
+                assert list(oldest.body.children) == []
+
+                await oldest.expand(sticky=True)
+                await pilot.pause()
+
+                assert not oldest.is_collapsed()
+                assert list(oldest.body.query(AgentResponse))
+                assert list(oldest.body.query(ReplyFooter))
+
     def test_apply_selected_agent_applies_profile(self, tmp_path):
         from taui.config import Config
         from taui.self_edit import AgentProfile
