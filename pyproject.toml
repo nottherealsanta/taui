@@ -1,6 +1,6 @@
 [project]
 name = "taui"
-version = "0.8"
+version = "0.8.1"
 description = "Agentic coding interface you can reshape"
 readme = "README.md"
 requires-python = ">=3.13"
