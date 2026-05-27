@@ -1,8 +1,10 @@
-"""Context-banner widget: shows the tool list grouped, with a click-to-open modal.
+"""Context-banner widget: tools grouped into columns, clickable to open a modal.
 
-The banner renders one preview line per group (``<group>(<count>)``). The
-whole banner is clickable — a single click opens a modal that lists every
-group with its tools and descriptions, same UX as the SystemPromptWidget.
+The banner renders the tool groups as a fixed-column table — dark grey at
+rest, brighter on hover — exactly like the SystemPromptWidget preview/modal
+pair. A single click on the banner opens a modal listing every group with
+its members (names only). The modal also has a button that opens the tools
+page of the self-edit modal.
 """
 
 from __future__ import annotations
@@ -12,24 +14,30 @@ from typing import Any
 from textual import events
 from textual.app import ComposeResult
 from textual.containers import Container, Horizontal, VerticalScroll
+from textual.message import Message
 from textual.screen import ModalScreen
 from textual.widgets import Button, Static
 
-# Color tokens — keep in sync with app.py
-_TOOL_ACTIVE_COLOR = "#bfbfbf"
-_TOOL_INACTIVE_COLOR = "#5a5a5a"
+# Same palette as the legacy table: dim by default, bright on hover.
+_TOOL_DEFAULT_COLOR = "#5a5a5a"
+_TOOL_HOVER_COLOR = "#bfbfbf"
+_TOOL_INACTIVE_COLOR = "#3a3a3a"
+
+
+class OpenToolsSelfEdit(Message):
+    """Posted when the user asks to jump to the self-edit tools page."""
 
 
 class ToolsModal(ModalScreen[None]):
-    """Modal listing every tool group with its members + descriptions."""
+    """Modal listing every tool group with its members (names only)."""
 
     DEFAULT_CSS = """
     ToolsModal {
         align: center middle;
     }
     #tools-modal-dialog {
-        width: 90%;
-        height: 90%;
+        width: 80%;
+        height: 80%;
         background: $surface;
         border: thick $surface-lighten-1;
         padding: 1 2;
@@ -45,6 +53,7 @@ class ToolsModal(ModalScreen[None]):
         height: 1fr;
         border-top: solid $surface-lighten-1;
         padding: 1 0 0 0;
+        scrollbar-size-vertical: 1;
     }
     #tools-modal-dialog .tm-group {
         color: #56d4dd;
@@ -52,19 +61,20 @@ class ToolsModal(ModalScreen[None]):
         padding: 1 0 0 0;
     }
     #tools-modal-dialog .tm-tool-name {
-        color: #d2a8ff;
-        text-style: bold;
+        color: #c9d1d9;
         padding: 0 0 0 2;
     }
-    #tools-modal-dialog .tm-tool-desc {
-        color: #c9d1d9;
-        padding: 0 0 0 4;
+    #tools-modal-dialog .tm-tool-name.-inactive {
+        color: #6a6a6a;
     }
     #tools-modal-dialog .button-container {
         width: 100%;
         height: auto;
         align: center middle;
         padding: 1 0 0 0;
+    }
+    #tools-modal-dialog #tm-edit-button {
+        margin: 0 1;
     }
     """
 
@@ -96,30 +106,31 @@ class ToolsModal(ModalScreen[None]):
                             classes="tm-group",
                             markup=False,
                         )
-                        for name, desc, active in members:
-                            state = (
-                                "active" if active else "inactive"
-                            )
-                            color = (
-                                _TOOL_ACTIVE_COLOR
+                        for name, _desc, active in members:
+                            classes = (
+                                "tm-tool-name"
                                 if active
-                                else _TOOL_INACTIVE_COLOR
+                                else "tm-tool-name -inactive"
                             )
                             yield Static(
-                                f"[bold {color}]{name}[/]  "
-                                f"[dim]({state})[/dim]",
-                                classes="tm-tool-name",
-                                markup=True,
-                            )
-                            yield Static(
-                                desc or "(no description)",
-                                classes="tm-tool-desc",
+                                f"· {name}",
+                                classes=classes,
                                 markup=False,
                             )
             with Horizontal(classes="button-container"):
+                yield Button(
+                    "Edit tools…",
+                    variant="default",
+                    id="tm-edit-button",
+                )
                 yield Button("Close", variant="primary", id="close-button")
 
-    def on_button_pressed(self, _event: Button.Pressed) -> None:
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "tm-edit-button":
+            # Pop this modal, then ask the app to open self-edit on tools.
+            self.app.post_message(OpenToolsSelfEdit())
+            self.dismiss(None)
+            return
         self.dismiss(None)
 
     def on_key(self, event: events.Key) -> None:
@@ -127,23 +138,49 @@ class ToolsModal(ModalScreen[None]):
             self.dismiss(None)
 
 
-def _build_preview(
+def _render_columns(
     groups: dict[str, list[tuple[str, str, bool]]],
+    *,
+    color: str,
+    columns: int = 3,
 ) -> str:
-    """Render group pills as a single static preview line."""
+    """Render the group/tool list as fixed-width columns of tool names.
+
+    Groups are emitted as labeled blocks; tools are flattened across columns
+    in the legacy fashion so the banner stays compact.
+    """
     if not groups:
         return ""
-    parts: list[str] = []
+    lines: list[str] = []
     for group in sorted(groups):
         members = groups[group]
-        any_active = any(active for _, _, active in members)
-        color = _TOOL_ACTIVE_COLOR if any_active else _TOOL_INACTIVE_COLOR
-        parts.append(f"[{color}]{group}({len(members)})[/{color}]")
-    return "  ".join(parts)
+        names = [name for name, _, _ in members]
+        if not names:
+            continue
+        if len(names) > 1:
+            lines.append(
+                f"[{color}]▾ {group}({len(names)})[/{color}]"
+            )
+            indent = "  "
+        else:
+            indent = ""
+        col_width = max((len(n) for n in names), default=0) + 2
+        for i in range(0, len(names), columns):
+            chunk = names[i:i + columns]
+            cells = []
+            for j, name in enumerate(chunk):
+                padded = name if j == len(chunk) - 1 else name.ljust(col_width)
+                cells.append(f"[{color}]{padded}[/{color}]")
+            lines.append(indent + "".join(cells))
+    return "\n".join(lines)
 
 
 class ToolGroupsBanner(Container):
-    """Context banner showing all tool groups; whole banner is one click target."""
+    """Context banner showing tool groups as columns; whole banner is clickable.
+
+    Renders dim grey at rest, brighter on hover — mirrors the visual
+    treatment of the SystemPromptWidget preview.
+    """
 
     DEFAULT_CSS = """
     ToolGroupsBanner {
@@ -151,11 +188,10 @@ class ToolGroupsBanner(Container):
         height: auto;
         margin: 0 1 1 1;
         padding: 0 1 0 2;
-        color: #a0a0a0;
     }
-    ToolGroupsBanner:hover {
-        color: #d0d0d0;
-        background: $surface-lighten-1 10%;
+    ToolGroupsBanner > Static {
+        width: 100%;
+        height: auto;
     }
     """
 
@@ -163,23 +199,37 @@ class ToolGroupsBanner(Container):
         self,
         groups: dict[str, list[tuple[str, str, bool]]],
     ) -> None:
-        """``groups`` maps group name -> list of (tool_name, description, active)."""
         super().__init__()
         self._groups = groups
+        self._hover = False
 
     def compose(self) -> ComposeResult:
-        yield Static(_build_preview(self._groups), markup=True)
+        yield Static(self._render(), markup=True)
+
+    def _render(self) -> str:
+        color = _TOOL_HOVER_COLOR if self._hover else _TOOL_DEFAULT_COLOR
+        return _render_columns(self._groups, color=color)
+
+    def _refresh_text(self) -> None:
+        try:
+            self.query_one(Static).update(self._render())
+        except Exception:
+            pass
 
     def set_groups(
         self, groups: dict[str, list[tuple[str, str, bool]]]
     ) -> None:
         """Replace the preview with a fresh group set."""
         self._groups = groups
-        try:
-            preview = self.query_one(Static)
-        except Exception:
-            return
-        preview.update(_build_preview(self._groups))
+        self._refresh_text()
+
+    def on_enter(self, _event: events.Enter) -> None:
+        self._hover = True
+        self._refresh_text()
+
+    def on_leave(self, _event: events.Leave) -> None:
+        self._hover = False
+        self._refresh_text()
 
     async def on_click(self, event: events.Click) -> None:
         event.stop()

@@ -51,6 +51,7 @@ from taui.tui.widgets.info_bar import InfoBar, _agent_color, sync_agent_colors
 from taui.tui.widgets.reply_footer import ReplyFooter
 from taui.tui.widgets.sidebar import Sidebar
 from taui.tui.widgets.spinner import ActivityProgress
+from taui.tui.widgets.tool_groups_banner import OpenToolsSelfEdit
 from taui.tui.widgets.tool_status import ToolStatusWidget
 from taui.tui.widgets.turn_container import TurnContainer
 
@@ -3401,7 +3402,9 @@ class TauiApp(App[None]):
         messages = self._session._loop._messages
         self.push_screen(ContextBreakdownScreen(messages))
 
-    async def action_enter_self_edit(self) -> None:
+    async def action_enter_self_edit(
+        self, *, initial_category: str = "agents"
+    ) -> None:
         """Ctrl+E: open the self-edit modal (futuristic yellow console)."""
         from taui.self_edit.factory import _safe_active_scope
         from taui.tui.screens.self_edit_modal import SelfEditModal
@@ -3416,9 +3419,18 @@ class TauiApp(App[None]):
             self._update_status()
 
         self.push_screen(
-            SelfEditModal(self._config.working_dir, initial_scope=scope),
+            SelfEditModal(
+                self._config.working_dir,
+                initial_scope=scope,
+                initial_category=initial_category,
+            ),
             _on_modal_close,
         )
+
+    @on(OpenToolsSelfEdit)
+    async def _on_open_tools_self_edit(self, event: OpenToolsSelfEdit) -> None:
+        event.stop()
+        await self.action_enter_self_edit(initial_category="tools")
 
     async def _show_self_edit_list_text(self, category: str | None) -> None:
         """Render the self-edit inventory as plain text into the chat log."""

@@ -802,6 +802,7 @@ class _Editor(ModalScreen):
         max-height: 18;
         border: solid {GRID_GREY};
         background: {INNER_BG};
+        scrollbar-size-vertical: 1;
     }}
     #se-editor-dialog #se-editor-tools {{
         height: auto;
@@ -2169,6 +2170,7 @@ class _InlineEditor(Vertical):
         max-height: 18;
         border: solid {GRID_GREY};
         background: {INNER_BG};
+        scrollbar-size-vertical: 1;
     }}
     _InlineEditor .se-inline-tools {{
         height: auto;
@@ -2903,6 +2905,7 @@ class SelfEditModal(ModalScreen[str | None]):
         background: {INNER_BG};
         color: {ACCENT};
         border: solid {GRID_GREY};
+        scrollbar-size-vertical: 1;
     }}
     #se-list-pane OptionList:focus {{
         border: solid {ACCENT_SOFT};
@@ -3168,8 +3171,9 @@ class SelfEditModal(ModalScreen[str | None]):
             )
             self._row_items.append(None)
         elif self._category.key == "tools":
-            # Tree view: group items by their canonical tool-group, render a
-            # disabled "folder" header followed by indented children.
+            # Tree view: group items by their canonical tool-group. Sort so
+            # groups containing any built-in tool come first; within each
+            # group, built-ins are rendered above user tools.
             from taui.tools.groups import resolve_groups_for_names
 
             names = [it.identifier for it in self._items]
@@ -3177,12 +3181,24 @@ class SelfEditModal(ModalScreen[str | None]):
             by_id: dict[str, inventory.Item] = {
                 it.identifier: it for it in self._items
             }
+
+            def _group_sort_key(g: str) -> tuple[int, str]:
+                has_builtin = any(
+                    by_id[n].builtin for n in groups[g] if n in by_id
+                )
+                # Builtins first (0), user-only second (1); then alphabetical.
+                return (0 if has_builtin else 1, g)
+
+            def _member_sort_key(item: inventory.Item) -> tuple[int, str]:
+                return (0 if item.builtin else 1, item.identifier)
+
             first_select_idx: int | None = None
             row = 0
-            for group in sorted(groups):
-                members = [
-                    by_id[n] for n in groups[group] if n in by_id
-                ]
+            for group in sorted(groups, key=_group_sort_key):
+                members = sorted(
+                    (by_id[n] for n in groups[group] if n in by_id),
+                    key=_member_sort_key,
+                )
                 if not members:
                     continue
                 opts.add_option(
@@ -3234,10 +3250,12 @@ class SelfEditModal(ModalScreen[str | None]):
         self._refresh_chrome()
 
     def _render_tree_item_row(self, item: inventory.Item) -> Text:
-        """Indented row for the tools tree view — name only, no description.
+        """Indented row for the tools tree view — name only.
 
-        The description is shown in the right-hand inline panel when the row
-        is selected; keeping the list lean makes the tree easier to scan.
+        The description (and built-in status) are shown in the right-hand
+        inline panel when the row is selected; keeping the list lean makes
+        the tree easier to scan. Built-in tools render in the softer accent
+        so they're still visually distinct.
         """
         text = Text()
         label_style = (
@@ -3245,8 +3263,6 @@ class SelfEditModal(ModalScreen[str | None]):
         )
         text.append("  └ ", style=GRID_GREY)
         text.append(item.label, style=label_style)
-        if item.builtin:
-            text.append(" [builtin]", style="#666666")
         return text
 
     def _refresh_general_panel(self) -> None:
