@@ -3201,29 +3201,33 @@ class SelfEditModal(ModalScreen[str | None]):
                 )
                 if not members:
                     continue
-                opts.add_option(
-                    Option(
-                        Text(
-                            f"▾ {group}  ({len(members)})",
-                            style=f"bold {ACCENT_SOFT}",
-                        ),
-                        id=f"__group:{group}__",
-                        disabled=True,
+                # Solo groups render the tool name flat — no folder header.
+                if len(members) > 1:
+                    opts.add_option(
+                        Option(
+                            Text(
+                                f"▾ {group}  ({len(members)})",
+                                style=f"bold {ACCENT_SOFT}",
+                            ),
+                            id=f"__group:{group}__",
+                            disabled=True,
+                        )
                     )
-                )
-                self._row_items.append(None)
-                row += 1
+                    self._row_items.append(None)
+                    row += 1
                 for item in members:
                     opt_id = (
                         f"builtin:{item.identifier}"
                         if item.builtin
                         else f"user:{item.identifier}"
                     )
+                    row_text = (
+                        self._render_tree_item_row(item)
+                        if len(members) > 1
+                        else self._render_flat_item_row(item)
+                    )
                     opts.add_option(
-                        Option(
-                            self._render_tree_item_row(item),
-                            id=opt_id,
-                        )
+                        Option(row_text, id=opt_id)
                     )
                     self._row_items.append(item)
                     if first_select_idx is None:
@@ -3262,6 +3266,15 @@ class SelfEditModal(ModalScreen[str | None]):
             f"bold {ACCENT_SOFT}" if item.builtin else f"bold {ACCENT}"
         )
         text.append("  └ ", style=GRID_GREY)
+        text.append(item.label, style=label_style)
+        return text
+
+    def _render_flat_item_row(self, item: inventory.Item) -> Text:
+        """Flat (un-indented) row used when a tool group has only one tool."""
+        text = Text()
+        label_style = (
+            f"bold {ACCENT_SOFT}" if item.builtin else f"bold {ACCENT}"
+        )
         text.append(item.label, style=label_style)
         return text
 

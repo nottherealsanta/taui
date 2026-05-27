@@ -18,10 +18,10 @@ from textual.message import Message
 from textual.screen import ModalScreen
 from textual.widgets import Button, Static
 
-# Same palette as the legacy table: dim by default, bright on hover.
-_TOOL_DEFAULT_COLOR = "#5a5a5a"
-_TOOL_HOVER_COLOR = "#bfbfbf"
-_TOOL_INACTIVE_COLOR = "#3a3a3a"
+# Match the SystemPromptWidget palette so the two banners feel consistent.
+_TOOL_DEFAULT_COLOR = "#a0a0a0"
+_TOOL_HOVER_COLOR = "#d0d0d0"
+_TOOL_INACTIVE_COLOR = "#5a5a5a"
 
 
 class OpenToolsSelfEdit(Message):

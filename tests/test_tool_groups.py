@@ -168,7 +168,7 @@ def test_render_columns_shows_group_labels_with_count_when_multi() -> None:
         ],
         "read": [("read", "", True)],
     }
-    output = _render_columns(payload, color="#5a5a5a", columns=3)
+    output = _render_columns(payload, color="#a0a0a0", columns=3)
     # Multi-tool group renders as ``bash(3)``; solo group as just ``read``.
     assert "bash(3)" in output
     # Solo group label has no parenthesized count.
@@ -177,6 +177,16 @@ def test_render_columns_shows_group_labels_with_count_when_multi() -> None:
     # click-to-open modal.
     for tool in ("bash_kill", "bash_status"):
         assert tool not in output
+
+
+def test_banner_uses_system_prompt_palette() -> None:
+    """Rest/hover colors match SystemPromptWidget for visual consistency."""
+    from taui.tui.widgets import system_prompt as sp_module
+    from taui.tui.widgets import tool_groups_banner as tg_module
+
+    sp_css = sp_module.SystemPromptWidget.DEFAULT_CSS
+    assert tg_module._TOOL_DEFAULT_COLOR in sp_css
+    assert tg_module._TOOL_HOVER_COLOR in sp_css
 
 
 def test_format_group_label_drops_count_for_solo_groups() -> None:
@@ -196,7 +206,11 @@ def test_render_columns_empty() -> None:
 
 
 def test_banner_widget_render_text_switches_on_hover() -> None:
-    from taui.tui.widgets.tool_groups_banner import ToolGroupsBanner
+    from taui.tui.widgets.tool_groups_banner import (
+        _TOOL_DEFAULT_COLOR,
+        _TOOL_HOVER_COLOR,
+        ToolGroupsBanner,
+    )
 
     payload = {"bash": [("bash", "", True), ("bash_kill", "", True)]}
     banner = ToolGroupsBanner(payload)
@@ -205,8 +219,8 @@ def test_banner_widget_render_text_switches_on_hover() -> None:
     hovered = banner._render_text()
     # Dimmer at rest, brighter on hover — different output for the two states.
     assert rest != hovered
-    assert "#5a5a5a" in rest
-    assert "#bfbfbf" in hovered
+    assert _TOOL_DEFAULT_COLOR in rest
+    assert _TOOL_HOVER_COLOR in hovered
 
 
 # ── user_extension.py: notebook tool group source ─────────────────────
@@ -321,6 +335,31 @@ def test_open_tools_self_edit_message_exists() -> None:
 
 
 # ── Self-edit tools tab: built-ins first ordering ─────────────────────
+
+
+def test_render_flat_item_row_has_no_tree_indent() -> None:
+    """Solo-group tools render flush, without the ``└`` tree branch glyph."""
+    import pathlib
+
+    from taui.self_edit import inventory
+    from taui.tui.screens.self_edit_modal import SelfEditModal
+
+    modal = SelfEditModal(pathlib.Path("/tmp"))
+    item = inventory.Item(
+        category="tools",
+        scope="global",
+        identifier="read",
+        label="read",
+        summary="",
+        path=pathlib.Path("/tmp/read"),
+        body="",
+        builtin=True,
+    )
+    flat = modal._render_flat_item_row(item)
+    tree = modal._render_tree_item_row(item)
+    assert "└" not in flat.plain
+    assert "└" in tree.plain
+    assert "read" in flat.plain
 
 
 def test_tools_tab_tree_sort_orders_builtin_groups_first() -> None:
