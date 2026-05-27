@@ -204,15 +204,15 @@ class ToolGroupsBanner(Container):
         self._hover = False
 
     def compose(self) -> ComposeResult:
-        yield Static(self._render(), markup=True)
+        yield Static(self._render_text(), markup=True)
 
-    def _render(self) -> str:
+    def _render_text(self) -> str:
         color = _TOOL_HOVER_COLOR if self._hover else _TOOL_DEFAULT_COLOR
         return _render_columns(self._groups, color=color)
 
     def _refresh_text(self) -> None:
         try:
-            self.query_one(Static).update(self._render())
+            self.query_one(Static).update(self._render_text())
         except Exception:
             pass
 
