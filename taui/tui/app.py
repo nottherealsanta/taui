@@ -331,6 +331,14 @@ class TauiApp(App[None]):
         return self._session.session_id if self._session else None
 
     @property
+    def resumable_session_id(self) -> str | None:
+        """Current active session id only when it has a session metadata row."""
+        session = self._session
+        if session is None or not getattr(session, "is_persisted", False):
+            return None
+        return session.session_id
+
+    @property
     def _tool_counter(self) -> int:
         return self._tool_ctrl._tool_counter
 
@@ -2342,13 +2350,26 @@ class TauiApp(App[None]):
         "  .::   .::  .:: .::  .:: .::      \n"
         "  .::  .::   .:: .::  .:: .::      \n"
         "  .::  .::   .:: .::  .:: .::      \n"
-        "   .::   .:: .:::  .::.:: .:: .:::::\n"# noqa: E501
+        "   .::   .:: .:::  .::.:: .:: .:::::\n"  # noqa: E501
     )
+
+    @staticmethod
+    def _splash_text() -> str:
+        from importlib.metadata import version
+        try:
+            ver = version("taui")
+        except Exception:
+            ver = "dev"
+        art = TauiApp._SPLASH_ART
+        ver_line = f"v{ver} - alpha"
+        # Center the version under the art (art lines are ~40 chars wide)
+        pad = max(0, (40 - len(ver_line)) // 2)
+        return art + "\n" + " " * pad + ver_line + "\n"
 
     async def _mount_splash(self, chat_log: VerticalScroll) -> None:
         """Mount the splash art widget into an empty chat log."""
         await chat_log.mount(
-            Static(self._SPLASH_ART, classes="session-splash")
+            Static(self._splash_text(), classes="session-splash")
         )
 
     async def _remove_splash(self, chat_log: VerticalScroll) -> None:
