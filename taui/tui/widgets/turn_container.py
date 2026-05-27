@@ -111,6 +111,10 @@ class TurnContainer(Vertical):
         self.image_note = image_note
         self.turn_id = turn_id
         self.sticky_expanded = False
+        # True while the LLM is still working on this turn — collapsing
+        # mid-flight would unmount tool widgets the controller still
+        # holds references to, so the chevron is a no-op until done.
+        self.processing = False
         self._total_tokens: int = 0
         self._tool_count: int = 0
         self._model: str = ""
@@ -219,6 +223,9 @@ class TurnContainer(Vertical):
     async def toggle(self) -> None:
         if self.is_collapsed():
             await self.expand(sticky=True)
+        elif self.processing:
+            # Don't collapse a turn the LLM is still working on.
+            return
         else:
             await self.collapse()
             self.sticky_expanded = False

@@ -997,7 +997,7 @@ class _Editor(ModalScreen):
             # Empty allowed_tools means "all tools" — show them all as ON.
             all_on = not selected
             from taui.tools.groups import resolve_groups_for_names
-            groups = resolve_groups_for_names(all_tools)
+            groups = resolve_groups_for_names(all_tools, self._working_dir)
             with VerticalScroll(id="se-editor-tools-scroll"):
                 with Vertical(id="se-editor-tools"):
                     for group in sorted(groups):
@@ -2481,7 +2481,7 @@ class _InlineEditor(Vertical):
                 _ShowBuiltinToggle(selected=self._show_builtin_tools)
             )
             from taui.tools.groups import resolve_groups_for_names
-            groups = resolve_groups_for_names(all_tools)
+            groups = resolve_groups_for_names(all_tools, self._working_dir)
             tools_scroll = VerticalScroll(classes="se-inline-tools-scroll")
             self.mount(tools_scroll)
             tools_container = Vertical(classes="se-inline-tools")

@@ -128,6 +128,47 @@ def test_resolve_groups_for_unknown_name_uses_itself() -> None:
     assert groups["my_custom_tool"] == ["my_custom_tool"]
 
 
+def test_resolve_groups_with_working_dir_resolves_extension_groups(
+    tmp_path,
+) -> None:
+    """Tools from a user extension should bucket under their declared group,
+    not collapse into solo groups, when ``working_dir`` is supplied."""
+    from test import user_extension
+
+    ext_dir = tmp_path / ".taui" / "extensions"
+    ext_dir.mkdir(parents=True)
+    (ext_dir / "notebook.py").write_text(user_extension.NOTEBOOK_EXT_PY)
+
+    names = [
+        "notebook_read",
+        "notebook_edit",
+        "notebook_run_cell",
+        "notebook_clear",
+    ]
+    groups = resolve_groups_for_names(names, working_dir=tmp_path)
+    assert sorted(groups["notebook"]) == sorted(names)
+
+
+def test_all_tool_names_includes_extension_tool_names(tmp_path) -> None:
+    """``all_tool_names`` should list the actual registered tool names from
+    extensions (e.g. ``notebook_read``), not the file stem (``notebook``)."""
+    from test import user_extension
+
+    from taui.self_edit import inventory
+
+    ext_dir = tmp_path / ".taui" / "extensions"
+    ext_dir.mkdir(parents=True)
+    (ext_dir / "notebook.py").write_text(user_extension.NOTEBOOK_EXT_PY)
+
+    names = set(inventory.all_tool_names(tmp_path))
+    assert {
+        "notebook_read",
+        "notebook_edit",
+        "notebook_run_cell",
+        "notebook_clear",
+    }.issubset(names)
+
+
 # ── ToolGroupsBanner payload + column renderer ────────────────────────
 
 

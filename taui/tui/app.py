@@ -1106,7 +1106,16 @@ class TauiApp(App[None]):
             return
         if not state.streamed_text:
             state.streamed_text = True
-            self.post_message(StreamTextDelta(text, session_id=session_id))
+            # Drive the handler directly instead of post_message: this method
+            # is awaited from the agent loop immediately before session.send()
+            # returns, and _do_send then calls _finalize_response synchronously.
+            # A queued message wouldn't be processed in time, so current_response
+            # would still be None when _finalize_response runs — the assistant
+            # text never gets recorded as a replay item, and the late-mounted
+            # AgentResponse vanishes on the next collapse → expand cycle.
+            await self.handle_stream_text(
+                StreamTextDelta(text, session_id=session_id)
+            )
 
     def _on_compact_sync(
         self, removed: int, before: int, after: int, *, session_id: str = "",
@@ -2393,6 +2402,8 @@ class TauiApp(App[None]):
                 st.pending_indicators.clear()
                 st.pending_steer_texts.clear()
                 st.pending_steer_widget = None
+                if st.current_turn is not None:
+                    st.current_turn.processing = False
             chat_input.focus()
         self._refresh_tab_bar()
 
@@ -2464,6 +2475,7 @@ class TauiApp(App[None]):
         if st is not None:
             st.turns.append(turn)
             st.current_turn = turn
+        turn.processing = True
         await log.mount(turn)
         await self._autocollapse_old_turns(st)
         return turn

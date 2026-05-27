@@ -288,16 +288,16 @@ def _list_builtin_tools() -> list[Item]:
 
 
 def all_tool_names(working_dir: Path) -> list[str]:
-    """Every tool a user might want to grant an agent — builtins + scopes."""
-    names: set[str] = set()
-    for item in _list_builtin_tools():
-        names.add(item.identifier)
-    for scope in ("global", "project"):
-        for item in _list_py_dir(
-            working_dir, scope, subdir="extensions", category="tools"
-        ):
-            names.add(item.identifier)
-    return sorted(names)
+    """Every tool a user might want to grant an agent — builtins + extension tools.
+
+    Extension tool *names* (e.g. ``notebook_read``) come from actually loading
+    the user's ``~/.taui/extensions/*.py`` files into a fresh registry, not
+    from file stems — one extension file may register many tools.
+    """
+    from taui.tools.groups import _build_known_registry
+
+    reg = _build_known_registry(working_dir)
+    return sorted(reg.names)
 
 
 def builtin_tool_names() -> set[str]:

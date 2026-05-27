@@ -716,6 +716,125 @@ class TestTauiApp:
                 assert list(oldest.body.query(AgentResponse))
                 assert list(oldest.body.query(ReplyFooter))
 
+    async def test_on_text_records_reply_before_finalize(self, tmp_path):
+        """Non-streaming providers deliver text once via _on_text right
+        before session.send() returns. _do_send then runs _finalize_response
+        synchronously, so a queued StreamTextDelta wouldn't be processed in
+        time — the assistant text would never become a replay item and the
+        late-mounted AgentResponse would vanish on collapse → expand."""
+        from taui.config import Config
+        from taui.tui import app as app_module
+        from taui.tui.widgets.turn_container import TurnContainer
+
+        class FakeLoop:
+            _messages = []
+            agent_id = "DEF"
+            _model = "claude-haiku-4.5"
+
+        class FakeTracker:
+            total_cost_usd = 0.0
+
+        class FakeSession:
+            session_id = "current"
+            provider_name = "copilot"
+            model_name = "claude-haiku-4.5"
+            extensions_mode = False
+            self_edit_mode = False
+            cost_tracker = FakeTracker()
+            replay_items = []
+            _loop = FakeLoop()
+            _ext_registry = None
+
+            def add_config_change_listener(self, callback):
+                return None
+
+        app = TauiApp(Config(working_dir=tmp_path))
+        with patch.object(
+            app_module.Session, "create", AsyncMock(return_value=FakeSession())
+        ):
+            async with app.run_test() as pilot:
+                st = app._sessions.active
+                assert st is not None
+                chat_log = app._get_active_chat_log()
+                turn = await app._begin_turn(
+                    "first", "", chat_log=chat_log, state=st
+                )
+
+                await app._on_text("the late reply", session_id=st.session_id)
+                await app._finalize_response(st)
+
+                assert any(
+                    item.kind == "assistant" and item.text == "the late reply"
+                    for item in turn.replay_items
+                )
+
+                await pilot.pause()
+                await turn.collapse()
+                await pilot.pause()
+                assert list(turn.body.children) == []
+                await turn.expand(sticky=True)
+                await pilot.pause()
+                assert list(turn.body.query(AgentResponse))
+                _ = TurnContainer
+
+    async def test_toggle_is_noop_while_turn_is_processing(self, tmp_path):
+        """The chevron must not collapse a turn the LLM is still working
+        on — collapsing mid-flight would unmount tool widgets the
+        controller still holds references to."""
+        from taui.config import Config
+        from taui.tui import app as app_module
+
+        class FakeLoop:
+            _messages = []
+            agent_id = "DEF"
+            _model = "claude-haiku-4.5"
+
+        class FakeTracker:
+            total_cost_usd = 0.0
+
+        class FakeSession:
+            session_id = "current"
+            provider_name = "copilot"
+            model_name = "claude-haiku-4.5"
+            model_variant = ""
+            extensions_mode = False
+            self_edit_mode = False
+            cost_tracker = FakeTracker()
+            replay_items = []
+            _loop = FakeLoop()
+            _ext_registry = None
+
+            def add_config_change_listener(self, callback):
+                return None
+
+        app = TauiApp(Config(working_dir=tmp_path))
+        with patch.object(
+            app_module.Session, "create", AsyncMock(return_value=FakeSession())
+        ):
+            async with app.run_test() as pilot:
+                st = app._sessions.active
+                assert st is not None
+                chat_log = app._get_active_chat_log()
+                turn = await app._begin_turn(
+                    "first", "", chat_log=chat_log, state=st
+                )
+
+                assert turn.processing is True
+                assert not turn.is_collapsed()
+
+                # User clicks the chevron while the turn is still in flight.
+                await turn.toggle()
+                await pilot.pause()
+                assert not turn.is_collapsed()
+
+                # Once the LLM is done, the chevron works normally again.
+                app._set_busy(False, st)
+                assert turn.processing is False
+
+                await turn.toggle()
+                await pilot.pause()
+                assert turn.is_collapsed()
+
     def test_apply_selected_agent_applies_profile(self, tmp_path):
         from taui.config import Config
         from taui.self_edit import AgentProfile

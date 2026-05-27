@@ -8,6 +8,7 @@ group keyed by their `name`.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from taui.tools.base import tool_group
@@ -33,21 +34,18 @@ def group_tools(tools: list[Any]) -> dict[str, list[str]]:
     return out
 
 
-def resolve_groups_for_names(names: list[str]) -> dict[str, list[str]]:
+def resolve_groups_for_names(
+    names: list[str], working_dir: Path | None = None
+) -> dict[str, list[str]]:
     """Map tool names to canonical groups using the built-in registry.
 
     Used by self-edit UIs that need to know how to group tool names without
-    holding a live registry. Tool names not known to the builtin registry
-    form their own group keyed by themselves (presumed user extensions).
+    holding a live registry. When ``working_dir`` is provided, user
+    extensions under ``~/.taui/extensions`` and ``<working_dir>/.taui/
+    extensions`` are also loaded so extension-defined tool groups resolve
+    correctly. Tool names still unknown form their own single-member group.
     """
-    from taui.tools.builtins import register_builtins
-    from taui.tools.registry import ToolRegistry
-
-    reg = ToolRegistry()
-    try:
-        register_builtins(reg)
-    except Exception:
-        pass
+    reg = _build_known_registry(working_dir)
 
     out: dict[str, list[str]] = {}
     for name in names:
@@ -60,3 +58,25 @@ def resolve_groups_for_names(names: list[str]) -> dict[str, list[str]]:
     for members in out.values():
         members.sort()
     return out
+
+
+def _build_known_registry(working_dir: Path | None) -> Any:
+    """Fresh registry seeded with builtins + (optionally) user extensions."""
+    from taui.tools.builtins import register_builtins
+    from taui.tools.registry import ToolRegistry
+
+    reg = ToolRegistry()
+    try:
+        register_builtins(reg)
+    except Exception:
+        pass
+    if working_dir is not None:
+        try:
+            from taui.extensions import ExtensionRegistry
+
+            ext_reg = ExtensionRegistry(working_dir, include_builtins=False)
+            ext_reg.discover()
+            ext_reg.load_all(tools=reg)
+        except Exception:
+            pass
+    return reg
