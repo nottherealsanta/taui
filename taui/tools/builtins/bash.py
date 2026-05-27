@@ -76,6 +76,7 @@ class BashTool:
         "`bash_status` and terminate with `bash_kill`."
     )
     category: ToolCategory = ToolCategory.SHELL
+    group: str = "bash"
     working_dir: Path = field(default_factory=Path.cwd)
     guidelines: str = (
         "Use `bash` for running shell commands. Prefer other tools when "
@@ -271,6 +272,7 @@ class BashStatusTool:
         "the previous call (incremental stream)."
     )
     category: ToolCategory = ToolCategory.SHELL
+    group: str = "bash"
     guidelines: str = (
         "Use after `bash` with `background: true` to stream incremental output. "
         "Call repeatedly until `running: false` to drain a job to completion."
@@ -353,6 +355,7 @@ class BashKillTool:
         "a short grace period if the process is still alive."
     )
     category: ToolCategory = ToolCategory.SHELL
+    group: str = "bash"
     guidelines: str = (
         "Use to clean up a background job started by `bash` with `background: "
         "true` — particularly when it's a server/watcher you no longer need."

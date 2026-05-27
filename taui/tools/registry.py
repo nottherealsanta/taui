@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from taui.tools.base import Tool, ToolCategory
+from taui.tools.base import Tool, ToolCategory, tool_group
 
 
 class ToolRegistry:
@@ -61,6 +61,24 @@ class ToolRegistry:
     def by_category(self, category: ToolCategory) -> list[Tool]:
         """Return all tools in a category."""
         return [t for t in self._tools.values() if t.category == category]
+
+    def groups(self) -> dict[str, list[str]]:
+        """Return a mapping of group name -> sorted member tool names.
+
+        Tools without an explicit `group` attribute form their own
+        single-member group keyed by their name.
+        """
+        out: dict[str, list[str]] = {}
+        for tool in self._tools.values():
+            g = tool_group(tool)
+            out.setdefault(g, []).append(tool.name)
+        for members in out.values():
+            members.sort()
+        return out
+
+    def group_of(self, name: str) -> str:
+        """Return the group of a tool by name (defaults to the tool name)."""
+        return tool_group(self.get(name))
 
     def schemas(
         self,

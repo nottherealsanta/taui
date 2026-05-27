@@ -70,6 +70,7 @@ class TaskCreateTool(_TaskToolBase):
         "check on it, and task_stop to cancel."
     )
     category: ToolCategory = ToolCategory.AGENT
+    group: str = "tasks"
     schema: dict[str, Any] = field(default=None)  # type: ignore[assignment]
 
     guidelines: str = (
@@ -161,6 +162,7 @@ class TaskListTool(_TaskToolBase):
         "state (queued/running/done/failed/cancelled)."
     )
     category: ToolCategory = ToolCategory.AGENT
+    group: str = "tasks"
     schema: dict[str, Any] = field(default=None)  # type: ignore[assignment]
 
     def __post_init__(self) -> None:
@@ -209,6 +211,7 @@ class TaskGetTool(_TaskToolBase):
         "task_output for that."
     )
     category: ToolCategory = ToolCategory.AGENT
+    group: str = "tasks"
     schema: dict[str, Any] = field(default=None)  # type: ignore[assignment]
 
     def __post_init__(self) -> None:
@@ -246,6 +249,7 @@ class TaskOutputTool(_TaskToolBase):
         "tasks, returns the last output line so the agent can poll progress."
     )
     category: ToolCategory = ToolCategory.AGENT
+    group: str = "tasks"
     schema: dict[str, Any] = field(default=None)  # type: ignore[assignment]
 
     def __post_init__(self) -> None:
@@ -296,6 +300,7 @@ class TaskStopTool(_TaskToolBase):
         "left untouched."
     )
     category: ToolCategory = ToolCategory.AGENT
+    group: str = "tasks"
     schema: dict[str, Any] = field(default=None)  # type: ignore[assignment]
 
     def __post_init__(self) -> None:
@@ -336,6 +341,7 @@ class TaskUpdateTool(_TaskToolBase):
         "operator but the prompt is frozen."
     )
     category: ToolCategory = ToolCategory.AGENT
+    group: str = "tasks"
     schema: dict[str, Any] = field(default=None)  # type: ignore[assignment]
 
     def __post_init__(self) -> None:

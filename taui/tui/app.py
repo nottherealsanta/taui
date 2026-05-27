@@ -1957,10 +1957,12 @@ class TauiApp(App[None]):
 
     # ── Context banner ─────────────────────────────────────────────────
 
-    def _build_context_banner_parts(self) -> tuple[str, str, str, str]:
-        """Resolve (system_prompt, tools_label, tools_body, label_style) for the banner."""
+    def _build_context_banner_parts(
+        self,
+    ) -> tuple[str, str, dict[str, list[tuple[str, str, bool]]], str]:
+        """Resolve (system_prompt, tools_label, groups_payload, label_style)."""
         if self._session is None:
-            return "", "", "", ""
+            return "", "", {}, ""
 
         sp = getattr(self._session, "_system_prompt", "") or ""
         if self._session.self_edit_mode:
@@ -1973,8 +1975,9 @@ class TauiApp(App[None]):
         label_style = f"bold {bg_clr} on {agent_clr}"
 
         available: list[str] = []
-        if hasattr(self._session, "_registry"):
-            available = list(getattr(self._session._registry, "names", []) or [])
+        registry = getattr(self._session, "_registry", None)
+        if registry is not None:
+            available = list(getattr(registry, "names", []) or [])
 
         active: set[str] = set()
         try:
@@ -1983,22 +1986,31 @@ class TauiApp(App[None]):
             active = set(available)
 
         tools_label = ""
-        tools_body = ""
-        if available:
-            tools_label = f"[{label_style}] Tools [/{label_style}]"
-            tools_body = _render_tools_table(available, active, columns=3)
+        groups_payload: dict[str, list[tuple[str, str, bool]]] = {}
+        if available and registry is not None:
+            from taui.tui.widgets.tool_groups_banner import build_group_payload
 
-        return sp, tools_label, tools_body, label_style
+            tools_label = f"[{label_style}] Tools [/{label_style}]"
+            groups_payload = build_group_payload(
+                registry,
+                available_names=available,
+                active_names=active,
+            )
+
+        return sp, tools_label, groups_payload, label_style
 
     async def _maybe_show_context_banner(self, chat_log) -> None:
-        """Show system prompt widget + tool list once, before the first user message."""
+        """Show system prompt widget + tool group banner once, before the first user message."""
         from taui.tui.widgets.system_prompt import SystemPromptWidget
+        from taui.tui.widgets.tool_groups_banner import ToolGroupsBanner
 
         if self._context_banner_shown or self._session is None:
             return
         self._context_banner_shown = True
 
-        sp, tools_label, tools_body, label_style = self._build_context_banner_parts()
+        sp, tools_label, groups_payload, label_style = (
+            self._build_context_banner_parts()
+        )
         if sp:
             await chat_log.mount(
                 SystemPromptWidget(
@@ -2009,14 +2021,13 @@ class TauiApp(App[None]):
             await chat_log.mount(
                 Static(tools_label, classes="context-banner-label", markup=True)
             )
-        if tools_body:
-            await chat_log.mount(
-                Static(tools_body, classes="context-banner", markup=True)
-            )
+        if groups_payload:
+            await chat_log.mount(ToolGroupsBanner(groups_payload))
 
     def _refresh_context_banner(self, session_id: str = "") -> None:
         """Re-render the context-start banner when agent config changes."""
         from taui.tui.widgets.system_prompt import SystemPromptWidget
+        from taui.tui.widgets.tool_groups_banner import ToolGroupsBanner
 
         state = self._sessions.get(session_id) if session_id else self._sessions.active
         if state is None or state.session is None:
@@ -2031,7 +2042,9 @@ class TauiApp(App[None]):
             chat_log = self._get_active_chat_log()
         except Exception:
             return
-        sp, tools_label, tools_body, label_style = self._build_context_banner_parts()
+        sp, tools_label, groups_payload, label_style = (
+            self._build_context_banner_parts()
+        )
         try:
             sp_widget = chat_log.query_one(SystemPromptWidget)
             if sp:
@@ -2045,9 +2058,9 @@ class TauiApp(App[None]):
         except Exception:
             pass
         try:
-            tools_widget = chat_log.query_one(".context-banner", Static)
-            if tools_body:
-                tools_widget.update(tools_body)
+            banner = chat_log.query_one(ToolGroupsBanner)
+            if groups_payload:
+                banner.set_groups(groups_payload)
         except Exception:
             pass
 
@@ -3706,28 +3719,10 @@ def _trunc(s: str, n: int = 40) -> str:
 
 # Light gray = active (in the loop's effective registry); dark gray = available
 # but inactive (filtered out by the current variant's tool selection).
+# Kept here for backward compatibility — the context banner now uses a clickable
+# tool-group widget (taui.tui.widgets.tool_groups_banner) instead of a table.
 _TOOL_ACTIVE_COLOR = "#bfbfbf"
 _TOOL_INACTIVE_COLOR = "#5a5a5a"
-
-
-def _render_tools_table(
-    available: list[str], active: set[str], *, columns: int = 3,
-) -> str:
-    """Render tool names as a fixed-column table with active/inactive coloring."""
-    if not available:
-        return ""
-    names = sorted(set(available))
-    col_width = max((len(n) for n in names), default=0) + 2
-    rows: list[str] = []
-    for i in range(0, len(names), columns):
-        chunk = names[i:i + columns]
-        cells = []
-        for j, name in enumerate(chunk):
-            color = _TOOL_ACTIVE_COLOR if name in active else _TOOL_INACTIVE_COLOR
-            padded = name if j == len(chunk) - 1 else name.ljust(col_width)
-            cells.append(f"[{color}]{padded}[/{color}]")
-        rows.append("".join(cells))
-    return "\n".join(rows)
 
 
 def _model_completion_matches(prefix: str, provider: str, model_id: str) -> bool:

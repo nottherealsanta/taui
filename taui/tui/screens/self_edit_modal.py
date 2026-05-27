@@ -148,13 +148,24 @@ class _ScopeChip(Static):
 
 
 class _ToolToggle(Static):
-    """Single clickable tool name with on/off state."""
+    """Single clickable tool name with on/off state.
+
+    Carries an optional ``group`` so a parent _ToolGroupToggle can find its
+    members and so the parent editor can keep the group header in sync.
+    """
+
+    class Changed(events.Event):
+        def __init__(self, tool_name: str, group: str, selected: bool) -> None:
+            super().__init__()
+            self.tool_name = tool_name
+            self.group = group
+            self.selected = selected
 
     DEFAULT_CSS = f"""
     _ToolToggle {{
         height: 1;
         width: 1fr;
-        padding: 0 1;
+        padding: 0 1 0 3;
         color: #555;
     }}
     _ToolToggle.-on {{
@@ -166,10 +177,13 @@ class _ToolToggle(Static):
     }}
     """
 
-    def __init__(self, tool_name: str, selected: bool) -> None:
+    def __init__(
+        self, tool_name: str, selected: bool, *, group: str = ""
+    ) -> None:
         super().__init__()
         self._tool_name = tool_name
         self._selected = selected
+        self._group = group or tool_name
         if selected:
             self.add_class("-on")
 
@@ -188,14 +202,113 @@ class _ToolToggle(Static):
         else:
             self.remove_class("-on")
         self.refresh()
+        self.post_message(
+            _ToolToggle.Changed(self._tool_name, self._group, self._selected)
+        )
+
+    def set_selected(self, value: bool, *, post: bool = False) -> None:
+        """Programmatically set the toggle without click. Optionally post Changed."""
+        if self._selected == value:
+            return
+        self._selected = value
+        if self._selected:
+            self.add_class("-on")
+        else:
+            self.remove_class("-on")
+        self.refresh()
+        if post:
+            self.post_message(
+                _ToolToggle.Changed(self._tool_name, self._group, value)
+            )
 
     @property
     def tool_name(self) -> str:
         return self._tool_name
 
     @property
+    def group(self) -> str:
+        return self._group
+
+    @property
     def is_selected(self) -> bool:
         return self._selected
+
+
+class _ToolGroupToggle(Static):
+    """Group header — toggles all member tools in one click.
+
+    The header shows ``<group>  (selected/total)``. Clicking selects all
+    member tools if any are off, otherwise deselects them all. The widget
+    is purely a notifier; the parent editor listens for the Changed event
+    and walks the matching _ToolToggle children.
+    """
+
+    class Changed(events.Event):
+        def __init__(self, group: str, select_all: bool) -> None:
+            super().__init__()
+            self.group = group
+            self.select_all = select_all
+
+    DEFAULT_CSS = f"""
+    _ToolGroupToggle {{
+        height: 1;
+        width: 1fr;
+        padding: 0 1;
+        margin: 1 0 0 0;
+        color: #888;
+        text-style: bold;
+    }}
+    _ToolGroupToggle.-all {{
+        color: {ACCENT};
+    }}
+    _ToolGroupToggle.-some {{
+        color: {ACCENT_SOFT};
+    }}
+    _ToolGroupToggle:hover {{
+        background: {INNER_BG};
+    }}
+    """
+
+    def __init__(self, group: str, *, selected: int, total: int) -> None:
+        super().__init__()
+        self._group = group
+        self._selected = selected
+        self._total = total
+        self._apply_state_class()
+
+    def render(self) -> str:
+        if self._total == 1:
+            # Solo group — keep header but show no fractional count
+            return f"▸ {self._group}"
+        marker = (
+            "▾" if self._selected == self._total
+            else ("▿" if self._selected > 0 else "▹")
+        )
+        return f"{marker} {self._group}  ({self._selected}/{self._total})"
+
+    def _apply_state_class(self) -> None:
+        self.remove_class("-all")
+        self.remove_class("-some")
+        if self._selected == self._total and self._total > 0:
+            self.add_class("-all")
+        elif self._selected > 0:
+            self.add_class("-some")
+
+    def set_counts(self, *, selected: int, total: int) -> None:
+        self._selected = selected
+        self._total = total
+        self._apply_state_class()
+        self.refresh()
+
+    def on_click(self, event: Click) -> None:
+        event.stop()
+        # If everything is on, toggle them all off; otherwise turn them all on.
+        select_all = self._selected < self._total
+        self.post_message(_ToolGroupToggle.Changed(self._group, select_all))
+
+    @property
+    def group(self) -> str:
+        return self._group
 
 
 class _ShowBuiltinToggle(Static):
@@ -689,10 +802,14 @@ class _Editor(ModalScreen):
         width: 100%;
         border: solid {GRID_GREY};
         background: {INNER_BG};
+        padding: 1;
+    }}
+    #se-editor-dialog #se-editor-tools .se-editor-tool-group {{
+        height: auto;
+        width: 100%;
         grid-size: 4;
         grid-rows: 1;
         grid-gutter: 0 1;
-        padding: 1;
     }}
     #se-editor-dialog .se-field-hint {{
         width: 1fr;
@@ -874,9 +991,24 @@ class _Editor(ModalScreen):
             all_tools = inventory.all_tool_names(self._working_dir)
             # Empty allowed_tools means "all tools" — show them all as ON.
             all_on = not selected
-            with Grid(id="se-editor-tools"):
-                for name in all_tools:
-                    yield _ToolToggle(name, all_on or name in selected)
+            from taui.tools.groups import resolve_groups_for_names
+            groups = resolve_groups_for_names(all_tools)
+            with Vertical(id="se-editor-tools"):
+                for group in sorted(groups):
+                    members = groups[group]
+                    sel_count = sum(
+                        1 for n in members if all_on or n in selected
+                    )
+                    yield _ToolGroupToggle(
+                        group, selected=sel_count, total=len(members),
+                    )
+                    with Grid(classes="se-editor-tool-group"):
+                        for name in members:
+                            yield _ToolToggle(
+                                name,
+                                all_on or name in selected,
+                                group=group,
+                            )
 
     def _initial_usage(self) -> str:
         """Read the initial usage value from the extra dict, defaulting to 'both'."""
@@ -993,6 +1125,31 @@ class _Editor(ModalScreen):
         event.stop()
         for swatch in self.query(_ColorSwatch):
             swatch.set_active(swatch.value == event.value)
+
+    @on(_ToolGroupToggle.Changed)
+    def _on_group_toggled(self, event: _ToolGroupToggle.Changed) -> None:
+        event.stop()
+        for toggle in self.query(_ToolToggle):
+            if toggle.group == event.group:
+                toggle.set_selected(event.select_all)
+        self._refresh_group_headers()
+
+    @on(_ToolToggle.Changed)
+    def _on_tool_toggled(self, event: _ToolToggle.Changed) -> None:
+        event.stop()
+        self._refresh_group_headers()
+
+    def _refresh_group_headers(self) -> None:
+        groups: dict[str, tuple[int, int]] = {}
+        for toggle in self.query(_ToolToggle):
+            sel, total = groups.get(toggle.group, (0, 0))
+            groups[toggle.group] = (
+                sel + (1 if toggle.is_selected else 0),
+                total + 1,
+            )
+        for header in self.query(_ToolGroupToggle):
+            sel, total = groups.get(header.group, (0, 0))
+            header.set_counts(selected=sel, total=total)
 
     def _submit(self) -> None:
         try:
@@ -2007,10 +2164,14 @@ class _InlineEditor(Vertical):
         width: 100%;
         border: solid {GRID_GREY};
         background: {INNER_BG};
+        padding: 1;
+    }}
+    _InlineEditor .se-inline-tools .se-editor-tool-group {{
+        height: auto;
+        width: 100%;
         grid-size: 3;
         grid-rows: 1;
         grid-gutter: 0 1;
-        padding: 1;
     }}
     _InlineEditor .se-field-hint {{
         width: 1fr;
@@ -2307,14 +2468,39 @@ class _InlineEditor(Vertical):
             tools_header.mount(
                 _ShowBuiltinToggle(selected=self._show_builtin_tools)
             )
-            tools_grid = Grid(classes="se-inline-tools")
-            self.mount(tools_grid)
-            for name in all_tools:
-                toggle = _ToolToggle(name, all_on or name in selected)
-                is_builtin = name in builtins
-                if is_builtin and not self._show_builtin_tools:
-                    toggle.display = False
-                tools_grid.mount(toggle)
+            from taui.tools.groups import resolve_groups_for_names
+            groups = resolve_groups_for_names(all_tools)
+            tools_container = Vertical(classes="se-inline-tools")
+            self.mount(tools_container)
+            for group in sorted(groups):
+                members = groups[group]
+                visible_members = [
+                    n for n in members
+                    if self._show_builtin_tools or n not in builtins
+                ]
+                sel_count = sum(
+                    1 for n in visible_members if all_on or n in selected
+                )
+                header = _ToolGroupToggle(
+                    group,
+                    selected=sel_count,
+                    total=len(visible_members),
+                )
+                tools_container.mount(header)
+                # If no members are visible in this group (all were builtin and
+                # hidden), hide the header too.
+                if not visible_members:
+                    header.display = False
+                group_grid = Grid(classes="se-editor-tool-group")
+                tools_container.mount(group_grid)
+                for name in members:
+                    toggle = _ToolToggle(
+                        name, all_on or name in selected, group=group,
+                    )
+                    is_builtin = name in builtins
+                    if is_builtin and not self._show_builtin_tools:
+                        toggle.display = False
+                    group_grid.mount(toggle)
 
         # LLM prompt + Generate/Edit button
         prompt_row = Horizontal(classes="se-prompt-row")
@@ -2418,6 +2604,47 @@ class _InlineEditor(Vertical):
         for toggle in self.query(_ToolToggle):
             if toggle.tool_name in builtins:
                 toggle.display = event.value
+        self._refresh_group_headers()
+
+    @on(_ToolGroupToggle.Changed)
+    def _on_group_toggled(self, event: _ToolGroupToggle.Changed) -> None:
+        event.stop()
+        builtins = inventory.builtin_tool_names()
+        for toggle in self.query(_ToolToggle):
+            if toggle.group != event.group:
+                continue
+            if (
+                toggle.tool_name in builtins
+                and not self._show_builtin_tools
+            ):
+                continue
+            toggle.set_selected(event.select_all)
+        self._refresh_group_headers()
+
+    @on(_ToolToggle.Changed)
+    def _on_tool_toggled(self, event: _ToolToggle.Changed) -> None:
+        event.stop()
+        self._refresh_group_headers()
+
+    def _refresh_group_headers(self) -> None:
+        """Sync each group header's count to the current child toggle state."""
+        builtins = inventory.builtin_tool_names()
+        groups: dict[str, tuple[int, int]] = {}
+        for toggle in self.query(_ToolToggle):
+            if (
+                toggle.tool_name in builtins
+                and not self._show_builtin_tools
+            ):
+                continue
+            sel, total = groups.get(toggle.group, (0, 0))
+            groups[toggle.group] = (
+                sel + (1 if toggle.is_selected else 0),
+                total + 1,
+            )
+        for header in self.query(_ToolGroupToggle):
+            sel, total = groups.get(header.group, (0, 0))
+            header.set_counts(selected=sel, total=total)
+            header.display = total > 0
 
     @on(Button.Pressed)
     def _on_button(self, event: Button.Pressed) -> None:
@@ -2770,6 +2997,9 @@ class SelfEditModal(ModalScreen[str | None]):
             ),
         )
         self._items: list[inventory.Item] = []
+        # Row-aligned mapping: OptionList row index → underlying Item or None
+        # (None marks a non-selectable header row used for the tools tree).
+        self._row_items: list[inventory.Item | None] = []
         # Show built-in tools in the TOOLS category list. Default off so
         # the user's own tools are easier to scan; toggle re-includes them.
         self._show_builtin_in_list: bool = False
@@ -2916,6 +3146,7 @@ class SelfEditModal(ModalScreen[str | None]):
         except Exception:
             pass
         opts.clear_options()
+        self._row_items = []
         if not self._items:
             opts.add_option(
                 Option(
@@ -2924,6 +3155,55 @@ class SelfEditModal(ModalScreen[str | None]):
                     disabled=True,
                 )
             )
+            self._row_items.append(None)
+        elif self._category.key == "tools":
+            # Tree view: group items by their canonical tool-group, render a
+            # disabled "folder" header followed by indented children.
+            from taui.tools.groups import resolve_groups_for_names
+
+            names = [it.identifier for it in self._items]
+            groups = resolve_groups_for_names(names)
+            by_id: dict[str, inventory.Item] = {
+                it.identifier: it for it in self._items
+            }
+            first_select_idx: int | None = None
+            row = 0
+            for group in sorted(groups):
+                members = [
+                    by_id[n] for n in groups[group] if n in by_id
+                ]
+                if not members:
+                    continue
+                opts.add_option(
+                    Option(
+                        Text(
+                            f"▾ {group}  ({len(members)})",
+                            style=f"bold {ACCENT_SOFT}",
+                        ),
+                        id=f"__group:{group}__",
+                        disabled=True,
+                    )
+                )
+                self._row_items.append(None)
+                row += 1
+                for item in members:
+                    opt_id = (
+                        f"builtin:{item.identifier}"
+                        if item.builtin
+                        else f"user:{item.identifier}"
+                    )
+                    opts.add_option(
+                        Option(
+                            self._render_tree_item_row(item),
+                            id=opt_id,
+                        )
+                    )
+                    self._row_items.append(item)
+                    if first_select_idx is None:
+                        first_select_idx = row
+                    row += 1
+            if first_select_idx is not None:
+                opts.highlighted = first_select_idx
         else:
             for item in self._items:
                 # ID must be unique within the OptionList — a user extension
@@ -2937,9 +3217,22 @@ class SelfEditModal(ModalScreen[str | None]):
                 opts.add_option(
                     Option(self._render_item_row(item), id=opt_id)
                 )
+                self._row_items.append(item)
             opts.highlighted = 0
         self._sync_inline_panel()
         self._refresh_chrome()
+
+    def _render_tree_item_row(self, item: inventory.Item) -> Text:
+        """Indented variant of _render_item_row for the tools tree view."""
+        text = Text()
+        label_style = (
+            f"bold {ACCENT_SOFT}" if item.builtin else f"bold {ACCENT}"
+        )
+        text.append("  └ ", style=GRID_GREY)
+        text.append(f"{item.label:<20s}", style=label_style)
+        suffix = " [builtin]" if item.builtin else ""
+        text.append(f" {item.summary}{suffix}", style="#999999")
+        return text
 
     def _refresh_general_panel(self) -> None:
         """Populate (or repopulate) the _GeneralSettings widget."""
@@ -3033,9 +3326,14 @@ class SelfEditModal(ModalScreen[str | None]):
         except Exception:
             return None
         idx = opts.highlighted
-        if idx is None or idx < 0 or idx >= len(self._items):
+        if idx is None or idx < 0:
             return None
-        return self._items[idx]
+        # Prefer the row-aligned mapping (handles tree headers).
+        if self._row_items and idx < len(self._row_items):
+            return self._row_items[idx]
+        if idx < len(self._items):
+            return self._items[idx]
+        return None
 
     def _sync_inline_panel(self) -> None:
         """Push the highlighted item (or empty state) into the inline editor."""
@@ -3220,8 +3518,9 @@ class SelfEditModal(ModalScreen[str | None]):
         self._refresh_items()
         try:
             opts = self.query_one("#se-options", OptionList)
-            for i, it in enumerate(self._items):
-                if it.identifier == ident:
+            rows = self._row_items or [it for it in self._items]
+            for i, it in enumerate(rows):
+                if it is not None and it.identifier == ident:
                     opts.highlighted = i
                     break
         except Exception:
