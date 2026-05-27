@@ -233,15 +233,15 @@ def _format_summary(
         tok_str = f"{tokens} tok"
     tool_str = f"{tools} tool{'s' if tools != 1 else ''}"
 
-    right = Text(" · ".join([tok_str, tool_str]), style="#6e7681")
+    right = Text(" · ".join([tok_str, tool_str]), style="#686868")
 
-    left = Text(style="#8b949e")
+    left = Text(style="#686868")
     if agent_id:
         try:
             from taui.tui.widgets.info_bar import _agent_color
             agent_style = f"bold {_agent_color(agent_id)}"
         except Exception:
-            agent_style = "bold #8b949e"
+            agent_style = "bold #686868"
         left.append("└ ")
         left.append(agent_id, style=agent_style)
     extra_parts: list[str] = []
@@ -256,8 +256,8 @@ def _format_summary(
             extra_parts.append(f"{duration_s:.1f}s")
     if extra_parts:
         if agent_id:
-            left.append(" · ", style="#8b949e")
+            left.append(" · ", style="#686868")
         else:
-            left.append("└ ", style="#8b949e")
-        left.append(" · ".join(extra_parts), style="#8b949e")
+            left.append("└ ", style="#686868")
+        left.append(" · ".join(extra_parts), style="#686868")
     return left, right

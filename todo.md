@@ -8,3 +8,4 @@
 - group tools: <tool_group_name>[<number_of_tools>] , list only group names (click to show more)
 - add more git tools (with auth access)
 - "/worktree" for user to quickly jump to a worktree (a session cannot change worktree, new session will be created with the worktree)
+- session_name tool not available after set
