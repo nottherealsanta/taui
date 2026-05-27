@@ -797,11 +797,15 @@ class _Editor(ModalScreen):
         padding: 0 1;
         margin-top: 1;
     }}
+    #se-editor-dialog #se-editor-tools-scroll {{
+        width: 100%;
+        max-height: 18;
+        border: solid {GRID_GREY};
+        background: {INNER_BG};
+    }}
     #se-editor-dialog #se-editor-tools {{
         height: auto;
         width: 100%;
-        border: solid {GRID_GREY};
-        background: {INNER_BG};
         padding: 1;
     }}
     #se-editor-dialog #se-editor-tools .se-editor-tool-group {{
@@ -993,22 +997,23 @@ class _Editor(ModalScreen):
             all_on = not selected
             from taui.tools.groups import resolve_groups_for_names
             groups = resolve_groups_for_names(all_tools)
-            with Vertical(id="se-editor-tools"):
-                for group in sorted(groups):
-                    members = groups[group]
-                    sel_count = sum(
-                        1 for n in members if all_on or n in selected
-                    )
-                    yield _ToolGroupToggle(
-                        group, selected=sel_count, total=len(members),
-                    )
-                    with Grid(classes="se-editor-tool-group"):
-                        for name in members:
-                            yield _ToolToggle(
-                                name,
-                                all_on or name in selected,
-                                group=group,
-                            )
+            with VerticalScroll(id="se-editor-tools-scroll"):
+                with Vertical(id="se-editor-tools"):
+                    for group in sorted(groups):
+                        members = groups[group]
+                        sel_count = sum(
+                            1 for n in members if all_on or n in selected
+                        )
+                        yield _ToolGroupToggle(
+                            group, selected=sel_count, total=len(members),
+                        )
+                        with Grid(classes="se-editor-tool-group"):
+                            for name in members:
+                                yield _ToolToggle(
+                                    name,
+                                    all_on or name in selected,
+                                    group=group,
+                                )
 
     def _initial_usage(self) -> str:
         """Read the initial usage value from the extra dict, defaulting to 'both'."""
@@ -2159,11 +2164,15 @@ class _InlineEditor(Vertical):
     _InlineEditor .se-tools-toggle.-on:hover {{
         color: {DEEP_BLACK};
     }}
+    _InlineEditor .se-inline-tools-scroll {{
+        width: 100%;
+        max-height: 18;
+        border: solid {GRID_GREY};
+        background: {INNER_BG};
+    }}
     _InlineEditor .se-inline-tools {{
         height: auto;
         width: 100%;
-        border: solid {GRID_GREY};
-        background: {INNER_BG};
         padding: 1;
     }}
     _InlineEditor .se-inline-tools .se-editor-tool-group {{
@@ -2255,7 +2264,7 @@ class _InlineEditor(Vertical):
         self._spinner_timer = None
         self._spinner_index = 0
         # Allowed-tools UI: whether to surface built-in tools in the grid.
-        self._show_builtin_tools = False
+        self._show_builtin_tools = True
 
     def compose(self) -> ComposeResult:
         yield Static(
@@ -2470,8 +2479,10 @@ class _InlineEditor(Vertical):
             )
             from taui.tools.groups import resolve_groups_for_names
             groups = resolve_groups_for_names(all_tools)
+            tools_scroll = VerticalScroll(classes="se-inline-tools-scroll")
+            self.mount(tools_scroll)
             tools_container = Vertical(classes="se-inline-tools")
-            self.mount(tools_container)
+            tools_scroll.mount(tools_container)
             for group in sorted(groups):
                 members = groups[group]
                 visible_members = [
@@ -3223,15 +3234,19 @@ class SelfEditModal(ModalScreen[str | None]):
         self._refresh_chrome()
 
     def _render_tree_item_row(self, item: inventory.Item) -> Text:
-        """Indented variant of _render_item_row for the tools tree view."""
+        """Indented row for the tools tree view — name only, no description.
+
+        The description is shown in the right-hand inline panel when the row
+        is selected; keeping the list lean makes the tree easier to scan.
+        """
         text = Text()
         label_style = (
             f"bold {ACCENT_SOFT}" if item.builtin else f"bold {ACCENT}"
         )
         text.append("  └ ", style=GRID_GREY)
-        text.append(f"{item.label:<20s}", style=label_style)
-        suffix = " [builtin]" if item.builtin else ""
-        text.append(f" {item.summary}{suffix}", style="#999999")
+        text.append(item.label, style=label_style)
+        if item.builtin:
+            text.append(" [builtin]", style="#666666")
         return text
 
     def _refresh_general_panel(self) -> None:

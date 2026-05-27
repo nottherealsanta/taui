@@ -20,9 +20,11 @@ What it drops:
   ~/.taui/skills/textual/SKILL.md   — skill package; taui's
       SkillRegistry picks it up from the global skill dir.
 
-  ~/.taui/extensions/notebook_edit.py — extension that registers the
-      ``notebook_edit`` tool. taui's defaults no longer ship it, so
-      this is the user's way of opting back in.
+  ~/.taui/extensions/notebook.py    — extension that registers the
+      ``notebook`` tool group: ``notebook_read``, ``notebook_edit``,
+      ``notebook_run_cell``, and ``notebook_clear`` all declare
+      ``group = "notebook"`` and therefore appear together in taui's
+      tools tree, allowed-tools toggle grid, and context banner.
 
 After running, restart taui and the four contributions appear as if
 they had always been there.
@@ -120,24 +122,145 @@ Use this skill when working on a Python TUI built with
 
 
 # --------------------------------------------------------------------------- #
-# Tool: notebook_edit — ~/.taui/extensions/notebook_edit.py                   #
+# Tool group: notebook — ~/.taui/extensions/notebook.py                       #
 # --------------------------------------------------------------------------- #
+#                                                                             #
+# Demonstrates the tool-group concept: four tools (notebook_read,             #
+# notebook_edit, notebook_run_cell, notebook_clear) all declare               #
+# ``group = "notebook"``, so the self-edit UI and context banner show them    #
+# together under one folder/pill. taui's defaults no longer ship notebook     #
+# tooling, so this is the user's way of opting back in — and of using a      #
+# group for it.                                                               #
 
-NOTEBOOK_EDIT_EXT_PY = '''\
-"""User-added extension: ``notebook_edit`` tool.
+NOTEBOOK_EXT_PY = '''\
+"""User-added extension: the ``notebook`` tool group.
 
-The taui defaults no longer register this tool, so the user has opted
-back in by dropping this file into ``~/.taui/extensions/``.
+Four sibling tools — notebook_read, notebook_edit, notebook_run_cell, and
+notebook_clear — that all declare ``group = "notebook"`` so taui shows them
+together in the agent toggle grid, the tools tree, and the context banner.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from taui.tools.base import ToolCategory, ToolResult
+
+NOTEBOOK_GROUP = "notebook"
+
+
+def _load_notebook(
+    working_dir: Path, path_str: str
+) -> tuple[Path, dict[str, Any], list[dict[str, Any]]] | str:
+    """Resolve the path, parse the notebook, and return (path, nb, cells).
+
+    Returns an error string on failure so callers can short-circuit.
+    """
+    if not path_str:
+        return "path is required"
+    path = Path(path_str)
+    if not path.is_absolute():
+        path = working_dir / path
+    if not path.exists():
+        return f"File not found: {path}"
+    if path.suffix != ".ipynb":
+        return f"Not a notebook file: {path}"
+    try:
+        nb = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        return f"Failed to read notebook: {exc}"
+    cells = nb.get("cells", [])
+    if not isinstance(cells, list):
+        return "Malformed notebook: cells is not a list"
+    return path, nb, cells
+
+
+def _cell_source(cell: dict[str, Any]) -> str:
+    src = cell.get("source", "")
+    if isinstance(src, list):
+        return "".join(src)
+    return str(src)
+
+
+def _write_notebook(path: Path, nb: dict[str, Any]) -> None:
+    path.write_text(
+        json.dumps(nb, indent=1, ensure_ascii=False) + "\\n",
+        encoding="utf-8",
+    )
+
+
+# ── notebook_read ─────────────────────────────────────────────────────────
+
+
+@dataclass(slots=True)
+class NotebookReadTool:
+    """List cells in a Jupyter notebook (and optionally show their source)."""
+
+    name: str = "notebook_read"
+    description: str = (
+        "Read a Jupyter notebook (.ipynb): list cells with index, type, and "
+        "a preview of source. Set `full: true` to dump every cell\\'s full "
+        "source. Use this before notebook_edit / notebook_run_cell to figure "
+        "out which cell to target."
+    )
+    category: ToolCategory = ToolCategory.FILE_READ
+    group: str = NOTEBOOK_GROUP
+    schema: dict[str, Any] = field(default=None)
+    working_dir: Path = field(default_factory=Path.cwd)
+
+    def __post_init__(self) -> None:
+        if self.schema is None:
+            self.schema = {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Path to the .ipynb file.",
+                    },
+                    "full": {
+                        "type": "boolean",
+                        "description": (
+                            "If true, include each cell\\'s full source "
+                            "(default false: 1-line preview only)."
+                        ),
+                    },
+                },
+                "required": ["path"],
+            }
+
+    async def execute(self, arguments: dict[str, Any]) -> ToolResult:
+        loaded = _load_notebook(
+            self.working_dir, arguments.get("path", "")
+        )
+        if isinstance(loaded, str):
+            return ToolResult.fail(loaded)
+        path, _nb, cells = loaded
+        full = bool(arguments.get("full", False))
+
+        if not cells:
+            return ToolResult.ok(f"{path} has 0 cells.")
+
+        lines = [f"{path} — {len(cells)} cells"]
+        for idx, cell in enumerate(cells):
+            ctype = cell.get("cell_type", "?")
+            source = _cell_source(cell)
+            if full:
+                lines.append(f"\\n--- [{idx}] {ctype} ---")
+                lines.append(source.rstrip())
+            else:
+                preview = source.splitlines()[0] if source else ""
+                if len(preview) > 80:
+                    preview = preview[:77] + "..."
+                lines.append(f"  [{idx}] {ctype:8s}  {preview}")
+        return ToolResult.ok("\\n".join(lines))
+
+
+# ── notebook_edit ─────────────────────────────────────────────────────────
 
 
 @dataclass(slots=True)
@@ -150,6 +273,7 @@ class NotebookEditTool:
         "Can replace cell source, insert new cells, or delete cells."
     )
     category: ToolCategory = ToolCategory.FILE_WRITE
+    group: str = NOTEBOOK_GROUP
     schema: dict[str, Any] = field(default=None)
     working_dir: Path = field(default_factory=Path.cwd)
 
@@ -160,13 +284,13 @@ class NotebookEditTool:
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Path to the .ipynb file",
+                        "description": "Path to the .ipynb file.",
                     },
                     "cell_index": {
                         "type": "integer",
                         "description": (
                             "0-based index of the cell to edit/delete, "
-                            "or insertion point"
+                            "or insertion point."
                         ),
                     },
                     "action": {
@@ -174,17 +298,17 @@ class NotebookEditTool:
                         "enum": ["replace", "insert", "delete"],
                         "description": (
                             "Action: replace cell content, insert new "
-                            "cell, or delete cell"
+                            "cell, or delete cell."
                         ),
                     },
                     "source": {
                         "type": "string",
-                        "description": "New cell source (required for replace/insert)",
+                        "description": "New cell source (required for replace/insert).",
                     },
                     "cell_type": {
                         "type": "string",
                         "enum": ["code", "markdown", "raw"],
-                        "description": "Cell type for insert (default: code)",
+                        "description": "Cell type for insert (default: code).",
                     },
                 },
                 "required": ["path", "cell_index", "action"],
@@ -192,34 +316,21 @@ class NotebookEditTool:
             }
 
     async def execute(self, arguments: dict[str, Any]) -> ToolResult:
-        path_str = arguments.get("path", "")
+        loaded = _load_notebook(
+            self.working_dir, arguments.get("path", "")
+        )
+        if isinstance(loaded, str):
+            return ToolResult.fail(loaded)
+        path, nb, cells = loaded
+
         cell_index = arguments.get("cell_index")
+        if cell_index is None:
+            return ToolResult.fail("cell_index is required")
         action = arguments.get("action", "")
         source = arguments.get("source", "")
         cell_type = arguments.get("cell_type", "code")
-
-        if not path_str:
-            return ToolResult.fail("path is required")
-        if cell_index is None:
-            return ToolResult.fail("cell_index is required")
         if action not in ("replace", "insert", "delete"):
             return ToolResult.fail(f"Unknown action: {action}")
-
-        path = Path(path_str)
-        if not path.is_absolute():
-            path = self.working_dir / path
-
-        if not path.exists():
-            return ToolResult.fail(f"File not found: {path}")
-        if path.suffix != ".ipynb":
-            return ToolResult.fail(f"Not a notebook file: {path}")
-
-        try:
-            nb = json.loads(path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError) as exc:
-            return ToolResult.fail(f"Failed to read notebook: {exc}")
-
-        cells = nb.get("cells", [])
 
         if action == "delete":
             if cell_index < 0 or cell_index >= len(cells):
@@ -228,7 +339,7 @@ class NotebookEditTool:
                 )
             removed = cells.pop(cell_index)
             removed_type = removed.get("cell_type", "unknown")
-            path.write_text(json.dumps(nb, indent=1, ensure_ascii=False) + "\\n")
+            _write_notebook(path, nb)
             return ToolResult.ok(
                 f"Deleted {removed_type} cell at index {cell_index}. "
                 f"Notebook now has {len(cells)} cells."
@@ -248,7 +359,7 @@ class NotebookEditTool:
                     f"cell_index {cell_index} out of range (0..{len(cells) - 1})"
                 )
             cells[cell_index]["source"] = formatted
-            path.write_text(json.dumps(nb, indent=1, ensure_ascii=False) + "\\n")
+            _write_notebook(path, nb)
             return ToolResult.ok(
                 f"Replaced cell {cell_index} source ({len(source_lines)} lines)."
             )
@@ -266,16 +377,185 @@ class NotebookEditTool:
             new_cell["execution_count"] = None
             new_cell["outputs"] = []
         cells.insert(cell_index, new_cell)
-        path.write_text(json.dumps(nb, indent=1, ensure_ascii=False) + "\\n")
+        _write_notebook(path, nb)
         return ToolResult.ok(
             f"Inserted {cell_type} cell at index {cell_index}. "
             f"Notebook now has {len(cells)} cells."
         )
 
 
+# ── notebook_run_cell ─────────────────────────────────────────────────────
+
+
+@dataclass(slots=True)
+class NotebookRunCellTool:
+    """Execute a single code cell\\'s source via a subprocess and capture output.
+
+    Lightweight by design: spawns ``python -c <source>`` so the runner has no
+    extra dependencies. State is *not* shared across calls — each invocation
+    starts a fresh interpreter. For true kernel semantics use jupyter directly.
+    """
+
+    name: str = "notebook_run_cell"
+    description: str = (
+        "Run a single code cell from a Jupyter notebook in a fresh Python "
+        "subprocess and return stdout/stderr. State is not preserved across "
+        "calls. Use for quick sanity checks; spin up a real Jupyter kernel for "
+        "stateful workflows."
+    )
+    category: ToolCategory = ToolCategory.SHELL
+    group: str = NOTEBOOK_GROUP
+    schema: dict[str, Any] = field(default=None)
+    working_dir: Path = field(default_factory=Path.cwd)
+    timeout: int = 30
+
+    def __post_init__(self) -> None:
+        if self.schema is None:
+            self.schema = {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Path to the .ipynb file.",
+                    },
+                    "cell_index": {
+                        "type": "integer",
+                        "description": "0-based index of the code cell to run.",
+                    },
+                    "timeout": {
+                        "type": "integer",
+                        "description": "Seconds before the subprocess is killed. Default 30.",
+                    },
+                },
+                "required": ["path", "cell_index"],
+            }
+
+    async def execute(self, arguments: dict[str, Any]) -> ToolResult:
+        loaded = _load_notebook(
+            self.working_dir, arguments.get("path", "")
+        )
+        if isinstance(loaded, str):
+            return ToolResult.fail(loaded)
+        path, _nb, cells = loaded
+
+        cell_index = arguments.get("cell_index")
+        if cell_index is None:
+            return ToolResult.fail("cell_index is required")
+        if cell_index < 0 or cell_index >= len(cells):
+            return ToolResult.fail(
+                f"cell_index {cell_index} out of range (0..{len(cells) - 1})"
+            )
+        cell = cells[cell_index]
+        if cell.get("cell_type") != "code":
+            return ToolResult.fail(
+                f"Cell {cell_index} is a "
+                f"{cell.get('cell_type', '?')} cell, not code."
+            )
+
+        source = _cell_source(cell)
+        if not source.strip():
+            return ToolResult.ok("(cell is empty)")
+
+        timeout = int(arguments.get("timeout", self.timeout))
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                sys.executable, "-c", source,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+                cwd=str(path.parent),
+            )
+            stdout, _ = await asyncio.wait_for(
+                proc.communicate(), timeout=timeout
+            )
+        except TimeoutError:
+            return ToolResult.fail(
+                f"Cell {cell_index} timed out after {timeout}s"
+            )
+        except OSError as exc:
+            return ToolResult.fail(f"Failed to run cell: {exc}")
+
+        text = (stdout or b"").decode("utf-8", errors="replace")
+        if len(text) > 8000:
+            text = text[:8000] + "\\n… (truncated)"
+        exit_code = proc.returncode or 0
+        header = (
+            f"cell {cell_index} · exit {exit_code} · "
+            f"{path.name}"
+        )
+        body = text.rstrip() if text else "(no output)"
+        return ToolResult.ok(
+            f"{header}\\n{body}",
+            cell_index=cell_index,
+            exit_code=exit_code,
+        )
+
+
+# ── notebook_clear ────────────────────────────────────────────────────────
+
+
+@dataclass(slots=True)
+class NotebookClearTool:
+    """Strip outputs (and execution counts) from a notebook\\'s code cells."""
+
+    name: str = "notebook_clear"
+    description: str = (
+        "Clear all outputs and reset execution counts on every code cell in "
+        "a notebook. Useful before committing — large output payloads should "
+        "not live in source control."
+    )
+    category: ToolCategory = ToolCategory.FILE_WRITE
+    group: str = NOTEBOOK_GROUP
+    schema: dict[str, Any] = field(default=None)
+    working_dir: Path = field(default_factory=Path.cwd)
+
+    def __post_init__(self) -> None:
+        if self.schema is None:
+            self.schema = {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Path to the .ipynb file.",
+                    },
+                },
+                "required": ["path"],
+            }
+
+    async def execute(self, arguments: dict[str, Any]) -> ToolResult:
+        loaded = _load_notebook(
+            self.working_dir, arguments.get("path", "")
+        )
+        if isinstance(loaded, str):
+            return ToolResult.fail(loaded)
+        path, nb, cells = loaded
+
+        cleared = 0
+        for cell in cells:
+            if cell.get("cell_type") != "code":
+                continue
+            if cell.get("outputs") or cell.get("execution_count") is not None:
+                cleared += 1
+            cell["outputs"] = []
+            cell["execution_count"] = None
+        _write_notebook(path, nb)
+        return ToolResult.ok(
+            f"Cleared outputs on {cleared} code cell(s) in {path}."
+        )
+
+
+# ── register ──────────────────────────────────────────────────────────────
+
+
 def register(ctx):
-    if ctx.tools is not None:
-        ctx.tools.register_or_replace(NotebookEditTool())
+    if ctx.tools is None:
+        return
+    for tool in (
+        NotebookReadTool(),
+        NotebookEditTool(),
+        NotebookRunCellTool(),
+        NotebookClearTool(),
+    ):
+        ctx.tools.register_or_replace(tool)
 '''
 
 
@@ -287,7 +567,7 @@ FILES = [
     (AGENTS_DIR / "ASK.md",                       ASK_AGENT_MD),
     (PROMPTS_DIR / "worktree.md",                 WORKTREE_PROMPT_MD),
     (SKILLS_DIR / "textual" / "SKILL.md",         TEXTUAL_SKILL_MD),
-    (EXTENSIONS_DIR / "notebook_edit.py",         NOTEBOOK_EDIT_EXT_PY),
+    (EXTENSIONS_DIR / "notebook.py",              NOTEBOOK_EXT_PY),
 ]
 
 
@@ -302,10 +582,17 @@ def install() -> list[Path]:
 
 def uninstall() -> list[Path]:
     removed: list[Path] = []
+    # Include legacy paths from earlier installs so 'uninstall' is idempotent
+    # across the rename from notebook_edit.py to notebook.py.
+    legacy_paths = [EXTENSIONS_DIR / "notebook_edit.py"]
     for dest, _ in FILES:
         if dest.exists():
             dest.unlink()
             removed.append(dest)
+    for legacy in legacy_paths:
+        if legacy.exists():
+            legacy.unlink()
+            removed.append(legacy)
     # Tidy now-empty directories we created.
     for d in (
         SKILLS_DIR / "textual",
