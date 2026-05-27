@@ -51,6 +51,9 @@ Session resume is implemented in `Session.resume_session()`: `taui/session.py:62
 - text streaming handler: `taui/tui/app.py:1575`
 - reasoning streaming handler: `taui/tui/app.py:1594`
 - tool status widget: `taui/tui/widgets/tool_status.py:49`
+- turn containers: `taui/tui/widgets/turn_container.py:47`. Completed turns keep
+  compact replay descriptors; collapsed turn bodies unmount their child widgets and
+  remount them from those descriptors when expanded.
 - approval prompt: `taui/tui/widgets/approval.py:14`
 - question panel: `taui/tui/widgets/questions_panel.py:123`
 - info bar: `taui/tui/widgets/info_bar.py:84`

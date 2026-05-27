@@ -52,7 +52,7 @@ Screen {
     width: 1fr;
     height: 1fr;
     content-align: center middle;
-    color: #555555;
+    color: #313131;
 }
 #activity-progress {
     dock: bottom;

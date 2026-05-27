@@ -34,7 +34,6 @@ class MockProvider:
 def _make_session(tmp_path: Path, responses: list[str] | None = None) -> Session:
     """Build a minimal Session with mock provider for testing."""
     from taui.agent.loop import AgentLoop
-    from taui.store.store import Store
     from taui.store.stream import StreamClient
     from taui.tools.executor import ToolExecutor, ToolPolicy
     from taui.tools.file_tracker import FileTracker
@@ -232,6 +231,26 @@ class TestNewSessionIsolation:
 
         await session.close()
 
+    async def test_new_session_is_not_persisted_until_first_message(self, tmp_path):
+        """new_session() should not add empty sessions to the session list."""
+        session = await _make_session_async(tmp_path)
+
+        await session.new_session()
+        new_id = session.session_id
+
+        assert not session.is_persisted
+        assert await session._store.get_session(new_id) is None
+
+        await session.send("hello")
+
+        meta = await session._store.get_session(new_id)
+        assert session.is_persisted
+        assert meta is not None
+        assert meta["message_count"] == 1
+        assert meta["first_message"] == "hello"
+
+        await session.close()
+
     async def test_new_session_clears_message_count(self, tmp_path):
         """Message count resets to zero on new session."""
         session = await _make_session_async(tmp_path)
@@ -395,8 +414,9 @@ class TestSessionManagerRekey:
     """Verify SessionManager re-keys state when session_id changes."""
 
     def test_rekey_updates_states_dict(self):
-        from taui.tui.session_state import SessionManager, SessionState
         from unittest.mock import MagicMock
+
+        from taui.tui.session_state import SessionManager, SessionState
 
         mgr = SessionManager()
         session = MagicMock()
@@ -406,8 +426,6 @@ class TestSessionManagerRekey:
             session_id="old-id",
         )
         # Manually supply required controller fields
-        from taui.tui.tool_controller import ToolController
-        from taui.tui.approval_controller import ApprovalController
         state.tool_ctrl = MagicMock()
         state.approval_ctrl = MagicMock()
 

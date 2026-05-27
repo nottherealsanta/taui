@@ -35,7 +35,7 @@ class SessionPickerScreen(ModalScreen[str | None]):
         width: 100%;
         content-align: center middle;
         padding: 0 0 1 0;
-        color: cyan;
+        color: $primary;
         text-style: bold;
     }
     #session-picker-dialog OptionList {

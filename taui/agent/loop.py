@@ -32,6 +32,12 @@ from taui.tools.executor import Completed, Denied, NeedsApproval, ToolExecutor
 
 logger = logging.getLogger(__name__)
 
+# Maximum consecutive compaction failures (raise or removed==0) before the
+# loop stops attempting further compactions for the remainder of the session.
+# Prevents the auto-recovery path from looping indefinitely on irrecoverable
+# contexts (e.g. a single oversized user message).
+MAX_COMPACT_FAILURES = 3
+
 
 class AgentState(StrEnum):
     IDLE = "idle"
@@ -153,6 +159,11 @@ class AgentLoop:
 
         # Compaction notification callback: (removed, before_tokens, after_tokens) -> None
         self._on_compact: Callable[[int, int, int], None] | None = None
+
+        # Consecutive compaction failures (raise or removed==0). Reset on a
+        # successful compaction with removed > 0. Once it reaches
+        # MAX_COMPACT_FAILURES the loop stops trying to compact.
+        self._compact_failure_count: int = 0
 
         # Result post-processor callback: (tool_name, call_id, content) -> content
         self._on_result_process: Callable[[str, str, str], str] | None = None
@@ -496,26 +507,25 @@ class AgentLoop:
                         thinking_level=self._model_variant or None,
                     )
             except ContextOverflowError:
-                # Auto-recovery: aggressive compaction + one retry
-                before = estimate_total_tokens(self._messages, self._tokenizer)
-                from taui.agent.context import async_compact_messages
-                removed = await async_compact_messages(
-                    self._messages,
-                    tokenizer=self._tokenizer,
-                    llm=self._llm,
-                    model=self._model,
-                    provider_name=self._provider_name or "default",
-                    max_input_tokens=self.max_input_tokens,
-                )
-                if removed:
-                    after = estimate_total_tokens(self._messages, self._tokenizer)
-                    logger.info(
-                        "Auto-recovery compaction agent_id=%s removed=%d tokens=%d->%d",
-                        self.agent_id, removed, before, after,
+                # Auto-recovery: aggressive compaction + one retry.
+                # Circuit breaker: bail out before wasting another API call
+                # if compaction has been ineffective MAX_COMPACT_FAILURES
+                # times in a row.
+                if self._compact_failure_count >= MAX_COMPACT_FAILURES:
+                    logger.warning(
+                        "Compaction circuit breaker tripped agent_id=%s failures=%d; "
+                        "skipping recovery and re-raising context overflow",
+                        self.agent_id, self._compact_failure_count,
                     )
-                    if self._on_compact:
-                        self._on_compact(removed, before, after)
+                    raise
+                removed = await self._run_compaction(reason="overflow")
+                if removed:
                     messages = self._build_llm_messages()
+                # Retry once regardless of removed: the overflow may have
+                # been spurious, in which case the same messages will now
+                # succeed. If the retry overflows again, it propagates and
+                # the next ContextOverflowError will see an incremented
+                # failure counter and short-circuit.
                 if self._rate_limiter:
                     async with self._rate_limiter.acquire():
                         return await self._llm.create_turn(
@@ -537,27 +547,74 @@ class AgentLoop:
 
     async def _maybe_compact(self) -> None:
         """Compact messages if approaching token budget."""
+        if self._compact_failure_count >= MAX_COMPACT_FAILURES:
+            return
         max_input = self.max_input_tokens
         before = estimate_total_tokens(self._messages, self._tokenizer)
         soft = int(max_input * 0.80)
         if before > soft:
-            from taui.agent.context import async_compact_messages
+            await self._run_compaction(reason="threshold")
+
+    async def _run_compaction(self, *, reason: str) -> int:
+        """Run async compaction, update the failure counter, and emit events.
+
+        Returns the number of messages removed. Always increments the failure
+        counter on raise or removed==0 and resets it on removed>0.
+        ``reason`` is one of ``"threshold"`` (proactive) or ``"overflow"``
+        (post-error recovery) and is recorded on the persisted event.
+        """
+        from taui.agent.context import (
+            async_compact_messages,
+            find_previous_summary,
+        )
+
+        before = estimate_total_tokens(self._messages, self._tokenizer)
+        try:
             removed = await async_compact_messages(
                 self._messages,
                 tokenizer=self._tokenizer,
                 llm=self._llm,
                 model=self._model,
                 provider_name=self._provider_name or "default",
-                max_input_tokens=max_input,
+                max_input_tokens=self.max_input_tokens,
             )
-            if removed:
-                after = estimate_total_tokens(self._messages, self._tokenizer)
-                logger.info(
-                    "Compacted %d messages agent_id=%s tokens=%d->%d",
-                    removed, self.agent_id, before, after,
-                )
-                if self._on_compact:
-                    self._on_compact(removed, before, after)
+        except Exception:
+            self._compact_failure_count += 1
+            logger.exception(
+                "Compaction failed agent_id=%s reason=%s failures=%d",
+                self.agent_id, reason, self._compact_failure_count,
+            )
+            return 0
+
+        if not removed:
+            self._compact_failure_count += 1
+            logger.info(
+                "Compaction no-op agent_id=%s reason=%s failures=%d",
+                self.agent_id, reason, self._compact_failure_count,
+            )
+            return 0
+
+        self._compact_failure_count = 0
+        after = estimate_total_tokens(self._messages, self._tokenizer)
+        logger.info(
+            "Compacted %d messages agent_id=%s reason=%s tokens=%d->%d",
+            removed, self.agent_id, reason, before, after,
+        )
+        summary_text = find_previous_summary(self._messages)
+        await self._emit(
+            EventType.COMPACTION,
+            {
+                "removed": removed,
+                "before_tokens": before,
+                "after_tokens": after,
+                "kind": "async",
+                "reason": reason,
+                "summary_text": summary_text,
+            },
+        )
+        if self._on_compact:
+            self._on_compact(removed, before, after)
+        return removed
 
     async def _execute_questions_batch(
         self, tcs: list[ProviderToolCall]

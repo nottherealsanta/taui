@@ -157,7 +157,7 @@ class _SessionRow(ListItem):
         self.label_text = _build_session_row_text(session, is_current=is_current)
         super().__init__(Static(self.label_text, markup=False))
         self.session_id = str(session.get("session_id", ""))
-        self.styles.height = 3
+        self.styles.height = 2
 
 
 class Sidebar(Vertical):

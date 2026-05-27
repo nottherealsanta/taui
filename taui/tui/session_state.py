@@ -33,6 +33,7 @@ class SessionState:
     reasoning_buf: str = ""
     _reasoning_render_pending: bool = False
     streamed_text: bool = False
+    assistant_text_buf: str = ""
     reply_footer: ReplyFooter | None = None
 
     # Queue for follow-up messages (Alt+Enter while busy)

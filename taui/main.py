@@ -108,7 +108,12 @@ def main(argv: list[str] | None = None) -> None:
     parsed = parse_args(argv)
 
     if parsed.pop("version", False):
-        print("taui 0.8")
+        from importlib.metadata import version
+        try:
+            ver = version("taui")
+        except Exception:
+            ver = "dev"
+        print(f"taui {ver}")
         return
 
     if parsed.pop("login", False):

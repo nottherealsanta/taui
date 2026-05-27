@@ -6,12 +6,15 @@ from typing import TYPE_CHECKING
 
 from textual.containers import Vertical
 
+from taui.session_replay import ReplayItem
 from taui.tui.messages import ToolEnded, ToolStarted
 from taui.tui.widgets.sub_agent_widget import SubAgentWidget
 from taui.tui.widgets.tool_status import ToolStatusWidget
 
 if TYPE_CHECKING:
     from taui.tui.app import TauiApp
+    from taui.tui.session_state import SessionState
+    from taui.tui.widgets.turn_container import TurnContainer
 
 
 def _trunc(s: str, n: int = 40) -> str:
@@ -44,6 +47,7 @@ class ToolController:
         # Track which inner tool_keys are recorded against a sub-agent
         # so the matching result event also routes to it.
         self._inner_to_sub_agent: dict[str, SubAgentWidget] = {}
+        self._tool_replay_turns: dict[str, TurnContainer] = {}
 
     def reset_section(self) -> None:
         self._current_tool_section = None
@@ -61,6 +65,7 @@ class ToolController:
         self._pending_tool_keys.clear()
         self._active_sub_agents.clear()
         self._inner_to_sub_agent.clear()
+        self._tool_replay_turns.clear()
         for _, widget in widgets:
             try:
                 await widget.fail(reason)
@@ -77,6 +82,15 @@ class ToolController:
         self._current_tool_section = None
         self._active_sub_agents.clear()
         self._inner_to_sub_agent.clear()
+        self._tool_replay_turns.clear()
+
+    def _owning_state(self) -> SessionState | None:
+        sessions = getattr(self._app, "_sessions", None)
+        if sessions:
+            for st in sessions.all_states.values():
+                if st.tool_ctrl is self:
+                    return st
+        return None
 
     async def on_tool_call(
         self, call_id: str, name: str, arguments: dict
@@ -135,17 +149,17 @@ class ToolController:
 
     async def handle_tool_started(self, event: ToolStarted) -> None:
         # Find the session state this tool belongs to
-        from taui.tui.session_state import SessionState
-
         st: SessionState | None = None
         if hasattr(event, "session_id") and event.session_id:
             sessions = getattr(self._app, "_sessions", None)
             if sessions:
                 st = sessions.get(event.session_id)
         if st is None:
-            st = getattr(self._app, "_sessions", None)
-            if st is not None:
-                st = st.active
+            st = self._owning_state()
+        if st is None:
+            sessions = getattr(self._app, "_sessions", None)
+            if sessions is not None:
+                st = sessions.active
 
         arguments = getattr(event, "arguments", None) or None
 
@@ -178,6 +192,22 @@ class ToolController:
             )
         await self._current_tool_section.mount(widget)
         self._active_tool_widgets[event.tool_key] = widget
+        if st is not None and st.current_turn is not None:
+            agent_id = str(getattr(st.session._loop, "agent_id", "") or "")
+            model = getattr(st.session, "model_name", "") or getattr(
+                st.session._loop, "_model", ""
+            )
+            st.current_turn.append_replay_item(
+                ReplayItem(
+                    kind="tool_call",
+                    name=event.tool_name,
+                    call_id=event.tool_key,
+                    arguments=arguments,
+                    agent_id=agent_id,
+                    model=model,
+                )
+            )
+            self._tool_replay_turns[event.tool_key] = st.current_turn
 
     async def handle_tool_ended(self, event: ToolEnded) -> None:
         # Inner tool results from a sub-agent are recorded on the sub-agent
@@ -193,6 +223,17 @@ class ToolController:
             return
 
         widget = self._active_tool_widgets.pop(event.tool_key, None)
+        turn = self._tool_replay_turns.pop(event.tool_key, None)
+        if turn is not None:
+            turn.append_replay_item(
+                ReplayItem(
+                    kind="tool_result",
+                    name=event.tool_name,
+                    call_id=event.tool_key,
+                    text=event.result,
+                    is_error=event.is_error,
+                )
+            )
         if widget:
             if isinstance(widget, SubAgentWidget) and widget in self._active_sub_agents:
                 self._active_sub_agents.remove(widget)

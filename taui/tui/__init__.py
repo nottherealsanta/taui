@@ -30,4 +30,4 @@ def run_tui(
     finally:
         if server is not None:
             server.stop()
-    return app.session_id
+    return app.resumable_session_id
