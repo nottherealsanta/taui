@@ -1,6 +1,12 @@
 Screen {
     background: $background;
 }
+Button {
+    height: 1;
+    min-height: 1;
+    padding: 0 2;
+    border: none;
+}
 #cwd-bar {
     dock: top;
     height: 1;
