@@ -221,13 +221,12 @@ def test_render_columns_shows_group_labels_with_count_when_multi() -> None:
 
 
 def test_banner_uses_system_prompt_palette() -> None:
-    """Rest/hover colors match SystemPromptWidget for visual consistency."""
+    """Rest text color matches SystemPromptWidget for visual consistency."""
     from taui.tui.widgets import system_prompt as sp_module
     from taui.tui.widgets import tool_groups_banner as tg_module
 
     sp_css = sp_module.SystemPromptWidget.DEFAULT_CSS
     assert tg_module._TOOL_DEFAULT_COLOR in sp_css
-    assert tg_module._TOOL_HOVER_COLOR in sp_css
 
 
 def test_format_group_label_drops_count_for_solo_groups() -> None:
@@ -246,22 +245,24 @@ def test_render_columns_empty() -> None:
 # ── ToolGroupsBanner widget basics (no Textual app) ──────────────────
 
 
-def test_banner_widget_render_text_switches_on_hover() -> None:
-    from taui.tui.widgets.tool_groups_banner import (
-        _TOOL_DEFAULT_COLOR,
-        _TOOL_HOVER_COLOR,
-        ToolGroupsBanner,
-    )
+def test_banner_widget_includes_label_and_body() -> None:
+    from taui.tui.widgets.tool_groups_banner import ToolGroupsBanner
 
     payload = {"bash": [("bash", "", True), ("bash_kill", "", True)]}
-    banner = ToolGroupsBanner(payload)
-    rest = banner._render_text()
-    banner._hover = True
-    hovered = banner._render_text()
-    # Dimmer at rest, brighter on hover — different output for the two states.
-    assert rest != hovered
-    assert _TOOL_DEFAULT_COLOR in rest
-    assert _TOOL_HOVER_COLOR in hovered
+    banner = ToolGroupsBanner(
+        payload, label_text=" Tools ", label_style="bold #fff on #555",
+    )
+    assert " Tools " in banner._render_label()
+    assert "bash(2)" in banner._render_body()
+
+
+def test_banner_widget_hover_handled_via_css() -> None:
+    """Hover state is purely CSS-driven (no Python state toggle)."""
+    from taui.tui.widgets.tool_groups_banner import ToolGroupsBanner
+
+    css = ToolGroupsBanner.DEFAULT_CSS
+    assert "ToolGroupsBanner:hover" in css
+    assert "background" in css
 
 
 # ── user_extension.py: notebook tool group source ─────────────────────

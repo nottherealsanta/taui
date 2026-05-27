@@ -1981,12 +1981,35 @@ class TauiApp(App[None]):
 
     # ── Context banner ─────────────────────────────────────────────────
 
+    def _neutral_banner_label_style(self) -> str:
+        """Label style for session-global banners (Skills, MCP).
+
+        Unlike Tools / System prompt — which carry the agent color since
+        they are agent-scoped — Skills and MCP belong to the session and
+        get a neutral grey background that does not change with the agent.
+        """
+        fg = "#070707" if self.theme == TAUI_DARK.name else "#ffffff"
+        return f"bold {fg} on #8a8a8a"
+
     def _build_context_banner_parts(
         self,
-    ) -> tuple[str, str, dict[str, list[tuple[str, str, bool]]], str]:
-        """Resolve (system_prompt, tools_label, groups_payload, label_style)."""
+    ) -> tuple[
+        str,
+        dict[str, list[tuple[str, str, bool]]],
+        str,
+        list[tuple[str, str, str]],
+        dict[str, list[str]],
+    ]:
+        """Resolve banner parts.
+
+        Returns (system_prompt, groups_payload, agent_label_style,
+        skills_payload, mcp_payload). Tools are filtered to the agent's
+        active set; the returned ``agent_label_style`` carries the agent
+        color used by the System prompt and Tools banner labels. Skills
+        and MCP are session-global and use the neutral label style.
+        """
         if self._session is None:
-            return "", "", {}, ""
+            return "", {}, "", [], {}
 
         sp = getattr(self._session, "_system_prompt", "") or ""
         if self._session.self_edit_mode:
@@ -1998,33 +2021,51 @@ class TauiApp(App[None]):
         bg_clr = "#070707" if self.theme == TAUI_DARK.name else "#ffffff"
         label_style = f"bold {bg_clr} on {agent_clr}"
 
-        available: list[str] = []
         registry = getattr(self._session, "_registry", None)
-        if registry is not None:
-            available = list(getattr(registry, "names", []) or [])
 
-        active: set[str] = set()
+        active: list[str] = []
         try:
-            active = set(self._session._loop._executor.registry.names)
+            active = list(self._session._loop._executor.registry.names)
         except AttributeError:
-            active = set(available)
+            if registry is not None:
+                active = list(getattr(registry, "names", []) or [])
 
-        tools_label = ""
         groups_payload: dict[str, list[tuple[str, str, bool]]] = {}
-        if available and registry is not None:
+        if active and registry is not None:
             from taui.tui.widgets.tool_groups_banner import build_group_payload
 
-            tools_label = f"[{label_style}] Tools [/{label_style}]"
             groups_payload = build_group_payload(
                 registry,
-                available_names=available,
-                active_names=active,
+                available_names=active,
+                active_names=set(active),
             )
 
-        return sp, tools_label, groups_payload, label_style
+        from taui.tui.widgets.mcp_banner import build_mcp_payload
+        from taui.tui.widgets.skills_banner import build_skills_payload
+
+        skills_payload = build_skills_payload(
+            getattr(self._session, "_skill_registry", None)
+        )
+        mcp_payload = build_mcp_payload(
+            getattr(self._session, "_mcp_manager", None)
+        )
+
+        return (
+            sp,
+            groups_payload,
+            label_style,
+            skills_payload,
+            mcp_payload,
+        )
 
     async def _maybe_show_context_banner(self, chat_log) -> None:
-        """Show system prompt widget + tool group banner once, before the first user message."""
+        """Mount the four context banners once, before the first user message.
+
+        Each banner is a self-contained widget that owns its header label
+        and body, highlights on hover, and opens its modal on click.
+        """
+        from taui.tui.widgets.mcp_banner import McpBanner
+        from taui.tui.widgets.skills_banner import SkillsBanner
         from taui.tui.widgets.system_prompt import SystemPromptWidget
         from taui.tui.widgets.tool_groups_banner import ToolGroupsBanner
 
@@ -2032,24 +2073,50 @@ class TauiApp(App[None]):
             return
         self._context_banner_shown = True
 
-        sp, tools_label, groups_payload, label_style = (
-            self._build_context_banner_parts()
-        )
+        (
+            sp,
+            groups_payload,
+            agent_label_style,
+            skills_payload,
+            mcp_payload,
+        ) = self._build_context_banner_parts()
+        neutral_style = self._neutral_banner_label_style()
+
         if sp:
             await chat_log.mount(
                 SystemPromptWidget(
-                    sp, label=" System prompt ", label_style=label_style,
+                    sp,
+                    label=" System prompt ",
+                    label_style=agent_label_style,
                 )
             )
-        if tools_label:
-            await chat_log.mount(
-                Static(tools_label, classes="context-banner-label", markup=True)
-            )
         if groups_payload:
-            await chat_log.mount(ToolGroupsBanner(groups_payload))
+            await chat_log.mount(
+                ToolGroupsBanner(
+                    groups_payload,
+                    label_text=" Tools ",
+                    label_style=agent_label_style,
+                )
+            )
+        await chat_log.mount(
+            SkillsBanner(
+                skills_payload,
+                label_text=" Skills ",
+                label_style=neutral_style,
+            )
+        )
+        await chat_log.mount(
+            McpBanner(
+                mcp_payload,
+                label_text=" MCP ",
+                label_style=neutral_style,
+            )
+        )
 
     def _refresh_context_banner(self, session_id: str = "") -> None:
         """Re-render the context-start banner when agent config changes."""
+        from taui.tui.widgets.mcp_banner import McpBanner
+        from taui.tui.widgets.skills_banner import SkillsBanner
         from taui.tui.widgets.system_prompt import SystemPromptWidget
         from taui.tui.widgets.tool_groups_banner import ToolGroupsBanner
 
@@ -2066,25 +2133,33 @@ class TauiApp(App[None]):
             chat_log = self._get_active_chat_log()
         except Exception:
             return
-        sp, tools_label, groups_payload, label_style = (
-            self._build_context_banner_parts()
-        )
+        (
+            sp,
+            groups_payload,
+            agent_label_style,
+            skills_payload,
+            mcp_payload,
+        ) = self._build_context_banner_parts()
+        neutral_style = self._neutral_banner_label_style()
         try:
             sp_widget = chat_log.query_one(SystemPromptWidget)
             if sp:
-                sp_widget.set_prompt(sp, label_style=label_style)
-        except Exception:
-            pass
-        try:
-            label_widget = chat_log.query_one(".context-banner-label", Static)
-            if tools_label:
-                label_widget.update(tools_label)
+                sp_widget.set_prompt(sp, label_style=agent_label_style)
         except Exception:
             pass
         try:
             banner = chat_log.query_one(ToolGroupsBanner)
-            if groups_payload:
-                banner.set_groups(groups_payload)
+            banner.set_groups(groups_payload, label_style=agent_label_style)
+        except Exception:
+            pass
+        try:
+            sk_banner = chat_log.query_one(SkillsBanner)
+            sk_banner.set_skills(skills_payload, label_style=neutral_style)
+        except Exception:
+            pass
+        try:
+            mcp_banner = chat_log.query_one(McpBanner)
+            mcp_banner.set_servers(mcp_payload, label_style=neutral_style)
         except Exception:
             pass
 

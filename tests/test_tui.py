@@ -2078,14 +2078,18 @@ class TestContextStartBanner:
         app = TauiApp(Config(working_dir=tmp_path))
         app._session = FakeSession()
 
-        sp1, _tlabel1, _tbody1, _style1 = app._build_context_banner_parts()
+        sp1, _tbody1, _style1, _skills1, _mcp1 = (
+            app._build_context_banner_parts()
+        )
         assert "Default agent prompt" in sp1
 
         # Simulate agent switch — update prompt and agent_id
         FakeSession._system_prompt = "You are PLN, a planning agent."
         FakeLoop.agent_id = "PLN"
 
-        sp2, _tlabel2, _tbody2, style2 = app._build_context_banner_parts()
+        sp2, _tbody2, style2, _skills2, _mcp2 = (
+            app._build_context_banner_parts()
+        )
         assert "planning agent" in sp2
         assert sp1 != sp2, "System prompt did not change after agent switch"
         assert style2  # label style should be present

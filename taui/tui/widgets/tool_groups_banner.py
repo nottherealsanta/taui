@@ -20,8 +20,7 @@ from textual.widgets import Button, Static
 
 # Match the SystemPromptWidget palette so the two banners feel consistent.
 _TOOL_DEFAULT_COLOR = "#a0a0a0"
-_TOOL_HOVER_COLOR = "#d0d0d0"
-_TOOL_INACTIVE_COLOR = "#5a5a5a"
+_DEFAULT_LABEL_STYLE = "bold #ffffff on #8a8a8a"
 
 
 class OpenToolsSelfEdit(Message):
@@ -46,7 +45,7 @@ class ToolsModal(ModalScreen[None]):
         width: 100%;
         content-align: center middle;
         padding: 0 0 1 0;
-        color: cyan;
+        color: #ff9e64;
         text-style: bold;
     }
     #tools-modal-dialog #tm-scroll {
@@ -196,10 +195,10 @@ def _render_columns(
 
 
 class ToolGroupsBanner(Container):
-    """Context banner showing tool groups as columns; whole banner is clickable.
+    """Context banner: header label + tool group grid, all in one widget.
 
-    Renders dim grey at rest, brighter on hover — mirrors the visual
-    treatment of the SystemPromptWidget preview.
+    The entire widget is clickable — header or body — and the whole
+    container highlights on hover. Clicking opens the tools modal.
     """
 
     DEFAULT_CSS = """
@@ -207,49 +206,72 @@ class ToolGroupsBanner(Container):
         width: 100%;
         height: auto;
         margin: 0 1 1 1;
-        padding: 0 1 0 2;
+        padding: 0 1 0 1;
+        color: #a0a0a0;
     }
-    ToolGroupsBanner > Static {
+    ToolGroupsBanner:hover {
+        background: #2a2a2a;
+        color: #e8e8e8;
+    }
+    ToolGroupsBanner .banner-label {
         width: 100%;
         height: auto;
+        padding: 0;
+        margin: 0 1 0 0;
+    }
+    ToolGroupsBanner .banner-body {
+        width: 100%;
+        height: auto;
+        padding: 0 1 0 2;
+        margin: 0 1 1 1;
     }
     """
 
     def __init__(
         self,
         groups: dict[str, list[tuple[str, str, bool]]],
+        *,
+        label_text: str = "Tools",
+        label_style: str = _DEFAULT_LABEL_STYLE,
     ) -> None:
         super().__init__()
         self._groups = groups
-        self._hover = False
+        self._label_text = label_text
+        self._label_style = label_style
 
     def compose(self) -> ComposeResult:
-        yield Static(self._render_text(), markup=True)
+        yield Static(
+            self._render_label(),
+            classes="banner-label",
+            markup=True,
+        )
+        yield Static(
+            self._render_body(),
+            classes="banner-body",
+            markup=True,
+        )
 
-    def _render_text(self) -> str:
-        color = _TOOL_HOVER_COLOR if self._hover else _TOOL_DEFAULT_COLOR
-        return _render_columns(self._groups, color=color)
+    def _render_label(self) -> str:
+        return f"[{self._label_style}] {self._label_text} [/]"
 
-    def _refresh_text(self) -> None:
-        try:
-            self.query_one(Static).update(self._render_text())
-        except Exception:
-            pass
+    def _render_body(self) -> str:
+        return _render_columns(self._groups, color=_TOOL_DEFAULT_COLOR)
 
     def set_groups(
-        self, groups: dict[str, list[tuple[str, str, bool]]]
+        self,
+        groups: dict[str, list[tuple[str, str, bool]]],
+        *,
+        label_style: str | None = None,
     ) -> None:
         """Replace the preview with a fresh group set."""
         self._groups = groups
-        self._refresh_text()
-
-    def on_enter(self, _event: events.Enter) -> None:
-        self._hover = True
-        self._refresh_text()
-
-    def on_leave(self, _event: events.Leave) -> None:
-        self._hover = False
-        self._refresh_text()
+        if label_style is not None:
+            self._label_style = label_style
+        try:
+            self.query_one(".banner-body", Static).update(self._render_body())
+            self.query_one(".banner-label", Static).update(self._render_label())
+        except Exception:
+            pass
 
     async def on_click(self, event: events.Click) -> None:
         event.stop()
