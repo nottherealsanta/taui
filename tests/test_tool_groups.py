@@ -157,7 +157,7 @@ def test_build_group_payload_includes_descriptions_and_active() -> None:
     ]
 
 
-def test_render_columns_emits_group_headers_only_for_multi_member_groups() -> None:
+def test_render_columns_shows_group_labels_with_count_when_multi() -> None:
     from taui.tui.widgets.tool_groups_banner import _render_columns
 
     payload = {
@@ -169,13 +169,21 @@ def test_render_columns_emits_group_headers_only_for_multi_member_groups() -> No
         "read": [("read", "", True)],
     }
     output = _render_columns(payload, color="#5a5a5a", columns=3)
-    # Header is rendered for the multi-tool group ...
-    assert "▾ bash(3)" in output
-    # ... but not for the solo "read" group.
-    assert "▾ read" not in output
-    # All tool names appear in the output.
-    for tool in ("bash", "bash_kill", "bash_status", "read"):
-        assert tool in output
+    # Multi-tool group renders as ``bash(3)``; solo group as just ``read``.
+    assert "bash(3)" in output
+    # Solo group label has no parenthesized count.
+    assert "read(" not in output
+    # Banner only lists group labels — individual tool names live in the
+    # click-to-open modal.
+    for tool in ("bash_kill", "bash_status"):
+        assert tool not in output
+
+
+def test_format_group_label_drops_count_for_solo_groups() -> None:
+    from taui.tui.widgets.tool_groups_banner import _format_group_label
+
+    assert _format_group_label("bash", 3) == "bash(3)"
+    assert _format_group_label("read", 1) == "read"
 
 
 def test_render_columns_empty() -> None:

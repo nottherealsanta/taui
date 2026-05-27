@@ -3014,9 +3014,9 @@ class SelfEditModal(ModalScreen[str | None]):
         # Row-aligned mapping: OptionList row index → underlying Item or None
         # (None marks a non-selectable header row used for the tools tree).
         self._row_items: list[inventory.Item | None] = []
-        # Show built-in tools in the TOOLS category list. Default off so
-        # the user's own tools are easier to scan; toggle re-includes them.
-        self._show_builtin_in_list: bool = False
+        # Show built-in tools in the TOOLS category list. On by default
+        # so the full tree is visible at a glance; toggle hides them.
+        self._show_builtin_in_list: bool = True
 
     @property
     def _category(self) -> inventory.Category:

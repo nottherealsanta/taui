@@ -64,6 +64,11 @@ class ToolsModal(ModalScreen[None]):
         color: #c9d1d9;
         padding: 0 0 0 2;
     }
+    #tools-modal-dialog .tm-tool-name.-solo {
+        padding: 1 0 0 0;
+        color: #d2a8ff;
+        text-style: bold;
+    }
     #tools-modal-dialog .tm-tool-name.-inactive {
         color: #6a6a6a;
     }
@@ -101,21 +106,34 @@ class ToolsModal(ModalScreen[None]):
                 else:
                     for group in sorted(self._groups):
                         members = self._groups[group]
-                        yield Static(
-                            f"▾ {group}  ({len(members)})",
-                            classes="tm-group",
-                            markup=False,
-                        )
-                        for name, _desc, active in members:
+                        # Multi-tool groups get a header; solo tools are
+                        # listed flat as their own name.
+                        if len(members) > 1:
+                            yield Static(
+                                f"▾ {group}  ({len(members)})",
+                                classes="tm-group",
+                                markup=False,
+                            )
+                            for name, _desc, active in members:
+                                classes = (
+                                    "tm-tool-name"
+                                    if active
+                                    else "tm-tool-name -inactive"
+                                )
+                                yield Static(
+                                    f"· {name}",
+                                    classes=classes,
+                                    markup=False,
+                                )
+                        else:
+                            name, _desc, active = members[0]
                             classes = (
-                                "tm-tool-name"
+                                "tm-tool-name -solo"
                                 if active
-                                else "tm-tool-name -inactive"
+                                else "tm-tool-name -solo -inactive"
                             )
                             yield Static(
-                                f"· {name}",
-                                classes=classes,
-                                markup=False,
+                                name, classes=classes, markup=False
                             )
             with Horizontal(classes="button-container"):
                 yield Button(
@@ -138,41 +156,43 @@ class ToolsModal(ModalScreen[None]):
             self.dismiss(None)
 
 
+def _format_group_label(group: str, count: int) -> str:
+    """``bash(3)`` for multi-tool groups, ``read`` for solo groups."""
+    return f"{group}({count})" if count > 1 else group
+
+
 def _render_columns(
     groups: dict[str, list[tuple[str, str, bool]]],
     *,
     color: str,
     columns: int = 3,
 ) -> str:
-    """Render the group/tool list as fixed-width columns of tool names.
+    """Render the group list as fixed-width columns of group labels.
 
-    Groups are emitted as labeled blocks; tools are flattened across columns
-    in the legacy fashion so the banner stays compact.
+    Each cell is ``<group>(<count>)`` (count omitted when 1). One cell per
+    group — individual tool names live behind the click-to-open modal.
     """
     if not groups:
         return ""
-    lines: list[str] = []
-    for group in sorted(groups):
-        members = groups[group]
-        names = [name for name, _, _ in members]
-        if not names:
-            continue
-        if len(names) > 1:
-            lines.append(
-                f"[{color}]▾ {group}({len(names)})[/{color}]"
+    labels = [
+        _format_group_label(g, len(groups[g]))
+        for g in sorted(groups)
+        if groups[g]
+    ]
+    if not labels:
+        return ""
+    col_width = max((len(label) for label in labels), default=0) + 2
+    rows: list[str] = []
+    for i in range(0, len(labels), columns):
+        chunk = labels[i:i + columns]
+        cells = []
+        for j, label in enumerate(chunk):
+            padded = (
+                label if j == len(chunk) - 1 else label.ljust(col_width)
             )
-            indent = "  "
-        else:
-            indent = ""
-        col_width = max((len(n) for n in names), default=0) + 2
-        for i in range(0, len(names), columns):
-            chunk = names[i:i + columns]
-            cells = []
-            for j, name in enumerate(chunk):
-                padded = name if j == len(chunk) - 1 else name.ljust(col_width)
-                cells.append(f"[{color}]{padded}[/{color}]")
-            lines.append(indent + "".join(cells))
-    return "\n".join(lines)
+            cells.append(f"[{color}]{padded}[/{color}]")
+        rows.append("".join(cells))
+    return "\n".join(rows)
 
 
 class ToolGroupsBanner(Container):
