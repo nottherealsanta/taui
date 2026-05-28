@@ -243,26 +243,21 @@ class TestBashWidget:
                 widgets = list(app.query(BashToolStatusWidget))
                 if widgets:
                     widget = widgets[0]
-                    info = widget.query_one("#info", Static)
-                    if "one" in _plain_widget_text(info):
+                    body = widget.query_one("#body", Static)
+                    if "one" in _plain_widget_text(body):
                         break
                 await pilot.pause()
 
             assert widget is not None
             info = widget.query_one("#info", Static)
             assert "printf" in _plain_widget_text(info)
-            assert "one" in _plain_widget_text(info)
-
-            widget.toggle_output()
-            await pilot.pause()
             body = widget.query_one("#body", Static)
-            assert "running:" in _plain_widget_text(body)
             assert "one" in _plain_widget_text(body)
 
             await _wait_idle(app, pilot, timeout=6.0)
-            assert "two" in _plain_widget_text(info)
-            assert "completed:" in _plain_widget_text(body)
+            body = widget.query_one("#body", Static)
             assert "two" in _plain_widget_text(body)
+            assert "completed" not in _plain_widget_text(info).lower()
             await app._session.close()
 
 
