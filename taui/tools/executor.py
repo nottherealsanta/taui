@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import fnmatch
 import logging
 import time
 from dataclasses import dataclass
@@ -16,6 +15,7 @@ from taui.tools.base import (
     ToolResult,
     reset_tool_output_delta_callback,
     set_tool_output_delta_callback,
+    tool_requires_approval,
 )
 from taui.tools.registry import ToolRegistry
 from taui.tools.truncation import TruncationStore
@@ -30,9 +30,6 @@ _RETRY_CATEGORIES: frozenset[ToolCategory] = frozenset(
 )
 _RETRY_DELAYS: tuple[float, ...] = (0.25, 1.0, 4.0)
 
-_READ_ONLY_GIT_OPS: frozenset[str] = frozenset(
-    {"status", "diff", "log", "show", "blame", "branch_list", "branch_current", "stash_list"}
-)
 
 # ── Policy ────────────────────────────────────────────────────────────────────
 
@@ -46,102 +43,70 @@ class PolicyDecision(StrEnum):
 
 
 class ToolPolicy:
-    """Resolves the policy decision for a given tool.
+    """Resolves the policy decision for a given tool call.
 
-    Policies are layered: ruleset > per-tool overrides > defaults.
+    Decisions are derived from:
+      1. Per-tool overrides (set via `set()` — used by tests / config).
+      2. Pattern-based PermissionRuleset (optional).
+      3. The tool's own `requires_approval` attribute.
+      4. The session-level `auto_approve` flag — when True, skips approval
+         for tools that would otherwise need it.
+
+    A `DENY` from a ruleset still blocks even with auto-approve on.
     """
-
-    # Sensible defaults — destructive / side-effecting tools require confirmation
-    _DEFAULTS: dict[str, PolicyDecision] = {
-        "bash": PolicyDecision.CONFIRM,
-        "write": PolicyDecision.CONFIRM,
-        "edit": PolicyDecision.CONFIRM,
-        "worktree": PolicyDecision.CONFIRM,
-    }
 
     def __init__(self, overrides: dict[str, PolicyDecision] | None = None) -> None:
         self._overrides = dict(overrides or {})
-        self._patterns: list[tuple[str, str]] = []
         self._ruleset: PermissionRuleset | None = None
+        self._auto_approve: bool = False
 
-    def decide(self, tool_name: str, arguments: dict | None = None) -> PolicyDecision:
-        """Resolve the policy for a tool name.
+    @property
+    def auto_approve(self) -> bool:
+        return self._auto_approve
 
-        If a ruleset is set, it is consulted first using the tool arguments to
-        extract the subject for pattern matching.  Falls back to per-tool
-        overrides and built-in defaults when no ruleset rule matches.
+    @auto_approve.setter
+    def auto_approve(self, value: bool) -> None:
+        self._auto_approve = bool(value)
+
+    def decide(
+        self,
+        tool_name: str,
+        arguments: dict | None = None,
+        *,
+        tool: Any = None,
+    ) -> PolicyDecision:
+        """Resolve the policy for a tool call.
+
+        Ruleset > per-tool overrides > tool.requires_approval. Auto-approve
+        downgrades a CONFIRM to AUTO; it never weakens a DENY.
         """
         if self._ruleset is not None:
             subject = self._ruleset.extract_subject(tool_name, arguments or {})
             decision = self._ruleset.decide(tool_name, subject)
             if decision is not None:
-                return decision
+                return self._maybe_auto(decision)
         if tool_name in self._overrides:
-            return self._overrides[tool_name]
-        if tool_name == "git":
-            operation = (arguments or {}).get("operation")
-            if operation in _READ_ONLY_GIT_OPS:
-                return PolicyDecision.AUTO
-            return PolicyDecision.CONFIRM
-        if tool_name in self._DEFAULTS:
-            return self._DEFAULTS[tool_name]
+            return self._maybe_auto(self._overrides[tool_name])
+        if tool is not None and tool_requires_approval(tool, arguments or {}):
+            return self._maybe_auto(PolicyDecision.CONFIRM)
         return PolicyDecision.AUTO
+
+    def _maybe_auto(self, decision: PolicyDecision) -> PolicyDecision:
+        if decision == PolicyDecision.CONFIRM and self._auto_approve:
+            return PolicyDecision.AUTO
+        return decision
 
     def set(self, tool_name: str, decision: PolicyDecision) -> None:
         """Override the policy for a specific tool."""
         self._overrides[tool_name] = decision
 
     def set_overrides(self, overrides: dict[str, PolicyDecision]) -> None:
-        """Replace per-tool policy overrides while preserving session patterns."""
+        """Replace per-tool policy overrides."""
         self._overrides = dict(overrides)
 
     def set_ruleset(self, ruleset: PermissionRuleset | None) -> None:
         """Attach a PermissionRuleset for pattern-based decisions."""
         self._ruleset = ruleset
-
-    def add_pattern(self, tool_name: str, pattern: str) -> None:
-        """Add a glob pattern for auto-approving similar tool calls."""
-        self._patterns.append((tool_name, pattern))
-
-    def should_auto_approve(self, tool_name: str, arguments: dict) -> bool:
-        """Return True if arguments match a stored auto-approve pattern or ruleset AUTO rule."""
-        # Check ruleset first
-        if self._ruleset is not None:
-            subject = self._ruleset.extract_subject(tool_name, arguments)
-            decision = self._ruleset.decide(tool_name, subject)
-            if decision == PolicyDecision.AUTO:
-                return True
-            if decision is not None:
-                return False
-        for pat_tool, pat_glob in self._patterns:
-            if pat_tool != tool_name:
-                continue
-            if tool_name == "bash":
-                subject = arguments.get("command", "")
-            elif tool_name in ("write", "edit"):
-                subject = arguments.get("file_path", "") or arguments.get("filePath", "")
-            elif tool_name == "git":
-                subject = _git_subject(arguments)
-            else:
-                subject = ""
-            if fnmatch.fnmatch(subject, pat_glob):
-                return True
-        return False
-
-
-def _git_subject(arguments: dict[str, Any]) -> str:
-    operation = arguments.get("operation", "")
-    args = arguments.get("args", {})
-    if not isinstance(operation, str):
-        return ""
-    if not isinstance(args, dict) or not args:
-        return operation
-    parts = [operation]
-    for key in sorted(args):
-        value = args[key]
-        if isinstance(value, str | int | bool):
-            parts.append(f"{key}={value}")
-    return " ".join(parts)
 
 
 # Late-binding import to avoid a circular dependency: permissions imports from
@@ -249,19 +214,18 @@ class ToolExecutor:
             )
 
         # Check policy
-        decision = self._policy.decide(tool_name, arguments)
+        decision = self._policy.decide(tool_name, arguments, tool=tool)
         if decision == PolicyDecision.DENY:
             return Denied(
                 result=ToolResult.fail(f"Tool {tool_name!r} is denied by policy.")
             )
         if decision == PolicyDecision.CONFIRM:
             if approved is None:
-                if not self._policy.should_auto_approve(tool_name, arguments):
-                    return NeedsApproval(
-                        tool_call_id=tool_call_id,
-                        tool_name=tool_name,
-                        arguments=arguments,
-                    )
+                return NeedsApproval(
+                    tool_call_id=tool_call_id,
+                    tool_name=tool_name,
+                    arguments=arguments,
+                )
             if approved is False:
                 return Denied(
                     result=ToolResult.fail("Tool execution rejected by user.")
