@@ -236,7 +236,7 @@ class TestGeneralCategory:
         from taui.self_edit.inventory import _GENERAL_DEFAULTS
 
         assert _GENERAL_DEFAULTS["verbose_tools"] is True
-        assert _GENERAL_DEFAULTS["auto_approve_reads"] is True
+        assert _GENERAL_DEFAULTS["auto_approve"] is False
 
 
 # ── 3. SelfEditModal instantiation tests ─────────────────────────────

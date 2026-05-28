@@ -258,15 +258,32 @@ class TestToolPolicy:
         assert policy.decide("bash") == PolicyDecision.DENY
 
     def test_git_read_only_ops_auto_approve(self):
+        from taui.tools.builtins.git import GitTool
         policy = ToolPolicy()
-        assert policy.decide("git", {"operation": "status"}) == PolicyDecision.AUTO
-        assert policy.decide("git", {"operation": "diff"}) == PolicyDecision.AUTO
-        assert policy.decide("git", {"operation": "show"}) == PolicyDecision.AUTO
+        git = GitTool()
+        assert policy.decide("git", {"operation": "status"}, tool=git) == PolicyDecision.AUTO
+        assert policy.decide("git", {"operation": "diff"}, tool=git) == PolicyDecision.AUTO
+        assert policy.decide("git", {"operation": "show"}, tool=git) == PolicyDecision.AUTO
 
     def test_git_mutating_ops_require_confirmation(self):
+        from taui.tools.builtins.git import GitTool
         policy = ToolPolicy()
-        assert policy.decide("git", {"operation": "commit"}) == PolicyDecision.CONFIRM
-        assert policy.decide("git", {"operation": "checkout"}) == PolicyDecision.CONFIRM
+        git = GitTool()
+        assert policy.decide("git", {"operation": "commit"}, tool=git) == PolicyDecision.CONFIRM
+        assert policy.decide("git", {"operation": "checkout"}, tool=git) == PolicyDecision.CONFIRM
+
+    def test_auto_approve_skips_confirm(self):
+        from taui.tools.builtins.bash import BashTool
+        policy = ToolPolicy()
+        bash = BashTool()
+        assert policy.decide("bash", {"command": "ls"}, tool=bash) == PolicyDecision.CONFIRM
+        policy.auto_approve = True
+        assert policy.decide("bash", {"command": "ls"}, tool=bash) == PolicyDecision.AUTO
+
+    def test_auto_approve_preserves_deny(self):
+        policy = ToolPolicy(overrides={"bash": PolicyDecision.DENY})
+        policy.auto_approve = True
+        assert policy.decide("bash") == PolicyDecision.DENY
 
 
 # ═══ ToolExecutor ═════════════════════════════════════════════════════════════

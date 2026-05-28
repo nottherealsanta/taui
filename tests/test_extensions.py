@@ -292,43 +292,6 @@ def register(ctx):
         assert loaded == ["ctx_tool_ext"]
         assert "ctx_tool" in tools
 
-    async def test_generated_auto_approve_extension_replaces_tool_and_policy(
-        self, tmp_path: Path
-    ):
-        """Generated auto-approve extensions wrap the tool and set policy AUTO."""
-        from dataclasses import dataclass, field
-
-        from taui.extensions.auto_approve import write_auto_approve_extension
-        from taui.tools.base import ToolCategory, ToolResult
-        from taui.tools.executor import PolicyDecision, ToolPolicy
-
-        @dataclass
-        class EchoTool:
-            name: str = "echo"
-            description: str = "echo"
-            category: ToolCategory = ToolCategory.SEARCH
-            schema: dict[str, Any] = field(
-                default_factory=lambda: {"type": "object", "properties": {}}
-            )
-
-            async def execute(self, arguments: dict[str, Any]) -> ToolResult:
-                return ToolResult.ok(arguments.get("text", ""))
-
-        original = EchoTool()
-        tools = ToolRegistry()
-        tools.register(original)
-        policy = ToolPolicy(overrides={"echo": PolicyDecision.CONFIRM})
-        write_auto_approve_extension("echo", tmp_path, "project")
-
-        reg = ExtensionRegistry(tmp_path)
-        reg.discover()
-        loaded = reg.load_all(tools=tools, policy=policy)
-
-        assert loaded == ["taui_auto_approve_echo"]
-        assert tools.get("echo") is not original
-        assert policy.decide("echo") == PolicyDecision.AUTO
-        assert (await tools.get("echo").execute({"text": "ok"})).content == "ok"
-
     def test_load_new_style_ctx_skill_path(self, tmp_path: Path):
         """New-style register(ctx) can contribute skill paths."""
         skill_dir = tmp_path / ".taui" / "extensions" / "skills"

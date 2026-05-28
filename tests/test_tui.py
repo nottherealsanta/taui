@@ -1601,16 +1601,16 @@ class TestInfo2:
 
         async with app.run_test() as pilot:
             info2 = app.query_one("#info2", Info2)
-            info2.show_approval("bash", "command=ls", "ls *")
+            info2.show_approval("bash", "command=ls")
             await pilot.pause()
 
             assert info2.mode == Info2Mode.APPROVAL
             assert app.focused is info2
             labels = [str(item.render()) for item in info2.query(Info2Item)]
-            assert any("Allow all bash commands (project extension)" in lb for lb in labels)
-            assert any("Allow all bash commands (global extension)" in lb for lb in labels)
+            assert any("Allow" in lb for lb in labels)
+            assert any("Deny" in lb for lb in labels)
 
-    async def test_approval_can_select_project_tool_scope(self):
+    async def test_approval_deny_returns_false(self):
         from taui.tui.widgets.info2 import Info2
 
         class Info2Harness(App[None]):
@@ -1621,17 +1621,15 @@ class TestInfo2:
 
         async with app.run_test() as pilot:
             info2 = app.query_one("#info2", Info2)
-            info2.show_approval("bash", "command=ls", "ls *")
+            info2.show_approval("bash", "command=ls")
             waiter = asyncio.create_task(info2.wait_for_approval())
             await pilot.pause()
 
-            info2.selected_index = 2
+            info2.selected_index = 1
             info2.accept()
             result = await waiter
 
-            assert result.approved is True
-            assert result.pattern is None
-            assert result.tool_scope == "project"
+            assert result.approved is False
 
 
 # ── Messages ─────────────────────────────────────────────────────────
