@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Any
 
 from rich.text import Text
 from textual.app import ComposeResult
@@ -15,14 +16,56 @@ from textual.widgets import Label, OptionList
 from textual.widgets.option_list import Option
 
 HIGHLIGHT_MARKER_STYLE = "bold #0178d4"
+RECOMMENDED_STYLE = "italic #0178d4"
+DETAIL_STYLE = "dim"
+
+
+@dataclass(slots=True)
+class QuestionOption:
+    """A single answer option."""
+
+    label: str
+    description: str | None = None
 
 
 @dataclass(slots=True)
 class QuestionSpec:
-    """One question with optional pre-defined choices."""
+    """One question with optional pre-defined choices.
+
+    `options` accepts either a list of `QuestionOption` objects or a list of
+    raw strings (each treated as a label with no description). `recommended`
+    is the 1-based index of the preferred option, if any.
+    """
 
     question: str
-    options: list[str] | None = None
+    options: list[QuestionOption] | list[str] | None = None
+    recommended: int | None = None
+    _normalized: list[QuestionOption] | None = field(default=None, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        if self.options is None:
+            self._normalized = None
+            return
+        normalized: list[QuestionOption] = []
+        for o in self.options:
+            if isinstance(o, QuestionOption):
+                normalized.append(o)
+            elif isinstance(o, str):
+                normalized.append(QuestionOption(label=o, description=None))
+            elif isinstance(o, dict):
+                lab = o.get("label", "")
+                if not isinstance(lab, str):
+                    continue
+                desc = o.get("description")
+                if desc is not None and not isinstance(desc, str):
+                    desc = str(desc)
+                normalized.append(QuestionOption(label=lab, description=desc))
+        self._normalized = normalized or None
+
+    @property
+    def norm_options(self) -> list[QuestionOption]:
+        """Return options as QuestionOption objects (empty list if None)."""
+        return list(self._normalized) if self._normalized else []
 
 
 class QuestionOptionList(OptionList):
@@ -127,8 +170,8 @@ class QuestionsPanel(Widget):
         ┌────────────────────────────────────────── 1/n ─┐
         │  <question>                                    │
         │  ┌──────────────────────────────────────────┐  │
-        │  │ 1. option A                              │  │
-        │  │ 2. option B                              │  │
+        │  │ 1. option A (recommended)    detail text │  │
+        │  │ 2. option B                  detail text │  │
         │  │ 3. option C                              │  │
         │  │ 4. ░░░ custom input ░░░░░░░░░░░░░░░░░░░░ │  │
         │  └──────────────────────────────────────────┘  │
@@ -214,6 +257,8 @@ class QuestionsPanel(Widget):
         self._custom_answers: list[str] = [""] * len(specs)
         self._current = 0
         self._future: asyncio.Future[list[str | None]] | None = None
+        # Cached usable width for trailing-detail layout; updated on resize.
+        self._content_width: int = 0
 
     # ── compose ──────────────────────────────────────────────
 
@@ -232,10 +277,10 @@ class QuestionsPanel(Widget):
                         id=f"qp-ind-{i}",
                         classes="qp-indicator",
                     )
-                opts = spec.options or []
+                opts = spec.norm_options
                 entries = [
                     Option(
-                        self._option_prompt(j, o, highlighted=j == 1),
+                        self._option_prompt(i, j, o, highlighted=j == 1),
                         id=f"qp-opt-{i}-{j - 1}",
                     )
                     for j, o in enumerate(opts, 1)
@@ -254,6 +299,27 @@ class QuestionsPanel(Widget):
 
     def on_mount(self) -> None:
         self._focus_current()
+
+    def on_resize(self, event: Any) -> None:  # pragma: no cover - layout hook
+        # Re-render rows so detail text right-aligns to the new width.
+        try:
+            self._content_width = self.size.width
+        except Exception:
+            self._content_width = 0
+        for i, spec in enumerate(self._specs):
+            try:
+                ol = self.query_one(f"#qp-opts-{i}", QuestionOptionList)
+            except Exception:
+                continue
+            opts = spec.norm_options
+            highlighted = ol.highlighted
+            for j, opt in enumerate(opts, 1):
+                ol.replace_option_prompt(
+                    f"qp-opt-{i}-{j - 1}",
+                    self._option_prompt(
+                        i, j, opt, highlighted=highlighted == j - 1
+                    ),
+                )
 
     # ── navigation ───────────────────────────────────────────
 
@@ -316,15 +382,45 @@ class QuestionsPanel(Widget):
         if self._future and not self._future.done():
             self._future.set_result(list(self._answers))
 
+    def _row_width(self) -> int:
+        """Best-effort interior width used to right-align detail text."""
+        w = self._content_width or 0
+        if not w:
+            try:
+                w = self.size.width
+            except Exception:
+                w = 0
+        # Account for the OptionList padding (0 1) and our prefix/indent.
+        return max(0, w - 8)
+
     def _option_prompt(
         self,
+        question_index: int,
         option_number: int,
-        label: str,
+        option: QuestionOption,
         highlighted: bool = False,
     ) -> Text:
         prefix = Text("┃ ", style=HIGHLIGHT_MARKER_STYLE) if highlighted else Text("  ")
-        body = Text(f"{option_number}. {label}")
-        return Text("\n") + prefix + body + Text("\n")
+        body = Text(f"{option_number}. ") + Text(option.label)
+        spec = self._specs[question_index]
+        if spec.recommended == option_number:
+            body.append(" ")
+            body.append("(recommended)", style=RECOMMENDED_STYLE)
+        line = Text("\n") + prefix + body
+        if option.description:
+            available = self._row_width() - line.cell_len
+            detail = f"  {option.description}"
+            if available > 4:
+                if len(detail) > available:
+                    detail = detail[: max(0, available - 1)] + "…"
+                pad = max(1, available - len(detail))
+                line.append(" " * pad)
+                line.append(detail.lstrip(" "), style=DETAIL_STYLE)
+            else:
+                line.append("  ")
+                line.append(option.description, style=DETAIL_STYLE)
+        line.append("\n")
+        return line
 
     def _custom_prompt(
         self,
@@ -361,13 +457,14 @@ class QuestionsPanel(Widget):
         if i is None:
             return
         spec = self._specs[i]
-        opts = spec.options or []
-        for j, label in enumerate(opts, 1):
+        opts = spec.norm_options
+        for j, opt in enumerate(opts, 1):
             ol.replace_option_prompt(
                 f"qp-opt-{i}-{j - 1}",
                 self._option_prompt(
+                    i,
                     j,
-                    label,
+                    opt,
                     highlighted=event.option_index == j - 1,
                 ),
             )
@@ -398,7 +495,7 @@ class QuestionsPanel(Widget):
             f"qp-custom-{i}",
             self._custom_prompt(
                 i,
-                len(spec.options or []),
+                len(spec.norm_options),
                 active=event.option_list.is_custom_active,
                 highlighted=(
                     event.option_list.highlighted == event.option_list.custom_index
@@ -411,7 +508,7 @@ class QuestionsPanel(Widget):
     ) -> None:
         i = self._current
         spec = self._specs[i]
-        opts = spec.options or []
+        opts = spec.norm_options
         idx = event.option_index
         ol = getattr(event, "option_list", None)
         # If the user clicked (or pressed Enter on) the custom row but
@@ -439,7 +536,7 @@ class QuestionsPanel(Widget):
             # Leaving editing mode for a real selection.
             ol._custom_active = False
         self._answers[i] = (
-            opts[idx]
+            opts[idx].label
             if idx < len(opts)
             else self._custom_answers[i].strip() or None
         )

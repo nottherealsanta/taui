@@ -1963,6 +1963,79 @@ class TestQuestionsPanel:
 
         assert panel._answers == [None]
 
+    def test_question_spec_with_structured_options(self):
+        from taui.tui.widgets.questions_panel import QuestionOption
+
+        spec = QuestionSpec(
+            "Pick",
+            [
+                QuestionOption("a", "fast"),
+                QuestionOption("b"),
+            ],
+            recommended=1,
+        )
+        norm = spec.norm_options
+        assert norm[0].label == "a"
+        assert norm[0].description == "fast"
+        assert norm[1].description is None
+        assert spec.recommended == 1
+
+    def test_question_spec_with_dict_options(self):
+        spec = QuestionSpec(
+            "Pick",
+            [
+                {"label": "a", "description": "fast"},
+                {"label": "b"},
+            ],
+            recommended=2,
+        )
+        norm = spec.norm_options
+        assert norm[0].label == "a"
+        assert norm[0].description == "fast"
+        assert spec.recommended == 2
+
+    def test_option_prompt_marks_recommended(self):
+        from taui.tui.widgets.questions_panel import QuestionOption
+
+        spec = QuestionSpec(
+            "Pick",
+            [QuestionOption("a"), QuestionOption("b")],
+            recommended=2,
+        )
+        panel = QuestionsPanel([spec])
+        text_a = panel._option_prompt(0, 1, spec.norm_options[0])
+        text_b = panel._option_prompt(0, 2, spec.norm_options[1])
+        assert "(recommended)" not in text_a.plain
+        assert "(recommended)" in text_b.plain
+
+    def test_option_prompt_includes_description(self):
+        from taui.tui.widgets.questions_panel import QuestionOption
+
+        spec = QuestionSpec(
+            "Pick",
+            [QuestionOption("a", "trade-off detail")],
+        )
+        panel = QuestionsPanel([spec])
+        panel._content_width = 80
+        text = panel._option_prompt(0, 1, spec.norm_options[0])
+        assert "trade-off detail" in text.plain
+
+    def test_structured_option_selection_returns_label(self):
+        from taui.tui.widgets.questions_panel import QuestionOption
+
+        spec = QuestionSpec(
+            "Pick",
+            [QuestionOption("alpha"), QuestionOption("beta")],
+            recommended=2,
+        )
+        panel = QuestionsPanel([spec])
+
+        class Event:
+            option_index = 1
+
+        panel.on_option_list_option_selected(Event())  # type: ignore[arg-type]
+        assert panel._answers == ["beta"]
+
     def test_click_on_custom_row_focuses_instead_of_resolving(self):
         from taui.tui.widgets.questions_panel import QuestionOptionList
 
