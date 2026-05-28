@@ -21,6 +21,7 @@ class ApplyPatchTool:
         "for large refactors."
     )
     category: ToolCategory = ToolCategory.FILE_WRITE
+    requires_approval: bool = True
     schema: dict[str, Any] = field(default=None)
     working_dir: Path | None = field(default=None, repr=False)
     _path_guard: Any = field(default=None, repr=False)

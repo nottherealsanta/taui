@@ -77,6 +77,10 @@ class Tool(Protocol):
 
     `group` is optional; tools without a group are treated as their own
     single-member group by the registry's grouping helpers.
+
+    `requires_approval` may be a bool (static) or a callable that takes
+    the call's arguments dict and returns a bool (dynamic, e.g. git read
+    vs write ops). Tools that omit it are auto-approved.
     """
 
     name: str
@@ -86,6 +90,17 @@ class Tool(Protocol):
     group: str | None
 
     async def execute(self, arguments: dict[str, Any]) -> ToolResult: ...
+
+
+def tool_requires_approval(tool: Any, arguments: dict[str, Any]) -> bool:
+    """Return True if the tool needs user confirmation for this call."""
+    needs = getattr(tool, "requires_approval", False)
+    if callable(needs):
+        try:
+            return bool(needs(arguments))
+        except Exception:
+            return True
+    return bool(needs)
 
 
 def tool_group(tool: Any) -> str:

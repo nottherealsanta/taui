@@ -150,6 +150,7 @@ class EditTool:
         "the target location. Supports multiple edits in one call."
     )
     category: ToolCategory = ToolCategory.FILE_WRITE
+    requires_approval: bool = True
     working_dir: Path = field(default_factory=Path.cwd)
     _path_guard: Any = None
     _file_tracker: FileTracker | None = None

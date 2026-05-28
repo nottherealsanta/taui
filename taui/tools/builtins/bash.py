@@ -92,6 +92,7 @@ class BashTool:
     )
     category: ToolCategory = ToolCategory.SHELL
     group: str = "bash"
+    requires_approval: bool = True
     working_dir: Path = field(default_factory=Path.cwd)
     guidelines: str = (
         "Use `bash` for running shell commands. Prefer other tools when "

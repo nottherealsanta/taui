@@ -36,6 +36,7 @@ class WorktreeTool:
         "or removing it and its branch (keep=false)."
     )
     category: ToolCategory = ToolCategory.GIT
+    requires_approval: bool = True
     working_dir: Path = field(default_factory=Path.cwd)
     guidelines: str = (
         "Use a worktree before risky refactors or to isolate parallel work "

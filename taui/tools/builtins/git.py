@@ -39,6 +39,10 @@ class GitTool:
     )
     schema: dict[str, Any] = field(default=None)  # type: ignore[assignment]
 
+    @staticmethod
+    def requires_approval(arguments: dict[str, Any]) -> bool:
+        return (arguments or {}).get("operation") not in _READ_OPS
+
     def __post_init__(self):
         if self.schema is None:
             self.schema = {
