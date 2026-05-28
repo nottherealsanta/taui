@@ -77,6 +77,8 @@ class SystemPromptWidget(Container):
     SystemPromptWidget {
         width: 100%;
         height: auto;
+        margin: 0 1 1 1;
+        padding: 0 1 0 1;
         color: #a0a0a0;
     }
     SystemPromptWidget:hover {
@@ -87,7 +89,7 @@ class SystemPromptWidget(Container):
         width: 100%;
         height: auto;
         padding: 0;
-        margin: 0 1 1 0;
+        margin: 0 1 0 0;
     }
     SystemPromptWidget .sp-body {
         width: 100%;
