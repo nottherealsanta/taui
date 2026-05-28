@@ -9,7 +9,7 @@ list of `Item`s, both keyed by `(scope, identifier)`.
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from taui.self_edit.store import SelfEditStore
@@ -181,7 +181,7 @@ def _list_agents(working_dir: Path, scope: str) -> list[Item]:
                     "provider": profile.provider,
                     "model": profile.model,
                     "allowed_tools": list(profile.allowed_tools),
-                    "auto_approve_all": profile.auto_approve_all,
+                    "auto_approve": profile.auto_approve,
                     "usage": profile.usage,
                     "color": profile.color,
                 },
@@ -253,6 +253,19 @@ def _list_commands(working_dir: Path, scope: str) -> list[Item]:
 
 def _list_tools(working_dir: Path, scope: str) -> list[Item]:
     items = _list_py_dir(working_dir, scope, subdir="extensions", category="tools")
+    if items:
+        from taui.tools.groups import _build_registry_with_attribution
+
+        _, attribution = _build_registry_with_attribution(working_dir)
+        enriched: list[Item] = []
+        for it in items:
+            tool_names = attribution.get(it.identifier)
+            if tool_names:
+                extra = dict(it.extra)
+                extra["registered_tools"] = list(tool_names)
+                it = replace(it, extra=extra)
+            enriched.append(it)
+        items = enriched
     if scope == "global":
         items = _list_builtin_tools() + items
     return items
@@ -466,9 +479,9 @@ GENERAL_SETTINGS_SECTIONS: tuple[
                 bool,
             ),
             (
-                "auto_approve_reads",
-                "Auto Approve Reads",
-                "Automatically approve read-only tool calls.",
+                "auto_approve",
+                "Auto Approve",
+                "Skip approval for every tool call (toggle with Ctrl+A).",
                 bool,
             ),
         ],
@@ -488,7 +501,7 @@ _GENERAL_SETTINGS_MAP: dict[str, tuple[str, type]] = {
     "notify_on_turn_done": ("notify_on_turn_done", bool),
     "notify_on_question": ("notify_on_question", bool),
     "verbose_tools": ("verbose_tools", bool),
-    "auto_approve_reads": ("auto_approve_reads", bool),
+    "auto_approve": ("auto_approve", bool),
 }
 
 # Total number of general settings (used for the tab badge).
@@ -509,7 +522,7 @@ _GENERAL_DEFAULTS: dict[str, object] = {
     "notify_on_turn_done": True,
     "notify_on_question": True,
     "verbose_tools": True,
-    "auto_approve_reads": True,
+    "auto_approve": False,
 }
 
 
@@ -524,7 +537,7 @@ def _load_general_values() -> dict[str, object]:
     values: dict[str, object] = dict(_GENERAL_DEFAULTS)
     for fld in ("max_turns", "provider", "model", "notifications",
                 "notify_on_turn_done", "notify_on_question", "verbose_tools",
-                "auto_approve_reads"):
+                "auto_approve"):
         if fld in taui_cfg:
             values[fld] = taui_cfg[fld]
     for fld in ("file_attach", "command"):
@@ -708,7 +721,7 @@ def _save_agent(
         model=str(extra.get("model", "")),
         allowed_tools=list(extra.get("allowed_tools", [])),
         tool_config={},
-        auto_approve_all=bool(extra.get("auto_approve_all", False)),
+        auto_approve=bool(extra.get("auto_approve", extra.get("auto_approve_all", False))),
         usage=usage,
         color=str(extra.get("color", "")),
     )

@@ -36,7 +36,7 @@ class AgentProfile:
     allowed_tools: list[str]
     prompt_path: Path | None = None
     tool_config: dict[str, ToolConfig] = field(default_factory=dict)
-    auto_approve_all: bool = False
+    auto_approve: bool = False
     # Where the profile is reachable. One of "main", "sub", "both".
     usage: str = "both"
     # Optional accent color (hex like "#7aa2f7", named like "cyan", or "").
@@ -84,7 +84,7 @@ _DEFAULT_AGENT_FILES: dict[str, str] = {
         'usage: both\n'
         'color: "#7aa2f7"\n'
         'allowed_tools: []\n'
-        'auto_approve_all: true\n'
+        'auto_approve: true\n'
         '---\n'
         'You are a pragmatic software engineer. Make scoped changes and verify them.'
     ),
@@ -228,7 +228,7 @@ def _parse_agent_frontmatter(
             allowed_tools=[str(x) for x in meta.get("allowed_tools", [])],
             prompt_path=path,
             tool_config=tool_config,
-            auto_approve_all=bool(meta.get("auto_approve_all", False)),
+            auto_approve=bool(meta.get("auto_approve", meta.get("auto_approve_all", False))),
             usage=usage,
             color=str(meta.get("color", "")),
         )
@@ -245,8 +245,8 @@ def _serialize_agent_frontmatter(profile: AgentProfile) -> str:
     if profile.color:
         meta["color"] = profile.color
     meta["allowed_tools"] = list(profile.allowed_tools)
-    if profile.auto_approve_all:
-        meta["auto_approve_all"] = profile.auto_approve_all
+    if profile.auto_approve:
+        meta["auto_approve"] = profile.auto_approve
     if profile.provider:
         meta["provider"] = profile.provider
     if profile.model:

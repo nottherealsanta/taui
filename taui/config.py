@@ -47,7 +47,7 @@ class Config:
     working_dir: Path = field(default_factory=Path.cwd)
 
     # Tool policy
-    auto_approve_reads: bool = True
+    auto_approve: bool = False  # session-level: skip approval for tools that would ask
     tool_policy: dict[str, str] = field(default_factory=dict)  # per-tool overrides
     permission: dict[str, dict[str, str]] = field(default_factory=dict)  # pattern-based rules
 
