@@ -641,14 +641,23 @@ class AgentLoop:
             if self._on_tool_call:
                 await self._on_tool_call(tc.call_id, tc.name, tc.arguments)
 
-        # Build question specs for the UI
-        specs: list[tuple[str, list[str] | None]] = []
+        # Build question specs for the UI. Each spec is a tuple of
+        # (question, options, recommended). `options` is a list of option
+        # dicts ({"label": str, "description": str | None}); `recommended`
+        # is the 1-based index of the model's preferred option, if any.
+        from taui.tools.builtins.question import (
+            _normalize_options,
+            _normalize_recommended,
+        )
+
+        specs: list[tuple[str, list[dict] | None, int | None]] = []
         for tc in tcs:
             q = tc.arguments.get("question", "")
-            opts = tc.arguments.get("options")
-            if opts is not None and not isinstance(opts, list):
-                opts = None
-            specs.append((q, opts))
+            opts = _normalize_options(tc.arguments.get("options"))
+            recommended = _normalize_recommended(
+                tc.arguments.get("recommended"), opts
+            )
+            specs.append((q, opts, recommended))
 
         # Call the batch UI callback
         answers = await self._on_questions_batch(specs)

@@ -58,9 +58,20 @@ class ApprovalController:
             pass
 
     async def on_questions_batch(
-        self, specs: list[tuple[str, list[str] | None]]
+        self,
+        specs: list[
+            tuple[str, list[str] | list[dict] | None]
+            | tuple[str, list[str] | list[dict] | None, int | None]
+        ],
     ) -> list[str | None]:
-        q_specs = [QuestionSpec(q, opts) for q, opts in specs]
+        q_specs: list[QuestionSpec] = []
+        for spec in specs:
+            if len(spec) == 3:
+                q, opts, recommended = spec  # type: ignore[misc]
+            else:
+                q, opts = spec  # type: ignore[misc]
+                recommended = None
+            q_specs.append(QuestionSpec(q, opts, recommended))
         chat_input = self._app.query_one("#chat-input", ChatInput)
         info2 = self._app.query_one("#info2", Info2)
         chat_input.disabled = True
@@ -111,18 +122,35 @@ class ApprovalController:
                     (
                         "Choose a deployment target",
                         [
-                            "Local dev server (Recommended)",
-                            "Staging environment",
-                            "Production with dry-run",
+                            {
+                                "label": "Local dev server",
+                                "description": "fastest, no remote impact",
+                            },
+                            {
+                                "label": "Staging environment",
+                                "description": "mirrors prod, safe",
+                            },
+                            {
+                                "label": "Production with dry-run",
+                                "description": "no writes, just plan",
+                            },
                         ],
+                        1,
                     ),
                     (
                         "Pick a follow-up action",
                         [
-                            "Open the diff",
-                            "Run tests (Recommended)",
-                            "Skip verification",
+                            {"label": "Open the diff"},
+                            {
+                                "label": "Run tests",
+                                "description": "verifies the change before merge",
+                            },
+                            {
+                                "label": "Skip verification",
+                                "description": "risky — only for trivial edits",
+                            },
                         ],
+                        2,
                     ),
                 ]
             )
