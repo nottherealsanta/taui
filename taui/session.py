@@ -131,6 +131,22 @@ class Session:
         """Whether this session has a resumable metadata record."""
         return self._session_persisted
 
+    @property
+    def auto_approve(self) -> bool:
+        """Whether tool calls that would otherwise need approval are auto-run."""
+        return self._executor.policy.auto_approve
+
+    @auto_approve.setter
+    def auto_approve(self, value: bool) -> None:
+        self._executor.policy.auto_approve = bool(value)
+        self.config.auto_approve = bool(value)
+        self._notify_config_changed()
+
+    def toggle_auto_approve(self) -> bool:
+        """Flip auto_approve and return the new state."""
+        self.auto_approve = not self.auto_approve
+        return self.auto_approve
+
     def _current_mode(self) -> str:
         if self.self_edit_mode:
             return "self_edit"
@@ -202,13 +218,9 @@ class Session:
             if hasattr(tool, "_lsp_manager"):
                 tool._lsp_manager = lsp_manager
 
-        # Tool policy — safe defaults with config overrides
+        # Tool policy — decisions derive from each tool's `requires_approval`.
+        # Per-tool overrides from config still win when set.
         policy_overrides: dict[str, PolicyDecision] = {}
-        if config.auto_approve_reads:
-            # Read-only tools auto-approved when configured
-            for name in ("read", "glob", "grep"):
-                policy_overrides[name] = PolicyDecision.AUTO
-        # Apply explicit per-tool overrides from config file
         for tool_name, decision_str in config.tool_policy.items():
             try:
                 policy_overrides[tool_name] = PolicyDecision(decision_str)
@@ -219,6 +231,7 @@ class Session:
                     tool_name,
                 )
         policy = ToolPolicy(overrides=policy_overrides)
+        policy.auto_approve = bool(config.auto_approve)
 
         # Pattern-based permission ruleset (project layer from config)
         if config.permission:
