@@ -63,7 +63,7 @@ class McpModal(ModalScreen[None]):
         align: center middle;
         padding: 1 0 0 0;
     }
-    #mcp-modal-dialog #mcp-add-button {
+    #mcp-modal-dialog #mcp-edit-button {
         margin: 0 1;
     }
     """
@@ -102,16 +102,18 @@ class McpModal(ModalScreen[None]):
                             )
             with Horizontal(classes="button-container"):
                 yield Button(
-                    "Add server…",
+                    "Edit MCP Server",
                     variant="default",
-                    id="mcp-add-button",
-                    disabled=True,
+                    id="mcp-edit-button",
                 )
                 yield Button("Close", variant="primary", id="close-button")
 
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "mcp-add-button":
-            # Stub — implemented later.
+    async def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "mcp-edit-button":
+            self.dismiss(None)
+            action = getattr(self.app, "action_enter_self_edit", None)
+            if action is not None:
+                await action(initial_category="mcp")
             return
         self.dismiss(None)
 

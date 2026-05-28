@@ -69,7 +69,7 @@ class SkillsModal(ModalScreen[None]):
         align: center middle;
         padding: 1 0 0 0;
     }
-    #skills-modal-dialog #sm-add-button {
+    #skills-modal-dialog #sm-edit-button {
         margin: 0 1;
     }
     """
@@ -110,16 +110,18 @@ class SkillsModal(ModalScreen[None]):
                             )
             with Horizontal(classes="button-container"):
                 yield Button(
-                    "Add skill…",
+                    "Edit Skill",
                     variant="default",
-                    id="sm-add-button",
-                    disabled=True,
+                    id="sm-edit-button",
                 )
                 yield Button("Close", variant="primary", id="close-button")
 
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "sm-add-button":
-            # Stub — implemented later.
+    async def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "sm-edit-button":
+            self.dismiss(None)
+            action = getattr(self.app, "action_enter_self_edit", None)
+            if action is not None:
+                await action(initial_category="skills")
             return
         self.dismiss(None)
 
