@@ -124,6 +124,7 @@ class AgentLoop:
         max_turns: int = 50,
         on_tool_call: Callable[[str, str, dict], Awaitable[None]] | None = None,
         on_tool_result: Callable[[str, str, str, bool], Awaitable[None]] | None = None,
+        on_tool_delta: Callable[[str, str, str], Awaitable[None]] | None = None,
         on_approval: Callable[[str, str, dict], Awaitable[bool]] | None = None,
         on_text: Callable[[str], Awaitable[None]] | None = None,
         on_text_delta: Callable[[str], None] | None = None,
@@ -146,6 +147,7 @@ class AgentLoop:
         # UI callbacks — optional hooks for frontends
         self._on_tool_call = on_tool_call
         self._on_tool_result = on_tool_result
+        self._on_tool_delta = on_tool_delta
         self._on_approval = on_approval
         self._on_text = on_text
         self._on_text_delta = on_text_delta
@@ -352,9 +354,16 @@ class AgentLoop:
                     "tool_calls": [
                         _serialize_tool_call(tc) for tc in llm_result.tool_calls
                     ],
-                    **({
-                        "reasoning_text": llm_result.assistant_metadata["reasoning_text"]
-                    } if llm_result.assistant_metadata and llm_result.assistant_metadata.get("reasoning_text") else {}),
+                    **(
+                        {
+                            "reasoning_text": llm_result.assistant_metadata[
+                                "reasoning_text"
+                            ]
+                        }
+                        if llm_result.assistant_metadata
+                        and llm_result.assistant_metadata.get("reasoning_text")
+                        else {}
+                    ),
                 },
             )
         if llm_result.text:
@@ -682,7 +691,17 @@ class AgentLoop:
         if self._on_tool_call:
             await self._on_tool_call(tc.call_id, tc.name, tc.arguments)
 
-        outcome = await self._executor.run(tc.call_id, tc.name, tc.arguments)
+        async def on_output_delta(chunk: str) -> None:
+            if self._on_tool_delta:
+                await self._on_tool_delta(tc.call_id, tc.name, chunk)
+
+        delta_callback = on_output_delta if self._on_tool_delta else None
+        outcome = await self._executor.run(
+            tc.call_id,
+            tc.name,
+            tc.arguments,
+            on_output_delta=delta_callback,
+        )
 
         match outcome:
             case Completed(result=result):
@@ -695,7 +714,11 @@ class AgentLoop:
 
                 if approved:
                     retry = await self._executor.run(
-                        tc.call_id, tc.name, tc.arguments, approved=True
+                        tc.call_id,
+                        tc.name,
+                        tc.arguments,
+                        approved=True,
+                        on_output_delta=delta_callback,
                     )
                     match retry:
                         case Completed(result=result):

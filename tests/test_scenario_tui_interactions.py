@@ -19,6 +19,21 @@ from tests.scenarios import ScriptedProvider, ScriptedToolCall, Turn, scenarios
 from tests.scenarios.tui_harness import use_scripted_provider
 
 
+def _plain_widget_text(widget) -> str:
+    rendered = None
+    if hasattr(widget, "render"):
+        try:
+            rendered = widget.render()
+        except Exception:
+            rendered = None
+    if rendered is None:
+        rendered = getattr(widget, "renderable", None)
+    plain = getattr(rendered, "plain", None)
+    if plain is not None:
+        return plain
+    return "" if rendered is None else str(rendered)
+
+
 async def _ready(app, pilot, *, timeout: float = 2.0) -> None:
     deadline = asyncio.get_event_loop().time() + timeout
     while asyncio.get_event_loop().time() < deadline:
@@ -185,6 +200,69 @@ class TestApprovalFlow:
             # Either we got a final "done" or the cancellation path ran; either is
             # acceptable. What matters is the app didn't hang.
             assert not app._is_processing
+            await app._session.close()
+
+
+class TestBashWidget:
+    async def test_bash_widget_streams_tail_and_expands_completed_feed(
+        self, tmp_path, monkeypatch
+    ):
+        from taui.tui.widgets.chat_input import ChatInput
+        from taui.tui.widgets.tool_status import BashToolStatusWidget
+
+        provider = ScriptedProvider(
+            [
+                Turn(
+                    tool_calls=[
+                        ScriptedToolCall(
+                            name="bash",
+                            arguments={
+                                "command": (
+                                    "printf 'one\\n'; sleep 1; printf 'two\\n'"
+                                ),
+                                "timeout": 5,
+                            },
+                        ),
+                    ],
+                    stop_reason="tool_use",
+                ),
+                Turn(text="done", text_deltas=["done"]),
+            ]
+        )
+        app = use_scripted_provider(monkeypatch, tmp_path, provider)
+        async with app.run_test() as pilot:
+            await _ready(app, pilot)
+            chat_input = app.query_one("#chat-input", ChatInput)
+            chat_input.text = "run a streaming bash command"
+            chat_input.focus()
+            await pilot.press("enter")
+
+            widget = None
+            deadline = asyncio.get_event_loop().time() + 3.0
+            while asyncio.get_event_loop().time() < deadline:
+                widgets = list(app.query(BashToolStatusWidget))
+                if widgets:
+                    widget = widgets[0]
+                    info = widget.query_one("#info", Static)
+                    if "one" in _plain_widget_text(info):
+                        break
+                await pilot.pause()
+
+            assert widget is not None
+            info = widget.query_one("#info", Static)
+            assert "printf" in _plain_widget_text(info)
+            assert "one" in _plain_widget_text(info)
+
+            widget.toggle_output()
+            await pilot.pause()
+            body = widget.query_one("#body", Static)
+            assert "running:" in _plain_widget_text(body)
+            assert "one" in _plain_widget_text(body)
+
+            await _wait_idle(app, pilot, timeout=6.0)
+            assert "two" in _plain_widget_text(info)
+            assert "completed:" in _plain_widget_text(body)
+            assert "two" in _plain_widget_text(body)
             await app._session.close()
 
 

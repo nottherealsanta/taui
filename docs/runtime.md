@@ -51,6 +51,8 @@ Session resume is implemented in `Session.resume_session()`: `taui/session.py:62
 - text streaming handler: `taui/tui/app.py:1575`
 - reasoning streaming handler: `taui/tui/app.py:1594`
 - tool status widget: `taui/tui/widgets/tool_status.py:49`
+- bash tool rows use a specialized clickable status widget that shows the command,
+  live tail output while running, and an expanded running/completed output feed.
 - turn containers: `taui/tui/widgets/turn_container.py:47`. Completed turns keep
   compact replay descriptors; collapsed turn bodies unmount their child widgets and
   remount them from those descriptors when expanded.

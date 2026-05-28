@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
+from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, Protocol
@@ -18,6 +20,36 @@ class ToolCategory(StrEnum):
     AGENT = "agent"
     MEMORY = "memory"
     QUESTION = "question"
+
+
+ToolOutputDeltaCallback = Callable[[str], Awaitable[None] | None]
+
+_TOOL_OUTPUT_DELTA_CALLBACK: ContextVar[ToolOutputDeltaCallback | None] = (
+    ContextVar("tool_output_delta_callback", default=None)
+)
+
+
+def set_tool_output_delta_callback(
+    callback: ToolOutputDeltaCallback | None,
+) -> Token[ToolOutputDeltaCallback | None]:
+    """Install a per-execution callback for live tool output chunks."""
+    return _TOOL_OUTPUT_DELTA_CALLBACK.set(callback)
+
+
+def reset_tool_output_delta_callback(
+    token: Token[ToolOutputDeltaCallback | None],
+) -> None:
+    _TOOL_OUTPUT_DELTA_CALLBACK.reset(token)
+
+
+async def emit_tool_output_delta(chunk: str) -> None:
+    """Emit a live output chunk for tools that support streaming output."""
+    callback = _TOOL_OUTPUT_DELTA_CALLBACK.get()
+    if callback is None or not chunk:
+        return
+    maybe_awaitable = callback(chunk)
+    if maybe_awaitable is not None:
+        await maybe_awaitable
 
 
 @dataclass(slots=True)

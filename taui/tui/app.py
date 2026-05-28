@@ -34,6 +34,7 @@ from taui.tui.messages import (
     StreamReasoningDelta,
     StreamTextDelta,
     ToolEnded,
+    ToolOutputDelta,
     ToolStarted,
 )
 from taui.tui.screens.context_breakdown import ContextBreakdownScreen
@@ -54,7 +55,7 @@ from taui.tui.widgets.reply_footer import ReplyFooter
 from taui.tui.widgets.sidebar import Sidebar
 from taui.tui.widgets.spinner import ActivityProgress
 from taui.tui.widgets.tool_groups_banner import OpenToolsSelfEdit
-from taui.tui.widgets.tool_status import ToolStatusWidget
+from taui.tui.widgets.tool_status import BashToolStatusWidget, ToolStatusWidget
 from taui.tui.widgets.turn_container import TurnContainer
 
 logger = logging.getLogger(__name__)
@@ -896,6 +897,7 @@ class TauiApp(App[None]):
         old_loop = session._loop
         old_loop._on_tool_call = None
         old_loop._on_tool_result = None
+        old_loop._on_tool_delta = None
         old_loop._on_approval = None
         old_loop._on_text = None
         old_loop._on_text_delta = None
@@ -1053,6 +1055,7 @@ class TauiApp(App[None]):
 
         loop._on_tool_call = state.tool_ctrl.on_tool_call
         loop._on_tool_result = state.tool_ctrl.on_tool_result
+        loop._on_tool_delta = state.tool_ctrl.on_tool_delta
         loop._on_text = lambda text: self._on_text(text, session_id=sid)
         loop._on_text_delta = lambda frag: self._on_text_delta_sync(frag, session_id=sid)
         loop._on_reasoning_delta = (
@@ -1083,6 +1086,7 @@ class TauiApp(App[None]):
                 if isinstance(sub_agent, SubAgentTool):
                     sub_agent._on_tool_call = state.tool_ctrl.on_tool_call
                     sub_agent._on_tool_result = state.tool_ctrl.on_tool_result
+                    sub_agent._on_tool_delta = state.tool_ctrl.on_tool_delta
         except (ValueError, ImportError):
             pass
 
@@ -1197,6 +1201,18 @@ class TauiApp(App[None]):
             await st.tool_ctrl.handle_tool_ended(event)
         if st is not None and st is self._sessions.active:
             self._update_status()
+
+    @on(ToolOutputDelta)
+    async def handle_tool_output_delta(self, event: ToolOutputDelta) -> None:
+        st = (
+            self._sessions.get(event.session_id)
+            if event.session_id
+            else self._sessions.active
+        )
+        if st is not None and st.tool_ctrl is not None:
+            await st.tool_ctrl.handle_tool_delta(event)
+        if st is not None and st is self._sessions.active:
+            self._smart_scroll()
 
     @on(InfoBar.AgentBadgeClicked)
     def handle_agent_badge_clicked(
@@ -2664,7 +2680,12 @@ class TauiApp(App[None]):
                         arguments=item.arguments,
                     )
                 else:
-                    widget = ToolStatusWidget(
+                    widget_cls = (
+                        BashToolStatusWidget
+                        if item.name == "bash"
+                        else ToolStatusWidget
+                    )
+                    widget = widget_cls(
                         item.name,
                         args_str,
                         arguments=item.arguments,
@@ -3217,7 +3238,12 @@ class TauiApp(App[None]):
                         arguments=item.arguments,
                     )
                 else:
-                    widget = ToolStatusWidget(
+                    widget_cls = (
+                        BashToolStatusWidget
+                        if item.name == "bash"
+                        else ToolStatusWidget
+                    )
+                    widget = widget_cls(
                         item.name,
                         args_str,
                         arguments=item.arguments,

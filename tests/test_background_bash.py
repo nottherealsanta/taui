@@ -11,6 +11,8 @@ from taui.tools.background import BackgroundProcessRegistry
 from taui.tools.builtins.bash import BashKillTool, BashStatusTool, BashTool
 from taui.tools.builtins.common import TruncationEnvelope
 from taui.tools.builtins.files import GlobTool, GrepTool
+from taui.tools.executor import Completed, PolicyDecision, ToolExecutor, ToolPolicy
+from taui.tools.registry import ToolRegistry
 from taui.tools.truncation import TruncationStore
 
 # ── TruncationEnvelope ────────────────────────────────────────────────────────
@@ -134,6 +136,36 @@ class TestBashForegroundTruncation:
         )
         assert peeked is not None
         assert len(peeked) > 50_000
+
+    async def test_foreground_streams_live_output_deltas(self, tmp_path: Path):
+        registry = ToolRegistry()
+        registry.register(BashTool(working_dir=tmp_path))
+        executor = ToolExecutor(
+            registry,
+            policy=ToolPolicy({"bash": PolicyDecision.AUTO}),
+        )
+        chunks: list[str] = []
+
+        async def capture(chunk: str) -> None:
+            chunks.append(chunk)
+
+        outcome = await executor.run(
+            "call-1",
+            "bash",
+            {
+                "command": "printf 'one\\n'; sleep 0.05; printf 'two\\n'",
+                "timeout": 5,
+            },
+            on_output_delta=capture,
+        )
+
+        assert isinstance(outcome, Completed)
+        assert not outcome.result.error
+        assert "one" in outcome.result.content
+        assert "two" in outcome.result.content
+        streamed = "".join(chunks)
+        assert "one" in streamed
+        assert "two" in streamed
 
 
 # ── BackgroundProcessRegistry ─────────────────────────────────────────────────

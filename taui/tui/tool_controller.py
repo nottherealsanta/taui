@@ -7,9 +7,9 @@ from typing import TYPE_CHECKING
 from textual.containers import Vertical
 
 from taui.session_replay import ReplayItem
-from taui.tui.messages import ToolEnded, ToolStarted
+from taui.tui.messages import ToolEnded, ToolOutputDelta, ToolStarted
 from taui.tui.widgets.sub_agent_widget import SubAgentWidget
-from taui.tui.widgets.tool_status import ToolStatusWidget
+from taui.tui.widgets.tool_status import BashToolStatusWidget, ToolStatusWidget
 
 if TYPE_CHECKING:
     from taui.tui.app import TauiApp
@@ -37,6 +37,7 @@ class ToolController:
         self._app = app
         self._tool_counter = 0
         self._pending_tool_keys: dict[str, list[str]] = {}
+        self._tool_call_keys: dict[str, str] = {}
         self._active_tool_widgets: dict[str, ToolStatusWidget] = {}
         self._current_tool_section: Vertical | None = None
         # Stack of active SubAgentWidgets. While non-empty, inner tool
@@ -63,6 +64,7 @@ class ToolController:
         widgets = list(self._active_tool_widgets.items())
         self._active_tool_widgets.clear()
         self._pending_tool_keys.clear()
+        self._tool_call_keys.clear()
         self._active_sub_agents.clear()
         self._inner_to_sub_agent.clear()
         self._tool_replay_turns.clear()
@@ -78,6 +80,7 @@ class ToolController:
         unmounted by a chat-log clear."""
         self._tool_counter = 0
         self._pending_tool_keys.clear()
+        self._tool_call_keys.clear()
         self._active_tool_widgets.clear()
         self._current_tool_section = None
         self._active_sub_agents.clear()
@@ -98,6 +101,7 @@ class ToolController:
         self._tool_counter += 1
         tool_key = f"{name}_{self._tool_counter}"
         self._pending_tool_keys.setdefault(name, []).append(tool_key)
+        self._tool_call_keys[call_id] = tool_key
         args_short = ", ".join(
             f"{k}={_trunc(str(v))}" for k, v in arguments.items()
         )
@@ -129,14 +133,18 @@ class ToolController:
     async def on_tool_result(
         self, call_id: str, name: str, content: str, is_error: bool
     ) -> None:
+        tool_key = self._tool_call_keys.pop(call_id, "")
         keys = self._pending_tool_keys.get(name, [])
-        if keys:
-            tool_key = keys.pop(0)
-        else:
-            tool_key = next(
-                (k for k in self._active_tool_widgets if k.startswith(name)),
-                f"{name}_unknown",
-            )
+        if tool_key and tool_key in keys:
+            keys.remove(tool_key)
+        if not tool_key:
+            if keys:
+                tool_key = keys.pop(0)
+            else:
+                tool_key = next(
+                    (k for k in self._active_tool_widgets if k.startswith(name)),
+                    f"{name}_unknown",
+                )
         self._app.post_message(
             ToolEnded(tool_key, name, content, is_error)
         )
@@ -146,6 +154,27 @@ class ToolController:
             await session.hooks.run(
                 "on_tool_result", name, content, is_error, session
             )
+
+    async def on_tool_delta(
+        self, call_id: str, name: str, chunk: str
+    ) -> None:
+        tool_key = self._tool_call_keys.get(call_id)
+        if not tool_key:
+            tool_key = next(
+                (k for k in self._active_tool_widgets if k.startswith(name)),
+                f"{name}_unknown",
+            )
+
+        sid = ""
+        sessions = getattr(self._app, "_sessions", None)
+        if sessions:
+            for s_id, st in sessions.all_states.items():
+                if st.tool_ctrl is self:
+                    sid = s_id
+                    break
+        self._app.post_message(
+            ToolOutputDelta(tool_key, name, chunk, session_id=sid)
+        )
 
     async def handle_tool_started(self, event: ToolStarted) -> None:
         # Find the session state this tool belongs to
@@ -185,11 +214,12 @@ class ToolController:
             )
             self._active_sub_agents.append(widget)
         else:
-            widget = ToolStatusWidget(
-                event.tool_name,
-                event.args_str,
-                arguments=arguments,
+            widget_cls = (
+                BashToolStatusWidget
+                if event.tool_name == "bash"
+                else ToolStatusWidget
             )
+            widget = widget_cls(event.tool_name, event.args_str, arguments=arguments)
         await self._current_tool_section.mount(widget)
         self._active_tool_widgets[event.tool_key] = widget
         if st is not None and st.current_turn is not None:
@@ -241,3 +271,15 @@ class ToolController:
                 await widget.fail(event.result)
             else:
                 await widget.complete(event.result)
+
+    async def handle_tool_delta(self, event: ToolOutputDelta) -> None:
+        sub = self._inner_to_sub_agent.get(event.tool_key)
+        if sub is not None:
+            return
+        widget = self._active_tool_widgets.get(event.tool_key)
+        if widget is None:
+            return
+        append_output = getattr(widget, "append_output", None)
+        if append_output is None:
+            return
+        append_output(event.chunk)
