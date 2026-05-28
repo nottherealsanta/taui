@@ -35,8 +35,6 @@ class ApprovalResult:
     """Result from an approval prompt."""
 
     approved: bool
-    pattern: str | None = None
-    tool_scope: str | None = None
 
 
 class Info2Mode(Enum):
@@ -156,10 +154,9 @@ class Info2(ScrollableContainer):
     class ApprovalResponse(Message):
         """User responded to an approval prompt."""
 
-        def __init__(self, approved: bool, pattern: str | None) -> None:
+        def __init__(self, approved: bool) -> None:
             super().__init__()
             self.approved = approved
-            self.pattern = pattern
 
     # ── Init ───────────────────────────────────────────────────────────
 
@@ -177,7 +174,6 @@ class Info2(ScrollableContainer):
         self._context_tree: Tree[str] | None = None
         self._approval_tool: str = ""
         self._approval_args: str = ""
-        self._approval_pattern: str = ""
         self._approval_future: asyncio.Future | None = None
         self._questions_panel: QuestionsPanel | None = None
         # Fuzzy-search filter state for inline pickers (models/agents). The
@@ -290,14 +286,13 @@ class Info2(ScrollableContainer):
         self.call_after_refresh(self._context_tree.focus)
         self.add_class("active")
 
-    def show_approval(self, tool_name: str, args_summary: str, pattern: str) -> None:
+    def show_approval(self, tool_name: str, args_summary: str) -> None:
         """Show a tool approval prompt in the panel."""
         if self._approval_future and not self._approval_future.done():
             self._approval_future.cancel()
         self._mode = Info2Mode.APPROVAL
         self._approval_tool = tool_name
         self._approval_args = args_summary
-        self._approval_pattern = pattern
         self._approval_future = asyncio.get_event_loop().create_future()
         self.selected_index = 0
         self._rebuild_approval()
@@ -479,16 +474,7 @@ class Info2(ScrollableContainer):
                 self._approval_future = None
                 self.hide()
                 if fut and not fut.done():
-                    if idx == 0:
-                        fut.set_result(ApprovalResult(True))
-                    elif idx == 1:
-                        fut.set_result(ApprovalResult(True, pattern=self._approval_pattern))
-                    elif idx == 2:
-                        fut.set_result(ApprovalResult(True, tool_scope="project"))
-                    elif idx == 3:
-                        fut.set_result(ApprovalResult(True, tool_scope="global"))
-                    else:
-                        fut.set_result(ApprovalResult(False))
+                    fut.set_result(ApprovalResult(idx == 0))
 
     def dismiss(self) -> None:
         """Dismiss without selection."""
@@ -518,7 +504,7 @@ class Info2(ScrollableContainer):
             case Info2Mode.CONTEXT:
                 return 0
             case Info2Mode.APPROVAL:
-                return 5
+                return 2
             case Info2Mode.QUESTIONS:
                 return 0
         return 0
@@ -654,14 +640,7 @@ class Info2(ScrollableContainer):
             f"Allow {self._approval_tool}({self._approval_args})?", markup=False
         )
         self.mount(header)
-        options = [
-            "  Allow",
-            f"  Allow all '{self._approval_pattern}' for this session",
-            f"  Allow all {self._approval_tool} commands (project extension)",
-            f"  Allow all {self._approval_tool} commands (global extension)",
-            "  Deny",
-        ]
-        for i, label in enumerate(options):
+        for i, label in enumerate(("  Allow", "  Deny")):
             item = Info2Item(label)
             if i == self.selected_index:
                 item.add_class("highlighted")

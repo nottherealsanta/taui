@@ -4,14 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 from typing import TYPE_CHECKING
 
 from rich.markup import escape
 from textual.containers import VerticalScroll
 from textual.widgets import Static
 
-from taui.extensions.auto_approve import write_auto_approve_extension
 from taui.tui.widgets.chat_input import ChatInput
 from taui.tui.widgets.info2 import Info2
 from taui.tui.widgets.questions_panel import QuestionsPanel, QuestionSpec
@@ -24,27 +22,6 @@ logger = logging.getLogger(__name__)
 
 def _trunc(s: str, n: int = 40) -> str:
     return s[: n - 3] + "..." if len(s) > n else s
-
-
-def _make_pattern(tool_name: str, arguments: dict) -> str:
-    if tool_name == "bash":
-        cmd = arguments.get("command", "")
-        parts = cmd.split()
-        if len(parts) >= 2:
-            return " ".join(parts[:2]) + " *"
-        return cmd + " *" if cmd else "*"
-    if tool_name in ("write", "edit"):
-        path = arguments.get("file_path", "") or arguments.get("filePath", "")
-        if path:
-            parent = os.path.dirname(path)
-            return os.path.join(parent, "*") if parent else "*"
-        return "*"
-    if tool_name == "git":
-        operation = arguments.get("operation", "")
-        if isinstance(operation, str) and operation:
-            return operation + " *"
-        return "*"
-    return "*"
 
 
 class ApprovalController:
@@ -117,35 +94,14 @@ class ApprovalController:
         args_short = ", ".join(
             f"{k}={_trunc(str(v))}" for k, v in arguments.items()
         )
-        pattern = _make_pattern(name, arguments)
         info2 = self._app.query_one("#info2", Info2)
         chat_input = self._app.query_one("#chat-input", ChatInput)
-        info2.show_approval(name, args_short, pattern)
+        info2.show_approval(name, args_short)
         try:
             result = await info2.wait_for_approval()
         finally:
             if not chat_input.disabled:
                 chat_input.focus()
-        if result.pattern is not None and self._app._session:
-            try:
-                self._app._session._executor._policy.add_pattern(name, result.pattern)
-            except Exception:
-                pass
-        if result.tool_scope is not None and self._app._session:
-            try:
-                path = write_auto_approve_extension(
-                    name,
-                    self._app._session.config.working_dir,
-                    result.tool_scope,
-                )
-                self._app._session.reload_extensions()
-                logger.info(
-                    "Created auto-approve extension for %s at %s",
-                    name,
-                    path,
-                )
-            except Exception:
-                logger.exception("Failed to create auto-approve extension for %s", name)
         return result.approved
 
     async def debug_questions(self, chat_log: VerticalScroll) -> None:
