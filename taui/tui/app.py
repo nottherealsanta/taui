@@ -1232,6 +1232,7 @@ class TauiApp(App[None]):
     def handle_context_badge_clicked(self, event: InfoBar.ContextBadgeClicked) -> None:
         self._open_context_tree()
 
+
     async def _load_and_show_sessions(self) -> None:
         self._open_sessions_sidebar()
 
@@ -2110,21 +2111,21 @@ class TauiApp(App[None]):
             await chat_log.mount(
                 ToolGroupsBanner(
                     groups_payload,
-                    label_text=" Tools ",
+                    label_text="Tools",
                     label_style=agent_label_style,
                 )
             )
         await chat_log.mount(
             SkillsBanner(
                 skills_payload,
-                label_text=" Skills ",
+                label_text="Skills",
                 label_style=neutral_style,
             )
         )
         await chat_log.mount(
             McpBanner(
                 mcp_payload,
-                label_text=" MCP ",
+                label_text="MCP",
                 label_style=neutral_style,
             )
         )
@@ -3781,10 +3782,8 @@ class TauiApp(App[None]):
                 continue
             executor._policy.set(tool_name, decision)
 
-        # Auto-approve all tools when the profile requests it
-        if profile.auto_approve_all:
-            for tool_name in registry.names:
-                executor._policy.set(tool_name, PolicyDecision.AUTO)
+        # Apply the agent profile's auto-approve preference to the policy.
+        executor._policy.auto_approve = bool(profile.auto_approve)
         if profile.provider:
             self._config.provider = profile.provider
         if profile.model:

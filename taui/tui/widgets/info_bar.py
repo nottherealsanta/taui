@@ -276,5 +276,6 @@ class InfoBar(Static):
             worktree.display = False
 
 
+
     def on_mount(self) -> None:
         self._sync_children()

@@ -436,6 +436,56 @@ class _UsageToggle(Static):
         self.refresh()
 
 
+class _AutoApproveToggle(Static):
+    """Single segment of the 2-way auto-approve selector (OFF / ON)."""
+
+    DEFAULT_CSS = f"""
+    _AutoApproveToggle {{
+        height: 1;
+        width: auto;
+        padding: 0 2;
+        color: #666;
+        background: {INNER_BG};
+        content-align: center middle;
+    }}
+    _AutoApproveToggle.-on {{
+        color: {DEEP_BLACK};
+        background: {ACCENT};
+        text-style: bold;
+    }}
+    _AutoApproveToggle:hover {{
+        color: {ACCENT};
+    }}
+    _AutoApproveToggle.-on:hover {{
+        color: {DEEP_BLACK};
+    }}
+    """
+
+    def __init__(self, value: str, *, selected: bool = False) -> None:
+        super().__init__()
+        self._value = value
+        if selected:
+            self.add_class("-on")
+
+    def render(self) -> str:
+        return self._value.upper()
+
+    @property
+    def value(self) -> str:
+        return self._value
+
+    def on_click(self, event: Click) -> None:
+        event.stop()
+        if "-on" in self.classes:
+            return
+        # Toggle: deactivate sibling, activate self
+        for sib in self.parent.query(_AutoApproveToggle):
+            sib.remove_class("-on")
+            sib.refresh()
+        self.add_class("-on")
+        self.refresh()
+
+
 # ── Color swatch (single colour cell) ──────────────────────────────
 
 # Curated palette — kept short so it stays a one-row selector.
@@ -1016,6 +1066,13 @@ class _Editor(ModalScreen):
                                     group=group,
                                 )
 
+            # Auto-approve toggle
+            initial_auto = bool(self._initial_extra.get("auto_approve", False))
+            yield Static("AUTO-APPROVE", classes="se-tools-label", markup=False)
+            with Horizontal(classes="se-usage-row"):
+                yield _AutoApproveToggle("off", selected=not initial_auto)
+                yield _AutoApproveToggle("on", selected=initial_auto)
+
     def _initial_usage(self) -> str:
         """Read the initial usage value from the extra dict, defaulting to 'both'."""
         from taui.self_edit.store import AGENT_USAGE_VALUES
@@ -1204,6 +1261,10 @@ class _Editor(ModalScreen):
                 "allowed_tools": allowed_tools,
                 "usage": usage,
                 "color": color,
+                "auto_approve": any(
+                    t.value == "on" and "-on" in t.classes
+                    for t in self.query(_AutoApproveToggle)
+                ),
             }
         self.dismiss(
             {
@@ -2516,6 +2577,15 @@ class _InlineEditor(Vertical):
                         toggle.display = False
                     group_grid.mount(toggle)
 
+            # Auto-approve toggle
+            initial_auto = bool(self._initial_extra.get("auto_approve", False))
+            auto_label = Static("AUTO-APPROVE", classes="se-tools-label")
+            self.mount(auto_label)
+            auto_row = Horizontal(classes="se-usage-row")
+            self.mount(auto_row)
+            auto_row.mount(_AutoApproveToggle("off", selected=not initial_auto))
+            auto_row.mount(_AutoApproveToggle("on", selected=initial_auto))
+
         # LLM prompt + Generate/Edit button
         prompt_row = Horizontal(classes="se-prompt-row")
         self.mount(prompt_row)
@@ -2715,6 +2785,10 @@ class _InlineEditor(Vertical):
                 "allowed_tools": allowed_tools,
                 "usage": usage,
                 "color": color,
+                "auto_approve": any(
+                    t.value == "on" and "-on" in t.classes
+                    for t in self.query(_AutoApproveToggle)
+                ),
             }
         payload = {"identifier": ident, "body": body, "extra": extra}
         self.post_message(_InlineSaveRequested(payload, self._creating))
@@ -3177,29 +3251,58 @@ class SelfEditModal(ModalScreen[str | None]):
             # group, built-ins are rendered above user tools.
             from taui.tools.groups import resolve_groups_for_names
 
-            names = [it.identifier for it in self._items]
-            groups = resolve_groups_for_names(names)
-            by_id: dict[str, inventory.Item] = {
-                it.identifier: it for it in self._items
-            }
+            # A single extension file can register multiple tools (e.g. the
+            # notebook extension registers notebook_read/edit/run_cell/clear).
+            # Expand those into per-tool display rows that all point back at
+            # the same Item — the file remains the unit of edit/save/delete,
+            # but the tree shows the registered tool names so the resolver
+            # can group them correctly.
+            #
+            # Two different items may produce the same display tool_name
+            # (e.g. a stale notebook_edit.py file alongside notebook.py's
+            # notebook_edit registration). Each entry carries its own
+            # unique key so both can coexist as separately-addressable rows.
+            entries: list[tuple[str, str, inventory.Item]] = []  # (key, tool_name, item)
+            for it in self._items:
+                regs = it.extra.get("registered_tools") if it.extra else None
+                if regs:
+                    for tool_name in regs:
+                        entries.append(
+                            (f"{it.identifier}::{tool_name}", tool_name, it)
+                        )
+                else:
+                    entries.append((it.identifier, it.identifier, it))
+
+            unique_tool_names = sorted({tn for _, tn, _ in entries})
+            name_groups = resolve_groups_for_names(
+                unique_tool_names, self._working_dir
+            )
+            tool_to_group: dict[str, str] = {}
+            for g, members in name_groups.items():
+                for tn in members:
+                    tool_to_group[tn] = g
+
+            group_to_entries: dict[str, list[tuple[str, str, inventory.Item]]] = {}
+            for entry in entries:
+                _, tn, _ = entry
+                g = tool_to_group.get(tn, tn)
+                group_to_entries.setdefault(g, []).append(entry)
 
             def _group_sort_key(g: str) -> tuple[int, str]:
-                has_builtin = any(
-                    by_id[n].builtin for n in groups[g] if n in by_id
-                )
+                has_builtin = any(it.builtin for _, _, it in group_to_entries[g])
                 # Builtins first (0), user-only second (1); then alphabetical.
                 return (0 if has_builtin else 1, g)
 
-            def _member_sort_key(item: inventory.Item) -> tuple[int, str]:
-                return (0 if item.builtin else 1, item.identifier)
+            def _entry_sort_key(
+                entry: tuple[str, str, inventory.Item],
+            ) -> tuple[int, str, str]:
+                _, tn, it = entry
+                return (0 if it.builtin else 1, tn, it.identifier)
 
             first_select_idx: int | None = None
             row = 0
-            for group in sorted(groups, key=_group_sort_key):
-                members = sorted(
-                    (by_id[n] for n in groups[group] if n in by_id),
-                    key=_member_sort_key,
-                )
+            for group in sorted(group_to_entries, key=_group_sort_key):
+                members = sorted(group_to_entries[group], key=_entry_sort_key)
                 if not members:
                     continue
                 # Solo groups render the tool name flat — no folder header.
@@ -3216,16 +3319,16 @@ class SelfEditModal(ModalScreen[str | None]):
                     )
                     self._row_items.append(None)
                     row += 1
-                for item in members:
+                for key, tool_name, item in members:
                     opt_id = (
-                        f"builtin:{item.identifier}"
+                        f"builtin:{tool_name}"
                         if item.builtin
-                        else f"user:{item.identifier}"
+                        else f"user:{key}"
                     )
                     row_text = (
-                        self._render_tree_item_row(item)
+                        self._render_tree_item_row(item, label=tool_name)
                         if len(members) > 1
-                        else self._render_flat_item_row(item)
+                        else self._render_flat_item_row(item, label=tool_name)
                     )
                     opts.add_option(
                         Option(row_text, id=opt_id)
@@ -3254,29 +3357,32 @@ class SelfEditModal(ModalScreen[str | None]):
         self._sync_inline_panel()
         self._refresh_chrome()
 
-    def _render_tree_item_row(self, item: inventory.Item) -> Text:
+    def _render_tree_item_row(
+        self, item: inventory.Item, label: str | None = None
+    ) -> Text:
         """Indented row for the tools tree view — name only.
 
-        The description (and built-in status) are shown in the right-hand
-        inline panel when the row is selected; keeping the list lean makes
-        the tree easier to scan. Built-in tools render in the softer accent
-        so they're still visually distinct.
+        ``label`` overrides the Item's own label so a multi-tool extension
+        file can render one row per registered tool while still pointing
+        back at the parent Item.
         """
         text = Text()
         label_style = (
             f"bold {ACCENT_SOFT}" if item.builtin else f"bold {ACCENT}"
         )
         text.append("  └ ", style=GRID_GREY)
-        text.append(item.label, style=label_style)
+        text.append(label or item.label, style=label_style)
         return text
 
-    def _render_flat_item_row(self, item: inventory.Item) -> Text:
+    def _render_flat_item_row(
+        self, item: inventory.Item, label: str | None = None
+    ) -> Text:
         """Flat (un-indented) row used when a tool group has only one tool."""
         text = Text()
         label_style = (
             f"bold {ACCENT_SOFT}" if item.builtin else f"bold {ACCENT}"
         )
-        text.append(item.label, style=label_style)
+        text.append(label or item.label, style=label_style)
         return text
 
     def _refresh_general_panel(self) -> None:
