@@ -159,8 +159,11 @@ class AgentLoop:
             | None
         ) = None
 
-        # Compaction notification callback: (removed, before_tokens, after_tokens) -> None
-        self._on_compact: Callable[[int, int, int], None] | None = None
+        # Compaction notification callback:
+        # (removed, before_tokens, after_tokens, summary_text, kind) -> None
+        self._on_compact: (
+            Callable[[int, int, int, str, str], None] | None
+        ) = None
 
         # Consecutive compaction failures (raise or removed==0). Reset on a
         # successful compaction with removed > 0. Once it reaches
@@ -622,7 +625,7 @@ class AgentLoop:
             },
         )
         if self._on_compact:
-            self._on_compact(removed, before, after)
+            self._on_compact(removed, before, after, summary_text or "", reason)
         return removed
 
     async def _execute_questions_batch(

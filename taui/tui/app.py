@@ -48,7 +48,7 @@ from taui.tui.tool_controller import ToolController
 from taui.tui.widgets.agent_response import AgentResponse
 from taui.tui.widgets.attachments_bar import AttachmentsBar
 from taui.tui.widgets.chat_input import ChatInput
-from taui.tui.widgets.compaction_marker import CompactionMarker
+from taui.tui.widgets.compaction_block import AbsorbedTurn, CompactionBlock
 from taui.tui.widgets.info2 import Info2
 from taui.tui.widgets.info_bar import InfoBar, _agent_color, sync_agent_colors
 from taui.tui.widgets.reply_footer import ReplyFooter
@@ -1063,7 +1063,9 @@ class TauiApp(App[None]):
         )
         loop._on_approval = state.approval_ctrl.on_approval
         loop._on_questions_batch = state.approval_ctrl.on_questions_batch
-        loop._on_compact = lambda r, b, a: self._on_compact_sync(r, b, a, session_id=sid)
+        loop._on_compact = lambda r, b, a, s, k: self._on_compact_sync(
+            r, b, a, s, k, session_id=sid
+        )
         loop._on_steering_drained = lambda: self._on_steering_drained_sync(session_id=sid)
 
         # Notify the TUI when the agent's prompt/tools/policy change so the
@@ -1122,11 +1124,25 @@ class TauiApp(App[None]):
             )
 
     def _on_compact_sync(
-        self, removed: int, before: int, after: int, *, session_id: str = "",
+        self,
+        removed: int,
+        before: int,
+        after: int,
+        summary_text: str = "",
+        kind: str = "auto",
+        *,
+        session_id: str = "",
     ) -> None:
         """Handle auto-compaction notification from the agent loop."""
         self.post_message(
-            CompactionOccurred(removed, before, after, session_id=session_id)
+            CompactionOccurred(
+                removed,
+                before,
+                after,
+                session_id=session_id,
+                summary_text=summary_text,
+                kind=kind,
+            )
         )
 
     def _on_steering_drained_sync(self, *, session_id: str = "") -> None:
@@ -1167,16 +1183,89 @@ class TauiApp(App[None]):
 
     @on(CompactionOccurred)
     async def handle_compaction(self, event: CompactionOccurred) -> None:
-        chat_log = self._get_active_chat_log()
-        await chat_log.mount(
-            CompactionMarker(
-                event.removed,
-                event.before_tokens,
-                event.after_tokens,
-                kind="auto",
-            )
+        st = (
+            self._sessions.get(event.session_id)
+            if event.session_id
+            else self._sessions.active
+        )
+        chat_log = (
+            (st.chat_log if st is not None else None)
+            or self._get_active_chat_log()
+        )
+        await self._absorb_turns_into_compaction(
+            st,
+            chat_log,
+            removed=event.removed,
+            before_tokens=event.before_tokens,
+            after_tokens=event.after_tokens,
+            summary_text=event.summary_text,
+            kind=event.kind or "auto",
         )
         chat_log.scroll_end()
+
+    async def _absorb_turns_into_compaction(
+        self,
+        state: SessionState | None,
+        chat_log: VerticalScroll,
+        *,
+        removed: int,
+        before_tokens: int,
+        after_tokens: int,
+        summary_text: str,
+        kind: str,
+    ) -> None:
+        """Replace all turns above the active turn with a CompactionBlock.
+
+        The main chat scroll should mirror what is actually in the LLM
+        context. After compaction, every turn except the live one has had
+        its messages dropped from the context, so they are detached from
+        the scroll and absorbed into the new block.
+        """
+        absorbed: list[AbsorbedTurn] = []
+        remaining_turns: list[TurnContainer] = []
+        current = state.current_turn if state is not None else None
+        turns = list(state.turns) if state is not None else []
+
+        for turn in turns:
+            if turn is current:
+                remaining_turns.append(turn)
+                continue
+            absorbed.append(
+                AbsorbedTurn(
+                    user_text=turn.user_text,
+                    image_note=turn.image_note,
+                    turn_id=turn.turn_id,
+                    replay_items=list(turn.replay_items),
+                    total_tokens=turn._total_tokens,
+                    tool_count=turn._tool_count,
+                    model=turn._model,
+                    duration_s=turn._duration_s,
+                    agent_id=turn._agent_id,
+                )
+            )
+            try:
+                await turn.remove()
+            except Exception:
+                pass
+
+        if state is not None:
+            state.turns = remaining_turns
+
+        block = CompactionBlock(
+            removed,
+            before_tokens,
+            after_tokens,
+            summary_text=summary_text,
+            absorbed=absorbed,
+            kind=kind,
+        )
+        if current is not None:
+            try:
+                await chat_log.mount(block, before=current)
+            except Exception:
+                await chat_log.mount(block)
+        else:
+            await chat_log.mount(block)
 
     @on(ToolStarted)
     async def handle_tool_started(self, event: ToolStarted) -> None:
@@ -3048,7 +3137,11 @@ class TauiApp(App[None]):
             )
             return
 
-        from taui.agent.context import estimate_total_tokens, manual_compact
+        from taui.agent.context import (
+            estimate_total_tokens,
+            find_previous_summary,
+            manual_compact,
+        )
 
         loop = self._session._loop
         before_tokens = estimate_total_tokens(loop._messages)
@@ -3056,8 +3149,15 @@ class TauiApp(App[None]):
         after_tokens = estimate_total_tokens(loop._messages)
 
         if removed:
-            await chat_log.mount(
-                CompactionMarker(removed, before_tokens, after_tokens, kind="manual")
+            summary_text = find_previous_summary(loop._messages) or ""
+            await self._absorb_turns_into_compaction(
+                self._sessions.active,
+                chat_log,
+                removed=removed,
+                before_tokens=before_tokens,
+                after_tokens=after_tokens,
+                summary_text=summary_text,
+                kind="manual",
             )
         else:
             await chat_log.mount(
@@ -3286,6 +3386,27 @@ class TauiApp(App[None]):
                     st.current_turn.append_replay_item(item)
                 turn_has_content = True
                 _remember_turn_footer(item)
+            elif item.kind == "compaction":
+                if turn_has_content:
+                    await _flush_turn_footer()
+                    turn_has_content = False
+                tool_section = None
+                pending_widgets.clear()
+                pending_order.clear()
+                # Detach the open turn (if any) so the absorb pass sweeps it
+                # into the block — the compaction event sits between turns
+                # historically, so there's no live current_turn at this point.
+                if st is not None:
+                    st.current_turn = None
+                await self._absorb_turns_into_compaction(
+                    st,
+                    chat_log,
+                    removed=item.removed,
+                    before_tokens=item.before_tokens,
+                    after_tokens=item.after_tokens,
+                    summary_text=item.text,
+                    kind="auto",
+                )
 
         if turn_has_content:
             await _flush_turn_footer()

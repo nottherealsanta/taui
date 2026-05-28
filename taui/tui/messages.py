@@ -77,13 +77,15 @@ class CompactionOccurred(Message):
 
     def __init__(
         self, removed: int, before_tokens: int, after_tokens: int,
-        *, session_id: str = "",
+        *, session_id: str = "", summary_text: str = "", kind: str = "auto",
     ) -> None:
         super().__init__()
         self.removed = removed
         self.before_tokens = before_tokens
         self.after_tokens = after_tokens
         self.session_id = session_id
+        self.summary_text = summary_text
+        self.kind = kind
 
 
 class AgentConfigChanged(Message):

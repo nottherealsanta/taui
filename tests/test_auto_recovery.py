@@ -97,7 +97,9 @@ class TestAutoRecovery:
         provider = OverflowThenOkProvider()
         compactions: list[tuple[int, int, int]] = []
 
-        def on_compact(removed: int, before: int, after: int) -> None:
+        def on_compact(
+            removed: int, before: int, after: int, summary: str = "", kind: str = "",
+        ) -> None:
             compactions.append((removed, before, after))
 
         loop = _make_loop_with_history(provider)
