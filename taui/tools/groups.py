@@ -62,6 +62,21 @@ def resolve_groups_for_names(
 
 def _build_known_registry(working_dir: Path | None) -> Any:
     """Fresh registry seeded with builtins + (optionally) user extensions."""
+    reg, _ = _build_registry_with_attribution(working_dir)
+    return reg
+
+
+def _build_registry_with_attribution(
+    working_dir: Path | None,
+) -> tuple[Any, dict[str, list[str]]]:
+    """Build a known registry and attribute each extension's tool names.
+
+    Returns ``(registry, {extension_name: [tool_name, ...]})``. The
+    attribution map is keyed by extension file stem (matching the names
+    in ``~/.taui/extensions``) and lists the tools that file registered
+    into the registry — used by self-edit UIs to expand a multi-tool
+    extension file into per-tool rows.
+    """
     from taui.tools.builtins import register_builtins
     from taui.tools.registry import ToolRegistry
 
@@ -70,13 +85,21 @@ def _build_known_registry(working_dir: Path | None) -> Any:
         register_builtins(reg)
     except Exception:
         pass
+    attribution: dict[str, list[str]] = {}
     if working_dir is not None:
         try:
             from taui.extensions import ExtensionRegistry
 
             ext_reg = ExtensionRegistry(working_dir, include_builtins=False)
             ext_reg.discover()
-            ext_reg.load_all(tools=reg)
+            for ext in ext_reg.list_all():
+                if ext.scope == "builtin" or not ext.enabled:
+                    continue
+                before = set(reg.names)
+                ext_reg._load_one(ext, tools=reg)
+                added = sorted(set(reg.names) - before)
+                if added:
+                    attribution[ext.name] = added
         except Exception:
             pass
-    return reg
+    return reg, attribution
