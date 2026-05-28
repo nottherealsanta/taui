@@ -91,6 +91,124 @@ def _fmt_args_sub_agent(arguments: dict[str, Any]) -> str:
     return "  ".join(pieces)
 
 
+def _fmt_args_git(arguments: dict[str, Any]) -> str:
+    op = arguments.get("operation") or ""
+    args = arguments.get("args") or {}
+    if not isinstance(args, dict):
+        args = {}
+    extras: list[str] = []
+    if op in ("diff",):
+        if args.get("staged"):
+            extras.append("--staged")
+        ref = args.get("ref")
+        if isinstance(ref, str) and ref:
+            extras.append(ref)
+        file = args.get("file")
+        if isinstance(file, str) and file:
+            extras.append(file)
+    elif op in ("log",):
+        count = args.get("count")
+        if isinstance(count, int):
+            extras.append(f"-{count}")
+        file = args.get("file")
+        if isinstance(file, str) and file:
+            extras.append(file)
+    elif op in ("show", "checkout"):
+        ref = args.get("ref")
+        if isinstance(ref, str) and ref:
+            extras.append(ref)
+    elif op == "blame":
+        file = args.get("file")
+        if isinstance(file, str) and file:
+            extras.append(file)
+        s, e = args.get("line_start"), args.get("line_end")
+        if isinstance(s, int):
+            extras.append(f"L{s}-{e}" if isinstance(e, int) else f"L{s}+")
+    elif op == "commit":
+        msg = args.get("message")
+        if isinstance(msg, str) and msg:
+            extras.append(_trunc(msg, 60))
+    elif op == "add":
+        files = args.get("files")
+        if isinstance(files, list):
+            extras.append(_trunc(" ".join(str(f) for f in files), 60))
+        elif isinstance(files, str):
+            extras.append(_trunc(files, 60))
+        else:
+            extras.append("-A")
+    elif op in ("stash_push",):
+        msg = args.get("message")
+        if isinstance(msg, str) and msg:
+            extras.append(_trunc(msg, 60))
+    if extras:
+        return f"{op}  {' '.join(extras)}"
+    return op or ""
+
+
+def _fmt_args_task(arguments: dict[str, Any]) -> str:
+    op = arguments.get("operation") or "list"
+    extras: list[str] = []
+    if op == "add":
+        title = arguments.get("title")
+        if isinstance(title, str) and title:
+            extras.append(_trunc(title, 60))
+    elif op == "update":
+        tid = arguments.get("task_id")
+        if tid:
+            extras.append(f"#{tid}")
+        status = arguments.get("status")
+        if status:
+            extras.append(f"→{status}")
+    elif op in ("complete", "remove"):
+        tid = arguments.get("task_id")
+        if tid:
+            extras.append(f"#{tid}")
+    return f"{op}  {' '.join(extras)}" if extras else op
+
+
+def _fmt_args_memory(arguments: dict[str, Any]) -> str:
+    op = arguments.get("operation") or ""
+    key = arguments.get("key")
+    if op == "save" and key:
+        content = arguments.get("content") or ""
+        n_lines = content.count("\n") + 1 if content else 0
+        return f"{op}  {key}  ({n_lines} lines)" if n_lines else f"{op}  {key}"
+    if key:
+        return f"{op}  {key}"
+    return op
+
+
+def _fmt_args_skills(arguments: dict[str, Any]) -> str:
+    op = arguments.get("operation") or ""
+    skill = arguments.get("skill")
+    return f"{op}  {skill}" if skill else op
+
+
+def _fmt_args_worktree(arguments: dict[str, Any]) -> str:
+    op = arguments.get("operation") or ""
+    extras: list[str] = []
+    branch = arguments.get("branch")
+    if isinstance(branch, str) and branch:
+        extras.append(branch)
+    base = arguments.get("base")
+    if isinstance(base, str) and base:
+        extras.append(f"from {base}")
+    if op == "exit" and arguments.get("keep"):
+        extras.append("--keep")
+    return f"{op}  {' '.join(extras)}" if extras else op
+
+
+def _fmt_args_mcp(arguments: dict[str, Any]) -> str:
+    op = arguments.get("operation") or ""
+    server = arguments.get("server")
+    tool = arguments.get("tool")
+    if op == "call" and server and tool:
+        return f"{op}  {server}/{tool}"
+    if server:
+        return f"{op}  {server}"
+    return op
+
+
 _ARG_FORMATTERS = {
     "read": _fmt_args_read,
     "edit": _fmt_args_edit,
@@ -101,7 +219,12 @@ _ARG_FORMATTERS = {
     "repo_overview": _fmt_args_repo_overview,
     "webfetch": _fmt_args_webfetch,
     "sub_agent": _fmt_args_sub_agent,
-    "task": _fmt_args_sub_agent,
+    "git": _fmt_args_git,
+    "task": _fmt_args_task,
+    "memory": _fmt_args_memory,
+    "skills": _fmt_args_skills,
+    "worktree": _fmt_args_worktree,
+    "mcp": _fmt_args_mcp,
 }
 
 
@@ -205,39 +328,230 @@ def _fmt_out_write(arguments: dict[str, Any], output: str) -> list[str]:
 
 def _fmt_out_grep(arguments: dict[str, Any], output: str) -> list[str]:
     if not output.strip():
-        return ["0 matches"]
-    # Heuristic: count non-empty lines.
+        return ["no matches"]
     lines = [l for l in output.splitlines() if l.strip()]
-    # Some grep outputs include a header like "Found N matches"
     m = re.search(r"(\d+)\s+match(es)?", output, re.IGNORECASE)
-    if m:
-        return [f"{m.group(1)} matches"]
-    return [f"{len(lines)} matches"]
+    n = int(m.group(1)) if m else len(lines)
+    files = len({l.split(":", 1)[0] for l in lines if ":" in l})
+    if files > 1:
+        return [f"{n} matches in {files} files"]
+    return [f"{n} match" + ("es" if n != 1 else "")]
 
 
 def _fmt_out_glob(arguments: dict[str, Any], output: str) -> list[str]:
     if not output.strip():
-        return ["0 files"]
+        return ["no files"]
     lines = [l for l in output.splitlines() if l.strip()]
-    return [f"{len(lines)} files"]
+    n = len(lines)
+    return [f"{n} file" + ("s" if n != 1 else "")]
 
 
 def _fmt_out_bash(arguments: dict[str, Any], output: str) -> list[str]:
+    # Inline preview falls back to a 1-line tail; full output is in the modal.
     line = _trunc(output, _MAX_INLINE_LEN)
     return [line] if line else []
 
 
 def _fmt_out_repo_overview(arguments: dict[str, Any], output: str) -> list[str]:
-    # Show tree if compact; otherwise summarize line count.
     lines = output.splitlines()
     if len(lines) <= 15:
         return [l.rstrip() for l in lines if l.strip()]
     return [f"{len(lines)} entries"]
 
 
+def _fmt_out_webfetch(arguments: dict[str, Any], output: str) -> list[str]:
+    if not output.strip():
+        return []
+    lines = output.splitlines()
+    n_bytes = len(output)
+    return [f"{len(lines)} lines, {n_bytes:,} bytes"]
+
+
+def _fmt_out_git(arguments: dict[str, Any], output: str) -> list[str]:
+    op = (arguments or {}).get("operation") or ""
+    text = output or ""
+    if not text.strip():
+        return ["(empty)"]
+
+    if op == "status":
+        lines = [l for l in text.splitlines() if l.strip()]
+        if not lines or "working tree clean" in text.lower():
+            return ["clean"]
+        # Porcelain v1: 2-char status code + space + filepath
+        added = modified = deleted = renamed = untracked = 0
+        for l in lines:
+            if len(l) < 3:
+                continue
+            code = l[:2]
+            if "?" in code:
+                untracked += 1
+            elif "A" in code:
+                added += 1
+            elif "D" in code:
+                deleted += 1
+            elif "R" in code:
+                renamed += 1
+            elif "M" in code or code.strip():
+                modified += 1
+        parts = []
+        if modified:
+            parts.append(f"~{modified}")
+        if added:
+            parts.append(f"+{added}")
+        if deleted:
+            parts.append(f"-{deleted}")
+        if renamed:
+            parts.append(f"→{renamed}")
+        if untracked:
+            parts.append(f"?{untracked}")
+        summary = " ".join(parts) or f"{len(lines)} changes"
+        out = [summary]
+        for l in lines[:5]:
+            out.append(l)
+        if len(lines) > 5:
+            out.append(f"… {len(lines) - 5} more")
+        return out
+
+    if op == "diff":
+        added = len(re.findall(r"^\+[^+]", text, re.MULTILINE))
+        removed = len(re.findall(r"^-[^-]", text, re.MULTILINE))
+        files = len(re.findall(r"^diff --git", text, re.MULTILINE))
+        hunks = len(re.findall(r"^@@", text, re.MULTILINE))
+        if not (added or removed or files):
+            return ["no changes"]
+        parts = [f"{files} file" + ("s" if files != 1 else "")]
+        if hunks:
+            parts.append(f"{hunks} hunk" + ("s" if hunks != 1 else ""))
+        parts.append(f"+{added}")
+        parts.append(f"-{removed}")
+        return [" · ".join(parts)]
+
+    if op == "log":
+        lines = [l for l in text.splitlines() if l.strip()]
+        head = lines[:5]
+        tail = (
+            [f"… {len(lines) - 5} more"] if len(lines) > 5 else []
+        )
+        return head + tail
+
+    if op == "branch_current":
+        return [text.strip() or "(detached)"]
+
+    if op == "branch_list":
+        lines = [l for l in text.splitlines() if l.strip()]
+        cur = next((l for l in lines if l.startswith("*")), "")
+        n = len(lines)
+        out = [f"{n} branch" + ("es" if n != 1 else "")]
+        if cur:
+            out.append(cur.strip())
+        return out
+
+    if op == "stash_list":
+        lines = [l for l in text.splitlines() if l.strip()]
+        if not lines:
+            return ["no stashes"]
+        return [f"{len(lines)} stash" + ("es" if len(lines) != 1 else "")]
+
+    if op in ("commit", "add", "checkout", "stash_push", "stash_pop", "show", "blame"):
+        lines = [l for l in text.splitlines() if l.strip()]
+        head = lines[:6]
+        if len(lines) > 6:
+            head.append(f"… {len(lines) - 6} more")
+        return head
+
+    # Fallback
+    lines = [l for l in text.splitlines() if l.strip()]
+    if len(lines) <= 5:
+        return lines
+    return lines[:5] + [f"… {len(lines) - 5} more"]
+
+
 def _fmt_out_generic(arguments: dict[str, Any], output: str) -> list[str]:
     line = _trunc(output, _MAX_INLINE_LEN)
     return [line] if line else []
+
+
+def _fmt_out_task(arguments: dict[str, Any], output: str) -> list[str]:
+    op = (arguments or {}).get("operation") or "list"
+    text = output or ""
+    if not text.strip():
+        return ["(no tasks)"]
+
+    if op == "list":
+        # Count status icons in the listing produced by the tool.
+        counts = {
+            "pending": text.count("⬜"),
+            "in_progress": text.count("🔄"),
+            "completed": text.count("✅"),
+            "cancelled": text.count("❌"),
+        }
+        parts = [f"{v} {k}" for k, v in counts.items() if v]
+        total = sum(counts.values())
+        if total:
+            return [f"{total} task" + ("s" if total != 1 else ""),
+                    " · ".join(parts)]
+        return [text.splitlines()[0]] if text.splitlines() else []
+
+    # add/update/complete/remove/clear return a one-line result.
+    first = next((l for l in text.splitlines() if l.strip()), "")
+    return [first] if first else []
+
+
+def _fmt_out_memory(arguments: dict[str, Any], output: str) -> list[str]:
+    op = (arguments or {}).get("operation") or ""
+    text = output or ""
+    if not text.strip():
+        return []
+    if op == "list":
+        lines = [l for l in text.splitlines() if l.strip()]
+        n = len(lines)
+        return [f"{n} entries" if n != 1 else "1 entry"]
+    if op == "read":
+        lines = text.splitlines()
+        return [f"{len(lines)} lines, {len(text):,} bytes"]
+    # save/delete: first non-empty line is the success message.
+    first = next((l for l in text.splitlines() if l.strip()), "")
+    return [first] if first else []
+
+
+def _fmt_out_skills(arguments: dict[str, Any], output: str) -> list[str]:
+    op = (arguments or {}).get("operation") or ""
+    text = output or ""
+    if not text.strip():
+        return []
+    if op in ("list", "status"):
+        lines = [l for l in text.splitlines() if l.strip()]
+        head = lines[:6]
+        if len(lines) > 6:
+            head.append(f"… {len(lines) - 6} more")
+        return head
+    first = next((l for l in text.splitlines() if l.strip()), "")
+    return [first] if first else []
+
+
+def _fmt_out_worktree(arguments: dict[str, Any], output: str) -> list[str]:
+    text = output or ""
+    if not text.strip():
+        return []
+    lines = [l for l in text.splitlines() if l.strip()]
+    head = lines[:4]
+    if len(lines) > 4:
+        head.append(f"… {len(lines) - 4} more")
+    return head
+
+
+def _fmt_out_mcp(arguments: dict[str, Any], output: str) -> list[str]:
+    op = (arguments or {}).get("operation") or ""
+    text = output or ""
+    if not text.strip():
+        return []
+    if op in ("servers", "tools"):
+        lines = [l for l in text.splitlines() if l.strip()]
+        n = len(lines)
+        label = "server" if op == "servers" else "tool"
+        return [f"{n} {label}" + ("s" if n != 1 else "")]
+    first = next((l for l in text.splitlines() if l.strip()), "")
+    return [_trunc(first, _MAX_INLINE_LEN)] if first else []
 
 
 _OUT_FORMATTERS = {
@@ -247,6 +561,13 @@ _OUT_FORMATTERS = {
     "glob": _fmt_out_glob,
     "bash": _fmt_out_bash,
     "repo_overview": _fmt_out_repo_overview,
+    "webfetch": _fmt_out_webfetch,
+    "git": _fmt_out_git,
+    "task": _fmt_out_task,
+    "memory": _fmt_out_memory,
+    "skills": _fmt_out_skills,
+    "worktree": _fmt_out_worktree,
+    "mcp": _fmt_out_mcp,
 }
 
 

@@ -1421,7 +1421,7 @@ class TestToolStatusWidget:
         assert w.tool_name == "bash"
         assert w.args_str == "ls -la"
 
-    async def test_bash_widget_shows_tail_and_expands_live_feed(self):
+    async def test_bash_widget_shows_command_and_tail_lines(self):
         class WidgetApp(App):
             def compose(self):
                 yield BashToolStatusWidget(
@@ -1437,17 +1437,17 @@ class TestToolStatusWidget:
 
             info = widget.query_one("#info", Static)
             assert "for i in 1 2 3" in _plain_widget_text(info)
-            assert "second | third" in _plain_widget_text(info)
 
-            widget.toggle_output()
-            await pilot.pause()
+            # Tail preview is in the body now; header carries the command only.
             body = widget.query_one("#body", Static)
-            assert "running:" in _plain_widget_text(body)
-            assert "third" in _plain_widget_text(body)
+            body_text = _plain_widget_text(body)
+            assert "third" in body_text
+            assert "second" in body_text
 
             await widget.complete("first\nsecond\nthird\n")
             await pilot.pause()
-            assert "completed:" in _plain_widget_text(body)
+            # No "completed" label in the header.
+            assert "completed" not in _plain_widget_text(info).lower()
 
     def test_activity_progress_instantiates(self):
         progress = ActivityProgress()
