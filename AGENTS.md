@@ -87,27 +87,35 @@ Important boundaries:
 | --- | --- |
 | `taui/main.py:29` | CLI parsing, logging setup, provider login flow, TUI launch |
 | `taui/config.py:33` | Runtime config defaults and config-file loading |
-| `taui/session.py:139` | Composition root for provider, tools, extensions, prompt, store, loop |
-| `taui/agent/loop.py:93` | Agent state machine, tool cycle, streaming callbacks, steering |
-| `taui/agent/context.py:134` | Token estimation and context compaction helpers |
-| `taui/store/store.py:97` | SQLite store, event/session persistence |
+| `taui/session.py:171` | `Session.create()` composition root: provider, tools, extensions, prompt, store, loop |
+| `taui/agent/loop.py:99` | Agent state machine, tool cycle, streaming callbacks, steering |
+| `taui/agent/context.py:139` | Token estimation and context compaction helpers |
+| `taui/store/store.py:95` | SQLite store, event/session persistence |
 | `taui/store/stream.py:22` | Stream projections, replay, and live tailing |
 | `taui/tools/base.py:10` | Tool protocol, categories, `ToolResult` |
 | `taui/tools/registry.py:10` | Tool registration, schemas, subsets, guidelines |
 | `taui/tools/executor.py:42` | Policy decisions, approval outcomes, timeout/error wrapping |
-| `taui/tools/builtins/__init__.py:28` | Builtin read/write/edit/search/bash/git/mcp/memory/question/skills/sub-agent tools |
-| `taui/tui/app.py:206` | Main `TauiApp`, command dispatch, streaming render, steering/queue, sessions |
-| `taui/tui/widgets/chat_input.py:35` | Chat input, key handling, prompt history, paste and attachment handling |
+| `taui/tools/groups.py:17` | Tool-group labels and attribution (banner + modal grouping) |
+| `taui/tools/builtins/__init__.py:37` | `register_builtins()` — read/write/edit/search/bash/git/mcp/memory/question/skills/sub-agent/tasks/webfetch/worktree |
+| `taui/tasks/manager.py:100` | Background `TaskManager` for long-running async tool work |
+| `taui/mcp/__init__.py:461` | `McpManager`, clients, and tool exposure for MCP servers |
+| `taui/tui/app.py:63` | Main `TauiApp`, command dispatch, streaming render, steering/queue, sessions |
+| `taui/tui/widgets/chat_input.py:38` | Chat input, key handling, prompt history, paste and attachment handling |
 | `taui/tui/widgets/tool_status.py:49` | Tool status rendering |
 | `taui/tui/widgets/approval.py:14` | Inline approval prompt |
+| `taui/tui/widgets/tool_groups_banner.py` | Context banner listing active tool groups |
+| `taui/tui/widgets/skills_banner.py` | Context banner listing loaded skills |
+| `taui/tui/widgets/mcp_banner.py` | Context banner listing connected MCP servers |
 | `taui/tui/screens/context_breakdown.py:15` | Context breakdown modal |
-| `taui/commands/builtins.py:858` | Slash command registration |
+| `taui/tui/screens/self_edit_modal.py` | Ctrl+E self-edit modal (CRUD over agents/skills/commands/tools/prompts/MCP) |
+| `taui/commands/builtins.py:1163` | `register_builtins()` for slash commands |
 | `taui/extensions/__init__.py:93` | Python extension discovery and loading |
-| `taui/skills/__init__.py:91` | Skill package discovery and lazy loading |
+| `taui/skills/__init__.py:66` | `SkillRegistry` — skill package discovery and lazy loading |
 | `taui/llm_provider/base.py:102` | Provider abstraction |
-| `taui/llm_provider/providers/copilot.py:33` | GitHub Copilot provider |
+| `taui/llm_provider/providers/copilot.py:34` | GitHub Copilot provider |
 | `taui/llm_provider/providers/codex.py:26` | OpenAI Codex provider |
-| `taui/self_edit/factory.py:101` | `/i` self-edit mode prompt and scoped tools |
+| `taui/self_edit/factory.py:100` | `/i` self-edit mode prompt and scoped tools |
+| `taui/self_edit/inventory.py` | Scope/inventory data used by the self-edit modal |
 | `taui/lsp/client.py:15` | LSP client lifecycle and types (experimental) |
 | `taui/symbols/indexer.py:27` | Lightweight source symbol extraction (experimental) |
 | `tests/scenarios/scripted_provider.py:82` | Deterministic provider harness for tests and snapshots |
@@ -132,7 +140,11 @@ Important boundaries:
 - image paste support: drag-and-drop image file paths, `@image.png` references,
   `Ctrl+V` to paste from system clipboard
 - session replay and session picker
-- self-edit mode through `/i`
+- self-edit mode through `/i` (agent loop variant) and a Ctrl+E self-edit
+  modal for direct CRUD over agents/skills/commands/tools/prompts/MCP across
+  global and project scopes
+- context banners under the chat showing active tool groups, loaded skills,
+  and connected MCP servers — each opens a modal with its details
 
 Current key bindings are defined in `TauiApp.BINDINGS` and `ChatInput`; verify in code
 before documenting a shortcut. Important app-level bindings include:
@@ -143,7 +155,7 @@ before documenting a shortcut. Important app-level bindings include:
 - `Ctrl+D`: quit (double-press required)
 - `Ctrl+B`: toggle sidebar
 - `Ctrl+R`: toggle info sidebar
-- `Ctrl+E`: enter self-edit mode
+- `Ctrl+E`: open the self-edit modal (CRUD over agents/skills/commands/tools/prompts/MCP)
 - `Ctrl+X`: context breakdown
 - `Alt+Left/Right`: focus left/right pane
 - `Ctrl+PageDown/Up`: next/previous tab
@@ -154,7 +166,8 @@ are handled by `ChatInput.Submitted.queue`.
 
 ### Slash Commands
 
-Builtins are registered in `taui/commands/builtins.py:858`. Current commands include:
+Builtins are registered in `taui/commands/builtins.py:1163` (`register_builtins`).
+Current commands include:
 
 - `/help`, `/h`, `/?`
 - `/cost`
@@ -163,9 +176,11 @@ Builtins are registered in `taui/commands/builtins.py:858`. Current commands inc
 - `/clear`
 - `/model`
 - `/agents`
+- `/skills`
+- `/prompts`
 - `/provider`
 - `/extensions`
-- `/i`
+- `/i` (self-edit mode)
 - `/ext-mode`
 - `/sessions`
 - `/new`
@@ -176,6 +191,10 @@ Builtins are registered in `taui/commands/builtins.py:858`. Current commands inc
 - `/export`
 - `/hotkeys`, `/keys`
 - `/verbose`, `/quiet`
+- `/variant`
+- `/theme`
+- `/tasks`
+- `/update-providers-models`
 - `/debug`
 
 Keep command behavior in command classes where possible; TUI-specific actions can be
@@ -238,6 +257,27 @@ specialist loop using playbooks from `taui/self_edit/playbooks/`.
 Self-edit should create or modify extension files, skills, commands, or tools through the
 extension surface. Do not use self-edit as a reason to bypass core invariants in
 `AgentLoop`, `Store`, or `ToolExecutor`.
+
+`Ctrl+E` opens the self-edit modal (`taui/tui/screens/self_edit_modal.py`), a
+non-agent CRUD UI that edits the same surfaces (agents, skills, commands,
+tools, prompts, MCP servers) across global (`~/.taui/`, `~/.config/agents/`)
+and project (`.taui/`, `.agents/`) scopes. Inventory data is gathered by
+`taui/self_edit/inventory.py`.
+
+### MCP
+
+`taui/mcp/__init__.py` provides `McpManager`, stdio/HTTP MCP clients, and
+adapters that surface remote tools through the same `Tool` protocol as
+builtins. Connected servers are shown in the chat-context MCP banner and
+exposed to the agent through the regular tool registry.
+
+### Background Tasks
+
+`taui/tasks/manager.py` runs long-lived async work (sub-agents, scripted
+operations) outside the foreground tool cycle. Builtin task tools
+(`TaskCreate`, `TaskGet`, `TaskList`, `TaskOutput`, `TaskStop`, `TaskUpdate`)
+in `taui/tools/builtins/tasks/` let the agent spawn and inspect them, and
+`/tasks` provides a TUI view.
 
 ## Coding Conventions
 
