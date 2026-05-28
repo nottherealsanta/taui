@@ -18,7 +18,9 @@ spawns sub-agents.
 2. The loop sends each call to `ToolExecutor.execute()`: `taui/tools/executor.py:219`.
 3. Policy checks decide auto, confirm, or deny: `taui/tools/executor.py:60`.
 4. Expected tool failures return `ToolResult.fail()`: `taui/tools/base.py:34`.
-5. Results are stored as stream events: `taui/agent/loop.py:547`.
+5. Tools that produce live stdout/stderr can emit output deltas through the
+   per-execution callback context in `taui/tools/base.py`.
+6. Results are stored as stream events: `taui/agent/loop.py:547`.
 
 Read and search categories can run concurrently in the loop:
 `taui/agent/loop.py:493`.
@@ -44,6 +46,10 @@ Read and search categories can run concurrently in the loop:
 
 The sample `notebook_edit` tool is intentionally not a builtin. It lives in
 `test/user_extension.py` as a user extension example.
+
+The foreground `bash` builtin drains stdout/stderr while the command is running and emits
+live output deltas for the TUI. Its final `ToolResult` still contains the complete,
+truncated, or failed command output for agent context and replay.
 
 ## Policies
 

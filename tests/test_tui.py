@@ -16,6 +16,7 @@ from taui.tui.app import _model_completion_matches, _trunc
 from taui.tui.messages import (
     StreamTextDelta,
     ToolEnded,
+    ToolOutputDelta,
     ToolStarted,
 )
 from taui.tui.screens.agent_picker import AgentPickerScreen
@@ -32,7 +33,23 @@ from taui.tui.widgets.sidebar import Sidebar
 from taui.tui.widgets.spinner import ActivityProgress
 from taui.tui.widgets.status_bar import ContextStatus, ModelStatus
 from taui.tui.widgets.terminal import TerminalOutput
-from taui.tui.widgets.tool_status import ToolStatusWidget
+from taui.tui.widgets.tool_status import BashToolStatusWidget, ToolStatusWidget
+
+
+def _plain_widget_text(widget) -> str:
+    rendered = None
+    if hasattr(widget, "render"):
+        try:
+            rendered = widget.render()
+        except Exception:
+            rendered = None
+    if rendered is None:
+        rendered = getattr(widget, "renderable", None)
+    plain = getattr(rendered, "plain", None)
+    if plain is not None:
+        return plain
+    return "" if rendered is None else str(rendered)
+
 
 # ── _trunc ────────────────────────────────────────────────────────────
 
@@ -1404,6 +1421,34 @@ class TestToolStatusWidget:
         assert w.tool_name == "bash"
         assert w.args_str == "ls -la"
 
+    async def test_bash_widget_shows_tail_and_expands_live_feed(self):
+        class WidgetApp(App):
+            def compose(self):
+                yield BashToolStatusWidget(
+                    "bash",
+                    arguments={"command": "for i in 1 2 3; do echo $i; done"},
+                )
+
+        app = WidgetApp()
+        async with app.run_test() as pilot:
+            widget = app.query_one(BashToolStatusWidget)
+            widget.append_output("first\nsecond\nthird\n")
+            await pilot.pause()
+
+            info = widget.query_one("#info", Static)
+            assert "for i in 1 2 3" in _plain_widget_text(info)
+            assert "second | third" in _plain_widget_text(info)
+
+            widget.toggle_output()
+            await pilot.pause()
+            body = widget.query_one("#body", Static)
+            assert "running:" in _plain_widget_text(body)
+            assert "third" in _plain_widget_text(body)
+
+            await widget.complete("first\nsecond\nthird\n")
+            await pilot.pause()
+            assert "completed:" in _plain_widget_text(body)
+
     def test_activity_progress_instantiates(self):
         progress = ActivityProgress()
         assert progress._running is False
@@ -1607,6 +1652,12 @@ class TestMessages:
     def test_tool_ended_error(self):
         msg = ToolEnded("bash_1", "bash", "error msg", True)
         assert msg.is_error
+
+    def test_tool_output_delta(self):
+        msg = ToolOutputDelta("bash_1", "bash", "line\n", session_id="s1")
+        assert msg.tool_key == "bash_1"
+        assert msg.chunk == "line\n"
+        assert msg.session_id == "s1"
 
     def test_stream_text_delta(self):
         msg = StreamTextDelta("hello ")

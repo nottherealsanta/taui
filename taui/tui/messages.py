@@ -33,6 +33,19 @@ class ToolEnded(Message):
         self.session_id = session_id
 
 
+class ToolOutputDelta(Message):
+    """Posted when a running tool emits stdout/stderr output."""
+
+    def __init__(
+        self, tool_key: str, tool_name: str, chunk: str, *, session_id: str = "",
+    ) -> None:
+        super().__init__()
+        self.tool_key = tool_key
+        self.tool_name = tool_name
+        self.chunk = chunk
+        self.session_id = session_id
+
+
 class StreamTextDelta(Message):
     """Posted when a text chunk arrives from streaming."""
 

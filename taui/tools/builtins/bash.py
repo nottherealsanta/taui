@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from taui.tools.background import BackgroundProcessRegistry
-from taui.tools.base import ToolCategory, ToolResult
+from taui.tools.base import ToolCategory, ToolResult, emit_tool_output_delta
 from taui.tools.builtins.common import TruncationEnvelope
 
 _MAX_OUTPUT_BYTES = 50_000  # 50 KB output cap (foreground)
@@ -30,6 +30,21 @@ _ENV_ALLOWLIST = frozenset({
     "EDITOR", "VISUAL", "PAGER",
     "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME",
 })
+
+
+async def _drain_stdout(
+    proc: asyncio.subprocess.Process, raw: bytearray
+) -> None:
+    assert proc.stdout is not None
+    while True:
+        chunk = await proc.stdout.read(4096)
+        if not chunk:
+            break
+        raw.extend(chunk)
+        try:
+            await emit_tool_output_delta(chunk.decode("utf-8", errors="replace"))
+        except Exception:
+            pass
 
 
 def _filtered_env() -> dict[str, str]:
@@ -147,31 +162,59 @@ class BashTool:
         except OSError as e:
             return ToolResult.fail(f"Failed to start process: {e}")
 
+        raw_buffer = bytearray()
+        reader_task = asyncio.create_task(_drain_stdout(proc, raw_buffer))
+        timed_out = False
         try:
-            stdout, _ = await asyncio.wait_for(
-                proc.communicate(), timeout=timeout
-            )
+            await asyncio.wait_for(proc.wait(), timeout=timeout)
         except TimeoutError:
+            timed_out = True
             # Kill the process group
             try:
                 os.killpg(proc.pid, signal.SIGTERM)
-                await asyncio.sleep(1)
+                await asyncio.wait_for(proc.wait(), timeout=1.0)
                 if proc.returncode is None:
                     os.killpg(proc.pid, signal.SIGKILL)
             except (ProcessLookupError, OSError):
                 pass
-            return ToolResult.fail(
-                f"Command timed out after {timeout}s: {command}. "
-                "Re-run with `background: true` for long-running jobs.",
-                command=command,
-                timeout=timeout,
-            )
+            except TimeoutError:
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                    await proc.wait()
+                except (ProcessLookupError, OSError):
+                    pass
+        finally:
+            try:
+                await asyncio.wait_for(reader_task, timeout=1.0)
+            except TimeoutError:
+                reader_task.cancel()
+                try:
+                    await reader_task
+                except asyncio.CancelledError:
+                    pass
+            except Exception:
+                pass
 
-        raw = stdout or b""
+        raw = bytes(raw_buffer)
         total_bytes = len(raw)
         text, was_truncated, kept_bytes = _truncate_bytes(
             raw, max_bytes=_MAX_OUTPUT_BYTES, max_lines=_MAX_OUTPUT_LINES
         )
+
+        if timed_out:
+            message = (
+                f"Command timed out after {timeout}s: {command}. "
+                "Re-run with `background: true` for long-running jobs."
+            )
+            if text:
+                message += f"\n\n--- partial output ---\n{text}"
+            return ToolResult.fail(
+                message,
+                command=command,
+                timeout=timeout,
+                timed_out=True,
+                truncated=was_truncated,
+            )
 
         exit_code = proc.returncode or 0
         meta: dict[str, Any] = {

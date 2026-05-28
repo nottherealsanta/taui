@@ -44,6 +44,8 @@ _DIFF_DEL_COLOR = "#f85149"
 
 _SPINNER_FRAMES = ("⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷")
 _STATIC_ICON = "✦"
+_BASH_LIVE_MAX_CHARS = 200_000
+_BASH_EXPANDED_MAX_LINES = 200
 
 
 class ToolStatusWidget(Widget):
@@ -273,4 +275,153 @@ class ToolStatusWidget(Widget):
                     f"[{_TOOL_ERROR_COLOR}]{escape(err_line)}[/{_TOOL_ERROR_COLOR}]"
                 )
             )
+        self._set_body(body_lines)
+
+
+class BashToolStatusWidget(ToolStatusWidget):
+    """Clickable bash status row with a live stdout/stderr feed."""
+
+    DEFAULT_CSS = (
+        ToolStatusWidget.DEFAULT_CSS
+        + """
+    BashToolStatusWidget {
+        width: 100%;
+        height: auto;
+        layout: vertical;
+        padding: 0;
+    }
+    BashToolStatusWidget #header {
+        width: 100%;
+        height: auto;
+    }
+    BashToolStatusWidget .tool-icon {
+        width: 2;
+        height: 1;
+    }
+    BashToolStatusWidget .tool-info {
+        width: 1fr;
+        height: auto;
+    }
+    BashToolStatusWidget #body {
+        width: 1fr;
+        height: auto;
+        padding: 0 0 0 2;
+    }
+    """
+    )
+
+    def __init__(
+        self,
+        tool_name: str,
+        args_str: str = "",
+        arguments: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(tool_name, args_str, arguments=arguments)
+        self._output_buffer = ""
+        self._expanded = False
+        self._running = True
+        self._failed = False
+        self._dropped_prefix = False
+        self.add_class("bash-tool")
+
+    @property
+    def is_expanded(self) -> bool:
+        return self._expanded
+
+    def on_mount(self) -> None:
+        super().on_mount()
+        self._refresh()
+
+    def on_click(self) -> None:
+        self.toggle_output()
+
+    def toggle_output(self) -> None:
+        self._expanded = not self._expanded
+        self._refresh()
+
+    def append_output(self, chunk: str) -> None:
+        if not chunk:
+            return
+        self._output_buffer += chunk
+        if len(self._output_buffer) > _BASH_LIVE_MAX_CHARS:
+            self._output_buffer = self._output_buffer[-_BASH_LIVE_MAX_CHARS:]
+            self._dropped_prefix = True
+        self._refresh()
+
+    async def complete(self, output: str = "") -> None:
+        self._stop_spinner()
+        self._running = False
+        self._failed = False
+        if output and output != "(no output)":
+            self._output_buffer = output
+        if not self.is_mounted:
+            return
+        self._set_icon(_STATIC_ICON)
+        self._refresh()
+
+    async def fail(self, error: str = "") -> None:
+        self._stop_spinner()
+        self._running = False
+        self._failed = True
+        if error:
+            self._output_buffer = error
+        if not self.is_mounted:
+            return
+        self._set_icon(_STATIC_ICON)
+        self._refresh()
+
+    def _status_label(self) -> str:
+        if self._running:
+            return "running"
+        if self._failed:
+            return "failed"
+        return "completed"
+
+    def _tail_preview(self) -> str:
+        lines = [line.rstrip() for line in self._output_buffer.splitlines()]
+        lines = [line for line in lines if line]
+        if not lines:
+            return ""
+        preview = " | ".join(lines[-2:])
+        return preview if len(preview) <= 150 else preview[:149] + "…"
+
+    def _expanded_lines(self) -> list[str]:
+        status = self._status_label()
+        lines = [f"{status}: {self.args_str or 'bash'}"]
+        output_lines = self._output_buffer.rstrip("\n").splitlines()
+        if self._dropped_prefix:
+            lines.append(
+                f"... showing last {_BASH_LIVE_MAX_CHARS} characters of output ..."
+            )
+        if len(output_lines) > _BASH_EXPANDED_MAX_LINES:
+            omitted = len(output_lines) - _BASH_EXPANDED_MAX_LINES
+            lines.append(f"... {omitted} earlier lines omitted ...")
+            output_lines = output_lines[-_BASH_EXPANDED_MAX_LINES:]
+        if output_lines:
+            lines.extend(output_lines)
+        else:
+            lines.append("(no output yet)" if self._running else "(no output)")
+        return lines
+
+    def _refresh(self) -> None:
+        if not self.is_mounted:
+            return
+
+        tail = self._tail_preview()
+        suffix_text = tail or self._status_label()
+        color = _TOOL_ERROR_COLOR if self._failed else _TOOL_DETAIL_COLOR
+        suffix = f"  [{color}]{escape(suffix_text)}[/{color}]"
+        try:
+            self.query_one("#info", Static).update(self._header_markup(suffix))
+        except Exception:
+            pass
+
+        if not self._expanded:
+            self._set_body([])
+            return
+
+        body_lines = [
+            Text.from_markup(f"[{color}]{escape(line)}[/{color}]")
+            for line in self._expanded_lines()
+        ]
         self._set_body(body_lines)

@@ -10,7 +10,13 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
-from taui.tools.base import ToolCategory, ToolResult
+from taui.tools.base import (
+    ToolCategory,
+    ToolOutputDeltaCallback,
+    ToolResult,
+    reset_tool_output_delta_callback,
+    set_tool_output_delta_callback,
+)
 from taui.tools.registry import ToolRegistry
 from taui.tools.truncation import TruncationStore
 
@@ -221,6 +227,7 @@ class ToolExecutor:
         arguments: dict[str, Any],
         *,
         approved: bool | None = None,
+        on_output_delta: ToolOutputDeltaCallback | None = None,
     ) -> Outcome:
         """Execute a tool call with policy enforcement.
 
@@ -273,7 +280,11 @@ class ToolExecutor:
 
         # Execute with optional retry for idempotent categories
         start = time.perf_counter()
-        result = await self._execute_with_retry(tool_name, tool, arguments)
+        token = set_tool_output_delta_callback(on_output_delta)
+        try:
+            result = await self._execute_with_retry(tool_name, tool, arguments)
+        finally:
+            reset_tool_output_delta_callback(token)
         elapsed = time.perf_counter() - start
         result.metadata.setdefault("duration_ms", int(elapsed * 1000))
 
