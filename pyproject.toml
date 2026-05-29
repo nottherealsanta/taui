@@ -43,7 +43,33 @@ target-version = "py313"
 select = ["E", "F", "I", "UP"]
 
 [tool.pytest.ini_options]
+addopts = ["-ra"]
 asyncio_mode = "auto"
+markers = [
+    "agent: agent loop, context, prompt, retry, tokenizer, and sub-agent tests",
+    "commands: slash command registry and builtin command tests",
+    "common: shared utility helpers used by multiple domains",
+    "config: configuration, model catalog, and CLI plumbing tests",
+    "cost: cost and usage accounting tests",
+    "extensions: extension discovery, loading, hooks, and extension surfaces",
+    "git: git tool and git-backed behavior tests",
+    "lsp: LSP and symbol-index tests",
+    "mcp: MCP client, server, and banner tests",
+    "memory: memory tool tests",
+    "permissions: permission DSL and policy tests",
+    "prompts: prompt builder and prompt snapshot tests",
+    "provider: provider abstraction, model, scenario, and provider error tests",
+    "self_edit: self-edit store, inventory, modal, and scoped tooling tests",
+    "session: session composition, resume, isolation, and picker tests",
+    "skills: skill registry and skill banner tests",
+    "store: SQLite store, replay, tailing, and persistence tests",
+    "tasks: background task and background bash tests",
+    "tools: tool registry, builtin tools, permissions, and tool UI grouping tests",
+    "tui: Textual app, widget, keyboard, modal, and sidebar tests",
+    "webfetch: web fetch tool tests",
+    "worktree: git worktree support tests",
+]
+testpaths = ["tests"]
 
 [tool.hatch.build]
 skip-excluded-dirs = true

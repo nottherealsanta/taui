@@ -738,16 +738,8 @@ class TestBuiltinCommands:
         assert result.error
         assert "/debug questions" in result.output
 
-    async def test_copy_copies_context_json(self, monkeypatch):
+    async def test_copy_copies_context_json(self):
         from taui.commands.builtins import register_builtins
-
-        copied: dict[str, bytes | list[str]] = {}
-
-        def fake_run(cmd, *, input, check, timeout):
-            copied["cmd"] = cmd
-            copied["input"] = input
-            assert check is True
-            assert timeout == 5
 
         class FakeLoop:
             _messages = [
@@ -764,15 +756,13 @@ class TestBuiltinCommands:
             model_name = "mock-model"
             _loop = FakeLoop()
 
-        monkeypatch.setattr(subprocess, "run", fake_run)
-
         reg = CommandRegistry()
         register_builtins(reg, get_session=lambda: FakeSession())
         result = await reg.execute("/copy")
 
         assert not result.error
-        assert copied["cmd"] == ["pbcopy"]
-        payload = json.loads(copied["input"].decode())
+        assert result.metadata["action"] == "copy_to_clipboard"
+        payload = json.loads(result.metadata["clipboard_content"])
         assert payload == {
             "session_id": "session-1",
             "provider": "copilot",
