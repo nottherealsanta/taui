@@ -91,6 +91,122 @@ class TestTauiApp:
         assert app.COMMAND_PALETTE_BINDING == "ctrl+p"
         assert app.ENABLE_COMMAND_PALETTE is True
 
+    def test_update_status_uses_model_context_limit_for_progress(
+        self, tmp_path, monkeypatch
+    ):
+        from taui.agent.types import Message
+        from taui.config import Config
+
+        class FakeLoop:
+            agent_id = ""
+            _messages = [
+                Message(role="system", content="system prompt"),
+                Message(role="user", content="x" * 400),
+            ]
+
+            @property
+            def max_input_tokens(self) -> int:
+                return 4096
+
+        class FakeSession:
+            _loop = FakeLoop()
+            provider_name = "copilot"
+            model_name = "tiny-context"
+            model_variant = ""
+            extensions_mode = False
+            self_edit_mode = False
+
+        app = TauiApp(Config(working_dir=tmp_path))
+        app._session = FakeSession()
+        info_bar = InfoBar()
+        progress = ActivityProgress()
+
+        def query_one(selector, *args):
+            if selector is InfoBar:
+                return info_bar
+            if selector is ActivityProgress:
+                return progress
+            return SimpleNamespace(self_edit_mode=False)
+
+        monkeypatch.setattr(app, "query_one", query_one)
+        monkeypatch.setattr(app, "_refresh_command_completions", lambda: None)
+        monkeypatch.setattr(app, "_refresh_sidebars_if_visible", lambda: None)
+        monkeypatch.setattr(app, "_set_terminal_title", lambda: None)
+
+        app._update_status()
+
+        assert info_bar._max_tokens == 4096
+        assert progress._context_ratio == info_bar._tokens / 4096
+
+    def test_switch_session_updates_activity_progress_context(self, tmp_path, monkeypatch):
+        from taui.agent.context import estimate_total_tokens
+        from taui.agent.types import Message
+        from taui.config import Config
+        from taui.tui.session_state import SessionState
+        from taui.tui.widgets.info_bar import _agent_color
+
+        class FakeLoop:
+            def __init__(self, agent_id: str, message_size: int) -> None:
+                self.agent_id = agent_id
+                self._messages = [
+                    Message(role="system", content="system prompt"),
+                    Message(role="user", content="x" * message_size),
+                ]
+
+            @property
+            def max_input_tokens(self) -> int:
+                return 1000
+
+        class FakeSession:
+            def __init__(self, session_id: str, agent_id: str, message_size: int) -> None:
+                self.session_id = session_id
+                self._loop = FakeLoop(agent_id, message_size)
+                self.provider_name = "copilot"
+                self.model_name = "test-model"
+                self.model_variant = ""
+                self.extensions_mode = False
+                self.self_edit_mode = False
+
+        first = FakeSession("s1", "AAA", 1600)
+        second = FakeSession("s2", "BBB", 100)
+        app = TauiApp(Config(working_dir=tmp_path))
+        app._session = first
+        app._sessions.add(
+            SessionState(
+                session=second,
+                session_id=second.session_id,
+                tool_ctrl=MagicMock(),
+                approval_ctrl=MagicMock(),
+            )
+        )
+        app._sessions.active_id = first.session_id
+        info_bar = InfoBar()
+        progress = ActivityProgress()
+        chat_input = SimpleNamespace(self_edit_mode=False, focus=lambda: None)
+
+        def query_one(selector, *args):
+            if selector is InfoBar:
+                return info_bar
+            if selector is ActivityProgress:
+                return progress
+            return chat_input
+
+        monkeypatch.setattr(app, "query_one", query_one)
+        monkeypatch.setattr(app, "_wire_callbacks", lambda: None)
+        monkeypatch.setattr(app, "_refresh_tab_bar", lambda: None)
+        monkeypatch.setattr(app, "_refresh_command_completions", lambda: None)
+        monkeypatch.setattr(app, "_refresh_sidebars_if_visible", lambda: None)
+        monkeypatch.setattr(app, "_set_terminal_title", lambda: None)
+
+        app._update_status()
+        assert progress._context_ratio == estimate_total_tokens(first._loop._messages) / 1000
+        assert progress._active_style == _agent_color("AAA")
+
+        app._switch_to_session(second.session_id)
+
+        assert progress._context_ratio == estimate_total_tokens(second._loop._messages) / 1000
+        assert progress._active_style == _agent_color("BBB")
+
     def test_question_notification_suppressed_for_focused_active_session(self, tmp_path):
         from taui.config import Config
 
@@ -2132,6 +2248,13 @@ class TestAgentResponse:
 # ── ActivityProgress ─────────────────────────────────────────────────
 
 
+def _style_at(text, index: int) -> str:
+    for span in text.spans:
+        if span.start <= index < span.end:
+            return str(span.style)
+    return ""
+
+
 class TestActivityProgress:
     def test_instantiate(self):
         progress = ActivityProgress()
@@ -2171,6 +2294,60 @@ class TestActivityProgress:
 
         assert progress._active_style == "#58a6ff"
         assert any(str(span.style) == "#58a6ff" for span in rendered.spans)
+
+    def test_context_usage_fills_from_left(self):
+        progress = ActivityProgress()
+        progress.set_context_usage(25, 100)
+
+        rendered = progress.render()
+
+        assert rendered.plain == "━" * 40
+        assert _style_at(rendered, 0) == "#238636"
+        assert _style_at(rendered, 9) == "#238636"
+        assert _style_at(rendered, 10) == "#30363d"
+
+    def test_tiny_context_usage_renders_one_cell(self):
+        progress = ActivityProgress()
+        progress.set_context_usage(1, 10_000)
+
+        rendered = progress.render()
+
+        assert _style_at(rendered, 0) == "#238636"
+        assert _style_at(rendered, 1) == "#30363d"
+
+    def test_context_usage_clamps_to_full_bar(self):
+        progress = ActivityProgress()
+        progress.set_context_usage(200, 100)
+
+        rendered = progress.render()
+
+        assert progress._context_ratio == 1.0
+        assert _style_at(rendered, 0) == "#da3633"
+        assert _style_at(rendered, 39) == "#da3633"
+
+    def test_active_bounce_overlays_context_fill(self):
+        progress = ActivityProgress()
+        progress.set_active_style("#58a6ff")
+        progress.set_context_usage(50, 100)
+        progress._running = True
+
+        rendered = progress.render()
+
+        assert _style_at(rendered, 0) == "#58a6ff"
+        assert _style_at(rendered, 8) == "#9e6a03"
+        assert _style_at(rendered, 20) == "#30363d"
+
+    def test_stop_preserves_context_fill(self):
+        progress = ActivityProgress()
+        progress.set_context_usage(25, 100)
+        progress._running = True
+
+        progress.stop()
+        rendered = progress.render()
+
+        assert progress._running is False
+        assert _style_at(rendered, 0) == "#238636"
+        assert _style_at(rendered, 10) == "#30363d"
 
 
 # ── Context-start banner update on agent switch ───────────────────────

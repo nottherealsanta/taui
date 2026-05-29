@@ -21,6 +21,7 @@ from textual.system_commands import SystemCommandsProvider
 from textual.widgets import Markdown, Static, Tree
 
 from taui.agent.context import DEFAULT_MAX_INPUT_TOKENS, estimate_total_tokens
+from taui.agent.types import Message
 from taui.commands.builtins import register_builtins as register_builtin_commands
 from taui.commands.registry import CommandRegistry
 from taui.config import Config
@@ -1000,20 +1001,22 @@ class TauiApp(App[None]):
 
     def _update_status(self) -> None:
         if not self._session:
+            self._update_activity_progress(None, 0, DEFAULT_MAX_INPUT_TOKENS)
             return
         info_bar = self.query_one(InfoBar)
-        tokens = estimate_total_tokens(self._session._loop._messages)
+        tokens, max_tokens = self._context_usage(self._session)
         wt_handle = getattr(self._session, "worktree", None)
         info_bar.update_info(
             provider=self._session.provider_name,
             model=self._session.model_name,
             variant=self._session.model_variant,
             tokens=tokens,
-            max_tokens=DEFAULT_MAX_INPUT_TOKENS,
+            max_tokens=max_tokens,
             extensions_mode=self._session.extensions_mode,
             agent_id=str(getattr(self._session._loop, "agent_id", "") or ""),
             worktree_branch=wt_handle.branch if wt_handle else "",
         )
+        self._update_activity_progress(self._session, tokens, max_tokens)
         try:
             chat_input = self.query_one("#chat-input", ChatInput)
             chat_input.self_edit_mode = self._session.self_edit_mode
@@ -1022,6 +1025,44 @@ class TauiApp(App[None]):
         self._refresh_command_completions()
         self._refresh_sidebars_if_visible()
         self._set_terminal_title()
+
+    def _context_usage(
+        self,
+        session: Session,
+        pending_message: str = "",
+    ) -> tuple[int, int]:
+        messages = list(session._loop._messages)
+        if pending_message:
+            if not messages:
+                messages.append(
+                    Message(
+                        role="system",
+                        content=str(getattr(session._loop, "_system_prompt", "") or ""),
+                    )
+                )
+            messages.append(Message(role="user", content=pending_message))
+        max_tokens = int(
+            getattr(session._loop, "max_input_tokens", DEFAULT_MAX_INPUT_TOKENS)
+            or DEFAULT_MAX_INPUT_TOKENS
+        )
+        tokenizer = getattr(session._loop, "_tokenizer", None)
+        return estimate_total_tokens(messages, tokenizer), max_tokens
+
+    def _update_activity_progress(
+        self,
+        session: Session | None,
+        tokens: int,
+        max_tokens: int,
+    ) -> None:
+        try:
+            progress = self.query_one(ActivityProgress)
+        except NoMatches:
+            return
+        agent_id = ""
+        if session is not None:
+            agent_id = str(getattr(session._loop, "agent_id", "") or "")
+        progress.set_active_style(_agent_color(agent_id) if agent_id else "#3fb950")
+        progress.set_context_usage(tokens, max_tokens)
 
     def _refresh_sidebars_if_visible(self) -> None:
         from taui.tui.widgets.session_info_sidebar import SessionInfoSidebar
@@ -2380,8 +2421,8 @@ class TauiApp(App[None]):
         session = st.session
 
         progress = self.query_one(ActivityProgress)
-        agent_id = str(getattr(session._loop, "agent_id", "") or "")
-        progress.set_active_style(_agent_color(agent_id) if agent_id else "#3fb950")
+        tokens, max_tokens = self._context_usage(session, text)
+        self._update_activity_progress(session, tokens, max_tokens)
         progress.start()
 
         st.tool_ctrl.reset_section()
@@ -3221,6 +3262,7 @@ class TauiApp(App[None]):
             self._wire_callbacks()
             self._update_status()
             await self._render_replay()
+            self._update_status()
             self._refresh_tab_bar()
             return True
 
@@ -3419,6 +3461,9 @@ class TauiApp(App[None]):
             await _flush_turn_footer()
         if st is not None:
             await self._autocollapse_old_turns(st)
+        if self._session is not None:
+            tokens, max_tokens = self._context_usage(self._session)
+            self._update_activity_progress(self._session, tokens, max_tokens)
         # Land the user at the bottom of the resumed transcript so the most
         # recent exchange is visible — they can scroll up for earlier turns
         # or the context banner.
@@ -3503,6 +3548,7 @@ class TauiApp(App[None]):
         self._context_banner_shown = False
         self._pending_files.clear()
         self._pending_folders.clear()
+        self._update_status()
 
     async def action_new_chat(self) -> None:
         """Create a new parallel session tab (does NOT cancel existing sessions)."""

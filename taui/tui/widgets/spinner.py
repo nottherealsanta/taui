@@ -24,6 +24,15 @@ def _blend_hex(c1: str, c2: str, t: float) -> str:
 
 
 _IDLE_COLOR = "#30363d"
+_CONTEXT_LOW_COLOR = "#238636"
+_CONTEXT_MEDIUM_COLOR = "#9e6a03"
+_CONTEXT_HIGH_COLOR = "#da3633"
+
+
+def _clamp_ratio(tokens: int, max_tokens: int) -> float:
+    if max_tokens <= 0 or tokens <= 0:
+        return 0.0
+    return min(tokens / max_tokens, 1.0)
 
 
 class ActivityProgress(Static):
@@ -45,6 +54,7 @@ class ActivityProgress(Static):
         self._mode: str = "idle"  # "idle" | "bounce" | "breathe"
         self._active_style = "#3fb950"
         self._breath_phase = 0.0
+        self._context_ratio = 0.0
         self._timer: Timer | None = None
 
     def _advance_bounce(self) -> None:
@@ -59,6 +69,22 @@ class ActivityProgress(Static):
     def set_active_style(self, style: str) -> None:
         self._active_style = style or "#3fb950"
         self.refresh()
+
+    def set_context_usage(self, tokens: int, max_tokens: int) -> None:
+        self._context_ratio = _clamp_ratio(tokens, max_tokens)
+        self.refresh()
+
+    def _context_style(self) -> str:
+        if self._context_ratio >= 0.75:
+            return _CONTEXT_HIGH_COLOR
+        if self._context_ratio >= 0.50:
+            return _CONTEXT_MEDIUM_COLOR
+        return _CONTEXT_LOW_COLOR
+
+    def _context_fill_width(self, width: int) -> int:
+        if self._context_ratio <= 0:
+            return 0
+        return max(1, min(width, round(width * self._context_ratio)))
 
     def _restart_timer(self, interval: float, callback) -> None:
         if self._timer is not None:
@@ -96,8 +122,14 @@ class ActivityProgress(Static):
 
     def render(self) -> Text:
         width = max(12, self.size.width or 40)
+        fill_width = self._context_fill_width(width)
+        context_style = self._context_style()
         if not self._running:
-            return Text("━" * width, style=_IDLE_COLOR)
+            bar = Text()
+            for index in range(width):
+                style = context_style if index < fill_width else _IDLE_COLOR
+                bar.append("━", style=style)
+            return bar
 
         if self._mode == "breathe":
             t = (math.sin(self._breath_phase) + 1) / 2
@@ -121,5 +153,6 @@ class ActivityProgress(Static):
             if position <= index < position + segment:
                 bar.append("━", style=self._active_style)
             else:
-                bar.append("━", style=_IDLE_COLOR)
+                style = context_style if index < fill_width else _IDLE_COLOR
+                bar.append("━", style=style)
         return bar
