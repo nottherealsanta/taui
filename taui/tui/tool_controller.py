@@ -176,6 +176,20 @@ class ToolController:
             ToolOutputDelta(tool_key, name, chunk, session_id=sid)
         )
 
+    async def on_sub_agent_text(self, text: str) -> None:
+        """Route a sub-agent's assistant text to its widget's activity log.
+
+        Runs on the app event loop (the child loop awaits this), so the widget
+        can be updated directly.
+        """
+        if self._active_sub_agents:
+            self._active_sub_agents[-1].record_text(text)
+
+    def on_sub_agent_reasoning(self, fragment: str) -> None:
+        """Route a streaming reasoning fragment to the active sub-agent widget."""
+        if self._active_sub_agents:
+            self._active_sub_agents[-1].record_reasoning_delta(fragment)
+
     async def handle_tool_started(self, event: ToolStarted) -> None:
         # Find the session state this tool belongs to
         st: SessionState | None = None

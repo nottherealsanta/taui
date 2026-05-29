@@ -433,6 +433,12 @@ GENERAL_SETTINGS_SECTIONS: tuple[
                 int,
             ),
             (
+                "sub_agent_max_turns",
+                "Sub-agent Max Turns",
+                "Default turn budget for spawned sub-agents (capped at 25).",
+                int,
+            ),
+            (
                 "provider",
                 "Default Provider",
                 "LLM provider used when no override is given.",
@@ -495,6 +501,7 @@ _GENERAL_SETTINGS_MAP: dict[str, tuple[str, type]] = {
     "skills": ("prefixes.skills", str),
     "prompts": ("prefixes.prompts", str),
     "max_turns": ("max_turns", int),
+    "sub_agent_max_turns": ("sub_agent_max_turns", int),
     "provider": ("provider", str),
     "model": ("model", str),
     "notifications": ("notifications", bool),
@@ -516,6 +523,7 @@ _GENERAL_DEFAULTS: dict[str, object] = {
     "skills": "!",
     "prompts": "#",
     "max_turns": 50,
+    "sub_agent_max_turns": 25,
     "provider": "copilot",
     "model": "",
     "notifications": True,
@@ -535,9 +543,9 @@ def _load_general_values() -> dict[str, object]:
     prefixes = taui_cfg.get("prefixes", {})
 
     values: dict[str, object] = dict(_GENERAL_DEFAULTS)
-    for fld in ("max_turns", "provider", "model", "notifications",
-                "notify_on_turn_done", "notify_on_question", "verbose_tools",
-                "auto_approve"):
+    for fld in ("max_turns", "sub_agent_max_turns", "provider", "model",
+                "notifications", "notify_on_turn_done", "notify_on_question",
+                "verbose_tools", "auto_approve"):
         if fld in taui_cfg:
             values[fld] = taui_cfg[fld]
     for fld in ("file_attach", "command"):

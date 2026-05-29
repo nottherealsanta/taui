@@ -26,7 +26,18 @@ _DEFAULT_SYSTEM_PROMPT = (
     "You are a focused research agent. "
     "Complete the given task concisely and return your findings."
 )
-_DEFAULT_MAX_TURNS = 10
+_DEFAULT_MAX_TURNS = 25
+
+
+def _first_line(text: str, limit: int = 200) -> str:
+    """First non-empty line of ``text``, truncated to ``limit`` chars."""
+    stripped = (text or "").strip()
+    if not stripped:
+        return ""
+    line = stripped.splitlines()[0].strip()
+    if len(line) > limit:
+        line = line[:limit] + "…"
+    return line
 
 
 class SubAgentModal(ModalScreen[None]):
@@ -117,6 +128,8 @@ class SubAgentModal(ModalScreen[None]):
 
     def compose(self) -> ComposeResult:
         ctx = self._resolve_ctx()
+        # Mirror the agent's context top→bottom: system prompt first, then the
+        # task/meta strip, then the live conversation (activity log).
         with Container(id="sub-agent-dialog"):
             yield Static(
                 self._title_markup(ctx),
@@ -124,6 +137,20 @@ class SubAgentModal(ModalScreen[None]):
                 markup=True,
                 id="modal-title",
             )
+
+            with Container(id="sysprompt-section"):
+                yield Static(
+                    "System prompt",
+                    classes="section-header",
+                    markup=False,
+                )
+                with VerticalScroll(id="sysprompt-scroll"):
+                    yield Static(
+                        ctx["system_prompt"],
+                        classes="section-body",
+                        markup=False,
+                    )
+
             yield Static(
                 self._meta_renderable(ctx),
                 classes="meta",
@@ -142,19 +169,6 @@ class SubAgentModal(ModalScreen[None]):
                         self._activity_renderable(),
                         markup=False,
                         id="activity-body",
-                    )
-
-            with Container(id="sysprompt-section"):
-                yield Static(
-                    "System prompt",
-                    classes="section-header",
-                    markup=False,
-                )
-                with VerticalScroll(id="sysprompt-scroll"):
-                    yield Static(
-                        ctx["system_prompt"],
-                        classes="section-body",
-                        markup=False,
                     )
 
             with Horizontal(classes="button-container"):
@@ -232,12 +246,16 @@ class SubAgentModal(ModalScreen[None]):
             scroll = self.query_one("#activity-scroll", VerticalScroll)
         except Exception:
             return
+        # Capture whether the user is pinned to the bottom *before* the content
+        # grows. If they've scrolled up to read earlier events, we leave their
+        # position alone instead of yanking them back to the tail every tick.
+        at_bottom = scroll.scroll_offset.y >= scroll.max_scroll_y - 1
         title.update(self._title_markup(self._resolve_ctx()))
         header.update(self._activity_header())
         body.update(self._activity_renderable())
-        # Auto-scroll to tail while live so new events stay visible.
-        if not self._widget._finished:
-            scroll.scroll_end(animate=False)
+        # Only follow the tail while live if the user was already at the bottom.
+        if not self._widget._finished and at_bottom:
+            self.call_after_refresh(self._scroll_to_tail)
 
     def on_button_pressed(self, _event: Button.Pressed) -> None:
         self.dismiss(None)
@@ -274,6 +292,10 @@ class SubAgentWidget(ToolStatusWidget):
         self._finished: bool = False
         self._failed: bool = False
         self._final_preview: str = ""
+        # Reasoning streams token-by-token; we accumulate here and show the
+        # first line live as the status, flushing one summary line into the
+        # activity log when the next discrete event (tool/text) arrives.
+        self._reasoning_buf: str = ""
         # Header shows just the agent_id next to "sub_agent"; the body
         # carries goal + status as a 2x2 table.
         aid = self._extract_agent_id()
@@ -306,13 +328,44 @@ class SubAgentWidget(ToolStatusWidget):
         return ""
 
     def record_activity(self, line: str) -> None:
-        """Append a live activity line and refresh the body."""
+        """Append a live tool activity line and refresh the body."""
         line = line.strip()
         if not line:
             return
+        self._flush_reasoning()
         self._activity_log.append(line)
         if not self._finished:
             self._refresh_live_body()
+
+    def record_text(self, text: str) -> None:
+        """Record assistant text from the sub-agent.
+
+        The full text is kept in the activity log (the modal shows it in
+        full); only the inline status line collapses it to one line.
+        """
+        body = (text or "").strip()
+        if not body:
+            return
+        self._flush_reasoning()
+        self._activity_log.append(f"💬 {body}")
+        if not self._finished:
+            self._refresh_live_body()
+
+    def record_reasoning_delta(self, fragment: str) -> None:
+        """Accumulate a streaming reasoning fragment; show it live as status."""
+        if not fragment:
+            return
+        self._reasoning_buf += fragment
+        if not self._finished:
+            self._refresh_live_body()
+
+    def _flush_reasoning(self) -> None:
+        """Move buffered reasoning into the activity log in full (the modal
+        shows the complete text; the status line collapses it to one line)."""
+        buf = self._reasoning_buf.strip()
+        self._reasoning_buf = ""
+        if buf:
+            self._activity_log.append(f"🤔 {buf}")
 
     def full_log_text(self) -> str:
         if not self._activity_log:
@@ -375,15 +428,17 @@ class SubAgentWidget(ToolStatusWidget):
         }
 
     def _status_line(self) -> str:
+        """The single line shown in the body — first line of the latest event
+        (tool, reasoning, or assistant text), or the final preview."""
         if self._failed:
-            return self._final_preview or "failed"
+            return _first_line(self._final_preview) or "failed"
         if self._finished:
-            return self._final_preview or "finished"
+            return _first_line(self._final_preview) or "finished"
+        # Reasoning currently streaming — surface the latest thought.
+        if self._reasoning_buf.strip():
+            return _first_line(self._reasoning_buf)
         if self._activity_log:
-            latest = self._activity_log[-1]
-            if len(latest) > 200:
-                latest = latest[:200] + "…"
-            return latest
+            return _first_line(self._activity_log[-1])
         return "starting…"
 
     def _render_body(self) -> None:
@@ -404,7 +459,11 @@ class SubAgentWidget(ToolStatusWidget):
         table.add_column(style=_MUTED, no_wrap=True)
         table.add_column(style=_VALUE_COLOR, overflow="fold")
         table.add_row("goal", goal)
-        table.add_row("status", Text(status, style=status_style))
+        # Status is capped to a single line: never wrap, crop with an ellipsis.
+        table.add_row(
+            "status",
+            Text(status, style=status_style, no_wrap=True, overflow="ellipsis"),
+        )
 
         body.update(table)
         body.styles.display = "block"
@@ -421,6 +480,7 @@ class SubAgentWidget(ToolStatusWidget):
 
     async def complete(self, output: str = "") -> None:
         self._stop_spinner()
+        self._flush_reasoning()
         self._finished = True
         self._failed = False
         preview = output.strip().splitlines()[0] if output and output.strip() else ""
@@ -428,20 +488,15 @@ class SubAgentWidget(ToolStatusWidget):
             preview = preview[:200] + "…"
         self._final_preview = preview or "finished"
         if not self.is_mounted:
-            self._activity_log.append(
-                f"== Finished: {preview}" if preview else "== Finished"
-            )
             return
         self._set_icon(_STATIC_ICON)
         # Don't add a header suffix — body carries the status.
         self.query_one("#info", Static).update(self._header_markup())
         self._render_body()
-        self._activity_log.append(
-            f"== Finished: {preview}" if preview else "== Finished"
-        )
 
     async def fail(self, error: str = "") -> None:
         self._stop_spinner()
+        self._flush_reasoning()
         self._finished = True
         self._failed = True
         err = (error or "").strip().splitlines()[0] if error else ""
@@ -449,16 +504,10 @@ class SubAgentWidget(ToolStatusWidget):
             err = err[:200] + "…"
         self._final_preview = err or "failed"
         if not self.is_mounted:
-            self._activity_log.append(
-                f"== Failed: {err}" if err else "== Failed"
-            )
             return
         self._set_icon(_STATIC_ICON)
         self.query_one("#info", Static).update(self._header_markup())
         self._render_body()
-        self._activity_log.append(
-            f"== Failed: {err}" if err else "== Failed"
-        )
 
     async def on_click(self, event: events.Click) -> None:
         event.stop()

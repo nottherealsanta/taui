@@ -137,6 +137,30 @@ class TestSubAgentTool:
         assert not result.error
         assert result.metadata["turns"] == 3
 
+    async def test_max_turns_does_final_wrap_up_turn(self):
+        """On hitting max_turns the loop makes one final tool-free turn so the
+        agent returns its findings rather than empty 'Max turns reached.' text."""
+        # Two tool-calling turns exhaust the budget, then the wrap-up turn
+        # (3rd create_turn) produces the actual answer.
+        responses = [
+            _tool_call(None, [("c1", "echo", {"text": "loop"})]),
+            _tool_call(None, [("c2", "echo", {"text": "loop"})]),
+            _text("Final summary of findings."),
+        ]
+        llm = MockLLM(responses)
+        tool = _make_sub_agent_tool(llm, EchoTool())
+
+        result = await tool.execute({
+            "task": "Keep going",
+            "tools": ["echo"],
+            "max_turns": 2,
+        })
+        assert not result.error
+        assert result.content == "Final summary of findings."
+        # turns still reports the budget; the wrap-up is an extra LLM call.
+        assert result.metadata["turns"] == 2
+        assert llm.call_count == 3
+
     async def test_max_turns_capped_at_25(self):
         """max_turns cannot exceed 25."""
         llm = MockLLM([_text("Done.")])
@@ -304,3 +328,180 @@ class TestSubAgentIntegration:
 
         assert result.turns == 2
         assert "3 functions" in result.text
+
+
+class TestSubAgentLiveCallbacks:
+    """The TUI relies on the child loop's tool events being forwarded so the
+    sub-agent widget shows live activity instead of staying at "starting…"."""
+
+    async def test_forwards_callbacks_to_child_loop(self):
+        """execute() copies the parent's tool callbacks onto the child loop."""
+
+        @dataclass
+        class FakeLoop:
+            _on_tool_call: Any = None
+            _on_tool_result: Any = None
+            _on_tool_delta: Any = None
+            _on_text: Any = None
+            _on_reasoning_delta: Any = None
+
+        class FakeResult:
+            text = "done"
+            turns = 1
+
+            class state:  # noqa: N801 - mimic enum-like .value
+                value = "completed"
+
+        class FakeSubSession:
+            def __init__(self, loop):
+                self._loop = loop
+
+            async def send(self, task):
+                return FakeResult()
+
+        captured_loop = FakeLoop()
+
+        class FakeParentSession:
+            class config:
+                model = "mock"
+
+            async def create_sub_session(self, **kwargs):
+                return FakeSubSession(captured_loop)
+
+        async def on_call(*a):
+            ...
+
+        async def on_result(*a):
+            ...
+
+        async def on_delta(*a):
+            ...
+
+        async def on_text(*a):
+            ...
+
+        def on_reasoning(*a):
+            ...
+
+        tool = SubAgentTool()
+        tool._session = FakeParentSession()
+        tool._on_tool_call = on_call
+        tool._on_tool_result = on_result
+        tool._on_tool_delta = on_delta
+        tool._on_child_text = on_text
+        tool._on_child_reasoning = on_reasoning
+
+        result = await tool.execute({"task": "do work"})
+
+        assert not result.error
+        # The child loop must end up wired to the parent's callbacks; without
+        # this the sub-agent widget never receives inner-tool events.
+        assert captured_loop._on_tool_call is on_call
+        assert captured_loop._on_tool_result is on_result
+        assert captured_loop._on_tool_delta is on_delta
+        # Text and reasoning are routed too so the status line can reflect them.
+        assert captured_loop._on_text is on_text
+        assert captured_loop._on_reasoning_delta is on_reasoning
+
+    async def test_legacy_path_forwards_callbacks(self):
+        """The legacy (no-session) path must also forward callbacks so the
+        child's tool calls reach the TUI."""
+        calls: list[tuple[str, str]] = []
+
+        async def on_call(call_id, name, args):
+            calls.append(("call", name))
+
+        async def on_result(call_id, name, content, is_error):
+            calls.append(("result", name))
+
+        llm = MockLLM([
+            _tool_call(None, [("c1", "echo", {"text": "hi"})]),
+            _text("All done."),
+        ])
+        tool = _make_sub_agent_tool(llm, EchoTool())  # legacy: no _session
+        tool._on_tool_call = on_call
+        tool._on_tool_result = on_result
+
+        result = await tool.execute({"task": "Echo hi", "tools": ["echo"]})
+
+        assert not result.error
+        assert ("call", "echo") in calls
+        assert ("result", "echo") in calls
+
+    def test_configure_sub_agents_injects_session(self):
+        """Live wiring must set `_session` so execute() uses the preferred path
+        (which forwards callbacks). The legacy path can't reach the TUI."""
+        from taui.extensions.builtins import _configure_sub_agents
+
+        registry = ToolRegistry()
+        registry.register(SubAgentTool())
+
+        class FakeSession:
+            _registry = registry
+            _provider = object()
+            _stream = object()
+            _executor = ToolExecutor(registry=registry, policy=ToolPolicy())
+
+            class config:
+                model = "mock"
+
+        session = FakeSession()
+        _configure_sub_agents(session)
+
+        assert registry.get("sub_agent")._session is session
+
+    def test_refresh_agent_catalog_advertises_profiles(self, tmp_path):
+        """Spawnable profiles (e.g. EXP) must appear in the agent_id schema so
+        the main agent can discover and use them."""
+        from taui.self_edit.store import SelfEditStore
+
+        SelfEditStore(tmp_path).ensure_default_agents()
+
+        class FakeSession:
+            class config:
+                working_dir = tmp_path
+
+        tool = SubAgentTool()
+        tool._session = FakeSession()
+        tool.refresh_agent_catalog()
+
+        prop = tool.schema["properties"]["agent_id"]
+        assert "EXP" in prop["enum"]
+        assert "EXP" in prop["description"]
+        assert "Explorer" in prop["description"]
+
+
+class TestSubAgentWidgetStatus:
+    """The widget's inline status is always one line; the modal activity log
+    keeps tool lines short but text/reasoning in full."""
+
+    def _widget(self):
+        from taui.tui.widgets.sub_agent_widget import SubAgentWidget
+
+        return SubAgentWidget("sub_agent", "", arguments={"task": "do x"})
+
+    def test_status_starts_at_starting(self):
+        assert self._widget()._status_line() == "starting…"
+
+    def test_tool_is_one_line_in_log_and_status(self):
+        w = self._widget()
+        w.record_activity("▸ grep  pattern=auth")
+        assert w._activity_log[-1] == "▸ grep  pattern=auth"
+        assert w._status_line() == "▸ grep  pattern=auth"
+
+    def test_reasoning_live_one_line_but_logged_in_full(self):
+        w = self._widget()
+        w.record_reasoning_delta("Thinking about auth\nand then tokens")
+        # Live status collapses to the first line…
+        assert w._status_line() == "Thinking about auth"
+        # …and the next discrete event flushes the full reasoning to the log.
+        w.record_activity("▸ read  path=auth.py")
+        flushed = next(s for s in w._activity_log if s.startswith("🤔"))
+        assert flushed == "🤔 Thinking about auth\nand then tokens"
+        assert w._status_line() == "▸ read  path=auth.py"
+
+    def test_text_full_in_log_one_line_in_status(self):
+        w = self._widget()
+        w.record_text("Summary:\n- a\n- b")
+        assert w._activity_log[-1] == "💬 Summary:\n- a\n- b"
+        assert w._status_line() == "💬 Summary:"

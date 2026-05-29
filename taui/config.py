@@ -41,6 +41,8 @@ class Config:
     # Agent
     system_prompt: str = DEFAULT_SYSTEM_PROMPT
     max_turns: int = 50
+    # Default turn budget for spawned sub-agents (sub_agent tool). Capped at 25.
+    sub_agent_max_turns: int = 25
     session_id: str | None = None
 
     # Paths
@@ -75,7 +77,8 @@ class Config:
         taui_cfg = file_cfg.get("taui", {})
 
         kwargs: dict = {}
-        for fld in ("provider", "model", "model_variant", "system_prompt", "max_turns"):
+        for fld in ("provider", "model", "model_variant", "system_prompt",
+                    "max_turns", "sub_agent_max_turns"):
             if fld in taui_cfg:
                 kwargs[fld] = taui_cfg[fld]
 

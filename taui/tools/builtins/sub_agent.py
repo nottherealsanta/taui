@@ -38,6 +38,9 @@ class SubAgentTool:
     guidelines: str = (
         "Use `sub_agent` for focused tasks like researching a topic, "
         "analyzing a section of code, or exploring alternatives. "
+        "When a task matches a predefined profile, spawn it with "
+        "`agent_id` (see the sub_agent tool's agent_id options) instead of an "
+        "ad-hoc sub-agent — e.g. EXP for read-only code exploration. "
         "Keep the task description clear and specific. "
         "The sub-agent cannot see the parent's conversation history."
     )
@@ -52,6 +55,20 @@ class SubAgentTool:
     _stream: Any = None
     _parent_executor: Any = None
     _system_prompt: str = ""
+
+    # UI callbacks — wired by the TUI (see TauiApp._wire_loop_callbacks).
+    # Forwarded onto the child loop so its tool calls surface in the parent's
+    # ToolController, driving the sub-agent widget's live activity log. Without
+    # these the widget never receives any inner-tool events and sits at
+    # "starting…" until the final result arrives.
+    _on_tool_call: Any = None
+    _on_tool_result: Any = None
+    _on_tool_delta: Any = None
+    # Child assistant text (async, per turn) and reasoning fragments (sync,
+    # streaming). Routed to the sub-agent widget so its status line can reflect
+    # the latest tool, reasoning, or LLM text — not just tool calls.
+    _on_child_text: Any = None
+    _on_child_reasoning: Any = None
 
     def __post_init__(self):
         if self.schema is None:
@@ -87,11 +104,59 @@ class SubAgentTool:
                     },
                     "max_turns": {
                         "type": "integer",
-                        "description": "Max turns for the sub-agent. Default: 10.",
+                        "description": (
+                            "Max turns for the sub-agent. Defaults to the "
+                            "configured sub_agent_max_turns (25). Capped at 25."
+                        ),
                     },
                 },
                 "required": ["task"],
             }
+
+    def refresh_agent_catalog(self) -> None:
+        """Advertise the currently spawnable agent profiles in the schema.
+
+        The model only sees what's in the tool schema, so without this the
+        ``agent_id`` field is just an opaque optional string and profiles like
+        EXP never get used. This enumerates the spawnable profiles (id, name,
+        one-line description) and constrains ``agent_id`` to them via ``enum``.
+        Called once the parent session is wired (see ``_configure_sub_agents``)
+        and again on extension reload, so newly added profiles show up too.
+        """
+        if self._session is None:
+            return
+        try:
+            from taui.self_edit.store import SelfEditStore
+
+            profiles = SelfEditStore(
+                self._session.config.working_dir
+            ).load_agents()
+        except Exception:
+            return
+
+        spawnable = sorted(
+            (p for p in profiles.values() if p.spawnable_as_sub),
+            key=lambda p: p.id,
+        )
+        prop = self.schema["properties"]["agent_id"]
+        if not spawnable:
+            prop.pop("enum", None)
+            return
+
+        lines = []
+        for p in spawnable:
+            summary = (p.prompt or "").strip().splitlines()
+            summary = summary[0].strip() if summary else (p.name or p.id)
+            if len(summary) > 140:
+                summary = summary[:140] + "…"
+            lines.append(f"- {p.id} ({p.name}): {summary}")
+        prop["description"] = (
+            "Optional ID of a predefined agent profile to spawn. When a task "
+            "fits one of these, prefer it over an ad-hoc sub-agent — the "
+            "profile brings a tuned system prompt, tool set, and model. "
+            "Available profiles:\n" + "\n".join(lines)
+        )
+        prop["enum"] = [p.id for p in spawnable]
 
     async def execute(self, arguments: dict[str, Any]) -> ToolResult:
         task = arguments.get("task")
@@ -124,7 +189,14 @@ class SubAgentTool:
         else:
             tool_names = [t for t in default_tools]
 
-        max_turns = min(arguments.get("max_turns", 10), 25)
+        # Default turn budget comes from config (sub_agent_max_turns, default
+        # 25); an explicit `max_turns` argument overrides it. Hard cap at 25.
+        default_max_turns = 25
+        if self._session is not None:
+            default_max_turns = getattr(
+                self._session.config, "sub_agent_max_turns", 25
+            )
+        max_turns = min(arguments.get("max_turns", default_max_turns), 25)
 
         # System prompt: profile prompt wins over default
         if profile is not None and profile.prompt:
@@ -163,6 +235,7 @@ class SubAgentTool:
                     model=model,
                     max_turns=max_turns,
                 )
+                self._forward_callbacks(sub)
                 result = await sub.send(task)
                 return ToolResult.ok(
                     result.text,
@@ -177,6 +250,32 @@ class SubAgentTool:
         return await self._execute_legacy(
             task, tool_names, max_turns, system_prompt
         )
+
+    def _forward_callbacks(self, sub: Any) -> None:
+        """Forward the parent's tool-event callbacks onto a sub-session's loop.
+
+        The TUI sets these on the SubAgentTool instance; the child loop is
+        created fresh by ``create_sub_session`` with no callbacks, so we copy
+        them across. This is what makes the sub-agent widget's activity log
+        update live as the child calls tools, instead of jumping straight from
+        "starting…" to the final result.
+        """
+        self._forward_callbacks_to_loop(getattr(sub, "_loop", None))
+
+    def _forward_callbacks_to_loop(self, loop: Any) -> None:
+        """Copy the parent's tool-event callbacks onto a child ``AgentLoop``."""
+        if loop is None:
+            return
+        if self._on_tool_call is not None:
+            loop._on_tool_call = self._on_tool_call
+        if self._on_tool_result is not None:
+            loop._on_tool_result = self._on_tool_result
+        if self._on_tool_delta is not None:
+            loop._on_tool_delta = self._on_tool_delta
+        if self._on_child_text is not None:
+            loop._on_text = self._on_child_text
+        if self._on_child_reasoning is not None:
+            loop._on_reasoning_delta = self._on_child_reasoning
 
     def _resolve_profile(self, agent_id: str) -> tuple[Any, str | None]:
         """Look up an AgentProfile by ID via the parent session's working dir.
@@ -247,6 +346,9 @@ class SubAgentTool:
             model=self._model,
             max_turns=max_turns,
         )
+        # Forward UI callbacks here too so the legacy path drives the live
+        # activity log just like the preferred (session) path.
+        self._forward_callbacks_to_loop(child_loop)
 
         try:
             result = await child_loop.run(task)

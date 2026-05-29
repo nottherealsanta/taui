@@ -135,11 +135,21 @@ def _configure_sub_agents(session: Session) -> None:
     if not isinstance(sub_agent, SubAgentTool):
         return
 
+    # Preferred path: hand the tool the live session so execute() spawns a
+    # real sub-session via create_sub_session(). Without this, execute() falls
+    # back to the legacy direct-loop path, which can't forward the child's tool
+    # events to the TUI — the sub-agent widget would sit at "starting…" with an
+    # empty activity log until the result lands. The legacy fields below remain
+    # as a fallback for contexts where no session is available (e.g. tests).
+    sub_agent._session = session
     sub_agent._llm = session._provider
     sub_agent._stream = session._stream
     sub_agent._parent_executor = session._executor
     sub_agent._model = session.config.model
     sub_agent._system_prompt = ""
+    # Advertise the spawnable agent profiles (EXP, …) in the tool schema so the
+    # main agent can actually discover and use them.
+    sub_agent.refresh_agent_catalog()
 
 
 def new_hook_registry() -> HookRegistry:

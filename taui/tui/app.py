@@ -1089,6 +1089,10 @@ class TauiApp(App[None]):
                     sub_agent._on_tool_call = state.tool_ctrl.on_tool_call
                     sub_agent._on_tool_result = state.tool_ctrl.on_tool_result
                     sub_agent._on_tool_delta = state.tool_ctrl.on_tool_delta
+                    sub_agent._on_child_text = state.tool_ctrl.on_sub_agent_text
+                    sub_agent._on_child_reasoning = (
+                        state.tool_ctrl.on_sub_agent_reasoning
+                    )
         except (ValueError, ImportError):
             pass
 

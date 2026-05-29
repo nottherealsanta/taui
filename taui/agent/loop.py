@@ -266,9 +266,24 @@ class AgentLoop:
                         turn_results=turn_results,
                     )
 
-            # Hit max turns
+            # Hit max turns — give the agent one final, tool-free turn so it
+            # returns its findings instead of leaving the caller with whatever
+            # (usually empty) text the last tool-calling turn produced.
+            self._messages.append(
+                Message(
+                    role="user",
+                    content=(
+                        "You have reached your turn limit and can no longer "
+                        "call tools. Using only what you have already gathered, "
+                        "give your final answer to the original task now."
+                    ),
+                )
+            )
+            wrap_up = await self._think_and_act(self._max_turns, with_tools=False)
+            turn_results.append(wrap_up)
+
             self.state = AgentState.DONE
-            last_text = turn_results[-1].text or "Max turns reached."
+            last_text = wrap_up.text or "Max turns reached."
             await self._emit(
                 EventType.STREAM_END,
                 {"reason": "max_turns", "turns": self._max_turns},
@@ -329,15 +344,19 @@ class AgentLoop:
 
     # ── Core loop ─────────────────────────────────────────────────────────
 
-    async def _think_and_act(self, turn: int) -> TurnResult:
-        """One think→tool→observe cycle."""
+    async def _think_and_act(self, turn: int, *, with_tools: bool = True) -> TurnResult:
+        """One think→tool→observe cycle.
+
+        With ``with_tools=False`` the model gets no tools and can only answer
+        with text — used for the final wrap-up turn after the budget is spent.
+        """
         # Wait if paused (in-flight tool calls already completed)
         await self._paused.wait()
         # Think: call LLM
         self.state = AgentState.THINKING
         await self._emit(EventType.STATE_CHANGE, {"state": "thinking", "turn": turn})
 
-        llm_result = await self._call_llm()
+        llm_result = await self._call_llm(with_tools=with_tools)
 
         # Record assistant message
         assistant_msg = Message(
@@ -493,11 +512,16 @@ class AgentLoop:
                 self._drain_steering()
                 i += 1
 
-    async def _call_llm(self) -> ProviderTurnResult:
-        """Call the LLM with current conversation and tool schemas."""
+    async def _call_llm(self, *, with_tools: bool = True) -> ProviderTurnResult:
+        """Call the LLM with current conversation and tool schemas.
+
+        When ``with_tools`` is False the model is given no tool schemas, so it
+        can only respond with text. Used for the final wrap-up turn once the
+        turn budget is exhausted, forcing the agent to return its findings.
+        """
         await self._maybe_compact()
         messages = self._build_llm_messages()
-        tools = self._executor.registry.schemas() or None
+        tools = (self._executor.registry.schemas() or None) if with_tools else None
         # Wire streaming text delta callback to provider
         self._llm.on_text_delta = self._on_text_delta
         self._llm.on_reasoning_delta = self._on_reasoning_delta
