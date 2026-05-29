@@ -173,7 +173,7 @@ def test_all_tool_names_includes_extension_tool_names(tmp_path) -> None:
 
 
 def test_build_group_payload_includes_descriptions_and_active() -> None:
-    from taui.tui.widgets.tool_groups_banner import build_group_payload
+    from taui.tui.widgets.tool_groups_banner import ToolEntry, build_group_payload
 
     reg = ToolRegistry()
     register_builtins(reg)
@@ -183,31 +183,37 @@ def test_build_group_payload_includes_descriptions_and_active() -> None:
         active_names={"bash", "read"},
     )
     bash_members = payload["bash"]
-    by_name = {name: (desc, active) for name, desc, active in bash_members}
-    assert by_name["bash"][1] is True
-    assert by_name["bash_kill"][1] is False
-    assert by_name["bash_status"][1] is False
+    by_name = {e.name: e for e in bash_members}
+    assert by_name["bash"].active is True
+    assert by_name["bash_kill"].active is False
+    assert by_name["bash_status"].active is False
     # Description is non-empty
-    assert by_name["bash"][0]
+    assert by_name["bash"].description
+    # Schema is the same dict the LLM sees — has "properties" for tools
+    # that declare arguments.
+    assert isinstance(by_name["bash"].schema, dict)
+    assert "properties" in by_name["bash"].schema
+    read_tool = ReadTool()
     assert payload["read"] == [
-        (
-            "read",
-            ReadTool().description,
-            True,
+        ToolEntry(
+            name="read",
+            description=read_tool.description,
+            active=True,
+            schema=read_tool.schema,
         )
     ]
 
 
 def test_render_columns_shows_group_labels_with_count_when_multi() -> None:
-    from taui.tui.widgets.tool_groups_banner import _render_columns
+    from taui.tui.widgets.tool_groups_banner import ToolEntry, _render_columns
 
     payload = {
         "bash": [
-            ("bash", "", True),
-            ("bash_kill", "", True),
-            ("bash_status", "", False),
+            ToolEntry("bash", "", True, {}),
+            ToolEntry("bash_kill", "", True, {}),
+            ToolEntry("bash_status", "", False, {}),
         ],
-        "read": [("read", "", True)],
+        "read": [ToolEntry("read", "", True, {})],
     }
     output = _render_columns(payload, color="#a0a0a0", columns=3)
     # Multi-tool group renders as ``bash(3)``; solo group as just ``read``.
@@ -246,9 +252,14 @@ def test_render_columns_empty() -> None:
 
 
 def test_banner_widget_includes_label_and_body() -> None:
-    from taui.tui.widgets.tool_groups_banner import ToolGroupsBanner
+    from taui.tui.widgets.tool_groups_banner import ToolEntry, ToolGroupsBanner
 
-    payload = {"bash": [("bash", "", True), ("bash_kill", "", True)]}
+    payload = {
+        "bash": [
+            ToolEntry("bash", "", True, {}),
+            ToolEntry("bash_kill", "", True, {}),
+        ]
+    }
     banner = ToolGroupsBanner(
         payload, label_text=" Tools ", label_style="bold #fff on #555",
     )
@@ -363,6 +374,84 @@ def test_tool_group_toggle_set_counts_updates_state() -> None:
     header.set_counts(selected=1, total=3)
     assert "-some" in header.classes
     assert "-all" not in header.classes
+
+
+# ── ToolsModal definition rendering ───────────────────────────────────
+
+
+def test_render_param_lines_marks_required_and_shows_types() -> None:
+    """Each parameter line carries name, type, required marker, description."""
+    from taui.tui.widgets.tool_groups_banner import _render_param_lines
+
+    schema = {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "Path to read."},
+            "offset": {"type": "integer", "description": "Start line."},
+            "mode": {"enum": ["r", "rb"], "description": "Read mode."},
+        },
+        "required": ["path"],
+    }
+    lines = _render_param_lines(schema)
+    joined = "\n".join(lines)
+    # Required param marker is present and only on the required param's line.
+    assert "*" in lines[0]
+    assert "path" in lines[0]
+    # Types are rendered for each param.
+    assert "string" in joined
+    assert "integer" in joined
+    # Enum is rendered as "one of: r | rb".
+    assert "one of:" in joined and "r | rb" in joined
+    # Descriptions surface in the output.
+    assert "Path to read." in joined
+
+
+def test_render_param_lines_empty_for_no_schema() -> None:
+    from taui.tui.widgets.tool_groups_banner import _render_param_lines
+
+    assert _render_param_lines({}) == []
+    assert _render_param_lines({"type": "object"}) == []
+
+
+def test_render_tool_entry_yields_three_widgets_when_full() -> None:
+    """name + description + parameter block when all three are present."""
+    from taui.tui.widgets.tool_groups_banner import ToolEntry, _render_tool_entry
+
+    entry = ToolEntry(
+        name="read",
+        description="Read a file.",
+        active=True,
+        schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Where."},
+            },
+            "required": ["path"],
+        },
+    )
+    widgets = list(_render_tool_entry(entry, solo=True))
+    # name + description + params -> 3 widgets
+    assert len(widgets) == 3
+
+
+def test_render_tool_entry_skips_empty_description_and_params() -> None:
+    """Tool with no description and no schema yields just the name widget."""
+    from taui.tui.widgets.tool_groups_banner import ToolEntry, _render_tool_entry
+
+    entry = ToolEntry("bash_kill", "", True, {})
+    widgets = list(_render_tool_entry(entry, solo=False))
+    assert len(widgets) == 1
+
+
+def test_render_tool_entry_inactive_marks_class_on_name() -> None:
+    """Inactive tools render with an ``-inactive`` modifier on the name."""
+    from taui.tui.widgets.tool_groups_banner import ToolEntry, _render_tool_entry
+
+    entry = ToolEntry("bash_kill", "", False, {})
+    widgets = list(_render_tool_entry(entry, solo=False))
+    name_w = widgets[0]
+    assert "-inactive" in str(name_w.classes)
+    assert "tm-tool-name" in str(name_w.classes)
 
 
 # ── ToolsModal OpenToolsSelfEdit signal ───────────────────────────────

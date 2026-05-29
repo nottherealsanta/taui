@@ -2136,10 +2136,13 @@ class TauiApp(App[None]):
             if registry is not None:
                 active = list(getattr(registry, "names", []) or [])
 
-        groups_payload: dict[str, list[tuple[str, str, bool]]] = {}
-        if active and registry is not None:
-            from taui.tui.widgets.tool_groups_banner import build_group_payload
+        from taui.tui.widgets.tool_groups_banner import (
+            ToolEntry,
+            build_group_payload,
+        )
 
+        groups_payload: dict[str, list[ToolEntry]] = {}
+        if active and registry is not None:
             groups_payload = build_group_payload(
                 registry,
                 available_names=active,
