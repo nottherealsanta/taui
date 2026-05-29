@@ -3,13 +3,14 @@
 The banner renders the tool groups as a fixed-column table — dark grey at
 rest, brighter on hover — exactly like the SystemPromptWidget preview/modal
 pair. A single click on the banner opens a modal listing every group with
-its members (names only). The modal also has a button that opens the tools
-page of the self-edit modal.
+its members. For each tool the modal shows the same definition the LLM
+sees: name, description, and the parameter schema. The modal also has a
+button that opens the tools page of the self-edit modal.
 """
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, NamedTuple
 
 from textual import events
 from textual.app import ComposeResult
@@ -17,6 +18,21 @@ from textual.containers import Container, Horizontal, VerticalScroll
 from textual.message import Message
 from textual.screen import ModalScreen
 from textual.widgets import Button, Static
+
+
+class ToolEntry(NamedTuple):
+    """A single tool's banner/modal entry.
+
+    ``schema`` is the JSON schema sent to the LLM (``{"type": "object",
+    "properties": {...}, "required": [...]}``); empty dict for tools that
+    don't declare one.
+    """
+
+    name: str
+    description: str
+    active: bool
+    schema: dict[str, Any]
+
 
 # Match the SystemPromptWidget palette so the two banners feel consistent.
 _TOOL_DEFAULT_COLOR = "#a0a0a0"
@@ -28,7 +44,12 @@ class OpenToolsSelfEdit(Message):
 
 
 class ToolsModal(ModalScreen[None]):
-    """Modal listing every tool group with its members (names only)."""
+    """Modal listing every tool group with each tool's LLM-facing definition.
+
+    Each tool shows its name, description, and parameter schema (name,
+    type, required/optional, default, description) — i.e. the same info
+    the LLM sees when it decides whether and how to call the tool.
+    """
 
     DEFAULT_CSS = """
     ToolsModal {
@@ -61,7 +82,8 @@ class ToolsModal(ModalScreen[None]):
     }
     #tools-modal-dialog .tm-tool-name {
         color: #c9d1d9;
-        padding: 0 0 0 2;
+        padding: 1 0 0 2;
+        text-style: bold;
     }
     #tools-modal-dialog .tm-tool-name.-solo {
         padding: 1 0 0 0;
@@ -70,6 +92,19 @@ class ToolsModal(ModalScreen[None]):
     }
     #tools-modal-dialog .tm-tool-name.-inactive {
         color: #6a6a6a;
+    }
+    #tools-modal-dialog .tm-tool-desc {
+        color: #9aa0a6;
+        padding: 0 0 0 4;
+    }
+    #tools-modal-dialog .tm-tool-desc.-solo {
+        padding: 0 0 0 2;
+    }
+    #tools-modal-dialog .tm-tool-params {
+        padding: 0 0 0 4;
+    }
+    #tools-modal-dialog .tm-tool-params.-solo {
+        padding: 0 0 0 2;
     }
     #tools-modal-dialog .button-container {
         width: 100%;
@@ -83,7 +118,7 @@ class ToolsModal(ModalScreen[None]):
     """
 
     def __init__(
-        self, groups: dict[str, list[tuple[str, str, bool]]]
+        self, groups: dict[str, list[ToolEntry]]
     ) -> None:
         super().__init__()
         self._groups = groups
@@ -113,26 +148,13 @@ class ToolsModal(ModalScreen[None]):
                                 classes="tm-group",
                                 markup=False,
                             )
-                            for name, _desc, active in members:
-                                classes = (
-                                    "tm-tool-name"
-                                    if active
-                                    else "tm-tool-name -inactive"
-                                )
-                                yield Static(
-                                    f"· {name}",
-                                    classes=classes,
-                                    markup=False,
+                            for entry in members:
+                                yield from _render_tool_entry(
+                                    entry, solo=False
                                 )
                         else:
-                            name, _desc, active = members[0]
-                            classes = (
-                                "tm-tool-name -solo"
-                                if active
-                                else "tm-tool-name -solo -inactive"
-                            )
-                            yield Static(
-                                name, classes=classes, markup=False
+                            yield from _render_tool_entry(
+                                members[0], solo=True
                             )
             with Horizontal(classes="button-container"):
                 yield Button(
@@ -160,8 +182,92 @@ def _format_group_label(group: str, count: int) -> str:
     return f"{group}({count})" if count > 1 else group
 
 
+def _format_type(prop: dict[str, Any]) -> str:
+    """Render a JSON-schema property's type concisely.
+
+    Handles unions (``["string", "null"]``), ``enum`` (rendered as
+    ``one of: a|b|c``), and arrays (``array<item-type>``).
+    """
+    enum = prop.get("enum")
+    if isinstance(enum, list) and enum:
+        return "one of: " + " | ".join(str(v) for v in enum)
+    t = prop.get("type")
+    if isinstance(t, list):
+        return " | ".join(str(x) for x in t)
+    if t == "array":
+        items = prop.get("items") or {}
+        inner = _format_type(items) if items else "any"
+        return f"array<{inner}>"
+    return str(t) if t else "any"
+
+
+def _render_param_lines(schema: dict[str, Any]) -> list[str]:
+    """Return one Rich-markup line per parameter for the modal."""
+    if not isinstance(schema, dict):
+        return []
+    props = schema.get("properties") or {}
+    if not isinstance(props, dict) or not props:
+        return []
+    required = set(schema.get("required") or [])
+    # Preserve declaration order; show required first within that order.
+    ordered = sorted(
+        props.items(), key=lambda kv: (kv[0] not in required, list(props).index(kv[0]))
+    )
+    name_width = max((len(n) for n in props), default=0)
+    lines: list[str] = []
+    for name, prop in ordered:
+        if not isinstance(prop, dict):
+            prop = {}
+        type_str = _format_type(prop)
+        is_required = name in required
+        req_marker = "[#f97583]*[/]" if is_required else " "
+        desc = str(prop.get("description") or "").strip()
+        default = prop.get("default")
+        if default is not None and not is_required:
+            desc = (
+                f"{desc}  [#6a737d](default: {default!r})[/]"
+                if desc
+                else f"[#6a737d](default: {default!r})[/]"
+            )
+        padded_name = name.ljust(name_width)
+        head = (
+            f"  {req_marker} [#7ee787]{padded_name}[/]  "
+            f"[#79b8ff]{type_str}[/]"
+        )
+        if desc:
+            lines.append(f"{head}  [#9aa0a6]— {desc}[/]")
+        else:
+            lines.append(head)
+    return lines
+
+
+def _render_tool_entry(entry: ToolEntry, *, solo: bool) -> Any:
+    """Yield Static widgets for a single tool: name, description, params."""
+    inactive_suffix = "" if entry.active else " -inactive"
+    solo_suffix = " -solo" if solo else ""
+
+    yield Static(
+        entry.name if solo else f"· {entry.name}",
+        classes=f"tm-tool-name{solo_suffix}{inactive_suffix}".strip(),
+        markup=False,
+    )
+    if entry.description:
+        yield Static(
+            entry.description,
+            classes=f"tm-tool-desc{solo_suffix}".strip(),
+            markup=False,
+        )
+    param_lines = _render_param_lines(entry.schema or {})
+    if param_lines:
+        yield Static(
+            "\n".join(param_lines),
+            classes=f"tm-tool-params{solo_suffix}".strip(),
+            markup=True,
+        )
+
+
 def _render_columns(
-    groups: dict[str, list[tuple[str, str, bool]]],
+    groups: dict[str, list[ToolEntry]],
     *,
     color: str,
     columns: int = 3,
@@ -229,7 +335,7 @@ class ToolGroupsBanner(Container):
 
     def __init__(
         self,
-        groups: dict[str, list[tuple[str, str, bool]]],
+        groups: dict[str, list[ToolEntry]],
         *,
         label_text: str = "Tools",
         label_style: str = _DEFAULT_LABEL_STYLE,
@@ -259,7 +365,7 @@ class ToolGroupsBanner(Container):
 
     def set_groups(
         self,
-        groups: dict[str, list[tuple[str, str, bool]]],
+        groups: dict[str, list[ToolEntry]],
         *,
         label_style: str | None = None,
     ) -> None:
@@ -285,21 +391,29 @@ def build_group_payload(
     *,
     available_names: list[str],
     active_names: set[str],
-) -> dict[str, list[tuple[str, str, bool]]]:
-    """Resolve the (group -> [(name, desc, active)]) payload for the banner."""
+) -> dict[str, list[ToolEntry]]:
+    """Resolve the ``group -> [ToolEntry, ...]`` payload for the banner.
+
+    Each entry carries the same definition the LLM sees: name,
+    description, and the JSON-schema for the tool's arguments.
+    """
     from taui.tools.base import tool_group
 
-    out: dict[str, list[tuple[str, str, bool]]] = {}
+    out: dict[str, list[ToolEntry]] = {}
     for name in available_names:
         active = name in active_names
         try:
             tool = registry.get(name)
             group = tool_group(tool)
             desc = str(getattr(tool, "description", "") or "")
+            schema = getattr(tool, "schema", None) or {}
         except Exception:
             group = name
             desc = ""
-        out.setdefault(group, []).append((name, desc, active))
+            schema = {}
+        out.setdefault(group, []).append(
+            ToolEntry(name=name, description=desc, active=active, schema=schema)
+        )
     for members in out.values():
-        members.sort(key=lambda m: m[0])
+        members.sort(key=lambda m: m.name)
     return out
