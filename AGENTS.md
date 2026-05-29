@@ -33,7 +33,16 @@ Run checks before handing off code changes:
 
 ```bash
 uv run ruff check .
-uv run python -m pytest tests/ -q
+uv run python -m pytest -q -m tools  # replace tools with the changed domain
+```
+
+Use domain groups for focused checks instead of running everything:
+
+```bash
+uv run python -m pytest -q -m tools
+uv run python -m pytest -q -m agent
+uv run python -m pytest -q -m "agent or provider"
+uv run python -m pytest -q -m tui
 ```
 
 For targeted work, prefer focused tests first, then the full suite when the change touches
