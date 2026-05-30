@@ -1,89 +1,13 @@
-"""Left sidebar — tabbed Sessions / Files panel."""
+"""Left sidebar — file attachment panel."""
 
 from __future__ import annotations
 
-import time
-from datetime import datetime
 from pathlib import Path
 
-from rich.text import Text
 from textual.app import ComposeResult
-from textual.containers import Horizontal, Vertical
+from textual.containers import Vertical
 from textual.message import Message
-from textual.widgets import DirectoryTree, ListItem, ListView, Static
-
-
-def _time_ago(ts: float) -> str:
-    if ts <= 0:
-        return "unknown"
-    delta = time.time() - ts
-    if delta < 60:
-        return "just now"
-    if delta < 3600:
-        return f"{int(delta / 60)}m ago"
-    if delta < 86400:
-        return f"{int(delta / 3600)}h ago"
-    return f"{int(delta / 86400)}d ago"
-
-
-def _time_ago_short(ts: float) -> str:
-    """Compact form of _time_ago — fits in the sidebar's right gutter."""
-    if ts <= 0:
-        return "—"
-    delta = time.time() - ts
-    if delta < 60:
-        return "now"
-    if delta < 3600:
-        return f"{int(delta / 60)}m"
-    if delta < 86400:
-        return f"{int(delta / 3600)}h"
-    return f"{int(delta / 86400)}d"
-
-
-def _fallback_name(session: dict) -> str:
-    """Label for sessions without a description — first user message or created time."""
-    first = (session.get("first_message") or "").strip()
-    if first:
-        return first
-    ts = float(session.get("created_at", 0) or 0)
-    if ts <= 0:
-        return "(unnamed)"
-    return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
-
-
-_ROW_WIDTH = 31  # usable width of a row inside the sidebar (px-ish chars)
-
-
-def _build_session_row_text(session: dict, *, is_current: bool) -> Text:
-    """Render a session row's two-line label.
-
-    Layout (per row, two lines):
-        ● <name truncated to one line>
-          5m · 42m
-
-    Line 1 holds the indicator + the session description. Line 2 carries the
-    compact time-ago and message count, dimmed.
-    """
-    text = Text()
-    indicator = "●" if is_current else "○"
-    indicator_style = "#3fb950" if is_current else "#6e7681"
-    desc = str(session.get("description") or _fallback_name(session))
-    msgs = int(session.get("message_count", 0) or 0)
-    ago_short = _time_ago_short(float(session.get("last_active", 0) or 0))
-
-    name_style = "bold #e6edf3" if is_current else "#c9d1d9"
-    meta_style = "dim #6e7681"
-
-    # Single-line name truncation. 2 cells reserved for "● ".
-    name_avail = _ROW_WIDTH - 2
-    if len(desc) > name_avail:
-        desc = desc[: name_avail - 1] + "…"
-
-    text.append(f"{indicator} ", style=indicator_style)
-    text.append(desc, style=name_style)
-    text.append("\n   ", style=name_style)
-    text.append(f"{msgs}m · {ago_short}", style=meta_style)
-    return text
+from textual.widgets import DirectoryTree, Static
 
 
 class FileTreeSelected(Message):
@@ -134,34 +58,8 @@ class _FilesTree(DirectoryTree):
         self.post_message(FileTreeSelected(Path(str(data.path))))
 
 
-class _TabLabel(Static):
-    """Clickable tab header — clicking it switches its sidebar to that tab."""
-
-    def __init__(self, label: str, *, tab: str, **kwargs) -> None:
-        super().__init__(label, **kwargs)
-        self.tab_name = tab
-
-    def on_click(self) -> None:
-        # Walk up to the owning Sidebar (defined below in this module).
-        parent = self.parent
-        while parent is not None and not isinstance(parent, Sidebar):
-            parent = parent.parent
-        if parent is not None:
-            parent.action_show_tab(self.tab_name)
-
-
-class _SessionRow(ListItem):
-    """One row in the sessions list — see _build_session_row_text for layout."""
-
-    def __init__(self, session: dict, *, is_current: bool) -> None:
-        self.label_text = _build_session_row_text(session, is_current=is_current)
-        super().__init__(Static(self.label_text, markup=False))
-        self.session_id = str(session.get("session_id", ""))
-        self.styles.height = 2
-
-
 class Sidebar(Vertical):
-    """Left sidebar with tabbed Sessions / Files panels."""
+    """Left sidebar for browsing files into the prompt context."""
 
     DEFAULT_CSS = """
     Sidebar {
@@ -178,35 +76,23 @@ class Sidebar(Vertical):
     Sidebar:focus-within {
         border-right: solid $secondary;
     }
-    Sidebar:focus-within .sidebar-tabs {
+    Sidebar:focus-within .sidebar-title {
         background: $surface-lighten-1;
     }
-    Sidebar:focus-within .tab.active {
+    Sidebar:focus-within .sidebar-title {
         color: $secondary;
     }
-    Sidebar .sidebar-tabs {
+    Sidebar .sidebar-title {
         height: 1;
         padding: 0 1;
         background: $surface-darken-1;
-    }
-    Sidebar .tab {
-        width: 1fr;
-        height: 1;
         content-align: center middle;
-        color: $text-muted;
-    }
-    Sidebar .tab.active {
         color: $foreground;
         text-style: bold;
-        background: $surface;
     }
     Sidebar .sidebar-body {
         height: 1fr;
         padding: 0;
-    }
-    Sidebar .panel-empty {
-        padding: 1 2;
-        color: $text-muted;
     }
     Sidebar DirectoryTree {
         height: 1fr;
@@ -221,30 +107,6 @@ class Sidebar(Vertical):
         scrollbar-background-hover: $surface;
         scrollbar-background-active: $surface;
     }
-    Sidebar ListView {
-        height: 1fr;
-        background: $surface;
-        padding: 0;
-        scrollbar-size-vertical: 1;
-        scrollbar-size-horizontal: 1;
-        scrollbar-color: $scrollbar-color $surface;
-        scrollbar-color-hover: $scrollbar-color-hover $surface;
-        scrollbar-color-active: $scrollbar-color-active $surface;
-        scrollbar-background: $surface;
-        scrollbar-background-hover: $surface;
-        scrollbar-background-active: $surface;
-    }
-    Sidebar ListView > ListItem {
-        background: $surface;
-        padding: 0 1 0 2;
-    }
-    Sidebar ListView > ListItem.--highlight {
-        background: $surface-lighten-1;
-    }
-    Sidebar ListView:focus > ListItem.--highlight {
-        background: $secondary-darken-1;
-        color: $foreground;
-    }
     Sidebar DirectoryTree:focus > .tree--cursor {
         background: $secondary-darken-1;
         color: $foreground;
@@ -253,19 +115,10 @@ class Sidebar(Vertical):
 
     BINDINGS = [
         ("escape", "dismiss", "Dismiss sidebar"),
-        ("tab", "cycle_tab", "Switch tab"),
-        ("shift+tab", "cycle_tab", "Switch tab"),
-        ("1", "show_tab('sessions')", ""),
-        ("2", "show_tab('files')", ""),
     ]
 
     class Dismiss(Message):
         pass
-
-    class SessionSelected(Message):
-        def __init__(self, session_id: str) -> None:
-            super().__init__()
-            self.session_id = session_id
 
     class FileToggleRequested(Message):
         """Posted when the user picks a file in the directory tree.
@@ -293,33 +146,16 @@ class Sidebar(Vertical):
     def __init__(self, working_dir: Path | None = None) -> None:
         super().__init__()
         self._working_dir = working_dir or Path.cwd()
-        self._active_tab: str = "sessions"
-        self._sessions: list[dict] = []
-        self._current_session_id: str = ""
+        self._active_tab: str = "files"
 
     def compose(self) -> ComposeResult:
-        with Horizontal(classes="sidebar-tabs", id="sidebar-tabs-row"):
-            yield _TabLabel(
-                "Sessions",
-                tab="sessions",
-                classes="tab active",
-                id="tab-sessions",
-            )
-            yield _TabLabel(
-                "Files",
-                tab="files",
-                classes="tab",
-                id="tab-files",
-            )
+        yield Static("Files", classes="sidebar-title", id="sidebar-title")
         with Vertical(classes="sidebar-body", id="sidebar-body"):
-            yield ListView(id="sessions-list")
             tree = _FilesTree(str(self._working_dir), id="dir-tree")
-            tree.display = False
             yield tree
 
     def on_mount(self) -> None:
         self.trap_focus()
-        self._render_sessions()
 
     # ── public API ───────────────────────────────────────────────────
 
@@ -330,63 +166,18 @@ class Sidebar(Vertical):
             self.add_class("visible")
             self._focus_active()
 
-    def set_sessions(self, sessions: list[dict], current_session_id: str) -> None:
-        """Replace the session list and highlight the active session."""
-        # Sort by last_active desc (most recently used first)
-        self._sessions = sorted(
-            sessions,
-            key=lambda s: float(s.get("last_active", 0) or 0),
-            reverse=True,
-        )
-        self._current_session_id = current_session_id or ""
-        self._render_sessions()
-
-    # ── internal rendering ───────────────────────────────────────────
-
-    def _render_sessions(self) -> None:
-        try:
-            listview = self.query_one("#sessions-list", ListView)
-        except Exception:
-            return
-        listview.clear()
-        if not self._sessions:
-            listview.append(
-                ListItem(Static("No sessions yet", classes="panel-empty"))
-            )
-            return
-        for session in self._sessions:
-            sid = str(session.get("session_id", ""))
-            listview.append(
-                _SessionRow(session, is_current=(sid == self._current_session_id))
-            )
-
     def _set_tab(self, name: str) -> None:
-        self._active_tab = name
+        self._active_tab = "files"
         try:
-            sessions_tab = self.query_one("#tab-sessions", Static)
-            files_tab = self.query_one("#tab-files", Static)
-            sessions_list = self.query_one("#sessions-list", ListView)
             dir_tree = self.query_one("#dir-tree", DirectoryTree)
         except Exception:
             return
-        if name == "sessions":
-            sessions_tab.add_class("active")
-            files_tab.remove_class("active")
-            sessions_list.display = True
-            dir_tree.display = False
-        else:
-            sessions_tab.remove_class("active")
-            files_tab.add_class("active")
-            sessions_list.display = False
-            dir_tree.display = True
+        dir_tree.display = True
         self._focus_active()
 
     def _focus_active(self) -> None:
         try:
-            if self._active_tab == "sessions":
-                self.query_one("#sessions-list", ListView).focus()
-            else:
-                self.query_one("#dir-tree", DirectoryTree).focus()
+            self.query_one("#dir-tree", DirectoryTree).focus()
         except Exception:
             pass
 
@@ -397,19 +188,10 @@ class Sidebar(Vertical):
         self.post_message(self.Dismiss())
 
     def action_cycle_tab(self) -> None:
-        self._set_tab("files" if self._active_tab == "sessions" else "sessions")
+        self._set_tab("files")
 
     def action_show_tab(self, name: str) -> None:
-        self._set_tab(name)
-
-    def on_list_view_selected(self, event: ListView.Selected) -> None:
-        item = event.item
-        sid = getattr(item, "session_id", None)
-        if sid:
-            self.post_message(self.SessionSelected(sid))
-            # Picking a session is a "commit and leave" gesture — fold the
-            # sidebar away so the user lands directly in the resumed session.
-            self.action_dismiss()
+        self._set_tab("files")
 
     def on_file_tree_selected(self, event: FileTreeSelected) -> None:
         """Forward the tree's label-click into the right toggle message."""

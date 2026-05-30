@@ -41,6 +41,7 @@ from taui.tui.messages import (
 from taui.tui.screens.context_breakdown import ContextBreakdownScreen
 from taui.tui.screens.git_diff import GitDiffScreen
 from taui.tui.screens.pasted_content import PastedContentScreen, PasteResult
+from taui.tui.screens.session_picker import SessionPickerScreen
 from taui.tui.screens.theme_picker import ThemePickerScreen
 from taui.tui.screens.variant_picker import VariantPickerScreen
 from taui.tui.session_state import SessionManager, SessionState
@@ -1076,11 +1077,7 @@ class TauiApp(App[None]):
         try:
             sidebar = self.query_one(Sidebar)
             if sidebar.has_class("visible"):
-                self.run_worker(
-                    self._refresh_sidebar_sessions(),
-                    name="refresh_sidebar_sessions",
-                    exclusive=True,
-                )
+                sidebar.refresh()
         except NoMatches:
             pass
 
@@ -1368,7 +1365,17 @@ class TauiApp(App[None]):
 
 
     async def _load_and_show_sessions(self) -> None:
-        self._open_sessions_sidebar()
+        if self._session is None:
+            return
+        try:
+            sessions = await self._session.list_sessions()
+        except Exception as exc:
+            self.notify(f"Failed to load sessions: {exc}", severity="error")
+            return
+        if not sessions:
+            self.notify("No previous sessions.", severity="information")
+            return
+        self._show_session_picker(sessions)
 
     def _open_palette(self, prefilter: str = "") -> None:
         """Open the command palette. `prefilter` pre-fills the search input."""
@@ -1658,17 +1665,10 @@ class TauiApp(App[None]):
             self.notify(f"Failed to switch theme: {exc}", severity="error")
 
     def _open_sessions_sidebar(self) -> None:
-        """Open the left sidebar on the sessions tab."""
-        try:
-            sidebar = self.query_one(Sidebar)
-        except NoMatches:
-            return
-        if not sidebar.has_class("visible"):
-            sidebar.toggle()
-        sidebar.action_show_tab("sessions")
+        """Legacy entry point: sessions now open in the modal picker."""
         self.run_worker(
-            self._refresh_sidebar_sessions(),
-            name="refresh_sidebar_sessions",
+            self._load_and_show_sessions(),
+            name="load_session_picker",
             exclusive=True,
         )
 
@@ -1724,14 +1724,6 @@ class TauiApp(App[None]):
     @on(Info2.AgentSelected)
     def handle_info2_agent_selected(self, event: Info2.AgentSelected) -> None:
         self._apply_selected_agent(event.agent_id)
-
-    @on(Info2.SessionSelected)
-    def handle_info2_session_selected(self, event: Info2.SessionSelected) -> None:
-        self.run_worker(
-            self._resume_session(event.session_id),
-            name="session_resume",
-            exclusive=True,
-        )
 
     @on(Info2.SkillSelected)
     def handle_info2_skill_selected(self, event: Info2.SkillSelected) -> None:
@@ -3291,21 +3283,45 @@ class TauiApp(App[None]):
         chat_log.scroll_end()
 
     def _show_session_picker(self, sessions: list[dict]) -> None:
-        """Open the sidebar on the sessions tab pre-populated with `sessions`."""
-        try:
-            sidebar = self.query_one(Sidebar)
-        except NoMatches:
+        """Open the modal session picker."""
+        if not sessions:
             return
-        sidebar.set_sessions(
-            sessions, self._session.session_id if self._session else ""
+        current = self._session.session_id if self._session else ""
+        self.push_screen(
+            SessionPickerScreen(
+                sessions,
+                current_session_id=current,
+                load_session_content=self._load_session_picker_content,
+            ),
+            self._handle_session_picker_result,
         )
-        if not sidebar.has_class("visible"):
-            sidebar.toggle()
-        sidebar.action_show_tab("sessions")
 
     async def _open_session_picker(self, sessions: list[dict]) -> None:
-        """Open the sessions sidebar (legacy entry point)."""
+        """Open the modal session picker (legacy async entry point)."""
         self._show_session_picker(sessions)
+
+    async def _load_session_picker_content(self, session_id: str) -> str:
+        if self._session is None:
+            return ""
+        try:
+            return await self._session.load_session_content(session_id)
+        except Exception:
+            logger.debug("Failed to load session picker content", exc_info=True)
+            return ""
+
+    def _handle_session_picker_result(self, session_id: str | None) -> None:
+        if not session_id or self._session is None:
+            return
+        if session_id == self._session.session_id:
+            return
+        if session_id in self._sessions:
+            self._switch_to_session(session_id)
+            return
+        self.run_worker(
+            self._resume_session(session_id),
+            name="session_resume",
+            exclusive=True,
+        )
 
     async def _resume_session(self, session_id: str) -> bool:
         """Resume a session into a new tab (or switch to it if already open)."""
@@ -3713,12 +3729,6 @@ class TauiApp(App[None]):
     def action_toggle_sidebar(self) -> None:
         sidebar = self.query_one(Sidebar)
         sidebar.toggle()
-        if sidebar.has_class("visible"):
-            self.run_worker(
-                self._refresh_sidebar_sessions(),
-                name="refresh_sidebar_sessions",
-                exclusive=True,
-            )
 
     def action_toggle_info_sidebar(self) -> None:
         from taui.tui.widgets.session_info_sidebar import SessionInfoSidebar
@@ -3844,19 +3854,6 @@ class TauiApp(App[None]):
             container.remove_class("chat-unfocused")
         else:
             container.add_class("chat-unfocused")
-
-    async def _refresh_sidebar_sessions(self) -> None:
-        if self._session is None:
-            return
-        try:
-            sessions = await self._session.list_sessions()
-        except Exception:
-            sessions = []
-        try:
-            sidebar = self.query_one(Sidebar)
-        except NoMatches:
-            return
-        sidebar.set_sessions(sessions, self._session.session_id or "")
 
     def _refresh_info_sidebar(self) -> None:
         from taui.tui.widgets.session_info_sidebar import SessionInfoSidebar
@@ -4148,24 +4145,6 @@ class TauiApp(App[None]):
     @on(Sidebar.Dismiss)
     def handle_sidebar_dismiss(self, event: Sidebar.Dismiss) -> None:
         self.query_one("#chat-input", ChatInput).focus()
-
-    @on(Sidebar.SessionSelected)
-    def handle_sidebar_session_selected(
-        self, event: Sidebar.SessionSelected
-    ) -> None:
-        if not event.session_id or self._session is None:
-            return
-        if event.session_id == self._session.session_id:
-            return
-        # Check if this session is already open as a tab
-        if event.session_id in self._sessions:
-            self._switch_to_session(event.session_id)
-        else:
-            self.run_worker(
-                self._resume_session(event.session_id),
-                name="session_resume",
-                exclusive=True,
-            )
 
     def _switch_to_session(self, session_id: str) -> None:
         """Switch the visible session to `session_id` without cancelling anything."""

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from taui.tui.screens.session_picker import (
+    SessionPickerScreen,
     _build_tree_order,
     _fallback_name,
+    _preview_text,
     _session_prompt,
     _time_ago,
 )
@@ -108,6 +110,39 @@ class TestSessionPrompt:
         }
         text = _session_prompt(session, depth=0)
         assert "[ext]" in str(text)
+
+
+class TestSessionSearchAndPreview:
+    def test_content_search_requires_toggle(self):
+        screen = SessionPickerScreen(
+            [
+                {
+                    "session_id": "abc123",
+                    "description": "Metadata only",
+                    "first_message": "",
+                }
+            ]
+        )
+        screen._content_cache["abc123"] = "needle from transcript"
+
+        assert screen._filter("needle") == []
+        screen._content_search = True
+        assert [s["session_id"] for s in screen._filter("needle")] == ["abc123"]
+
+    def test_preview_text_includes_session_and_content(self):
+        preview = _preview_text(
+            {
+                "session_id": "abc123",
+                "description": "Refactor flow",
+                "message_count": 2,
+                "last_active": 0.0,
+            },
+            "User: hello\n\nAssistant: hi",
+        )
+
+        assert "Refactor flow" in preview
+        assert "abc123" in preview
+        assert "Assistant: hi" in preview
 
 
 class TestHelpers:

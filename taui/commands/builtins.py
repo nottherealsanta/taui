@@ -456,7 +456,7 @@ class SessionsCommand:
     """List recent sessions and request a frontend picker."""
 
     name: str = "sessions"
-    description: str = "List sessions — interactive picker or /sessions <id>"
+    description: str = "List sessions — modal picker or /sessions <id>"
     accepts_args: bool = True
     _get_session: Any = None
 
@@ -492,7 +492,7 @@ class SessionsCommand:
         result = self._format_session_list(sessions)
         result.metadata.update(
             action="session_picker",
-            sessions=sessions[:20],
+            sessions=sessions[:50],
         )
         return result
 

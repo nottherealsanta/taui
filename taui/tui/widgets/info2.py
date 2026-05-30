@@ -4,16 +4,13 @@ Modes:
 - completions: slash-command autocomplete list
 - models: inline model picker
 - agents: inline agent picker
-- sessions: inline session picker
 - context: inline context tree
 """
 
 from __future__ import annotations
 
 import asyncio
-import time
 from dataclasses import dataclass
-from datetime import datetime
 from enum import Enum, auto
 from typing import Any
 
@@ -42,7 +39,6 @@ class Info2Mode(Enum):
     COMPLETIONS = auto()
     MODELS = auto()
     AGENTS = auto()
-    SESSIONS = auto()
     SKILLS = auto()
     PROMPTS = auto()
     CONTEXT = auto()
@@ -127,13 +123,6 @@ class Info2(ScrollableContainer):
             super().__init__()
             self.agent_id = agent_id
 
-    class SessionSelected(Message):
-        """A session was selected inline."""
-
-        def __init__(self, session_id: str) -> None:
-            super().__init__()
-            self.session_id = session_id
-
     class SkillSelected(Message):
         """A skill was selected inline."""
 
@@ -166,7 +155,6 @@ class Info2(ScrollableContainer):
         self._items: list[Completion] = []
         self._model_items: list[dict] = []
         self._agent_items: list = []  # list[AgentProfile]
-        self._session_items: list[dict] = []
         self._skill_items: list = []  # list[Skill]
         self._prompt_items: list = []  # list[Item]
         self._current_marker: str = ""
@@ -246,16 +234,6 @@ class Info2(ScrollableContainer):
         self._rebuild_agents()
         self.add_class("active")
 
-    def show_sessions(self, sessions: list[dict]) -> None:
-        """Show inline session picker."""
-        if not sessions:
-            return
-        self._mode = Info2Mode.SESSIONS
-        self._session_items = sessions[:20]
-        self.selected_index = 0
-        self._rebuild_sessions()
-        self.add_class("active")
-
     def show_skills(self, skills: list) -> None:
         """Show inline skill picker."""
         if not skills:
@@ -324,7 +302,6 @@ class Info2(ScrollableContainer):
         self._items = []
         self._model_items = []
         self._agent_items = []
-        self._session_items = []
         self._skill_items = []
         self._prompt_items = []
         self._models_all = []
@@ -392,12 +369,6 @@ class Info2(ScrollableContainer):
             case Info2Mode.AGENTS:
                 if self._agent_items and 0 <= self.selected_index < len(self._agent_items):
                     return self._agent_items[self.selected_index].id
-            case Info2Mode.SESSIONS:
-                if (
-                    self._session_items
-                    and 0 <= self.selected_index < len(self._session_items)
-                ):
-                    return str(self._session_items[self.selected_index]["session_id"])
             case Info2Mode.SKILLS:
                 if self._skill_items and 0 <= self.selected_index < len(self._skill_items):
                     return self._skill_items[self.selected_index].name
@@ -450,11 +421,6 @@ class Info2(ScrollableContainer):
                 if value is not None:
                     self.post_message(self.AgentSelected(value))
                 self.hide()
-            case Info2Mode.SESSIONS:
-                value = self.current_value
-                if value is not None:
-                    self.post_message(self.SessionSelected(value))
-                self.hide()
             case Info2Mode.SKILLS:
                 value = self.current_value
                 if value is not None:
@@ -495,8 +461,6 @@ class Info2(ScrollableContainer):
                 return len(self._model_items)
             case Info2Mode.AGENTS:
                 return len(self._agent_items)
-            case Info2Mode.SESSIONS:
-                return len(self._session_items)
             case Info2Mode.SKILLS:
                 return len(self._skill_items)
             case Info2Mode.PROMPTS:
@@ -550,14 +514,6 @@ class Info2(ScrollableContainer):
         )
         self.mount(header)
 
-    def _rebuild_sessions(self) -> None:
-        self.remove_children()
-        for i, session in enumerate(self._session_items):
-            item = Info2Item(self._session_label(session))
-            if i == self.selected_index:
-                item.add_class("highlighted")
-            self.mount(item)
-
     def _rebuild_skills(self) -> None:
         self.remove_children()
         for i, skill in enumerate(self._skill_items):
@@ -594,22 +550,6 @@ class Info2(ScrollableContainer):
         text.append(f"{agent.id:<5s}", style="bold cyan" if marker else "white")
         text.append(f"{agent.name:<24s}", style="white")
         text.append(f"  {model}{marker}", style="dim")
-        return text
-
-    @staticmethod
-    def _session_label(session: dict) -> Text:
-        sid = str(session.get("session_id", ""))
-        desc = str(
-            session.get("description") or _fallback_session_name(session)
-        )[:40]
-        mode = str(session.get("mode", "normal"))
-        msgs = int(session.get("message_count", 0) or 0)
-        ago = _time_ago(float(session.get("last_active", 0) or 0))
-        mode_tag = " [ext]" if mode == "extensions" else ""
-        text = Text()
-        text.append(sid, style="bold cyan")
-        text.append(f"  {desc:<40s}  ", style="white")
-        text.append(f"{msgs:>3} msgs  {ago}{mode_tag}", style="dim")
         return text
 
     @staticmethod
@@ -683,26 +623,3 @@ def _subseq_match(query: str, target: str) -> bool:
             i += 1
     return i == len(query)
 
-
-def _fallback_session_name(session: dict) -> str:
-    """Label for sessions without a description — first user message or created time."""
-    first = (session.get("first_message") or "").strip()
-    if first:
-        return first
-    ts = float(session.get("created_at", 0) or 0)
-    if ts <= 0:
-        return "(unnamed)"
-    return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
-
-
-def _time_ago(ts: float) -> str:
-    if ts <= 0:
-        return "unknown"
-    delta = time.time() - ts
-    if delta < 60:
-        return "just now"
-    if delta < 3600:
-        return f"{int(delta / 60)}m ago"
-    if delta < 86400:
-        return f"{int(delta / 3600)}h ago"
-    return f"{int(delta / 86400)}d ago"

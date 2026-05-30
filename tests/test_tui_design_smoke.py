@@ -4,8 +4,8 @@ These are behavioral tests (no SVG snapshots) that drive `TauiApp` through
 its public key bindings and assert on real DOM/widget state. They cover:
 
 - ctrl+b toggles the left sidebar.
-- The left sidebar exposes Sessions/Files tabs and cycles between them.
-- Sessions render with the current-session indicator and time-sort order.
+- The left sidebar is a files-only attachment panel.
+- Sessions open in a modal picker.
 - ctrl+r toggles the right info sidebar and populates its sections.
 - Slash-command autocomplete: a single Enter runs the highlighted command
   (no more "press twice").
@@ -23,7 +23,6 @@ import pytest
 
 from tests.scenarios import scenarios
 from tests.scenarios.tui_harness import use_scripted_provider
-
 
 # ── Helpers ─────────────────────────────────────────────────────────────
 
@@ -81,16 +80,35 @@ async def test_ctrl_b_toggles_left_sidebar(tmp_path, monkeypatch):
         await _close_cleanly(pilot)
 
 
-# ── Sidebar Sessions / Files tabs ───────────────────────────────────────
+# ── Sidebar files panel / sessions modal ───────────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_clicking_session_closes_sidebar(tmp_path, monkeypatch):
-    """Selecting a session should fold the sidebar away — committing to a
-    session is also a "done with the picker" gesture."""
-    from textual.widgets import ListView
+async def test_sidebar_is_files_only(tmp_path, monkeypatch):
+    """Ctrl+B should open the files panel, not a sessions list."""
+    from textual.css.query import NoMatches
+    from textual.widgets import DirectoryTree
 
     from taui.tui.widgets.sidebar import Sidebar
+
+    app = _make_app(monkeypatch, tmp_path)
+    async with app.run_test() as pilot:
+        await _wait_until_ready(pilot)
+        await pilot.press("ctrl+b")
+        await pilot.pause()
+        sidebar = pilot.app.query_one(Sidebar)
+        assert sidebar.has_class("visible")
+        assert sidebar._active_tab == "files"
+        assert sidebar.query_one("#dir-tree", DirectoryTree).display is True
+        with pytest.raises(NoMatches):
+            sidebar.query_one("#sessions-list")
+        await _close_cleanly(pilot)
+
+
+@pytest.mark.asyncio
+async def test_sessions_open_modal_picker(tmp_path, monkeypatch):
+    """The sessions picker should be a modal rather than a sidebar tab."""
+    from taui.tui.screens.session_picker import SessionPickerScreen
 
     app = _make_app(monkeypatch, tmp_path)
     async with app.run_test() as pilot:
@@ -109,157 +127,10 @@ async def test_clicking_session_closes_sidebar(tmp_path, monkeypatch):
             ]
 
         pilot.app._session.list_sessions = _stub_list  # type: ignore[assignment]
-        await pilot.press("ctrl+b")
-        for _ in range(5):
-            await pilot.pause()
-        sidebar = pilot.app.query_one(Sidebar)
-        assert sidebar.has_class("visible")
-        listview = sidebar.query_one("#sessions-list", ListView)
-        # Drive the same notification a click on the row would.
-        if listview.children:
-            listview.post_message(
-                ListView.Selected(listview, listview.children[0], 0)
-            )
-        for _ in range(5):
-            await pilot.pause()
-        assert not sidebar.has_class("visible"), (
-            "sidebar should auto-close after a session is picked"
-        )
-        await _close_cleanly(pilot)
-
-
-@pytest.mark.asyncio
-async def test_clicking_tab_label_switches_tab(tmp_path, monkeypatch):
-    """Clicking the Files / Sessions header should switch tabs the same way
-    the Tab key does — the header is a real button, not just decoration."""
-    from textual.widgets import DirectoryTree, ListView
-
-    from taui.tui.widgets.sidebar import Sidebar, _TabLabel
-
-    app = _make_app(monkeypatch, tmp_path)
-    async with app.run_test() as pilot:
-        await _wait_until_ready(pilot)
-        await pilot.press("ctrl+b")
+        await pilot.app._load_and_show_sessions()
         await pilot.pause()
-        sidebar = pilot.app.query_one(Sidebar)
-        sessions_list = sidebar.query_one("#sessions-list", ListView)
-        dir_tree = sidebar.query_one("#dir-tree", DirectoryTree)
-
-        # Initial state: Sessions active.
-        assert sessions_list.display is True
-
-        # Click the Files header → switches to Files tab.
-        files_tab = sidebar.query_one("#tab-files", _TabLabel)
-        files_tab.on_click()
-        await pilot.pause()
-        assert dir_tree.display is True
-        assert sessions_list.display is False
-        assert files_tab.has_class("active")
-
-        # Click Sessions header → back to Sessions.
-        sessions_tab = sidebar.query_one("#tab-sessions", _TabLabel)
-        sessions_tab.on_click()
-        await pilot.pause()
-        assert sessions_list.display is True
-        assert dir_tree.display is False
-        assert sessions_tab.has_class("active")
-        await _close_cleanly(pilot)
-
-
-@pytest.mark.asyncio
-async def test_sidebar_has_sessions_and_files_tabs(tmp_path, monkeypatch):
-    """Sidebar should expose Sessions + Files tabs and cycle between them."""
-    from textual.widgets import DirectoryTree, ListView, Static
-
-    from taui.tui.widgets.sidebar import Sidebar
-
-    app = _make_app(monkeypatch, tmp_path)
-    async with app.run_test() as pilot:
-        await _wait_until_ready(pilot)
-        await pilot.press("ctrl+b")
-        await pilot.pause()
-        sidebar = pilot.app.query_one(Sidebar)
-
-        sessions_tab = sidebar.query_one("#tab-sessions", Static)
-        files_tab = sidebar.query_one("#tab-files", Static)
-        sessions_list = sidebar.query_one("#sessions-list", ListView)
-        dir_tree = sidebar.query_one("#dir-tree", DirectoryTree)
-
-        # Initial: sessions active
-        assert sessions_tab.has_class("active")
-        assert not files_tab.has_class("active")
-        assert sessions_list.display is True
-        assert dir_tree.display is False
-
-        # Cycle → files
-        sidebar.action_cycle_tab()
-        await pilot.pause()
-        assert files_tab.has_class("active")
-        assert not sessions_tab.has_class("active")
-        assert dir_tree.display is True
-        assert sessions_list.display is False
-
-        # Cycle → sessions again
-        sidebar.action_cycle_tab()
-        await pilot.pause()
-        assert sessions_tab.has_class("active")
-        assert sessions_list.display is True
-        await _close_cleanly(pilot)
-
-
-@pytest.mark.asyncio
-async def test_sidebar_sessions_show_running_indicator_and_sort(
-    tmp_path, monkeypatch
-):
-    """Current session should be marked, list sorted by last_active desc."""
-    from textual.widgets import ListView
-
-    from taui.tui.widgets.sidebar import Sidebar, _SessionRow
-
-    app = _make_app(monkeypatch, tmp_path)
-    async with app.run_test() as pilot:
-        await _wait_until_ready(pilot)
-
-        async def _stub_list():
-            return [
-                {
-                    "session_id": "old-one",
-                    "description": "older",
-                    "message_count": 1,
-                    "last_active": 100.0,
-                    "created_at": 0.0,
-                    "mode": "normal",
-                },
-                {
-                    "session_id": "current-x",
-                    "description": "current",
-                    "message_count": 5,
-                    "last_active": 9999.0,
-                    "created_at": 0.0,
-                    "mode": "normal",
-                },
-                {
-                    "session_id": "middle",
-                    "description": "middle",
-                    "message_count": 2,
-                    "last_active": 500.0,
-                    "created_at": 0.0,
-                    "mode": "normal",
-                },
-            ]
-
-        pilot.app._session.list_sessions = _stub_list  # type: ignore[assignment]
-        pilot.app._session.session_id = "current-x"
-        await pilot.press("ctrl+b")
-        # Worker is async; pause a few times so the refresh settles.
-        for _ in range(5):
-            await pilot.pause()
-
-        sidebar = pilot.app.query_one(Sidebar)
-        listview = sidebar.query_one("#sessions-list", ListView)
-        rows = [c for c in listview.children if isinstance(c, _SessionRow)]
-        # Sorted by last_active desc: current-x (9999), middle (500), old-one (100)
-        assert [r.session_id for r in rows] == ["current-x", "middle", "old-one"]
+        assert isinstance(pilot.app.screen, SessionPickerScreen)
+        await pilot.press("escape")
         await _close_cleanly(pilot)
 
 
@@ -573,8 +444,6 @@ async def test_info_sidebar_session_shows_name_and_gray_id(
 ):
     """Session section should show the description as the headline and the
     id below it rendered in gray. Model row was dropped entirely."""
-    from rich.text import Text
-
     from taui.tui.widgets.session_info_sidebar import SessionInfoSidebar
 
     app = _make_app(monkeypatch, tmp_path)
@@ -622,8 +491,6 @@ async def test_info_sidebar_agent_uses_agent_color_and_100_char_prompt(
     """Agent id should render in the per-agent color (same family the info
     bar uses), and the prompt preview should be the first 100 chars of the
     raw prompt — not just the first line."""
-    from rich.text import Text
-
     from taui.tui.widgets.info_bar import _agent_color
     from taui.tui.widgets.session_info_sidebar import SessionInfoSidebar
 
@@ -840,9 +707,8 @@ async def test_files_tree_selection_actually_adds_pill(tmp_path, monkeypatch):
             if data is not None and Path(str(data.path)).name == "hello.txt":
                 target = child
                 break
-        assert target is not None, (
-            f"hello.txt not found among {[str(c.data.path) for c in tree.root.children if c.data]!r}"
-        )
+        child_paths = [str(c.data.path) for c in tree.root.children if c.data]
+        assert target is not None, f"hello.txt not found among {child_paths!r}"
         # Drive the same code path a real label-click runs: point the
         # cursor at the node and invoke our overridden action_select_cursor.
         target_line = next(
@@ -961,46 +827,6 @@ async def test_render_bar_attachments_image_uses_image_label(tmp_path, monkeypat
             "data:image/png;base64,second",
         ]
         await _close_cleanly(pilot)
-
-
-# ── Session row: name primary, id in gray ──────────────────────────────
-
-
-def test_session_row_renders_name_then_id(tmp_path):
-    """The session description should be the primary row label; the id
-    should appear as dim gray context, not the headline."""
-    from rich.text import Text
-
-    from taui.tui.widgets.sidebar import _SessionRow
-
-    row = _SessionRow(
-        {
-            "session_id": "abc123def456",
-            "description": "Refactor login flow",
-            "message_count": 7,
-            "last_active": 0.0,
-            "created_at": 0.0,
-        },
-        is_current=True,
-    )
-    rendered = row.label_text
-    plain = rendered.plain
-    # Name appears before the id (and id is below it in the second line).
-    name_pos = plain.find("Refactor login flow")
-    id_pos = plain.find("abc123def456")
-    assert name_pos != -1 and id_pos != -1
-    assert name_pos < id_pos, (
-        f"name should come before id, got name@{name_pos} id@{id_pos}"
-    )
-
-    # The id span should be styled with a gray color (#6e7681 in our palette).
-    spans_at_id = [
-        sp for sp in rendered.spans if sp.start <= id_pos < sp.end
-    ]
-    styles = " ".join(str(sp.style) for sp in spans_at_id)
-    assert "#6e7681" in styles, (
-        f"id span should be dim gray, styles seen: {styles!r}"
-    )
 
 
 def test_tool_status_uses_unified_gray_palette():
