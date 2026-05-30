@@ -2293,6 +2293,19 @@ class _InlineEditor(Vertical):
         width: auto;
         padding: 0 1;
     }}
+    _InlineEditor .se-auto-row {{
+        height: 1;
+        width: 100%;
+        padding: 0 1;
+        margin-top: 1;
+    }}
+    _InlineEditor .se-auto-label {{
+        width: auto;
+        height: 1;
+        color: {ACCENT_SOFT};
+        padding: 0 2 0 0;
+        content-align: left middle;
+    }}
     _InlineEditor .se-hidden {{
         display: none;
     }}
@@ -2577,12 +2590,12 @@ class _InlineEditor(Vertical):
                         toggle.display = False
                     group_grid.mount(toggle)
 
-            # Auto-approve toggle
+            # Auto-approve toggle (label + toggles inline on one row)
             initial_auto = bool(self._initial_extra.get("auto_approve", False))
-            auto_label = Static("AUTO-APPROVE", classes="se-tools-label")
-            self.mount(auto_label)
-            auto_row = Horizontal(classes="se-usage-row")
+            auto_row = Horizontal(classes="se-auto-row")
             self.mount(auto_row)
+            auto_row.mount(Static("AUTO-APPROVE", classes="se-auto-label",
+                                  markup=False))
             auto_row.mount(_AutoApproveToggle("off", selected=not initial_auto))
             auto_row.mount(_AutoApproveToggle("on", selected=initial_auto))
 
