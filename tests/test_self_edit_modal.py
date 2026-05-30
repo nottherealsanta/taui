@@ -155,6 +155,15 @@ class TestInventory:
         names = {i.identifier for i in builtins}
         assert {"read", "edit", "write", "bash"}.issubset(names)
 
+    def test_builtin_tool_definition_includes_params(self, tmp_path):
+        items = inventory.list_items(tmp_path, "tools", "global")
+        read = next(i for i in items if i.identifier == "read")
+
+        assert "Parameters:" in read.body
+        assert "path" in read.body
+        assert "string" in read.body
+        assert read.extra["schema"]["properties"]["path"]["type"] == "string"
+
     def test_all_tool_names_lists_builtins(self, tmp_path):
         names = inventory.all_tool_names(tmp_path)
         assert "read" in names

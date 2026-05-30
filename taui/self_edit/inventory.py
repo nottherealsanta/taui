@@ -14,6 +14,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from taui.self_edit.store import SelfEditStore
+from taui.tools.schema_format import schema_param_rows
 
 
 @dataclass(frozen=True, slots=True)
@@ -286,6 +287,7 @@ def _list_builtin_tools() -> list[Item]:
     for name in sorted(registry.names):
         tool = registry.get(name)
         desc = getattr(tool, "description", "") or "(builtin)"
+        schema = getattr(tool, "schema", None) or {}
         out.append(
             Item(
                 category="tools",
@@ -294,11 +296,33 @@ def _list_builtin_tools() -> list[Item]:
                 label=name,
                 summary=str(desc)[:120],
                 path=Path(f"<builtin:{name}>"),
-                body=str(desc),
+                body=_format_tool_definition(str(desc), schema),
                 builtin=True,
+                extra={"schema": schema},
             )
         )
     return out
+
+
+def _format_tool_definition(description: str, schema: object) -> str:
+    """Plain-text tool definition for the self-edit preview pane."""
+    lines = [description.strip() or "(no description)"]
+    params = schema_param_rows(schema)
+    if not params:
+        return "\n".join(lines)
+
+    name_width = max(len(param.name) for param in params)
+    lines.extend(["", "Parameters:"])
+    for param in params:
+        required = "*" if param.required else " "
+        desc = f"  - {param.description}" if param.description else ""
+        default = ""
+        if param.default is not None and not param.required:
+            default = f"  (default: {param.default!r})"
+        lines.append(
+            f"  {required} {param.name.ljust(name_width)}  {param.type_label}{default}{desc}"
+        )
+    return "\n".join(lines)
 
 
 def all_tool_names(working_dir: Path) -> list[str]:

@@ -19,6 +19,8 @@ from textual.message import Message
 from textual.screen import ModalScreen
 from textual.widgets import Button, Static
 
+from taui.tools.schema_format import format_schema_type, schema_param_rows
+
 
 class ToolEntry(NamedTuple):
     """A single tool's banner/modal entry.
@@ -188,51 +190,27 @@ def _format_type(prop: dict[str, Any]) -> str:
     Handles unions (``["string", "null"]``), ``enum`` (rendered as
     ``one of: a|b|c``), and arrays (``array<item-type>``).
     """
-    enum = prop.get("enum")
-    if isinstance(enum, list) and enum:
-        return "one of: " + " | ".join(str(v) for v in enum)
-    t = prop.get("type")
-    if isinstance(t, list):
-        return " | ".join(str(x) for x in t)
-    if t == "array":
-        items = prop.get("items") or {}
-        inner = _format_type(items) if items else "any"
-        return f"array<{inner}>"
-    return str(t) if t else "any"
+    return format_schema_type(prop)
 
 
 def _render_param_lines(schema: dict[str, Any]) -> list[str]:
     """Return one Rich-markup line per parameter for the modal."""
-    if not isinstance(schema, dict):
-        return []
-    props = schema.get("properties") or {}
-    if not isinstance(props, dict) or not props:
-        return []
-    required = set(schema.get("required") or [])
-    # Preserve declaration order; show required first within that order.
-    ordered = sorted(
-        props.items(), key=lambda kv: (kv[0] not in required, list(props).index(kv[0]))
-    )
-    name_width = max((len(n) for n in props), default=0)
+    rows = schema_param_rows(schema)
+    name_width = max((len(row.name) for row in rows), default=0)
     lines: list[str] = []
-    for name, prop in ordered:
-        if not isinstance(prop, dict):
-            prop = {}
-        type_str = _format_type(prop)
-        is_required = name in required
-        req_marker = "[#f97583]*[/]" if is_required else " "
-        desc = str(prop.get("description") or "").strip()
-        default = prop.get("default")
-        if default is not None and not is_required:
+    for row in rows:
+        req_marker = "[#f97583]*[/]" if row.required else " "
+        desc = row.description
+        if row.default is not None and not row.required:
             desc = (
-                f"{desc}  [#6a737d](default: {default!r})[/]"
+                f"{desc}  [#6a737d](default: {row.default!r})[/]"
                 if desc
-                else f"[#6a737d](default: {default!r})[/]"
+                else f"[#6a737d](default: {row.default!r})[/]"
             )
-        padded_name = name.ljust(name_width)
+        padded_name = row.name.ljust(name_width)
         head = (
             f"  {req_marker} [#7ee787]{padded_name}[/]  "
-            f"[#79b8ff]{type_str}[/]"
+            f"[#79b8ff]{row.type_label}[/]"
         )
         if desc:
             lines.append(f"{head}  [#9aa0a6]— {desc}[/]")
