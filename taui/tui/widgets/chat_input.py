@@ -1024,7 +1024,7 @@ class ChatInput(TextArea):
                         trailing_space=True,
                     )
                     return value, accepts_args
-                # No-arg commands (e.g. /model, /agents, /sessions) act as
+                # No-arg commands (e.g. /model, /agents) act as
                 # openers — submit immediately so the picker is the only
                 # entry point. This avoids dual-triggering the inline arg
                 # completion dropdown alongside the picker.
@@ -1094,7 +1094,7 @@ class ChatInput(TextArea):
             self.insert(self._command_prefix)
             return
 
-        # ── Info2 panel keys (approval/model/agent/context/sessions) ──
+        # ── Info2 panel keys (approval/model/agent/context) ──
         if event.key in ("up", "down", "enter", "space", "escape"):
             from taui.tui.widgets.info2 import Info2, Info2Mode
 

@@ -205,36 +205,12 @@ def test_sidebar_visible(snap_compare, tmp_path, monkeypatch):
     app = use_scripted_provider(monkeypatch, tmp_path, provider)
 
     async def setup(pilot: Pilot) -> None:
-        await _wait_until_ready(pilot)
-        # Replace the runtime session list with a deterministic fixture so the
-        # snapshot does not change every run (real session IDs are uuid-random
-        # and last_active is wall-clock time).
-        async def _stub_list():
-            return [
-                {
-                    "session_id": "sess-aaaa",
-                    "description": "first session",
-                    "message_count": 12,
-                    "last_active": 0.0,
-                    "created_at": 0.0,
-                    "mode": "normal",
-                },
-                {
-                    "session_id": "sess-bbbb",
-                    "description": "older work",
-                    "message_count": 3,
-                    "last_active": 0.0,
-                    "created_at": 0.0,
-                    "mode": "normal",
-                },
-            ]
+        from textual.widgets import Static
 
-        if app._session is not None:
-            app._session.list_sessions = _stub_list  # type: ignore[assignment]
-            app._session.session_id = "sess-aaaa"
+        await _wait_until_ready(pilot)
+        pilot.app.query_one("#cwd-bar", Static).update("/tmp/taui-sidebar")
         await pilot.press("ctrl+b")
         await pilot.pause()
-        # Workers run asynchronously; pause again so refresh has settled.
         for _ in range(3):
             await pilot.pause()
         await _close_cleanly(pilot)
@@ -519,26 +495,48 @@ def test_resumed_session_real_store(snap_compare, tmp_path, monkeypatch):
             await stream.ensure_stream(stream_id)
             await store.create_session(session_id, stream_id=stream_id)
             # Turn 1
-            await store.append(stream_id, EventType.STREAM_START, {"agent_id": "DEF", "model": "m"})
-            await store.append(stream_id, EventType.USER_MESSAGE, {"text": "first message"})
             await store.append(
-                stream_id, EventType.ASSISTANT_MESSAGE, {"text": "First reply.", "agent_id": "DEF", "model": "m"},
+                stream_id,
+                EventType.STREAM_START,
+                {"agent_id": "DEF", "model": "m"},
+            )
+            await store.append(
+                stream_id,
+                EventType.USER_MESSAGE,
+                {"text": "first message"},
+            )
+            await store.append(
+                stream_id,
+                EventType.ASSISTANT_MESSAGE,
+                {"text": "First reply.", "agent_id": "DEF", "model": "m"},
             )
             await store.append(
                 stream_id, EventType.USAGE, {"input_tokens": 20, "output_tokens": 10},
             )
             # Turn 2
-            await store.append(stream_id, EventType.USER_MESSAGE, {"text": "second message"})
             await store.append(
-                stream_id, EventType.ASSISTANT_MESSAGE, {"text": "Second reply.", "agent_id": "DEF", "model": "m"},
+                stream_id,
+                EventType.USER_MESSAGE,
+                {"text": "second message"},
+            )
+            await store.append(
+                stream_id,
+                EventType.ASSISTANT_MESSAGE,
+                {"text": "Second reply.", "agent_id": "DEF", "model": "m"},
             )
             await store.append(
                 stream_id, EventType.USAGE, {"input_tokens": 40, "output_tokens": 15},
             )
             # Turn 3
-            await store.append(stream_id, EventType.USER_MESSAGE, {"text": "third message"})
             await store.append(
-                stream_id, EventType.ASSISTANT_MESSAGE, {"text": "Third reply.", "agent_id": "DEF", "model": "m"},
+                stream_id,
+                EventType.USER_MESSAGE,
+                {"text": "third message"},
+            )
+            await store.append(
+                stream_id,
+                EventType.ASSISTANT_MESSAGE,
+                {"text": "Third reply.", "agent_id": "DEF", "model": "m"},
             )
             await store.append(
                 stream_id, EventType.USAGE, {"input_tokens": 80, "output_tokens": 20},

@@ -743,6 +743,23 @@ class Session:
         """List recent sessions with parent relationships."""
         return await self._store.list_sessions_with_parents()
 
+    async def load_session_content(self, session_id: str) -> str:
+        """Return a searchable, previewable transcript for a stored session.
+
+        This reads persisted stream events without rebinding the active session.
+        It is used by the TUI session picker for content search and preview.
+        """
+        meta = await self._store.get_session(session_id)
+        if meta is None:
+            return ""
+
+        stream_id = str(meta.get("stream_id") or "")
+        if not stream_id or not await self._stream.stream_exists(stream_id):
+            return ""
+
+        transcript = await self._stream.load_conversation(stream_id)
+        return _replay_items_to_text(transcript.items)
+
     def reload_extensions(self) -> list[str]:
         """Hot-reload extensions: unload, re-discover, re-load.
 
@@ -1439,6 +1456,50 @@ class Session:
         current_offset = await self._stream.get_length(self._loop.stream_id)
         if current_offset > self._loaded_offset:
             await self._replay_stream()
+
+
+def _replay_items_to_text(items: list[ReplayItem], *, max_chars: int = 120_000) -> str:
+    """Flatten replay items into bounded transcript text for picker search."""
+    lines: list[str] = []
+    total = 0
+
+    def add(line: str) -> bool:
+        nonlocal total
+        if not line:
+            return True
+        remaining = max_chars - total
+        if remaining <= 0:
+            return False
+        if len(line) > remaining:
+            line = line[:remaining]
+        lines.append(line)
+        total += len(line)
+        return total < max_chars
+
+    for item in items:
+        match item.kind:
+            case "user":
+                line = f"User: {item.text}"
+            case "assistant":
+                line = f"Assistant: {item.text}"
+            case "reasoning":
+                line = f"Reasoning: {item.text}"
+            case "tool_call":
+                line = f"Tool call {item.name}: {item.arguments or {}}"
+            case "tool_result":
+                line = f"Tool result {item.name}: {item.text}"
+            case "error":
+                line = f"Error: {item.text}"
+            case "compaction":
+                line = f"Compaction: {item.text}"
+            case "usage":
+                line = ""
+            case _:
+                line = item.text
+        if not add(line):
+            break
+
+    return "\n\n".join(lines)
 
 
 def _agent_id_from_stream(stream_id: str, fallback: str) -> str:

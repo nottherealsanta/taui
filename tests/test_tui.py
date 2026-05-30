@@ -495,10 +495,9 @@ class TestTauiApp:
                 assert app.query_one("#chat-input", ChatInput).can_submit is True
                 release.set()
 
-    async def test_open_session_picker_shows_sidebar(self, tmp_path):
+    async def test_open_session_picker_shows_modal(self, tmp_path):
         from taui.config import Config
         from taui.tui import app as app_module
-        from taui.tui.widgets.sidebar import Sidebar
 
         class FakeSession:
             session_id = "current"
@@ -519,21 +518,21 @@ class TestTauiApp:
                 self.session_id = session_id
                 return True
 
+            async def load_session_content(self, session_id: str) -> str:
+                return ""
+
         app = TauiApp(Config(working_dir=tmp_path))
         fake = FakeSession()
         with patch.object(app_module.Session, "create", AsyncMock(return_value=fake)):
             async with app.run_test():
                 sessions = [{"session_id": "abc123"}]
                 await app._open_session_picker(sessions)
-                sidebar = app.query_one(Sidebar)
-                assert sidebar.has_class("visible")
-                assert sidebar._active_tab == "sessions"
-                assert len(sidebar._sessions) == 1
+                assert isinstance(app.screen, SessionPickerScreen)
+                assert len(app.screen._sessions) == 1
 
     async def test_session_picker_accept_resumes(self, tmp_path):
         from taui.config import Config
         from taui.tui import app as app_module
-        from taui.tui.widgets.sidebar import Sidebar
 
         class FakeSession:
             session_id = "current"
@@ -554,21 +553,105 @@ class TestTauiApp:
                 self.session_id = session_id
                 return True
 
+            async def load_session_content(self, session_id: str) -> str:
+                return ""
+
         app = TauiApp(Config(working_dir=tmp_path))
         fake = FakeSession()
         with patch.object(app_module.Session, "create", AsyncMock(return_value=fake)):
-            async with app.run_test():
+            async with app.run_test() as pilot:
                 app._wire_callbacks = MagicMock()
                 app._update_status = MagicMock()
                 sessions = [{"session_id": "abc123"}]
                 await app._open_session_picker(sessions)
-                # Pick the session from the sidebar by posting the
-                # message it would emit when a user clicks a row.
-                sidebar = app.query_one(Sidebar)
-                sidebar.post_message(Sidebar.SessionSelected("abc123"))
+                await pilot.pause()
+                await pilot.press("enter")
                 # Give the worker time to run
                 await asyncio.sleep(0.1)
                 assert fake.resumed == ["abc123"]
+
+    async def test_session_picker_arrow_keys_move_selection(self, tmp_path):
+        from taui.config import Config
+        from taui.tui import app as app_module
+
+        class FakeSession:
+            session_id = "current"
+            last_resume_error = ""
+            replay_items = []
+            provider_name = "copilot"
+            model_name = "claude-haiku-4.5"
+            extensions_mode = False
+            self_edit_mode = False
+            cost_tracker = MagicMock(total_cost_usd=0.0)
+            _loop = MagicMock(_messages=[], agent_id="")
+
+            def __init__(self):
+                self.resumed: list[str] = []
+
+            async def resume_session(self, session_id: str) -> bool:
+                self.resumed.append(session_id)
+                self.session_id = session_id
+                return True
+
+            async def load_session_content(self, session_id: str) -> str:
+                return ""
+
+        app = TauiApp(Config(working_dir=tmp_path))
+        fake = FakeSession()
+        with patch.object(app_module.Session, "create", AsyncMock(return_value=fake)):
+            async with app.run_test() as pilot:
+                app._wire_callbacks = MagicMock()
+                app._update_status = MagicMock()
+                await app._open_session_picker(
+                    [{"session_id": "first"}, {"session_id": "second"}]
+                )
+                await pilot.pause()
+                await pilot.press("down")
+                await pilot.press("enter")
+                await asyncio.sleep(0.1)
+                assert fake.resumed == ["second"]
+
+    async def test_session_picker_preview_key_does_not_resume(self, tmp_path):
+        from taui.config import Config
+        from taui.tui import app as app_module
+
+        class FakeSession:
+            session_id = "current"
+            last_resume_error = ""
+            replay_items = []
+            provider_name = "copilot"
+            model_name = "claude-haiku-4.5"
+            extensions_mode = False
+            self_edit_mode = False
+            cost_tracker = MagicMock(total_cost_usd=0.0)
+            _loop = MagicMock(_messages=[], agent_id="")
+
+            def __init__(self):
+                self.resumed: list[str] = []
+
+            async def resume_session(self, session_id: str) -> bool:
+                self.resumed.append(session_id)
+                self.session_id = session_id
+                return True
+
+            async def load_session_content(self, session_id: str) -> str:
+                return "User: preview-only content"
+
+        app = TauiApp(Config(working_dir=tmp_path))
+        fake = FakeSession()
+        with patch.object(app_module.Session, "create", AsyncMock(return_value=fake)):
+            async with app.run_test() as pilot:
+                await app._open_session_picker([{"session_id": "abc123"}])
+                await pilot.pause()
+                screen = app.screen
+                assert isinstance(screen, SessionPickerScreen)
+                await pilot.press("down")
+                await pilot.press("p")
+                for _ in range(5):
+                    await pilot.pause()
+                preview = screen.query_one("#session-preview", Static)
+                assert "preview-only content" in _plain_widget_text(preview)
+                assert fake.resumed == []
 
     async def test_model_command_refreshes_status(self, tmp_path):
         from taui.config import Config
@@ -1094,8 +1177,6 @@ class TestTauiApp:
     async def test_open_session_picker_dismiss_keeps_session(self, tmp_path):
         from taui.config import Config
         from taui.tui import app as app_module
-        from taui.tui.widgets.sidebar import Sidebar
-
         class FakeSession:
             session_id = "current"
             provider_name = "copilot"
@@ -1108,14 +1189,16 @@ class TestTauiApp:
             async def resume_session(self, session_id: str) -> bool:
                 raise AssertionError("resume should not be called")
 
+            async def load_session_content(self, session_id: str) -> str:
+                return ""
+
         app = TauiApp(Config(working_dir=tmp_path))
         with patch.object(app_module.Session, "create", AsyncMock(return_value=FakeSession())):
-            async with app.run_test():
+            async with app.run_test() as pilot:
                 await app._open_session_picker([{"session_id": "abc123"}])
-                sidebar = app.query_one(Sidebar)
-                # Dismiss without selecting
-                sidebar.action_dismiss()
-                assert not sidebar.has_class("visible")
+                await pilot.pause()
+                assert isinstance(app.screen, SessionPickerScreen)
+                await pilot.press("escape")
                 assert app.session_id == "current"
 
     def test_session_picker_instantiates(self):

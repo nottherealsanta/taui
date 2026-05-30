@@ -33,7 +33,8 @@ CLI parsing and app launch live in `taui/main.py:29` and `taui/main.py:90`.
   `taui/session.py:139`.
 - Stores sessions as append-only SQLite event streams in the working directory:
   `taui/store/store.py:97` and `taui/store/stream.py:22`.
-- Renders chat, streaming output, approvals, questions, sidebars, and session controls in
+- Renders chat, streaming output, approvals, questions, the file sidebar, and session
+  modal controls in
   Textual: `taui/tui/app.py:206`.
 
 ## Providers
@@ -59,7 +60,7 @@ Important slash commands are registered in `taui/commands/builtins.py:858`.
 | `/model` | Show, refresh, or switch models |
 | `/provider` | Show or switch provider |
 | `/agents` | List or activate agent profiles |
-| `/sessions` | List or resume sessions |
+| `/sessions` | Open the session picker modal or resume a session |
 | `/new [message]` | Start a new session |
 | `/compact`, `/context` | Manage or inspect context |
 | `/extensions`, `/reload`, `/ext-mode` | Inspect and reload extensions |
@@ -81,7 +82,7 @@ Input-specific bindings are in `ChatInput.BINDINGS` at
 | `Ctrl+N` | New session |
 | `Ctrl+C` | Cancel active request or approval |
 | `Ctrl+D` | Quit after double press |
-| `Ctrl+B` | Toggle sidebar |
+| `Ctrl+B` | Toggle file sidebar |
 | `Ctrl+R` | Toggle info sidebar |
 | `Ctrl+E` | Enter self-edit mode |
 | `Ctrl+X` | Context breakdown |
