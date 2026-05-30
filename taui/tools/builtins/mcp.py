@@ -102,7 +102,7 @@ class McpTool:
         if not names:
             return ToolResult.ok(
                 "No MCP servers configured.\n"
-                "Add servers to .taui/mcp.toml or ~/.config/taui/mcp.toml"
+                "Add servers to .taui/mcp.toml or ~/.taui/mcp.toml"
             )
 
         connected = set(self._manager.connected_servers)

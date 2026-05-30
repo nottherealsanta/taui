@@ -50,6 +50,61 @@ class TestMcpManager:
         mgr.load_configs()
         assert "myserver" in mgr.server_names
 
+    def test_load_global_self_edit_config(self, tmp_path: Path):
+        config_dir = Path.home() / ".taui"
+        config_dir.mkdir(parents=True)
+        (config_dir / "mcp.toml").write_text(
+            '[servers.global_demo]\ncommand = "echo"\nargs = ["hello"]\n',
+            encoding="utf-8",
+        )
+
+        mgr = McpManager(tmp_path)
+        mgr.load_configs()
+        assert "global_demo" in mgr.server_names
+        assert mgr._configs["global_demo"].command == ["echo", "hello"]
+
+    def test_load_legacy_global_config(self, tmp_path: Path):
+        config_dir = Path.home() / ".config" / "taui"
+        config_dir.mkdir(parents=True)
+        (config_dir / "mcp.toml").write_text(
+            '[servers.legacy]\ncommand = ["echo", "legacy"]\n',
+            encoding="utf-8",
+        )
+
+        mgr = McpManager(tmp_path)
+        mgr.load_configs()
+        assert "legacy" in mgr.server_names
+
+    def test_project_config_overrides_global(self, tmp_path: Path):
+        global_dir = Path.home() / ".taui"
+        global_dir.mkdir(parents=True)
+        (global_dir / "mcp.toml").write_text(
+            '[servers.demo]\ncommand = ["echo", "global"]\n',
+            encoding="utf-8",
+        )
+        project_dir = tmp_path / ".taui"
+        project_dir.mkdir()
+        (project_dir / "mcp.toml").write_text(
+            '[servers.demo]\ncommand = ["echo", "project"]\n',
+            encoding="utf-8",
+        )
+
+        mgr = McpManager(tmp_path)
+        mgr.load_configs()
+        assert mgr._configs["demo"].command == ["echo", "project"]
+
+    def test_load_command_string_with_args(self, tmp_path: Path):
+        config_dir = tmp_path / ".taui"
+        config_dir.mkdir()
+        (config_dir / "mcp.toml").write_text(
+            '[servers.demo]\ncommand = "echo"\nargs = ["hello"]\n',
+            encoding="utf-8",
+        )
+
+        mgr = McpManager(tmp_path)
+        mgr.load_configs()
+        assert mgr._configs["demo"].command == ["echo", "hello"]
+
     def test_load_with_env(self, tmp_path: Path):
         config_dir = tmp_path / ".taui"
         config_dir.mkdir()
@@ -97,6 +152,39 @@ class TestMcpManager:
         mgr.load_configs()
         with pytest.raises(ValueError, match="Unknown"):
             await mgr.connect("nonexistent")
+
+    async def test_reload_configs_disconnects_removed_server(self, tmp_path: Path):
+        config_dir = tmp_path / ".taui"
+        config_dir.mkdir()
+        config_path = config_dir / "mcp.toml"
+        config_path.write_text(
+            '[servers.demo]\ncommand = ["echo", "hello"]\n',
+            encoding="utf-8",
+        )
+
+        mgr = McpManager(tmp_path)
+        mgr.load_configs()
+
+        class FakeClient:
+            def __init__(self, config: McpServerConfig) -> None:
+                self.config = config
+                self.disconnected = False
+
+            @property
+            def connected(self) -> bool:
+                return not self.disconnected
+
+            async def disconnect(self) -> None:
+                self.disconnected = True
+
+        client = FakeClient(mgr._configs["demo"])
+        mgr._clients["demo"] = client
+
+        config_path.write_text("", encoding="utf-8")
+        await mgr.reload_configs()
+
+        assert client.disconnected
+        assert mgr.connected_servers == []
 
 
 # ═══ McpClient ════════════════════════════════════════════════════════════════
@@ -349,3 +437,34 @@ class TestMcpToolErrors:
         tool, _ = _make_mcp_tool()
         result = await tool.execute({"operation": "invalid"})
         assert result.error
+
+
+async def test_session_reload_mcp_configs_reloads_tool_manager(tmp_path: Path):
+    from types import SimpleNamespace
+
+    from taui.session import Session
+    from taui.tools.registry import ToolRegistry
+
+    registry = ToolRegistry()
+    mcp_tool = McpTool()
+    registry.register(mcp_tool)
+
+    session = Session.__new__(Session)
+    session.config = SimpleNamespace(working_dir=tmp_path)
+    session._registry = registry
+    session._config_change_listeners = []
+    session._mcp_manager = McpManager(tmp_path)
+    session._mcp_manager.load_configs()
+    mcp_tool._manager = session._mcp_manager
+
+    config_dir = tmp_path / ".taui"
+    config_dir.mkdir()
+    (config_dir / "mcp.toml").write_text(
+        '[servers.demo]\ncommand = "echo"\nargs = ["hello"]\n',
+        encoding="utf-8",
+    )
+
+    await session.reload_mcp_configs()
+
+    assert mcp_tool._manager is session._mcp_manager
+    assert session._mcp_manager.server_names == ["demo"]

@@ -675,15 +675,22 @@ class TestBuiltinCommands:
         from taui.commands.builtins import register_builtins
 
         class FakeSession:
+            mcp_reloaded = False
+
             def reload_extensions(self):
                 return ["my_ext"]
 
+            async def reload_mcp_configs(self):
+                self.mcp_reloaded = True
+
+        session = FakeSession()
         reg = CommandRegistry()
-        register_builtins(reg, get_session=lambda: FakeSession())
+        register_builtins(reg, get_session=lambda: session)
         result = await reg.execute("/reload")
         assert not result.error
         assert "my_ext" in result.output
         assert "1" in result.output
+        assert session.mcp_reloaded is True
 
     async def test_reload_no_extensions(self):
         from taui.commands.builtins import register_builtins

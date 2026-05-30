@@ -7,14 +7,20 @@ optional environment variables.
 
 MCP servers are discovered from:
     .taui/mcp.toml          — project-scoped
-    ~/.config/taui/mcp.toml — global
+    ~/.taui/mcp.toml        — global
+    ~/.config/taui/mcp.toml — legacy global
 
 Config format::
 
     [servers.filesystem]
     command = ["npx", "-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
 
+    # The Claude Desktop-style shape is also accepted:
     [servers.github]
+    command = "npx"
+    args = ["-y", "@modelcontextprotocol/server-github"]
+
+    [servers.github_token]
     command = ["npx", "-y", "@modelcontextprotocol/server-github"]
     env = { GITHUB_TOKEN = "..." }
 """
@@ -37,11 +43,12 @@ class McpServerConfig:
     """Configuration for a single MCP server."""
 
     name: str
-    command: list[str]
+    command: list[str] = field(default_factory=list)
     env: dict[str, str] = field(default_factory=dict)
     enabled: bool = True
     transport: str = "stdio"
     prefix: str | None = None  # Override the default "mcp__<server>__" prefix
+    url: str = ""
 
     def tool_prefix(self) -> str:
         """Return the prefix used to qualify tool names for this server.
@@ -467,15 +474,19 @@ class McpManager:
 
     def __init__(self, working_dir: Path) -> None:
         self._working_dir = working_dir
-        self._clients: dict[str, McpClient] = {}
+        self._clients: dict[str, Any] = {}
         self._configs: dict[str, McpServerConfig] = {}
 
     def load_configs(self) -> None:
         """Load MCP server configs from config files."""
         self._configs.clear()
 
-        # Global config
-        global_path = Path.home() / ".config" / "taui" / "mcp.toml"
+        # Legacy global config, then current self-edit/global config. Later
+        # files override earlier ones by server name.
+        legacy_global_path = Path.home() / ".config" / "taui" / "mcp.toml"
+        self._load_config_file(legacy_global_path)
+
+        global_path = Path.home() / ".taui" / "mcp.toml"
         self._load_config_file(global_path)
 
         # Project config (overrides global)
@@ -492,20 +503,62 @@ class McpManager:
                 data = tomllib.load(f)
             servers = data.get("servers", {})
             for name, cfg in servers.items():
-                command = cfg.get("command")
-                if not command or not isinstance(command, list):
-                    logger.warning("MCP server '%s': missing or invalid command", name)
+                if not isinstance(cfg, dict):
+                    logger.warning("MCP server '%s': config must be a table", name)
                     continue
-                self._configs[name] = McpServerConfig(
-                    name=name,
-                    command=command,
-                    env=cfg.get("env", {}),
-                    enabled=cfg.get("enabled", True),
-                    transport=cfg.get("transport", "stdio"),
-                    prefix=cfg.get("prefix"),
-                )
+                parsed = self._parse_server_config(str(name), cfg, path)
+                if parsed is not None:
+                    self._configs[parsed.name] = parsed
         except Exception as e:
             logger.warning("Failed to load MCP config from %s: %s", path, e)
+
+    def _parse_server_config(
+        self,
+        name: str,
+        cfg: dict[str, Any],
+        path: Path,
+    ) -> McpServerConfig | None:
+        """Parse one server table into a normalized runtime config."""
+        transport = str(cfg.get("transport", "stdio") or "stdio").lower()
+        enabled = bool(cfg.get("enabled", True))
+        prefix = cfg.get("prefix")
+        if prefix is not None:
+            prefix = str(prefix)
+
+        env_raw = cfg.get("env", {})
+        if isinstance(env_raw, dict):
+            env = {str(k): str(v) for k, v in env_raw.items()}
+        else:
+            logger.warning("MCP server '%s': env must be a table", name)
+            env = {}
+
+        if transport in {"http", "sse", "streamable_http"}:
+            url = str(cfg.get("url", "") or cfg.get("base_url", "") or "").strip()
+            if not url:
+                logger.warning("MCP server '%s': missing url in %s", name, path)
+                return None
+            return McpServerConfig(
+                name=name,
+                command=[],
+                env=env,
+                enabled=enabled,
+                transport=transport,
+                prefix=prefix,
+                url=url,
+            )
+
+        command = _normalize_command(cfg.get("command"), cfg.get("args", []))
+        if command is None:
+            logger.warning("MCP server '%s': missing or invalid command in %s", name, path)
+            return None
+        return McpServerConfig(
+            name=name,
+            command=command,
+            env=env,
+            enabled=enabled,
+            transport=transport,
+            prefix=prefix,
+        )
 
     @property
     def server_names(self) -> list[str]:
@@ -515,7 +568,7 @@ class McpManager:
     def connected_servers(self) -> list[str]:
         return [n for n, c in self._clients.items() if c.connected]
 
-    async def connect(self, name: str) -> McpClient:
+    async def connect(self, name: str) -> Any:
         """Connect to a configured MCP server."""
         if name not in self._configs:
             raise ValueError(f"Unknown MCP server: {name!r}")
@@ -527,10 +580,32 @@ class McpManager:
         if name in self._clients and self._clients[name].connected:
             return self._clients[name]
 
-        client = McpClient(cfg)
+        if cfg.transport in {"http", "sse", "streamable_http"}:
+            client = McpHttpClient(cfg.url, name=cfg.name)
+            client.config = cfg
+        else:
+            client = McpClient(cfg)
         await client.connect()
         self._clients[name] = client
         return client
+
+    async def reload_configs(self) -> None:
+        """Reload configs and drop clients whose config disappeared or changed."""
+        old_clients = dict(self._clients)
+        self.load_configs()
+        for name, client in old_clients.items():
+            cfg = self._configs.get(name)
+            client_cfg = getattr(client, "config", None)
+            stale = cfg is None or not cfg.enabled or (
+                client_cfg is not None and client_cfg != cfg
+            )
+            if not stale:
+                continue
+            try:
+                await client.disconnect()
+            except Exception:
+                logger.debug("Error disconnecting stale MCP client", exc_info=True)
+            self._clients.pop(name, None)
 
     async def connect_all(self) -> list[str]:
         """Connect to all enabled servers. Returns names of successfully connected."""
@@ -602,3 +677,20 @@ class McpManager:
                         name, exc_info=True,
                     )
         return prompts
+
+
+def _normalize_command(command: Any, args: Any) -> list[str] | None:
+    """Accept both command-list and command+args TOML shapes."""
+    if isinstance(command, str):
+        result = [command]
+    elif isinstance(command, list) and all(isinstance(part, str) for part in command):
+        result = list(command)
+    else:
+        return None
+
+    if isinstance(args, list) and all(isinstance(part, str) for part in args):
+        result.extend(args)
+    elif args not in (None, []):
+        return None
+
+    return result or None

@@ -558,10 +558,10 @@ class ExtensionsCommand:
 
 @dataclass(slots=True)
 class ReloadCommand:
-    """Hot-reload extensions without restarting."""
+    """Hot-reload extensions and MCP configs without restarting."""
 
     name: str = "reload"
-    description: str = "Reload extensions"
+    description: str = "Reload extensions and MCP configs"
     accepts_args: bool = False
     _get_session: Any = None
 
@@ -572,6 +572,9 @@ class ReloadCommand:
         session = self._get_session()
         try:
             loaded = session.reload_extensions()
+            reload_mcp = getattr(session, "reload_mcp_configs", None)
+            if reload_mcp is not None:
+                await reload_mcp()
         except Exception as exc:
             return CommandResult.fail(
                 f"Reload failed: {exc}", action="reloaded",

@@ -8,6 +8,7 @@ list of `Item`s, both keyed by `(scope, identifier)`.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -748,11 +749,8 @@ def _save_mcp(working_dir: Path, scope: str, identifier: str, body: str) -> Path
         except OSError:
             existing = ""
 
-    cleaned_body = body.strip() + "\n"
+    new_block = _normalize_mcp_server_block(identifier, body)
     block_header = f"[servers.{identifier}]"
-    new_block = cleaned_body
-    if block_header not in new_block:
-        new_block = f"{block_header}\n{cleaned_body}"
 
     if block_header in existing:
         updated = _replace_toml_block(existing, identifier, new_block)
@@ -780,35 +778,33 @@ def _delete_mcp(working_dir: Path, scope: str, identifier: str) -> None:
 
 
 def _extract_mcp_server_block(raw: str, name: str) -> str:
-    header = f"[servers.{name}]"
     lines = raw.splitlines()
     out: list[str] = []
     inside = False
     for line in lines:
-        stripped = line.strip()
-        if stripped == header:
+        table = _toml_table_name(line)
+        if table == f"servers.{name}":
             inside = True
             out.append(line)
             continue
-        if inside and stripped.startswith("[") and stripped != header:
+        if inside and table is not None and not _is_mcp_server_table(table, name):
             break
         if inside:
             out.append(line)
     text = "\n".join(out).strip()
-    return text or f"{header}\n"
+    return text or f"[servers.{name}]\n"
 
 
 def _replace_toml_block(raw: str, name: str, replacement: str) -> str:
-    header = f"[servers.{name}]"
     lines = raw.splitlines(keepends=True)
     out: list[str] = []
     inside = False
     for line in lines:
-        stripped = line.strip()
-        if stripped == header:
+        table = _toml_table_name(line)
+        if table == f"servers.{name}":
             inside = True
             continue
-        if inside and stripped.startswith("["):
+        if inside and table is not None and not _is_mcp_server_table(table, name):
             inside = False
         if not inside:
             out.append(line)
@@ -819,6 +815,52 @@ def _replace_toml_block(raw: str, name: str, replacement: str) -> str:
     elif result:
         result = result + "\n"
     return result
+
+
+_MCP_SERVER_HEADER_RE = re.compile(
+    r"^\s*\[\s*servers\.(?P<name>[A-Za-z0-9_-]+|\"[^\"]+\")(?P<suffix>(?:\.[^\]]+)?)\s*\]\s*$",
+    re.MULTILINE,
+)
+
+
+def _normalize_mcp_server_block(identifier: str, body: str) -> str:
+    """Return a single server block whose headers use `identifier`.
+
+    The new-item template contains `[servers.NAME]`; LLM generation may also
+    choose a different name. The modal's ID field is the source of truth, so
+    rewrite the main and nested server table headers instead of prepending a
+    second header.
+    """
+    cleaned = body.strip()
+    if not cleaned:
+        return f"[servers.{identifier}]\n"
+
+    found = False
+
+    def repl(match: re.Match[str]) -> str:
+        nonlocal found
+        found = True
+        suffix = match.group("suffix") or ""
+        return f"[servers.{identifier}{suffix}]"
+
+    normalized = _MCP_SERVER_HEADER_RE.sub(repl, cleaned)
+    if not found:
+        normalized = f"[servers.{identifier}]\n{cleaned}"
+    return normalized.strip() + "\n"
+
+
+def _toml_table_name(line: str) -> str | None:
+    stripped = line.strip()
+    if not stripped.startswith("[") or not stripped.endswith("]"):
+        return None
+    stripped = stripped.strip("[]").strip()
+    # This self-edit file only needs server-table block boundaries; keep the
+    # parser deliberately narrow and leave full TOML parsing to tomllib.
+    return stripped.replace('"', "")
+
+
+def _is_mcp_server_table(table: str, name: str) -> bool:
+    return table == f"servers.{name}" or table.startswith(f"servers.{name}.")
 
 
 # ── Helpers ─────────────────────────────────────────────────────────

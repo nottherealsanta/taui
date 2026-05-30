@@ -3665,6 +3665,8 @@ class SelfEditModal(ModalScreen[str | None]):
             self.app.bell()
             self._toast(f"Save failed: {exc}")
             return
+        if self._category.key == "mcp":
+            self._reload_mcp_after_change()
         # Refresh list, then re-select the saved item if possible.
         self._refresh_items()
         try:
@@ -3802,9 +3804,23 @@ class SelfEditModal(ModalScreen[str | None]):
                 self.app.bell()
                 self._toast(f"Delete failed: {exc}")
                 return
+            if self._category.key == "mcp":
+                self._reload_mcp_after_change()
             self._refresh_items()
 
         self.app.push_screen(confirm, after)
+
+    @work(exclusive=True, group="self_edit_mcp_reload")
+    async def _reload_mcp_after_change(self) -> None:
+        session = getattr(self.app, "_session", None)
+        reload_mcp = getattr(session, "reload_mcp_configs", None)
+        if reload_mcp is None:
+            return
+        try:
+            await reload_mcp()
+        except Exception as exc:
+            self.app.bell()
+            self._toast(f"MCP reload failed: {exc}")
 
     def _toast(self, message: str) -> None:
         try:

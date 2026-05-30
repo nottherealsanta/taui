@@ -602,6 +602,10 @@ class Session:
         except Exception:
             logger.exception("reload_extensions failed during self-edit exit")
         try:
+            await self.reload_mcp_configs()
+        except Exception:
+            logger.exception("MCP reload failed during self-edit exit")
+        try:
             self._variant_registry.discover_from_dir(
                 self.config.working_dir / ".taui" / "agents"
             )
@@ -798,6 +802,27 @@ class Session:
 
         logger.info("Reloaded extensions: %s", loaded)
         return loaded
+
+    async def reload_mcp_configs(self) -> None:
+        """Reload MCP server definitions and rewire the builtin MCP tool."""
+        from taui.mcp import McpManager
+        from taui.tools.builtins.mcp import McpTool
+
+        manager = getattr(self, "_mcp_manager", None)
+        if manager is None:
+            manager = McpManager(self.config.working_dir)
+            self._mcp_manager = manager
+            manager.load_configs()
+        else:
+            await manager.reload_configs()
+
+        try:
+            mcp_tool = self._registry.get("mcp")
+        except ValueError:
+            return
+        if isinstance(mcp_tool, McpTool):
+            mcp_tool._manager = manager
+        self._notify_config_changed()
 
     async def fork(self, *, at_offset: int | None = None) -> Session:
         """Fork this session at an offset, creating a branched session.

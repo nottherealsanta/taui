@@ -488,11 +488,12 @@ async def test_exit_self_edit_mode_hot_reloads_and_updates_prompt(tmp_path):
         session_id="main-sid",
         loop=prior_loop,
         message_count=3,
+        session_persisted=True,
         loaded_offset=42,
         last_replay_items=[],
     )
 
-    calls: dict[str, int] = {"reload": 0, "rebuild": 0, "replay": 0}
+    calls: dict[str, int] = {"reload": 0, "mcp": 0, "rebuild": 0, "replay": 0}
 
     session = Session.__new__(Session)
     session.config = SimpleNamespace(working_dir=tmp_path)
@@ -517,17 +518,21 @@ async def test_exit_self_edit_mode_hot_reloads_and_updates_prompt(tmp_path):
         calls["rebuild"] += 1
         session._system_prompt = "REBUILT"
 
+    async def fake_reload_mcp():
+        calls["mcp"] += 1
+
     async def fake_replay():
         calls["replay"] += 1
 
     session.reload_extensions = fake_reload
+    session.reload_mcp_configs = fake_reload_mcp
     session._rebuild_system_prompt = fake_rebuild
     session._replay_stream = fake_replay
 
     result = await session.toggle_self_edit_mode()
 
     assert result is False
-    assert calls == {"reload": 1, "rebuild": 1, "replay": 1}
+    assert calls == {"reload": 1, "mcp": 1, "rebuild": 1, "replay": 1}
     assert session._loop is prior_loop
     assert prior_loop.prompt_updates == ["REBUILT"]
     assert session.session_id == "main-sid"

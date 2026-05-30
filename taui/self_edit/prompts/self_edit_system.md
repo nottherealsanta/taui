@@ -100,11 +100,12 @@ skills/
 **Format (TOML):**
 ```toml
 [servers.my_server]
-command = ["npx", "-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
 enabled = true
 ```
 
-**Required fields:** `command` (list of strings), `enabled` (bool).
+**Required fields:** `command` (string, optionally with `args`, or a list of strings), `enabled` (bool).
 
 **Caution:** TOML is sensitive to formatting. Always `read` the file first, identify the exact lines to change, then use `edit` for targeted replacement. Do not rewrite the entire file unless necessary.
 

@@ -3,16 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
-
-import pytest
 
 from taui.self_edit import inventory
-from taui.tui.screens.self_edit_modal import (
-    SelfEditModal,
-    _ConfirmDelete,
-    _Editor,
-)
+from taui.tui.screens.self_edit_modal import SelfEditModal
 from tests.scenarios import scenarios
 from tests.scenarios.tui_harness import use_scripted_provider
 
@@ -32,7 +25,15 @@ async def _ready(app, *, timeout: float = 2.0) -> None:
 class TestInventory:
     def test_categories_exposed(self):
         keys = {c.key for c in inventory.CATEGORIES}
-        assert keys == {"agents", "skills", "commands", "tools", "prompts", "mcp"}
+        assert keys == {
+            "agents",
+            "skills",
+            "commands",
+            "tools",
+            "prompts",
+            "mcp",
+            "general",
+        }
 
     def test_create_and_list_command(self, tmp_path):
         inventory.save_item(
@@ -67,6 +68,52 @@ class TestInventory:
         inventory.delete_item(tmp_path, "mcp", "project", "demo")
         assert inventory.list_items(tmp_path, "mcp", "project") == []
 
+    def test_create_mcp_from_template_header_is_loadable(self, tmp_path):
+        from taui.mcp import McpManager
+
+        path = inventory.save_item(
+            tmp_path,
+            "mcp",
+            "project",
+            "demo",
+            '[servers.NAME]\ncommand = "x"\nargs = ["-y"]\n',
+        )
+
+        text = path.read_text(encoding="utf-8")
+        assert "[servers.demo]" in text
+        assert "[servers.NAME]" not in text
+
+        mgr = McpManager(tmp_path)
+        mgr.load_configs()
+        assert mgr.server_names == ["demo"]
+        assert mgr._configs["demo"].command == ["x", "-y"]
+
+    def test_mcp_nested_env_is_part_of_server_block(self, tmp_path):
+        path = inventory.save_item(
+            tmp_path,
+            "mcp",
+            "project",
+            "demo",
+            (
+                '[servers.demo]\ncommand = "x"\n'
+                "[servers.demo.env]\nTOKEN = \"abc\"\n"
+            ),
+        )
+
+        item = inventory.list_items(tmp_path, "mcp", "project")[0]
+        assert "[servers.demo.env]" in item.body
+
+        inventory.save_item(
+            tmp_path,
+            "mcp",
+            "project",
+            "demo",
+            '[servers.demo]\ncommand = "y"\n',
+        )
+        text = path.read_text(encoding="utf-8")
+        assert "[servers.demo.env]" not in text
+        assert 'command = "y"' in text
+
     def test_create_and_delete_agent(self, tmp_path):
         inventory.save_item(
             tmp_path,
@@ -98,6 +145,7 @@ class TestInventory:
             "tools",
             "prompts",
             "mcp",
+            "general",
         }
 
     def test_tools_section_includes_builtins(self, tmp_path):
@@ -323,6 +371,47 @@ class TestSelfEditModal:
             await pilot.press("escape")
             await app._session.close()
 
+    async def test_modal_saving_mcp_reloads_session_manager(
+        self, tmp_path, monkeypatch
+    ):
+        from taui.tui.screens.self_edit_modal import _InlineSaveRequested
+
+        provider = scenarios.happy_path("(unused)")
+        app = use_scripted_provider(monkeypatch, tmp_path, provider)
+        async with app.run_test(size=(160, 50)) as pilot:
+            await _ready(app)
+            await app.action_enter_self_edit(initial_category="mcp")
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, SelfEditModal)
+            screen._scope = "project"
+
+            calls = 0
+
+            async def fake_reload_mcp_configs():
+                nonlocal calls
+                calls += 1
+
+            app._session.reload_mcp_configs = fake_reload_mcp_configs
+            screen._on_inline_save(
+                _InlineSaveRequested(
+                    {
+                        "identifier": "demo",
+                        "body": '[servers.NAME]\ncommand = "x"\nargs = ["-y"]\n',
+                        "extra": {},
+                    },
+                    creating=True,
+                )
+            )
+            await pilot.pause()
+
+            assert calls == 1
+            text = (tmp_path / ".taui" / "mcp.toml").read_text(encoding="utf-8")
+            assert "[servers.demo]" in text
+            assert "[servers.NAME]" not in text
+            await pilot.press("escape")
+            await app._session.close()
+
     async def test_modal_close_via_escape(self, tmp_path, monkeypatch):
         provider = scenarios.happy_path("(unused)")
         app = use_scripted_provider(monkeypatch, tmp_path, provider)
@@ -433,10 +522,9 @@ class TestSelfEditModal:
             # always opens the fuzzy picker.
             assert not editor.query("#se-editor-gen-model")
 
-            # Agent id label is "AGENT ID" not "ID / NAME"
-            from taui.tui.screens.self_edit_modal import _ToolToggle  # noqa: F401
             from textual.widgets import Label
 
+            # Agent id label is "AGENT ID" not "ID / NAME"
             labels = [str(lbl.render()) for lbl in editor.query(Label)]
             assert "AGENT ID" in labels
             assert "ID / NAME" not in labels
@@ -612,7 +700,7 @@ class TestSelfEditModal:
         from taui.tui.screens.self_edit_modal import _Editor
 
         # Pre-create a command so we have something to edit.
-        inv_path = inventory.save_item(
+        inventory.save_item(
             tmp_path, "commands", "project", "demo",
             '"""hi."""\nprint("hi")\n',
         )
