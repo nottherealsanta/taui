@@ -293,7 +293,7 @@ class SkillsCommand:
     """Open the inline skill picker, or list/toggle skills."""
 
     name: str = "skills"
-    description: str = "List or toggle skills (/skills [name])"
+    description: str = "List, toggle, or add skills (/skills [name|add <source>])"
     accepts_args: bool = True
     _get_session: Any = None
 
@@ -310,6 +310,15 @@ class SkillsCommand:
             return CommandResult.ok("", action="open_skill_picker_inline")
         if ctx.args[0].lower() in ("list", "ls"):
             return self._list_skills(skills)
+        if ctx.args[0].lower() == "add":
+            source = " ".join(ctx.args[1:]).strip()
+            if not source:
+                return CommandResult.fail(
+                    "Usage: /skills add <owner/repo | git-url | path> [-g]"
+                )
+            return CommandResult.ok(
+                "", action="skill_install", skill_source=source,
+            )
 
         name = ctx.args[0]
         if reg.get(name) is None:

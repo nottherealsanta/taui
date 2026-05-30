@@ -36,9 +36,11 @@ _SELF_EDIT_BASH_FORBIDDEN_FIND_ARGS = frozenset({
 
 _SKILLS_NOTE = (
     "Self-edit can create and modify taui-native skills under "
-    "`~/.taui/skills/` or `.taui/skills/`. Agent Skills standard paths "
-    "outside those roots remain discoverable by Taui but are outside "
-    "self-edit's write scope."
+    "`~/.taui/skills/` or `.taui/skills/`, and can install skills from an "
+    "external source with the `install_skill` tool (GitHub shorthand, git "
+    "URL, or local path — vercel-labs/skills compatible). Agent Skills "
+    "standard paths outside those roots remain discoverable by Taui but are "
+    "outside self-edit's write scope."
 )
 
 
@@ -87,6 +89,70 @@ class _SelfEditBashTool:
         if not allowed:
             return ToolResult.fail(f"Self-edit agent: bash is read-only. {reason}")
         return await self._inner.execute(arguments)
+
+
+@dataclass(slots=True)
+class _SelfEditSkillInstallTool:
+    """Install skill packages from an external source into a self-edit scope."""
+
+    _project_working_dir: Path
+    _scope: str
+
+    name: str = "install_skill"
+    description: str = (
+        "Install a skill from an external source into the active self-edit "
+        "scope. Accepts vercel-labs/skills sources: GitHub shorthand "
+        "(owner/repo), a full git/GitHub/GitLab URL, a URL pointing at a "
+        "specific skill (…/tree/<ref>/<path>), an SSH git URL, or a local "
+        "path. Discovers every SKILL.md in the source and copies it under "
+        "skills/."
+    )
+    category: ToolCategory = ToolCategory.AGENT
+    guidelines: str = (
+        "Use this to add a published skill instead of hand-writing SKILL.md. "
+        "Pass `owner/repo` for a whole repo, or a deeper URL/path to install "
+        "one specific skill."
+    )
+    schema: dict[str, Any] = None  # type: ignore[assignment]
+
+    def __post_init__(self) -> None:
+        if self.schema is None:
+            self.schema = {
+                "type": "object",
+                "properties": {
+                    "source": {
+                        "type": "string",
+                        "description": (
+                            "Skill source: owner/repo, a git/web URL, a "
+                            "URL with /tree/<ref>/<path>, or a local path."
+                        ),
+                    },
+                },
+                "required": ["source"],
+            }
+
+    async def execute(self, arguments: dict[str, Any]) -> ToolResult:
+        import asyncio
+
+        from taui.skills import SkillInstallError, install
+
+        source = str(arguments.get("source", "")).strip()
+        if not source:
+            return ToolResult.fail("'source' is required.")
+        try:
+            result = await asyncio.to_thread(
+                install,
+                source,
+                working_dir=self._project_working_dir,
+                scope=self._scope,
+            )
+        except SkillInstallError as exc:
+            return ToolResult.fail(f"Skill install failed: {exc}")
+        except Exception as exc:  # pragma: no cover - defensive
+            return ToolResult.fail(f"Skill install error: {exc}")
+        if not result.ok:
+            return ToolResult.fail(result.summary())
+        return ToolResult.ok(result.summary())
 
 
 def load_self_edit_system_prompt() -> str:
@@ -336,6 +402,14 @@ def build_scoped_tool_registry(
             allowlist,
             relative_root=tool_working_dir,
         )
+    # The skill installer manages its own scope (it only ever writes under the
+    # active scope's skills/ dir), so it is registered unwrapped — its `source`
+    # argument is a repo ref/URL, not a filesystem path to allowlist.
+    install_tool = _SelfEditSkillInstallTool(
+        _project_working_dir=project_working_dir,
+        _scope=scope,
+    )
+    scoped._tools[install_tool.name] = install_tool
     return scoped
 
 

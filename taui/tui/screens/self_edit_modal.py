@@ -2990,6 +2990,27 @@ class SelfEditModal(ModalScreen[str | None]):
         color: {ACCENT};
         text-style: bold;
     }}
+    #se-list-pane #se-add-button {{
+        margin: 1 0 0 0;
+        height: 1;
+        width: 100%;
+        min-width: 0;
+        border: none;
+        padding: 0;
+        background: {INNER_BG};
+        color: {ACCENT};
+        text-style: bold;
+        content-align: center middle;
+    }}
+    #se-list-pane #se-add-button:hover {{
+        background: {HAZARD_AMBER};
+        color: {DEEP_BLACK};
+    }}
+    #se-list-pane #se-add-button:focus {{
+        background: {HAZARD_AMBER};
+        color: {DEEP_BLACK};
+        text-style: bold;
+    }}
     #se-list-pane #se-new-button {{
         margin: 1 0 1 0;
         height: 1;
@@ -3059,6 +3080,7 @@ class SelfEditModal(ModalScreen[str | None]):
         ("n", "new_item", "New"),
         ("e", "edit_item", "Edit"),
         ("d", "delete_item", "Delete"),
+        ("a", "install_skill", "Add source"),
         ("enter", "edit_item", "Open"),
         ("g", "set_global", "Global"),
         ("p", "set_project", "Project"),
@@ -3114,6 +3136,9 @@ class SelfEditModal(ModalScreen[str | None]):
             )
             with Horizontal(id="se-body"):
                 with Vertical(id="se-list-pane"):
+                    add_btn = Button("⤓ ADD FROM SOURCE", id="se-add-button")
+                    add_btn.display = self._category.key == "skills"
+                    yield add_btn
                     yield Button("✚ NEW", id="se-new-button")
                     list_toggle = _ListBuiltinToggle(
                         selected=self._show_builtin_in_list,
@@ -3440,6 +3465,19 @@ class SelfEditModal(ModalScreen[str | None]):
                 new_btn.display = True
         except Exception:
             pass
+        try:
+            add_btn = self.query_one("#se-add-button", Button)
+            add_btn.display = self._category.key == "skills"
+        except Exception:
+            pass
+        try:
+            footer = self.query_one("#se-footer", Static)
+            base = "n new · e edit · d delete · ←→ category · tab scope · esc close"
+            if self._category.key == "skills":
+                base = "n new · a add from source · e edit · d delete · ←→ category · esc close"
+            footer.update(base)
+        except Exception:
+            pass
 
     def _render_item_row(self, item: inventory.Item) -> Text:
         text = Text()
@@ -3525,6 +3563,10 @@ class SelfEditModal(ModalScreen[str | None]):
     @on(Button.Pressed, "#se-new-button")
     def _on_new_button(self, _: Button.Pressed) -> None:
         self.action_new_item()
+
+    @on(Button.Pressed, "#se-add-button")
+    def _on_add_button(self, _: Button.Pressed) -> None:
+        self.action_install_skill()
 
     @on(_ListBuiltinToggle.Changed)
     def _on_list_builtin_changed(self, event: _ListBuiltinToggle.Changed) -> None:
@@ -3618,6 +3660,73 @@ class SelfEditModal(ModalScreen[str | None]):
             provider_name=provider_name,
         )
         inline.start_new()
+
+    def action_install_skill(self) -> None:
+        """Install a skill from an external source into the current scope.
+
+        Compatible with vercel-labs/skills: accepts GitHub shorthand, a git/web
+        URL, a URL pointing at one skill, an SSH git URL, or a local path, with
+        an optional `-g` flag. Only meaningful on the SKILLS tab.
+        """
+        if self._category.key != "skills":
+            self._toast("Press 'a' on the SKILLS tab to add a skill from a source.")
+            return
+
+        def after(source: str | None) -> None:
+            if source and source.strip():
+                self._install_skill_worker(source.strip())
+
+        self.app.push_screen(
+            _StringEditor(
+                label="ADD SKILL",
+                current_value="",
+                hint="owner/repo · git URL · path · Ctrl+S install",
+            ),
+            after,
+        )
+
+    @work(exclusive=False, group="self_edit_skill_install")
+    async def _install_skill_worker(self, source: str) -> None:
+        await self._perform_skill_install(source)
+
+    async def _perform_skill_install(self, source: str) -> bool:
+        """Install ``source`` into the active scope and refresh the list.
+
+        Returns True if at least one skill was installed.
+        """
+        import asyncio
+
+        from taui.skills import SkillInstallError, install
+
+        self._toast(f"Installing skill from {source}…")
+        try:
+            result = await asyncio.to_thread(
+                install,
+                source,
+                working_dir=self._working_dir,
+                scope=self._scope,
+            )
+        except SkillInstallError as exc:
+            self.app.bell()
+            self._toast(f"Skill install failed: {exc}")
+            return False
+        except Exception as exc:  # pragma: no cover - defensive
+            self.app.bell()
+            self._toast(f"Skill install error: {exc}")
+            return False
+
+        # An explicit -g in the source can redirect to global scope; follow it
+        # so the freshly installed skills are visible in the list.
+        if result.scope != self._scope:
+            self._scope = result.scope
+        self._refresh_items()
+        if result.ok:
+            names = ", ".join(s.name for s in result.installed)
+            self.app.notify(f"Installed skill(s): {names}")
+            self._toast(f"Installed: {names}")
+            return True
+        self._toast("No SKILL.md packages found in the source.")
+        return False
 
     def action_edit_item(self) -> None:
         if self._category.key == "general":

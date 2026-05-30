@@ -380,6 +380,65 @@ class TestSelfEditModal:
             await pilot.press("escape")
             await app._session.close()
 
+    async def test_modal_install_skill_from_source(self, tmp_path, monkeypatch):
+        # A local skill package to install from.
+        src = tmp_path / "src" / "demo"
+        src.mkdir(parents=True)
+        (src / "SKILL.md").write_text(
+            "---\nname: installed-skill\ndescription: d\n---\n# Demo\n",
+            encoding="utf-8",
+        )
+        provider = scenarios.happy_path("(unused)")
+        app = use_scripted_provider(monkeypatch, tmp_path, provider)
+        async with app.run_test() as pilot:
+            await _ready(app)
+            await app.action_enter_self_edit(initial_category="skills")
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, SelfEditModal)
+            screen._scope = "project"
+            assert screen._category.key == "skills"
+
+            # The ADD button is visible on the SKILLS tab and opens the prompt.
+            from textual.widgets import Button
+
+            add_btn = screen.query_one("#se-add-button", Button)
+            assert add_btn.display is True
+
+            ok = await screen._perform_skill_install(str(src))
+            await pilot.pause()
+            assert ok is True
+            ids = [i.identifier for i in screen._items]
+            assert "installed-skill" in ids
+            assert (
+                tmp_path / ".taui" / "skills" / "installed-skill" / "SKILL.md"
+            ).is_file()
+            await pilot.press("escape")
+            await app._session.close()
+
+    async def test_modal_install_skill_rejected_off_skills_tab(
+        self, tmp_path, monkeypatch
+    ):
+        provider = scenarios.happy_path("(unused)")
+        app = use_scripted_provider(monkeypatch, tmp_path, provider)
+        async with app.run_test() as pilot:
+            await _ready(app)
+            await app.action_enter_self_edit(initial_category="agents")
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, SelfEditModal)
+            assert screen._category.key == "agents"
+            # The ADD button is hidden away from the SKILLS tab.
+            from textual.widgets import Button
+
+            assert screen.query_one("#se-add-button", Button).display is False
+            # Pressing 'a' away from the SKILLS tab must not open the prompt.
+            screen.action_install_skill()
+            await pilot.pause()
+            assert isinstance(app.screen, SelfEditModal)
+            await pilot.press("escape")
+            await app._session.close()
+
     async def test_modal_saving_mcp_reloads_session_manager(
         self, tmp_path, monkeypatch
     ):

@@ -95,6 +95,8 @@ _FILE_DOMAINS: dict[str, set[str]] = {
     "test_session_isolation.py": {"session", "store"},
     "test_session_picker.py": {"session", "store", "tui"},
     "test_skills.py": {"skills"},
+    "test_skill_installer.py": {"skills"},
+    "test_skill_install_command.py": {"skills", "commands"},
     "test_skills_mcp_banner.py": {"mcp", "skills", "tui"},
     "test_steering.py": {"agent"},
     "test_store.py": {"store"},

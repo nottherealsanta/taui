@@ -26,7 +26,30 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
+from taui.skills.installer import (
+    InstallResult,
+    SkillInstallError,
+    SkillSource,
+    install,
+    looks_like_skill_source,
+    parse_source,
+    parse_sources,
+)
+
 logger = logging.getLogger(__name__)
+
+__all__ = [
+    "MAX_SKILL_CHARS",
+    "InstallResult",
+    "Skill",
+    "SkillInstallError",
+    "SkillRegistry",
+    "SkillSource",
+    "install",
+    "looks_like_skill_source",
+    "parse_source",
+    "parse_sources",
+]
 
 MAX_SKILL_CHARS = 8_000
 

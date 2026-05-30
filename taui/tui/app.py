@@ -1414,6 +1414,62 @@ class TauiApp(App[None]):
             skill.loaded = True
             self.notify(f"Skill '{name}' loaded.")
 
+    def _install_skills_from_source(self, source: str) -> None:
+        """Install skill(s) from an external source (npx-skills compatible)."""
+        self.run_worker(
+            self._do_install_skills(source),
+            name="install_skills",
+            group="skill_install",
+            exclusive=False,
+        )
+
+    async def _do_install_skills(self, source: str) -> None:
+        import asyncio
+
+        from taui.skills import SkillInstallError, install
+
+        chat_log = self._get_active_chat_log()
+        self.notify("Installing skill…")
+        wd = self._config.working_dir
+        try:
+            result = await asyncio.to_thread(
+                install, source, working_dir=wd, scope="project"
+            )
+        except SkillInstallError as exc:
+            await chat_log.mount(
+                Static(f"[red]Skill install failed: {exc}[/red]", markup=True)
+            )
+            self.notify(f"Skill install failed: {exc}", severity="error")
+            self._smart_scroll()
+            return
+        except Exception as exc:  # pragma: no cover - defensive
+            await chat_log.mount(
+                Static(f"[red]Skill install error: {exc}[/red]", markup=True)
+            )
+            self.notify("Skill install error", severity="error")
+            self._smart_scroll()
+            return
+
+        # Re-discover so newly installed skills appear in the registry/banner.
+        reg = getattr(self._session, "_skill_registry", None)
+        if reg is not None:
+            try:
+                reg.discover()
+            except Exception:
+                pass
+        self._refresh_context_banner()
+
+        style = "green" if result.ok else "yellow"
+        await chat_log.mount(
+            Static(f"[{style}]{result.summary()}[/{style}]", markup=True)
+        )
+        if result.ok:
+            names = ", ".join(s.name for s in result.installed)
+            self.notify(f"Installed skill(s): {names}")
+        else:
+            self.notify("No skills found in source.", severity="warning")
+        self._smart_scroll()
+
     def _lookup_prompt_body(self, identifier: str) -> str | None:
         """Return the body of a prompt with the given identifier, or None."""
         from taui.self_edit.inventory import list_items
@@ -1745,6 +1801,19 @@ class TauiApp(App[None]):
 
         if text.startswith(self._config.prefixes.get("command", "/")):
             await self._handle_command(text)
+            return
+
+        # Pasted `npx skills add <source>` or a bare repo/git source installs a
+        # skill rather than sending the text to the agent.
+        from taui.skills import looks_like_skill_source
+
+        if looks_like_skill_source(text):
+            self._save_to_history(text)
+            self._install_skills_from_source(text)
+            try:
+                self.query_one("#chat-input", ChatInput).clear()
+            except Exception:
+                pass
             return
 
         skills_pfx = self._config.prefixes.get("skills", "!")
@@ -3091,6 +3160,11 @@ class TauiApp(App[None]):
             name = str(result.metadata.get("skill_name") or "")
             if name:
                 self._apply_selected_skill(name)
+            return
+        if action == "skill_install":
+            source = str(result.metadata.get("skill_source") or "")
+            if source:
+                self._install_skills_from_source(source)
             return
         if action == "prompt_selected":
             pid = str(result.metadata.get("prompt_id") or "")

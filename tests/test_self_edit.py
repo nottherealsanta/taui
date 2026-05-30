@@ -243,15 +243,15 @@ def _registry_with(*names: str) -> ToolRegistry:
 def test_build_scoped_tool_registry_includes_only_expected_tools():
     base = _registry_with("read", "edit", "write", "bash", "git", "grep", "glob")
     scoped = build_scoped_tool_registry(base)
-    assert set(scoped.names) == {"read", "edit", "write", "bash"}
+    assert set(scoped.names) == {"read", "edit", "write", "bash", "install_skill"}
 
 
 def test_build_scoped_tool_registry_uses_fresh_tools_not_shared():
-    # The scoped registry always contains the four self-edit tools as fresh instances,
-    # independent of whatever is in the base registry.
+    # The scoped registry always contains the self-edit file/bash tools (plus the
+    # skill installer) as fresh instances, independent of the base registry.
     base = _registry_with()
     scoped = build_scoped_tool_registry(base)
-    assert set(scoped.names) == {"read", "edit", "write", "bash"}
+    assert set(scoped.names) == {"read", "edit", "write", "bash", "install_skill"}
 
 
 async def test_scoped_registry_resolves_relative_paths_from_project_scope(tmp_path):

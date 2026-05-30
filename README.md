@@ -59,6 +59,7 @@ Important slash commands are registered in `taui/commands/builtins.py:858`.
 | `/model` | Show, refresh, or switch models |
 | `/provider` | Show or switch provider |
 | `/agents` | List or activate agent profiles |
+| `/skills [name\|add <source>]` | List/toggle skills, or install from a source |
 | `/sessions` | List or resume sessions |
 | `/new [message]` | Start a new session |
 | `/compact`, `/context` | Manage or inspect context |
@@ -122,6 +123,15 @@ Extensions are Python files loaded from `~/.taui/extensions/*.py` and
 
 Skills are `SKILL.md` files discovered by `taui/skills/__init__.py:91` and loaded lazily
 by `taui/skills/__init__.py:52`.
+
+Install skills from external sources (compatible with
+[`vercel-labs/skills`](https://github.com/vercel-labs/skills)) with
+`/skills add <source>`, or just paste `npx skills add <source>` / a bare repo
+ref into the chat input. Sources may be GitHub shorthand (`owner/repo`), a full
+git/GitHub/GitLab URL, a URL pointing at one skill
+(`…/tree/<ref>/<path>`), an SSH git URL, or a local path; add `-g` to install
+globally. The installer lives in `taui/skills/installer.py`, and the self-edit
+agent exposes the same engine as the `install_skill` tool.
 
 ## Documentation
 
