@@ -101,6 +101,13 @@ class VariantBadge(Static):
         self.post_message(InfoBar.VariantBadgeClicked())
 
 
+class AutoApproveBadge(Static):
+    """Clickable 'A' badge that toggles auto-approve."""
+
+    def on_click(self) -> None:
+        self.post_message(InfoBar.AutoApproveToggled())
+
+
 class ContextBadge(Static):
     """Clickable context token usage."""
 
@@ -123,6 +130,9 @@ class InfoBar(Static):
 
     class VariantBadgeClicked(Message):
         """Posted when the model-variant badge is clicked."""
+
+    class AutoApproveToggled(Message):
+        """Posted when the auto-approve 'A' badge is clicked."""
 
     class ContextBadgeClicked(Message):
         """Posted when the context token area is clicked."""
@@ -175,6 +185,9 @@ class InfoBar(Static):
         color: $foreground;
         margin-right: 2;
     }
+    InfoBar #info-auto {
+        margin-right: 2;
+    }
     """
 
     def __init__(self) -> None:
@@ -188,6 +201,7 @@ class InfoBar(Static):
         self._agent_id = ""
         self._plan_mode = False
         self._worktree_branch = ""
+        self._auto_approve = False
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="info-row-1"):
@@ -197,6 +211,7 @@ class InfoBar(Static):
             yield ProviderBadge("", id="info-provider")
             yield VariantBadge("", id="info-variant")
             yield Static("", id="info-worktree")
+            yield AutoApproveBadge("", id="info-auto")
         with Horizontal(id="info-row-2"):
             yield ContextBadge("", id="info-tokens")
 
@@ -212,6 +227,7 @@ class InfoBar(Static):
         agent_id: str = "",
         plan_mode: bool = False,
         worktree_branch: str = "",
+        auto_approve: bool = False,
     ) -> None:
         self._provider = provider
         self._variant = variant
@@ -222,6 +238,7 @@ class InfoBar(Static):
         self._agent_id = agent_id
         self._plan_mode = plan_mode
         self._worktree_branch = worktree_branch
+        self._auto_approve = auto_approve
         self._sync_children()
 
     def _sync_children(self) -> None:
@@ -274,6 +291,13 @@ class InfoBar(Static):
         else:
             worktree.update("")
             worktree.display = False
+
+        auto = self.query_one("#info-auto", AutoApproveBadge)
+        if self._auto_approve:
+            auto.update(Text(" A ", style="bold black on #555555"))
+        else:
+            auto.update(Text(" A ", style="dim"))
+        auto.display = True
 
 
 

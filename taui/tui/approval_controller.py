@@ -113,7 +113,43 @@ class ApprovalController:
         finally:
             if not chat_input.disabled:
                 chat_input.focus()
+        if result.allow_session:
+            self._allow_tool_for_session(name)
         return result.approved
+
+    def _allow_tool_for_session(self, tool_name: str) -> None:
+        """Auto-approve all future calls to this tool for the rest of the session.
+
+        Adds an agent-layer "allow" rule to the live permission ruleset. The
+        ruleset is consulted before a tool's ``requires_approval``, so this is
+        what actually suppresses the prompt (a per-tool AUTO *override* does
+        not beat ``requires_approval``). The active loop's executor shares this
+        policy object, so the change takes effect on the next call without a
+        restart. ``add_rules(layer="agent")`` replaces the agent layer, so we
+        accumulate the allowed tools and rebuild the whole layer each time.
+        Switching agent profiles re-applies the profile and clears these.
+        """
+        from taui.permissions import PermissionRuleset
+
+        session = getattr(self._app, "_session", None)
+        if session is None:
+            return
+        allowed = getattr(self, "_session_allowed_tools", None)
+        if allowed is None:
+            allowed = set()
+            self._session_allowed_tools = allowed
+        allowed.add(tool_name)
+        try:
+            policy = session._executor.policy
+            ruleset = policy._ruleset or PermissionRuleset()
+            ruleset.add_rules(
+                {tool: {"*": "allow"} for tool in allowed}, layer="agent"
+            )
+            policy.set_ruleset(ruleset)
+        except Exception:
+            logger.exception(
+                "Failed to allowlist tool for session: %s", tool_name
+            )
 
     async def debug_questions(self, chat_log: VerticalScroll) -> None:
         try:

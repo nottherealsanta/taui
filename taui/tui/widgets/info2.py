@@ -32,6 +32,9 @@ class ApprovalResult:
     """Result from an approval prompt."""
 
     approved: bool
+    # True when the user chose "Allow for session" — the caller then allowlists
+    # this tool for the rest of the session (not just this one call).
+    allow_session: bool = False
 
 
 class Info2Mode(Enum):
@@ -76,14 +79,17 @@ class Info2(ScrollableContainer):
         display: none;
         scrollbar-size: 1 1;
         padding: 0 0 0 1;
-        margin: 0 1 5 1;
+        margin: 0 2 6 2;
+        max-width: 100%;
         background: $surface;
-        border: tall $surface-darken-1;
-        border-top: none;
-        border-bottom: none;
+        border: none;
+        border-right: none;
+        border-left: none;
     }
     Info2.active {
         display: block;
+        border-top: tall $primary;
+        border-bottom: tall $primary;
     }
     Info2.questions {
         max-height: 24;
@@ -440,7 +446,13 @@ class Info2(ScrollableContainer):
                 self._approval_future = None
                 self.hide()
                 if fut and not fut.done():
-                    fut.set_result(ApprovalResult(idx == 0))
+                    # idx: 0 = allow once, 1 = allow for session, 2 = deny
+                    fut.set_result(
+                        ApprovalResult(
+                            approved=idx in (0, 1),
+                            allow_session=idx == 1,
+                        )
+                    )
 
     def dismiss(self) -> None:
         """Dismiss without selection."""
@@ -468,7 +480,7 @@ class Info2(ScrollableContainer):
             case Info2Mode.CONTEXT:
                 return 0
             case Info2Mode.APPROVAL:
-                return 2
+                return 3
             case Info2Mode.QUESTIONS:
                 return 0
         return 0
@@ -580,7 +592,9 @@ class Info2(ScrollableContainer):
             f"Allow {self._approval_tool}({self._approval_args})?", markup=False
         )
         self.mount(header)
-        for i, label in enumerate(("  Allow", "  Deny")):
+        for i, label in enumerate(
+            ("  Allow once", "  Allow for session", "  Deny")
+        ):
             item = Info2Item(label)
             if i == self.selected_index:
                 item.add_class("highlighted")

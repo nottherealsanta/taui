@@ -79,6 +79,7 @@ class TauiApp(App[None]):
         ("ctrl+n", "new_chat", "New session"),
         ("ctrl+c", "cancel_request", "Cancel"),
         ("ctrl+d", "ctrl_d", ""),
+        ("ctrl+a", "toggle_auto_approve", "Auto-approve"),
         ("ctrl+b", "toggle_sidebar", "Sidebar"),
         ("ctrl+r", "toggle_info_sidebar", "Info"),
         ("ctrl+x", "show_context", "Context"),
@@ -1016,6 +1017,7 @@ class TauiApp(App[None]):
             extensions_mode=self._session.extensions_mode,
             agent_id=str(getattr(self._session._loop, "agent_id", "") or ""),
             worktree_branch=wt_handle.branch if wt_handle else "",
+            auto_approve=bool(getattr(self._session, "auto_approve", False)),
         )
         self._update_activity_progress(self._session, tokens, max_tokens)
         try:
@@ -1363,6 +1365,9 @@ class TauiApp(App[None]):
     def handle_context_badge_clicked(self, event: InfoBar.ContextBadgeClicked) -> None:
         self._open_context_tree()
 
+    @on(InfoBar.AutoApproveToggled)
+    def handle_auto_approve_toggled(self, event: InfoBar.AutoApproveToggled) -> None:
+        self.action_toggle_auto_approve()
 
     async def _load_and_show_sessions(self) -> None:
         if self._session is None:
@@ -3725,6 +3730,17 @@ class TauiApp(App[None]):
         self._wire_callbacks()
         self._update_status()
         self._refresh_tab_bar()
+
+    def action_toggle_auto_approve(self) -> None:
+        if not self._session:
+            return
+        new_state = self._session.toggle_auto_approve()
+        self._update_status()
+        self.notify(
+            f"Auto-approve {'on' if new_state else 'off'}",
+            severity="warning" if new_state else "information",
+            timeout=2,
+        )
 
     def action_toggle_sidebar(self) -> None:
         sidebar = self.query_one(Sidebar)

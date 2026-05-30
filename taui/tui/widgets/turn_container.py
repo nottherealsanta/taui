@@ -78,7 +78,6 @@ class TurnContainer(Vertical):
         width: 1fr;
         padding: 1 2 1 0;
         color: #e6e6e6;
-        text-style: bold;
     }
     TurnContainer > .turn-summary {
         height: 1;
