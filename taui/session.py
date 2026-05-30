@@ -142,11 +142,6 @@ class Session:
         self.config.auto_approve = bool(value)
         self._notify_config_changed()
 
-    def toggle_auto_approve(self) -> bool:
-        """Flip auto_approve and return the new state."""
-        self.auto_approve = not self.auto_approve
-        return self.auto_approve
-
     def _current_mode(self) -> str:
         if self.self_edit_mode:
             return "self_edit"

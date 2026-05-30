@@ -512,7 +512,7 @@ GENERAL_SETTINGS_SECTIONS: tuple[
             (
                 "auto_approve",
                 "Auto Approve",
-                "Skip approval for every tool call (toggle with Ctrl+A).",
+                "Skip approval for every tool call.",
                 bool,
             ),
         ],
