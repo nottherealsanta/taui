@@ -790,16 +790,19 @@ class _Editor(ModalScreen):
         padding: 0 1;
     }}
     #se-editor-dialog .se-field-row {{
-        height: 3;
+        height: auto;
+        min-height: 1;
         width: 100%;
         padding: 0;
+        margin-top: 1;
     }}
     #se-editor-dialog .se-field-label {{
         width: 18;
-        height: 3;
+        height: auto;
+        min-height: 1;
         color: {ACCENT_SOFT};
         content-align: left middle;
-        padding: 1 1 0 1;
+        padding: 0 1;
     }}
     #se-editor-dialog Input {{
         width: 1fr;
@@ -905,12 +908,31 @@ class _Editor(ModalScreen):
     #se-editor-dialog #se-editor-usage {{
         height: 1;
         width: auto;
-        padding: 0 1;
+        padding: 0 0;
+        content-align: left middle;
     }}
     #se-editor-dialog #se-editor-color {{
         height: 1;
         width: auto;
+        padding: 0 0;
+        content-align: left middle;
+    }}
+    #se-editor-dialog #se-editor-auto-approve {{
+        height: 1;
+        width: auto;
+        padding: 0 0;
+        content-align: left middle;
+    }}
+    #se-editor-dialog .se-field-dot {{
+        width: auto;
+        height: 1;
+        color: #555;
+        content-align: center middle;
         padding: 0 1;
+    }}
+    #se-editor-dialog .se-field-spacer {{
+        width: 1fr;
+        height: 1;
     }}
     #se-editor-dialog .se-hidden {{
         display: none;
@@ -1008,40 +1030,32 @@ class _Editor(ModalScreen):
 
             # ── USAGE: 3-way toggle ─────────────────────────────
             initial_usage = self._initial_usage()
-            yield Static(
-                "USAGE  [dim](main = tab/picker only · sub = spawnable by sub_agent · both)[/dim]",
-                classes="se-tools-label",
-                markup=True,
-            )
-            with Horizontal(id="se-editor-usage"):
-                for value in ("main", "sub", "both"):
-                    yield _UsageToggle(value, selected=(value == initial_usage))
+            with Horizontal(classes="se-field-row"):
+                yield Label("USAGE", classes="se-field-label")
+                with Horizontal(id="se-editor-usage"):
+                    for i, value in enumerate(("main", "sub", "both")):
+                        if i > 0:
+                            yield Static("·", classes="se-field-dot")
+                        yield _UsageToggle(value, selected=(value == initial_usage))
 
             # ── COLOR: row of swatches — main + both only ──────
-            # Build classes and set hidden state before yielding to avoid
-            # duplicate widget IDs (yield + with block would mount twice).
-            color_label_classes = "se-tools-label"
-            color_row = Horizontal(id="se-editor-color")
+            color_row_classes = "se-field-row"
             if initial_usage == "sub":
-                color_label_classes += " se-hidden"
-                color_row.add_class("se-hidden")
+                color_row_classes += " se-hidden"
 
-            yield Static(
-                "COLOR  [dim](badge accent in picker / info bar)[/dim]",
-                classes=color_label_classes,
-                id="se-editor-color-label",
-                markup=True,
-            )
             initial_color = str(self._initial_extra.get("color", "") or "")
-            with color_row:
-                for hex_value, _label in AGENT_COLOR_PALETTE:
-                    yield _ColorSwatch(
-                        hex_value,
-                        selected=(hex_value == initial_color),
-                    )
+            with Horizontal(classes=color_row_classes, id="se-editor-color-row"):
+                yield Label("COLOR", classes="se-field-label", id="se-editor-color-label")
+                with Horizontal(id="se-editor-color"):
+                    for hex_value, _label in AGENT_COLOR_PALETTE:
+                        yield _ColorSwatch(
+                            hex_value,
+                            selected=(hex_value == initial_color),
+                        )
 
-            yield Static("ALLOWED TOOLS",
-                         classes="se-tools-label", markup=True)
+            with Horizontal(classes="se-field-row"):
+                yield Label("ALLOWED TOOLS", classes="se-field-label")
+                yield Static("", classes="se-field-spacer")
             selected = set(self._initial_extra.get("allowed_tools", []))
             all_tools = inventory.all_tool_names(self._working_dir)
             # Empty allowed_tools means "all tools" — show them all as ON.
@@ -1068,10 +1082,12 @@ class _Editor(ModalScreen):
 
             # Auto-approve toggle
             initial_auto = bool(self._initial_extra.get("auto_approve", False))
-            yield Static("AUTO-APPROVE", classes="se-tools-label", markup=False)
-            with Horizontal(classes="se-usage-row"):
-                yield _AutoApproveToggle("off", selected=not initial_auto)
-                yield _AutoApproveToggle("on", selected=initial_auto)
+            with Horizontal(classes="se-field-row"):
+                yield Label("AUTO-APPROVE", classes="se-field-label")
+                with Horizontal(id="se-editor-auto-approve"):
+                    yield _AutoApproveToggle("off", selected=not initial_auto)
+                    yield Static("·", classes="se-field-dot")
+                    yield _AutoApproveToggle("on", selected=initial_auto)
 
     def _initial_usage(self) -> str:
         """Read the initial usage value from the extra dict, defaulting to 'both'."""
@@ -1172,16 +1188,13 @@ class _Editor(ModalScreen):
         for toggle in self.query(_UsageToggle):
             toggle.set_active(toggle.value == event.value)
         try:
-            color_row = self.query_one("#se-editor-color", Horizontal)
-            color_label = self.query_one("#se-editor-color-label", Static)
+            color_row_wrapper = self.query_one("#se-editor-color-row", Horizontal)
         except Exception:
             return
         if event.value == "sub":
-            color_row.add_class("se-hidden")
-            color_label.add_class("se-hidden")
+            color_row_wrapper.add_class("se-hidden")
         else:
-            color_row.remove_class("se-hidden")
-            color_label.remove_class("se-hidden")
+            color_row_wrapper.remove_class("se-hidden")
 
     @on(_ColorSwatch.Changed)
     def _on_color_changed(self, event: _ColorSwatch.Changed) -> None:
@@ -2286,25 +2299,39 @@ class _InlineEditor(Vertical):
     _InlineEditor .se-inline-usage {{
         height: 1;
         width: auto;
-        padding: 0 1;
+        padding: 0 0;
     }}
     _InlineEditor .se-inline-color {{
         height: 1;
         width: auto;
-        padding: 0 1;
+        padding: 0 0;
     }}
-    _InlineEditor .se-auto-row {{
+    _InlineEditor .se-inline-auto {{
         height: 1;
-        width: 100%;
-        padding: 0 1;
-        margin-top: 1;
+        width: auto;
+        padding: 0 0;
     }}
-    _InlineEditor .se-auto-label {{
+    _InlineEditor .se-field-dot {{
         width: auto;
         height: 1;
+        color: #555;
+        content-align: center middle;
+        padding: 0 1;
+    }}
+    _InlineEditor .se-field-row {{
+        height: auto;
+        min-height: 1;
+        width: 100%;
+        padding: 0;
+        margin-top: 1;
+    }}
+    _InlineEditor .se-field-label {{
+        width: 18;
+        height: auto;
+        min-height: 1;
         color: {ACCENT_SOFT};
-        padding: 0 2 0 0;
         content-align: left middle;
+        padding: 0 1;
     }}
     _InlineEditor .se-hidden {{
         display: none;
@@ -2506,36 +2533,29 @@ class _InlineEditor(Vertical):
 
             # Usage toggle
             initial_usage = self._initial_usage()
-            self.mount(
-                Static(
-                    "USAGE",
-                    classes="se-tools-label",
-                    markup=True,
-                )
-            )
-            usage_row = Horizontal(classes="se-inline-usage")
+            usage_row = Horizontal(classes="se-field-row")
             self.mount(usage_row)
-            for value in ("main", "sub", "both"):
-                usage_row.mount(
+            usage_row.mount(Label("USAGE", classes="se-field-label"))
+            usage_inner = Horizontal(classes="se-inline-usage")
+            usage_row.mount(usage_inner)
+            for i, value in enumerate(("main", "sub", "both")):
+                if i > 0:
+                    usage_inner.mount(Static("·", classes="se-field-dot"))
+                usage_inner.mount(
                     _UsageToggle(value, selected=(value == initial_usage))
                 )
 
             # Color swatches
-            color_label_classes = "se-tools-label"
             initial_color = str(self._initial_extra.get("color", "") or "")
+            color_field_row = Horizontal(classes="se-field-row")
             if initial_usage == "sub":
-                color_label_classes += " se-hidden"
-            self.mount(
-                Static(
-                    "COLOR  [dim](badge accent in picker / info bar)[/dim]",
-                    classes=color_label_classes,
-                    markup=True,
-                )
+                color_field_row.add_class("se-hidden")
+            self.mount(color_field_row)
+            color_field_row.mount(
+                Label("COLOR", classes="se-field-label")
             )
             color_row = Horizontal(classes="se-inline-color")
-            if initial_usage == "sub":
-                color_row.add_class("se-hidden")
-            self.mount(color_row)
+            color_field_row.mount(color_row)
             for hex_value, _label in AGENT_COLOR_PALETTE:
                 color_row.mount(
                     _ColorSwatch(hex_value, selected=(hex_value == initial_color))
@@ -2548,9 +2568,9 @@ class _InlineEditor(Vertical):
                 all_tools = inventory.all_tool_names(self._working_dir)
             builtins = inventory.builtin_tool_names()
             all_on = not selected
-            tools_header = Horizontal(classes="se-tools-header")
+            tools_header = Horizontal(classes="se-field-row")
             self.mount(tools_header)
-            tools_header.mount(Static("ALLOWED TOOLS", markup=False))
+            tools_header.mount(Label("ALLOWED TOOLS", classes="se-field-label"))
             tools_header.mount(
                 _ShowBuiltinToggle(selected=self._show_builtin_tools)
             )
@@ -2592,12 +2612,14 @@ class _InlineEditor(Vertical):
 
             # Auto-approve toggle (label + toggles inline on one row)
             initial_auto = bool(self._initial_extra.get("auto_approve", False))
-            auto_row = Horizontal(classes="se-auto-row")
+            auto_row = Horizontal(classes="se-field-row")
             self.mount(auto_row)
-            auto_row.mount(Static("AUTO-APPROVE", classes="se-auto-label",
-                                  markup=False))
-            auto_row.mount(_AutoApproveToggle("off", selected=not initial_auto))
-            auto_row.mount(_AutoApproveToggle("on", selected=initial_auto))
+            auto_row.mount(Label("AUTO-APPROVE", classes="se-field-label"))
+            auto_inner = Horizontal(classes="se-inline-auto")
+            auto_row.mount(auto_inner)
+            auto_inner.mount(_AutoApproveToggle("off", selected=not initial_auto))
+            auto_inner.mount(Static("·", classes="se-field-dot"))
+            auto_inner.mount(_AutoApproveToggle("on", selected=initial_auto))
 
         # LLM prompt + Generate/Edit button
         prompt_row = Horizontal(classes="se-prompt-row")
@@ -2671,21 +2693,16 @@ class _InlineEditor(Vertical):
             toggle.set_active(toggle.value == event.value)
         try:
             color_row = self.query_one(".se-inline-color")
-            color_label = None
-            for static in self.query(Static):
-                if "se-tools-label" in static.classes and "COLOR" in static.renderable.__str__():
-                    color_label = static
-                    break
+            # The color row is now inside a se-field-row wrapper
+            color_field_row = color_row.parent
         except Exception:
             return
         if event.value == "sub":
-            color_row.add_class("se-hidden")
-            if color_label is not None:
-                color_label.add_class("se-hidden")
+            if color_field_row is not None:
+                color_field_row.add_class("se-hidden")
         else:
-            color_row.remove_class("se-hidden")
-            if color_label is not None:
-                color_label.remove_class("se-hidden")
+            if color_field_row is not None:
+                color_field_row.remove_class("se-hidden")
 
     @on(_ColorSwatch.Changed)
     def _on_color_changed(self, event: _ColorSwatch.Changed) -> None:
