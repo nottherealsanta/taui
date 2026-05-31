@@ -31,6 +31,23 @@ async def _wait_until_ready(pilot: Pilot, *, timeout: float = 2.0) -> None:
     raise TimeoutError("Session never finished initializing")
 
 
+def _normalize_scope_path(pilot: Pilot) -> None:
+    roots = [pilot.app.screen, *getattr(pilot.app, "screen_stack", [])]
+    for root in roots:
+        for path_label in root.query("#se-scope-path"):
+            path_label.update("~/.taui  ")
+
+
+async def _close_cleanly(pilot: Pilot) -> None:
+    session = getattr(pilot.app, "_session", None)
+    if session is not None:
+        try:
+            await session.close()
+        except Exception:
+            pass
+        pilot.app._session = None
+
+
 def test_self_edit_modal_opens_default(snap_compare, tmp_path, monkeypatch):
     """Modal opens on Agents tab, GLOBAL scope, yellow construction theme."""
     provider = scenarios.happy_path("(unused)")
@@ -41,5 +58,7 @@ def test_self_edit_modal_opens_default(snap_compare, tmp_path, monkeypatch):
         await pilot.app.action_enter_self_edit()
         await pilot.pause()
         await pilot.pause()
+        _normalize_scope_path(pilot)
+        await _close_cleanly(pilot)
 
     assert snap_compare(app, run_before=setup, terminal_size=(120, 36))

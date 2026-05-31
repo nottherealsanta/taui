@@ -7,6 +7,7 @@ skills, commands, tools, prompts, MCP servers) across both scopes
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 from rich.text import Text
@@ -36,6 +37,72 @@ INNER_BG = "#121212"      # slightly lighter for sub-panels
 DEEP_BLACK = "#0a0a0a"
 HAZARD_AMBER = "#ffae00"  # warning/destructive accent
 GRID_GREY = "#2a2a2a"     # darker grey for inner borders
+DOT_STYLE = "dim #555555"
+LIST_ROW_WIDTH = 36
+TOOL_TOGGLE_WIDTH = 24
+FIELD_LEADER = "·" * 96
+
+
+def _ellipsize(value: str, max_chars: int) -> str:
+    """Trim text to a single display cell budget."""
+    if max_chars <= 0:
+        return ""
+    if len(value) <= max_chars:
+        return value
+    if max_chars == 1:
+        return "…"
+    return value[: max_chars - 1] + "…"
+
+
+def _append_dotted_text(
+    text: Text,
+    left: str,
+    right: str,
+    *,
+    width: int,
+    left_style: str = "",
+    right_style: str = "",
+    min_dots: int = 3,
+) -> None:
+    """Append ``left ··· right`` with dim dot leaders like the General tab."""
+    if not right:
+        text.append(_ellipsize(left, width), style=left_style)
+        return
+
+    width = max(width, min_dots + 4)
+    left_text = _ellipsize(left, max(1, width - min_dots - 3))
+    max_right = max(1, width - len(left_text) - min_dots - 2)
+    right_text = _ellipsize(right, max_right)
+    dot_count = max(min_dots, width - len(left_text) - len(right_text) - 2)
+
+    text.append(left_text, style=left_style)
+    text.append(f" {'·' * dot_count} ", style=DOT_STYLE)
+    text.append(right_text, style=right_style)
+
+
+def _dotted_text(
+    left: str,
+    right: str,
+    *,
+    width: int,
+    left_style: str = "",
+    right_style: str = "",
+) -> Text:
+    text = Text()
+    _append_dotted_text(
+        text,
+        left,
+        right,
+        width=width,
+        left_style=left_style,
+        right_style=right_style,
+    )
+    return text
+
+
+def _field_leader() -> Static:
+    """Inline field dot leader used between labels and compact controls."""
+    return Static(FIELD_LEADER, classes="se-field-leader")
 
 
 # ── Custom events ───────────────────────────────────────────────────
@@ -165,7 +232,7 @@ class _ToolToggle(Static):
     _ToolToggle {{
         height: 1;
         width: 1fr;
-        padding: 0 1 0 3;
+        padding: 0 1;
         color: #555;
     }}
     _ToolToggle.-on {{
@@ -187,9 +254,17 @@ class _ToolToggle(Static):
         if selected:
             self.add_class("-on")
 
-    def render(self) -> str:
+    def render(self) -> Text | str:
         marker = "✓" if self._selected else "·"
-        return f" {marker}  {self._tool_name}"
+        marker_style = ACCENT if self._selected else "#666666"
+        label_style = f"bold {ACCENT}" if self._selected else "#666666"
+        return _dotted_text(
+            self._tool_name,
+            marker,
+            width=TOOL_TOGGLE_WIDTH,
+            left_style=label_style,
+            right_style=marker_style,
+        )
 
     def on_click(self, event: Click) -> None:
         event.stop()
@@ -276,7 +351,7 @@ class _ToolGroupToggle(Static):
         self._total = total
         self._apply_state_class()
 
-    def render(self) -> str:
+    def render(self) -> Text | str:
         if self._total == 1:
             # Solo group — keep header but show no fractional count
             return f"▸ {self._group}"
@@ -284,7 +359,11 @@ class _ToolGroupToggle(Static):
             "▾" if self._selected == self._total
             else ("▿" if self._selected > 0 else "▹")
         )
-        return f"{marker} {self._group}  ({self._selected}/{self._total})"
+        return _dotted_text(
+            f"{marker} {self._group}",
+            f"({self._selected}/{self._total})",
+            width=TOOL_TOGGLE_WIDTH,
+        )
 
     def _apply_state_class(self) -> None:
         self.remove_class("-all")
@@ -325,9 +404,15 @@ class _ShowBuiltinToggle(Static):
         if selected:
             self.add_class("-on")
 
-    def render(self) -> str:
+    def render(self) -> Text:
         marker = "✓" if self._selected else "·"
-        return f" {marker} show built-in "
+        return _dotted_text(
+            "show built-in",
+            marker,
+            width=22,
+            left_style=f"bold {DEEP_BLACK}" if self._selected else "#777777",
+            right_style=f"bold {DEEP_BLACK}" if self._selected else "#777777",
+        )
 
     def on_click(self, event: Click) -> None:
         event.stop()
@@ -354,18 +439,27 @@ class _ListBuiltinToggle(Static):
         if selected:
             self.add_class("-on")
 
-    def render(self) -> str:
-        marker = "✓" if self._selected else "·"
-        return f" {marker} show built-in "
-
-    def on_click(self, event: Click) -> None:
-        event.stop()
-        self._selected = not self._selected
-        if self._selected:
+    def set_selected(self, selected: bool) -> None:
+        self._selected = selected
+        if selected:
             self.add_class("-on")
         else:
             self.remove_class("-on")
         self.refresh()
+
+    def render(self) -> Text:
+        marker = "✓" if self._selected else "·"
+        return _dotted_text(
+            "show built-in",
+            marker,
+            width=22,
+            left_style=f"bold {DEEP_BLACK}" if self._selected else "#777777",
+            right_style=f"bold {DEEP_BLACK}" if self._selected else "#777777",
+        )
+
+    def on_click(self, event: Click) -> None:
+        event.stop()
+        self.set_selected(not self._selected)
         self.post_message(_ListBuiltinToggle.Changed(self._selected))
 
 
@@ -975,7 +1069,7 @@ class _Editor(ModalScreen):
 
     def compose(self) -> ComposeResult:
         verb = "NEW" if self._creating else "EDIT"
-        header = f"  ▰  {verb} · {self._category.label} · {self._scope.upper()} SCOPE"
+        header = f"  {verb} · {self._category.label} · {self._scope.upper()} SCOPE"
         with Container(id="se-editor-dialog"):
             yield Static(header, classes="se-editor-header")
             yield Static(
@@ -1666,6 +1760,86 @@ class _ConfirmDelete(ModalScreen[bool]):
         self.dismiss(event.button.id == "se-confirm-yes")
 
 
+class _UnsavedChangesPrompt(ModalScreen[str | None]):
+    """Three-way prompt shown before discarding an edited inline form."""
+
+    DEFAULT_CSS = f"""
+    _UnsavedChangesPrompt {{
+        align: center middle;
+        background: $background 70%;
+    }}
+    #se-unsaved-dialog {{
+        width: 58;
+        height: auto;
+        background: {PANEL_BG};
+        border: round {BORDER};
+        padding: 1 2;
+    }}
+    #se-unsaved-dialog .se-unsaved-title {{
+        color: {ACCENT};
+        text-style: bold;
+        margin: 0 0 1 0;
+    }}
+    #se-unsaved-dialog .se-unsaved-body {{
+        color: #b8b8b8;
+        margin: 0 0 1 0;
+    }}
+    #se-unsaved-dialog .se-unsaved-actions {{
+        height: 1;
+        align-horizontal: right;
+    }}
+    #se-unsaved-dialog Button {{
+        margin: 0 0 0 1;
+        border: none;
+        padding: 0 2;
+        height: 1;
+        min-width: 0;
+        background: {GRID_GREY};
+        color: {ACCENT};
+    }}
+    #se-unsaved-dialog Button.-primary {{
+        background: {ACCENT};
+        color: {DEEP_BLACK};
+        text-style: bold;
+    }}
+    """
+
+    BINDINGS = [
+        ("escape", "cancel", "Cancel"),
+        ("s", "save", "Save"),
+        ("c", "close_without_save", "Close"),
+    ]
+
+    def compose(self) -> ComposeResult:
+        with Container(id="se-unsaved-dialog"):
+            yield Static("UNSAVED CHANGES", classes="se-unsaved-title")
+            yield Static(
+                "Save before leaving this editor?",
+                classes="se-unsaved-body",
+            )
+            with Horizontal(classes="se-unsaved-actions"):
+                yield Button("Cancel", id="se-unsaved-cancel")
+                yield Button("Close", id="se-unsaved-close")
+                yield Button("Save", id="se-unsaved-save", classes="-primary")
+
+    def action_cancel(self) -> None:
+        self.dismiss("cancel")
+
+    def action_save(self) -> None:
+        self.dismiss("save")
+
+    def action_close_without_save(self) -> None:
+        self.dismiss("close")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "se-unsaved-save":
+            self.dismiss("save")
+        elif event.button.id == "se-unsaved-close":
+            self.dismiss("close")
+        else:
+            self.dismiss("cancel")
+
+
 # ── Prefix editor sub-modal ─────────────────────────────────────────
 
 
@@ -2094,6 +2268,16 @@ class _InlineSaveRequested(events.Event):
         self.creating = creating
 
 
+class _InlineAgentPreviewChanged(events.Event):
+    """Posted by _InlineEditor when agent list-facing fields change."""
+
+    def __init__(self, identifier: str, *, usage: str, color: str) -> None:
+        super().__init__()
+        self.identifier = identifier
+        self.usage = usage
+        self.color = color
+
+
 class _InlineEditor(Vertical):
     """Inline editor that lives in the right pane of the self-edit modal.
 
@@ -2318,6 +2502,13 @@ class _InlineEditor(Vertical):
         content-align: center middle;
         padding: 0 1;
     }}
+    _InlineEditor .se-field-leader {{
+        width: 1fr;
+        height: 1;
+        color: #555;
+        content-align: center middle;
+        padding: 0 1;
+    }}
     _InlineEditor .se-field-row {{
         height: auto;
         min-height: 1;
@@ -2332,6 +2523,16 @@ class _InlineEditor(Vertical):
         color: {ACCENT_SOFT};
         content-align: left middle;
         padding: 0 1;
+    }}
+    _InlineEditor .se-input-row {{
+        height: 3;
+        min-height: 3;
+    }}
+    _InlineEditor .se-input-row .se-field-label {{
+        height: 3;
+        min-height: 3;
+        padding: 1 1 0 1;
+        content-align: left middle;
     }}
     _InlineEditor .se-hidden {{
         display: none;
@@ -2363,6 +2564,7 @@ class _InlineEditor(Vertical):
         self._llm_input: Input | None = None
         self._gen_button: Button | None = None
         self._initial_extra: dict = {}
+        self._initial_snapshot: dict | None = None
         # LLM generation state
         self._generating = False
         self._spinner_timer = None
@@ -2445,6 +2647,7 @@ class _InlineEditor(Vertical):
         self._body_area = None
         self._llm_input = None
         self._gen_button = None
+        self._initial_snapshot = None
 
         if self._mode == "empty" or self._category is None:
             self.mount(
@@ -2485,7 +2688,7 @@ class _InlineEditor(Vertical):
         item = self._item
         creating = self._creating
         verb = "NEW" if creating else "EDIT"
-        header_text = f"▰ {verb} · {cat.label} · {self._scope.upper()} SCOPE"
+        header_text = f"{verb} · {cat.label} · {self._scope.upper()} SCOPE"
         header_row = Horizontal(classes="se-inline-header-row")
         self.mount(header_row)
         header_row.mount(
@@ -2496,7 +2699,7 @@ class _InlineEditor(Vertical):
 
         # ID row
         is_agent = cat.key == "agents"
-        id_row = Horizontal(classes="se-field-row")
+        id_row = Horizontal(classes="se-field-row se-input-row")
         self.mount(id_row)
         id_row.mount(
             Label(
@@ -2514,7 +2717,7 @@ class _InlineEditor(Vertical):
 
         # Agent-specific fields
         if is_agent:
-            model_row = Horizontal(classes="se-field-row")
+            model_row = Horizontal(classes="se-field-row se-input-row")
             self.mount(model_row)
             model_row.mount(Label("MODEL ID", classes="se-field-label"))
             self._model_input = Input(
@@ -2536,6 +2739,7 @@ class _InlineEditor(Vertical):
             usage_row = Horizontal(classes="se-field-row")
             self.mount(usage_row)
             usage_row.mount(Label("USAGE", classes="se-field-label"))
+            usage_row.mount(_field_leader())
             usage_inner = Horizontal(classes="se-inline-usage")
             usage_row.mount(usage_inner)
             for i, value in enumerate(("main", "sub", "both")):
@@ -2554,6 +2758,7 @@ class _InlineEditor(Vertical):
             color_field_row.mount(
                 Label("COLOR", classes="se-field-label")
             )
+            color_field_row.mount(_field_leader())
             color_row = Horizontal(classes="se-inline-color")
             color_field_row.mount(color_row)
             for hex_value, _label in AGENT_COLOR_PALETTE:
@@ -2571,6 +2776,7 @@ class _InlineEditor(Vertical):
             tools_header = Horizontal(classes="se-field-row")
             self.mount(tools_header)
             tools_header.mount(Label("ALLOWED TOOLS", classes="se-field-label"))
+            tools_header.mount(_field_leader())
             tools_header.mount(
                 _ShowBuiltinToggle(selected=self._show_builtin_tools)
             )
@@ -2615,6 +2821,7 @@ class _InlineEditor(Vertical):
             auto_row = Horizontal(classes="se-field-row")
             self.mount(auto_row)
             auto_row.mount(Label("AUTO-APPROVE", classes="se-field-label"))
+            auto_row.mount(_field_leader())
             auto_inner = Horizontal(classes="se-inline-auto")
             auto_row.mount(auto_inner)
             auto_inner.mount(_AutoApproveToggle("off", selected=not initial_auto))
@@ -2639,6 +2846,7 @@ class _InlineEditor(Vertical):
         initial_body = item.body if item else cat.new_template
         self._body_area = TextArea(initial_body, classes="se-inline-body")
         self.mount(self._body_area)
+        self._initial_snapshot = self._form_snapshot()
 
     # ── Helpers ─────────────────────────────────────────────────────
 
@@ -2703,12 +2911,95 @@ class _InlineEditor(Vertical):
         else:
             if color_field_row is not None:
                 color_field_row.remove_class("se-hidden")
+        self._post_agent_preview_changed()
 
     @on(_ColorSwatch.Changed)
     def _on_color_changed(self, event: _ColorSwatch.Changed) -> None:
         event.stop()
         for swatch in self.query(_ColorSwatch):
             swatch.set_active(swatch.value == event.value)
+        self._post_agent_preview_changed()
+
+    def _post_agent_preview_changed(self) -> None:
+        if self._category is None or self._category.key != "agents":
+            return
+        ident = ""
+        if self._item is not None:
+            ident = self._item.identifier
+        elif self._id_input is not None:
+            ident = self._id_input.value.strip().upper()
+        if not ident:
+            return
+        usage = self._current_usage()
+        color = "" if usage == "sub" else self._current_color()
+        self.post_message(
+            _InlineAgentPreviewChanged(ident, usage=usage, color=color)
+        )
+
+    def _current_usage(self) -> str:
+        try:
+            return next(
+                t.value for t in self.query(_UsageToggle) if "-on" in t.classes
+            )
+        except StopIteration:
+            return self._initial_usage()
+
+    def _current_color(self) -> str:
+        try:
+            return next(
+                s.value for s in self.query(_ColorSwatch) if "-on" in s.classes
+            )
+        except StopIteration:
+            return str(self._initial_extra.get("color", "") or "")
+
+    def is_dirty(self) -> bool:
+        if self._mode not in ("edit", "new"):
+            return False
+        if self._initial_snapshot is None:
+            return False
+        return self._form_snapshot() != self._initial_snapshot
+
+    def request_save(self) -> bool:
+        return self._submit()
+
+    def _form_snapshot(self) -> dict:
+        ident = self._id_input.value.strip() if self._id_input is not None else ""
+        if self._category is not None and self._category.key == "agents":
+            ident = ident.upper()
+        body = self._body_area.text if self._body_area is not None else ""
+        snapshot: dict = {
+            "identifier": ident,
+            "body": body,
+        }
+        if self._category is not None and self._category.key == "agents":
+            provider_str, model_str = "", ""
+            if self._model_input is not None:
+                provider_str, model_str = _split_model_id(
+                    self._model_input.value.strip()
+                )
+            try:
+                allowed_tools = sorted(
+                    {t.tool_name for t in self.query(_ToolToggle) if t.is_selected}
+                )
+            except Exception:
+                allowed_tools = sorted(
+                    {str(t) for t in self._initial_extra.get("allowed_tools", [])}
+                )
+            usage = self._current_usage()
+            color = "" if usage == "sub" else self._current_color()
+            auto_approve = any(
+                t.value == "on" and "-on" in t.classes
+                for t in self.query(_AutoApproveToggle)
+            )
+            snapshot["extra"] = {
+                "provider": provider_str,
+                "model": model_str,
+                "allowed_tools": allowed_tools,
+                "usage": usage,
+                "color": color,
+                "auto_approve": auto_approve,
+            }
+        return snapshot
 
     @on(_ShowBuiltinToggle.Changed)
     def _on_show_builtin_changed(self, event: _ShowBuiltinToggle.Changed) -> None:
@@ -2773,38 +3064,39 @@ class _InlineEditor(Vertical):
             event.stop()
             self._start_llm_generation()
 
-    def _submit(self) -> None:
+    def _submit(self) -> bool:
         if self._id_input is None or self._body_area is None or self._category is None:
-            return
+            return False
         ident = self._id_input.value.strip()
         body = self._body_area.text
         if not ident:
-            return
+            self.app.bell()
+            return False
         if self._category.key == "agents":
             ident = ident.upper()
         extra: dict = {}
         if self._category.key == "agents":
             try:
                 toggles = list(self.query(_ToolToggle))
-                allowed_tools = [t.tool_name for t in toggles if t.is_selected]
+                allowed_tools = sorted(
+                    {t.tool_name for t in toggles if t.is_selected}
+                )
             except Exception:
-                allowed_tools = list(self._initial_extra.get("allowed_tools", []))
+                allowed_tools = sorted(
+                    {str(t) for t in self._initial_extra.get("allowed_tools", [])}
+                )
             provider_str, model_str = "", ""
             if self._model_input is not None:
                 provider_str, model_str = _split_model_id(
                     self._model_input.value.strip()
                 )
             try:
-                usage = next(
-                    t.value for t in self.query(_UsageToggle) if "-on" in t.classes
-                )
-            except StopIteration:
+                usage = self._current_usage()
+            except Exception:
                 usage = self._initial_usage()
             try:
-                color = next(
-                    s.value for s in self.query(_ColorSwatch) if "-on" in s.classes
-                )
-            except StopIteration:
+                color = self._current_color()
+            except Exception:
                 color = str(self._initial_extra.get("color", "") or "")
             if usage == "sub":
                 color = ""
@@ -2822,6 +3114,7 @@ class _InlineEditor(Vertical):
             }
         payload = {"identifier": ident, "body": body, "extra": extra}
         self.post_message(_InlineSaveRequested(payload, self._creating))
+        return True
 
     # ── LLM generation (reuses helpers from _Editor) ────────────────
 
@@ -3144,6 +3437,9 @@ class SelfEditModal(ModalScreen[str | None]):
         # Show built-in tools in the TOOLS category list. On by default
         # so the full tree is visible at a glance; toggle hides them.
         self._show_builtin_in_list: bool = True
+        self._last_highlighted: int | None = None
+        self._suppress_highlight_guard: bool = False
+        self._after_inline_save = None
 
     @property
     def _category(self) -> inventory.Category:
@@ -3291,6 +3587,7 @@ class SelfEditModal(ModalScreen[str | None]):
             pass
         opts.clear_options()
         self._row_items = []
+        row_width = self._list_row_width()
         if not self._items:
             opts.add_option(
                 Option(
@@ -3364,9 +3661,12 @@ class SelfEditModal(ModalScreen[str | None]):
                 if len(members) > 1:
                     opts.add_option(
                         Option(
-                            Text(
-                                f"▾ {group}  ({len(members)})",
-                                style=f"bold {ACCENT_SOFT}",
+                            _dotted_text(
+                                f"▾ {group}",
+                                f"({len(members)})",
+                                width=row_width,
+                                left_style=f"bold {ACCENT_SOFT}",
+                                right_style=ACCENT_SOFT,
                             ),
                             id=f"__group:{group}__",
                             disabled=True,
@@ -3381,9 +3681,17 @@ class SelfEditModal(ModalScreen[str | None]):
                         else f"user:{key}"
                     )
                     row_text = (
-                        self._render_tree_item_row(item, label=tool_name)
+                        self._render_tree_item_row(
+                            item,
+                            label=tool_name,
+                            width=row_width,
+                        )
                         if len(members) > 1
-                        else self._render_flat_item_row(item, label=tool_name)
+                        else self._render_flat_item_row(
+                            item,
+                            label=tool_name,
+                            width=row_width,
+                        )
                     )
                     opts.add_option(
                         Option(row_text, id=opt_id)
@@ -3405,17 +3713,24 @@ class SelfEditModal(ModalScreen[str | None]):
                     else f"user:{item.identifier}"
                 )
                 opts.add_option(
-                    Option(self._render_item_row(item), id=opt_id)
+                    Option(self._render_item_row(item, width=row_width), id=opt_id)
                 )
                 self._row_items.append(item)
             opts.highlighted = 0
         self._sync_inline_panel()
+        try:
+            self._last_highlighted = opts.highlighted
+        except Exception:
+            self._last_highlighted = None
         self._refresh_chrome()
 
     def _render_tree_item_row(
-        self, item: inventory.Item, label: str | None = None
+        self,
+        item: inventory.Item,
+        label: str | None = None,
+        width: int | None = None,
     ) -> Text:
-        """Indented row for the tools tree view — name only.
+        """Indented row for the tools tree view.
 
         ``label`` overrides the Item's own label so a multi-tool extension
         file can render one row per registered tool while still pointing
@@ -3425,19 +3740,37 @@ class SelfEditModal(ModalScreen[str | None]):
         label_style = (
             f"bold {ACCENT_SOFT}" if item.builtin else f"bold {ACCENT}"
         )
-        text.append("  └ ", style=GRID_GREY)
-        text.append(label or item.label, style=label_style)
+        source = "builtin" if item.builtin else item.identifier
+        _append_dotted_text(
+            text,
+            f"  └ {label or item.label}",
+            source,
+            width=width or self._list_row_width(),
+            left_style=label_style,
+            right_style="#777777",
+        )
         return text
 
     def _render_flat_item_row(
-        self, item: inventory.Item, label: str | None = None
+        self,
+        item: inventory.Item,
+        label: str | None = None,
+        width: int | None = None,
     ) -> Text:
         """Flat (un-indented) row used when a tool group has only one tool."""
         text = Text()
         label_style = (
             f"bold {ACCENT_SOFT}" if item.builtin else f"bold {ACCENT}"
         )
-        text.append(label or item.label, style=label_style)
+        source = "builtin" if item.builtin else item.identifier
+        _append_dotted_text(
+            text,
+            label or item.label,
+            source,
+            width=width or self._list_row_width(),
+            left_style=label_style,
+            right_style="#777777",
+        )
         return text
 
     def _refresh_general_panel(self) -> None:
@@ -3509,34 +3842,63 @@ class SelfEditModal(ModalScreen[str | None]):
         except Exception:
             pass
 
-    def _render_item_row(self, item: inventory.Item) -> Text:
+    def _list_row_width(self) -> int:
+        """Approximate the visible option width for dotted list rows."""
+        try:
+            opts = self.query_one("#se-options", OptionList)
+            width = opts.size.width - 4
+        except Exception:
+            width = LIST_ROW_WIDTH
+        return max(20, min(54, width))
+
+    def _render_item_row(
+        self,
+        item: inventory.Item,
+        *,
+        width: int | None = None,
+    ) -> Text:
         text = Text()
-        # Sub-only agents have no accent color (the picker doesn't expose
-        # them and the COLOR option is hidden in the editor), so render
-        # them gray to signal that the colour slot is unused.
         usage = ""
         if item.category == "agents":
             usage = str(item.extra.get("usage", "") or "").strip().lower()
+            color = str(item.extra.get("color", "") or "").strip()
+        else:
+            color = ""
         if item.builtin:
             label_style = f"bold {ACCENT_SOFT}"
+        elif item.category == "agents" and color:
+            label_style = f"bold {color}"
         elif usage == "sub":
             label_style = "bold #777777"
         else:
             label_style = f"bold {ACCENT}"
-        text.append(" ", style=ACCENT)
-        text.append(f"{item.label:<22s}", style=label_style)
+        row_width = width or self._list_row_width()
 
         # Agents: id + usage badge only (no name / model summary).
         if item.category == "agents":
-            color = str(item.extra.get("color", "") or "").strip()
             if usage in ("main", "sub", "both"):
-                badge_style = f"dim {color}" if color else "dim"
-                text.append(f" [{usage}]", style=badge_style)
+                _append_dotted_text(
+                    text,
+                    f"  {item.label}",
+                    f"[{usage}]",
+                    width=row_width,
+                    left_style=label_style,
+                    right_style="dim #777777",
+                )
+            else:
+                text.append(f"  {item.label}", style=label_style)
             return text
 
         # Non-agents: keep the summary line so users can scan descriptions.
-        suffix = " [builtin]" if item.builtin else ""
-        text.append(f" {item.summary}{suffix}", style="#999999")
+        right = "builtin" if item.builtin else item.summary
+        _append_dotted_text(
+            text,
+            f"  {item.label}",
+            right,
+            width=row_width,
+            left_style=label_style,
+            right_style="#999999",
+        )
         return text
 
     def _current_item(self) -> inventory.Item | None:
@@ -3575,20 +3937,80 @@ class SelfEditModal(ModalScreen[str | None]):
         else:
             inline.show_item(item)
 
+    def _inline_is_dirty(self) -> bool:
+        try:
+            inline = self.query_one("#se-inline", _InlineEditor)
+        except Exception:
+            return False
+        return inline.is_dirty()
+
+    def _guard_unsaved(self, continuation) -> None:
+        if not self._inline_is_dirty():
+            continuation()
+            return
+
+        def after(choice: str | None) -> None:
+            if choice == "save":
+                self._save_inline_then(continuation)
+            elif choice == "close":
+                continuation()
+            else:
+                try:
+                    self.query_one("#se-inline", _InlineEditor).focus()
+                except Exception:
+                    pass
+
+        self.app.push_screen(_UnsavedChangesPrompt(), after)
+
+    def _save_inline_then(self, continuation) -> None:
+        try:
+            inline = self.query_one("#se-inline", _InlineEditor)
+        except Exception:
+            return
+        self._after_inline_save = continuation
+        if not inline.request_save():
+            self._after_inline_save = None
+
+    def _restore_highlight(self, index: int | None) -> None:
+        if index is None:
+            return
+        try:
+            opts = self.query_one("#se-options", OptionList)
+            self._suppress_highlight_guard = True
+            opts.highlighted = index
+        except Exception:
+            pass
+        finally:
+            self._suppress_highlight_guard = False
+
+    def _select_option_index(self, index: int) -> None:
+        try:
+            opts = self.query_one("#se-options", OptionList)
+            self._suppress_highlight_guard = True
+            opts.highlighted = index
+            self._last_highlighted = index
+        except Exception:
+            return
+        finally:
+            self._suppress_highlight_guard = False
+        self._sync_inline_panel()
+
     # ── Tab / scope clicks ─────────────────────────────────────────
 
     @on(_CategoryClicked)
     def _on_category_clicked(self, message: _CategoryClicked) -> None:
-        for i, cat in enumerate(inventory.CATEGORIES):
-            if cat.key == message.category_key:
-                self._category_index = i
-                break
-        self._refresh_items()
+        def change_category() -> None:
+            for i, cat in enumerate(inventory.CATEGORIES):
+                if cat.key == message.category_key:
+                    self._category_index = i
+                    break
+            self._refresh_items()
+
+        self._guard_unsaved(change_category)
 
     @on(_ScopeClicked)
     def _on_scope_clicked(self, message: _ScopeClicked) -> None:
-        self._scope = message.scope
-        self._refresh_items()
+        self._guard_unsaved(lambda: self._set_scope(message.scope))
 
     @on(Button.Pressed, "#se-new-button")
     def _on_new_button(self, _: Button.Pressed) -> None:
@@ -3601,13 +4023,44 @@ class SelfEditModal(ModalScreen[str | None]):
     @on(_ListBuiltinToggle.Changed)
     def _on_list_builtin_changed(self, event: _ListBuiltinToggle.Changed) -> None:
         event.stop()
-        self._show_builtin_in_list = event.value
+        if self._inline_is_dirty():
+            self._sync_list_builtin_toggle()
+            self._guard_unsaved(
+                lambda: self._set_show_builtin_in_list(event.value),
+            )
+            return
+        self._set_show_builtin_in_list(event.value)
+
+    def _sync_list_builtin_toggle(self) -> None:
+        try:
+            self.query_one(_ListBuiltinToggle).set_selected(
+                self._show_builtin_in_list
+            )
+        except Exception:
+            pass
+
+    def _set_show_builtin_in_list(self, value: bool) -> None:
+        self._show_builtin_in_list = value
         self._refresh_items()
 
     # ── Actions ───────────────────────────────────────────────────
 
     @on(OptionList.OptionHighlighted)
-    def _on_option_highlighted(self, _: OptionList.OptionHighlighted) -> None:
+    def _on_option_highlighted(self, event: OptionList.OptionHighlighted) -> None:
+        index = event.option_index
+        if self._suppress_highlight_guard:
+            self._last_highlighted = index
+            self._sync_inline_panel()
+            return
+        if self._last_highlighted == index:
+            self._sync_inline_panel()
+            return
+        if self._inline_is_dirty():
+            previous = self._last_highlighted
+            self._restore_highlight(previous)
+            self._guard_unsaved(lambda: self._select_option_index(index))
+            return
+        self._last_highlighted = index
         self._sync_inline_panel()
 
     @on(OptionList.OptionSelected)
@@ -3618,20 +4071,42 @@ class SelfEditModal(ModalScreen[str | None]):
         # Form is already inline — focus the body so the user can edit.
         self._focus_inline_body()
 
+    @on(_InlineAgentPreviewChanged)
+    def _on_inline_agent_preview_changed(
+        self, message: _InlineAgentPreviewChanged
+    ) -> None:
+        message.stop()
+        if self._category.key != "agents":
+            return
+        item = self._current_item()
+        if item is None or item.identifier != message.identifier:
+            return
+        extra = dict(item.extra)
+        extra["usage"] = message.usage
+        extra["color"] = message.color
+        updated = replace(item, extra=extra)
+        self._replace_item_references(item, updated)
+        self._replace_highlighted_prompt(updated)
+
     def action_close(self) -> None:
-        self.dismiss(None)
+        self._guard_unsaved(lambda: self.dismiss(None))
 
     def action_next_scope(self) -> None:
-        self._scope = "project" if self._scope == "global" else "global"
-        self._bump_off_general()
-        self._refresh_items()
+        def change_scope() -> None:
+            self._scope = "project" if self._scope == "global" else "global"
+            self._bump_off_general()
+            self._refresh_items()
+
+        self._guard_unsaved(change_scope)
 
     def action_set_global(self) -> None:
-        self._scope = "global"
-        self._refresh_items()
+        self._guard_unsaved(lambda: self._set_scope("global"))
 
     def action_set_project(self) -> None:
-        self._scope = "project"
+        self._guard_unsaved(lambda: self._set_scope("project"))
+
+    def _set_scope(self, scope: str) -> None:
+        self._scope = scope
         self._bump_off_general()
         self._refresh_items()
 
@@ -3648,34 +4123,43 @@ class SelfEditModal(ModalScreen[str | None]):
             steps += 1
 
     def action_next_category(self) -> None:
-        n = len(inventory.CATEGORIES)
-        self._category_index = (self._category_index + 1) % n
-        steps = 0
-        while (
-            self._scope == "project"
-            and self._category.key in ("general", "tools")
-            and steps < n
-        ):
+        def change_category() -> None:
+            n = len(inventory.CATEGORIES)
             self._category_index = (self._category_index + 1) % n
-            steps += 1
-        self._refresh_items()
+            steps = 0
+            while (
+                self._scope == "project"
+                and self._category.key in ("general", "tools")
+                and steps < n
+            ):
+                self._category_index = (self._category_index + 1) % n
+                steps += 1
+            self._refresh_items()
+
+        self._guard_unsaved(change_category)
 
     def action_prev_category(self) -> None:
-        n = len(inventory.CATEGORIES)
-        self._category_index = (self._category_index - 1) % n
-        steps = 0
-        while (
-            self._scope == "project"
-            and self._category.key in ("general", "tools")
-            and steps < n
-        ):
+        def change_category() -> None:
+            n = len(inventory.CATEGORIES)
             self._category_index = (self._category_index - 1) % n
-            steps += 1
-        self._refresh_items()
+            steps = 0
+            while (
+                self._scope == "project"
+                and self._category.key in ("general", "tools")
+                and steps < n
+            ):
+                self._category_index = (self._category_index - 1) % n
+                steps += 1
+            self._refresh_items()
+
+        self._guard_unsaved(change_category)
 
     def action_new_item(self) -> None:
         if self._category.key == "general":
             return
+        self._guard_unsaved(self._start_new_item)
+
+    def _start_new_item(self) -> None:
         try:
             inline = self.query_one("#se-inline", _InlineEditor)
         except Exception:
@@ -3785,6 +4269,8 @@ class SelfEditModal(ModalScreen[str | None]):
         message.stop()
         if self._category is None:
             return
+        after_save = self._after_inline_save
+        self._after_inline_save = None
         try:
             current_id = (
                 self._current_item().identifier
@@ -3806,6 +4292,8 @@ class SelfEditModal(ModalScreen[str | None]):
             return
         if self._category.key == "mcp":
             self._reload_mcp_after_change()
+        if self._category.key == "agents":
+            self._refresh_app_agent_colors()
         # Refresh list, then re-select the saved item if possible.
         self._refresh_items()
         try:
@@ -3819,6 +4307,38 @@ class SelfEditModal(ModalScreen[str | None]):
             pass
         self._sync_inline_panel()
         self._toast(f"Saved {self._category.label.lower()} · {ident}")
+        if after_save is not None:
+            after_save()
+
+    def _replace_item_references(
+        self, old: inventory.Item, new: inventory.Item
+    ) -> None:
+        self._items = [new if it is old else it for it in self._items]
+        self._row_items = [new if it is old else it for it in self._row_items]
+
+    def _replace_highlighted_prompt(self, item: inventory.Item) -> None:
+        try:
+            opts = self.query_one("#se-options", OptionList)
+            idx = opts.highlighted
+            if idx is None or idx < 0:
+                return
+            opts.replace_option_prompt_at_index(
+                idx,
+                self._render_item_row(item, width=self._list_row_width()),
+            )
+        except Exception:
+            pass
+
+    def _refresh_app_agent_colors(self) -> None:
+        try:
+            from taui.tui.widgets.info_bar import sync_agent_colors
+
+            sync_agent_colors(self._working_dir)
+            update_status = getattr(self.app, "_update_status", None)
+            if update_status is not None:
+                update_status()
+        except Exception:
+            pass
 
     def _edit_general_setting(self) -> None:
         """Open an appropriate editor for the currently highlighted general setting."""
@@ -3918,6 +4438,9 @@ class SelfEditModal(ModalScreen[str | None]):
         )
 
     def action_delete_item(self) -> None:
+        self._guard_unsaved(self._delete_current_item)
+
+    def _delete_current_item(self) -> None:
         item = self._current_item()
         if item is None:
             return
@@ -3986,4 +4509,4 @@ class SelfEditModal(ModalScreen[str | None]):
     def on_key(self, event: Key) -> None:
         if event.key == "escape":
             event.stop()
-            self.dismiss(None)
+            self.action_close()
