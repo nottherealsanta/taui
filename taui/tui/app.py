@@ -944,7 +944,9 @@ class TauiApp(App[None]):
         state.tool_ctrl.reset()
 
         try:
-            self.query_one(ActivityProgress).stop()
+            progress = self.query_one(ActivityProgress)
+            progress.stop()
+            progress.reset_context()
         except NoMatches:
             pass
 
@@ -3651,6 +3653,11 @@ class TauiApp(App[None]):
         # session — that would reset the old session's loop/messages.
         new_session = await Session.create(self._config)
         await self._add_session(new_session)
+
+        try:
+            self.query_one(ActivityProgress).reset_context()
+        except NoMatches:
+            pass
 
         if prior_agent_id:
             self._reapply_agent_profile(prior_agent_id)
