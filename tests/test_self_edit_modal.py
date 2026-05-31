@@ -318,6 +318,123 @@ class TestSelfEditModal:
             await pilot.press("escape")
             await app._session.close()
 
+    async def test_agent_input_rows_keep_labels_aligned(
+        self, tmp_path, monkeypatch
+    ):
+        from textual.widgets import Input
+
+        provider = scenarios.happy_path("(unused)")
+        app = use_scripted_provider(monkeypatch, tmp_path, provider)
+        async with app.run_test(size=(160, 50)) as pilot:
+            await _ready(app)
+            await app.action_enter_self_edit()
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, SelfEditModal)
+
+            agent_id = screen.query_one(".se-inline-id", Input)
+            model_id = screen.query_one(".se-inline-model-id", Input)
+            assert agent_id.parent is not None
+            assert model_id.parent is not None
+            assert "se-input-row" in agent_id.parent.classes
+            assert "se-input-row" in model_id.parent.classes
+            await pilot.press("escape")
+            await app._session.close()
+
+    async def test_agent_color_preview_updates_left_list(
+        self, tmp_path, monkeypatch
+    ):
+        from textual.widgets import OptionList
+
+        from taui.tui.screens.self_edit_modal import _InlineAgentPreviewChanged
+
+        provider = scenarios.happy_path("(unused)")
+        app = use_scripted_provider(monkeypatch, tmp_path, provider)
+        async with app.run_test(size=(160, 50)) as pilot:
+            await _ready(app)
+            await app.action_enter_self_edit()
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, SelfEditModal)
+
+            screen._on_inline_agent_preview_changed(
+                _InlineAgentPreviewChanged("DEF", usage="both", color="#73daca")
+            )
+            await pilot.pause()
+
+            item = screen._current_item()
+            assert item is not None
+            assert item.extra["color"] == "#73daca"
+            opts = screen.query_one("#se-options", OptionList)
+            prompt = opts.get_option_at_index(0).prompt
+            assert "[both]" in prompt.plain
+            assert any("#73daca" in str(span.style) for span in prompt.spans)
+            await pilot.press("escape")
+            await app._session.close()
+
+    async def test_dirty_inline_close_prompts_before_dismiss(
+        self, tmp_path, monkeypatch
+    ):
+        from textual.widgets import TextArea
+
+        from taui.tui.screens.self_edit_modal import _UnsavedChangesPrompt
+
+        provider = scenarios.happy_path("(unused)")
+        app = use_scripted_provider(monkeypatch, tmp_path, provider)
+        async with app.run_test(size=(160, 50)) as pilot:
+            await _ready(app)
+            await app.action_enter_self_edit()
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, SelfEditModal)
+
+            body = screen.query_one(".se-inline-body", TextArea)
+            body.text = f"{body.text}\nUnsaved edit."
+            screen.action_close()
+            await pilot.pause()
+
+            assert isinstance(app.screen, _UnsavedChangesPrompt)
+            await pilot.press("escape")
+            await pilot.pause()
+            assert isinstance(app.screen, SelfEditModal)
+            screen.action_close()
+            await pilot.pause()
+            assert isinstance(app.screen, _UnsavedChangesPrompt)
+            await pilot.press("c")
+            await pilot.pause()
+            await app._session.close()
+
+    async def test_dirty_inline_save_choice_continues_navigation(
+        self, tmp_path, monkeypatch
+    ):
+        from textual.widgets import TextArea
+
+        from taui.tui.screens.self_edit_modal import _UnsavedChangesPrompt
+
+        provider = scenarios.happy_path("(unused)")
+        app = use_scripted_provider(monkeypatch, tmp_path, provider)
+        async with app.run_test(size=(160, 50)) as pilot:
+            await _ready(app)
+            await app.action_enter_self_edit()
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, SelfEditModal)
+            start_category = screen._category.key
+
+            body = screen.query_one(".se-inline-body", TextArea)
+            body.text = f"{body.text}\nSaved before navigation."
+            screen.action_next_category()
+            await pilot.pause()
+            assert isinstance(app.screen, _UnsavedChangesPrompt)
+
+            await pilot.press("s")
+            await pilot.pause()
+            await pilot.pause()
+            assert isinstance(app.screen, SelfEditModal)
+            assert screen._category.key != start_category
+            await pilot.press("escape")
+            await app._session.close()
+
     async def test_modal_category_cycling(self, tmp_path, monkeypatch):
         provider = scenarios.happy_path("(unused)")
         app = use_scripted_provider(monkeypatch, tmp_path, provider)
