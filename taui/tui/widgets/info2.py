@@ -101,8 +101,8 @@ class Info2(ScrollableContainer):
     }
     Info2.active {
         display: block;
-        border-top: tall $primary;
-        border-bottom: tall $primary;
+        border-top: tall $surface-lighten-1;
+        border-bottom: tall $surface-lighten-1;
     }
     Info2.questions {
         max-height: 24;
