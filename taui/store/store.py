@@ -564,6 +564,7 @@ class Store:
             "FROM sessions s "
             "LEFT JOIN streams st ON s.stream_id = st.stream_id "
             "LEFT JOIN sessions ps ON st.parent_id = ps.stream_id "
+            "WHERE st.parent_id IS NULL "
             "ORDER BY s.last_active DESC LIMIT ?",
             (limit,),
         ) as cur:

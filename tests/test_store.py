@@ -499,7 +499,8 @@ class TestListSessionsWithParents:
             sessions = await store.list_sessions_with_parents()
             by_id = {s["session_id"]: s for s in sessions}
 
-            assert by_id["child-sess"]["parent_session_id"] == "parent-sess"
+            # Sub-agent (child) sessions should be excluded
+            assert "child-sess" not in by_id
             assert by_id["parent-sess"].get("parent_session_id") is None
         finally:
             await store.close()
