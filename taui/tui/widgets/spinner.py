@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 
 from rich.text import Text
+from textual.reactive import reactive
 from textual.timer import Timer
 from textual.widgets import Static
 
@@ -38,6 +39,8 @@ def _clamp_ratio(tokens: int, max_tokens: int) -> float:
 class ActivityProgress(Static):
     """Activity progress row above the info bar."""
 
+    _context_ratio: reactive[float] = reactive(0.0)
+
     DEFAULT_CSS = """
     ActivityProgress {
         height: 1;
@@ -54,7 +57,6 @@ class ActivityProgress(Static):
         self._mode: str = "idle"  # "idle" | "bounce" | "breathe"
         self._active_style = "#3fb950"
         self._breath_phase = 0.0
-        self._context_ratio = 0.0
         self._timer: Timer | None = None
 
     def _advance_bounce(self) -> None:
@@ -72,7 +74,10 @@ class ActivityProgress(Static):
 
     def set_context_usage(self, tokens: int, max_tokens: int) -> None:
         self._context_ratio = _clamp_ratio(tokens, max_tokens)
-        self.refresh()
+
+    def reset_context(self) -> None:
+        """Clear context usage — call when starting a new session."""
+        self._context_ratio = 0.0
 
     def _context_style(self) -> str:
         if self._context_ratio >= 0.75:
