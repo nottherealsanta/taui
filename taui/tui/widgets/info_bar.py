@@ -174,6 +174,7 @@ class InfoBar(Static):
     InfoBar #info-worktree {
         color: $foreground;
         margin-right: 2;
+        align: right middle;
     }
     """
 
@@ -268,7 +269,7 @@ class InfoBar(Static):
         worktree = self.query_one("#info-worktree", Static)
         if self._worktree_branch:
             worktree.update(
-                Text(f" ⌥ {self._worktree_branch} ", style="bold black on #79c0ff")
+                Text(f" ⌥ {self._worktree_branch} ")
             )
             worktree.display = True
         else:

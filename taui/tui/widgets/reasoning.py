@@ -89,7 +89,7 @@ class ReasoningWidget(Container):
         height: auto;
         min-height: 1;
         max-height: 5;
-        padding: 0 1 0 0;
+        padding: 0 1 0 2;
         color: $text-muted;
         scrollbar-size-vertical: 1;
     }

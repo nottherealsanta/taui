@@ -54,8 +54,8 @@ class SessionPickerScreen(ModalScreen[str | None]):
         border: solid #5a5a5a;
     }
     #session-content-toggle {
-        width: 20;
-        min-width: 20;
+        width: auto;
+        min-width: 22;
         height: 3;
         margin: 0 0 0 1;
         content-align: center middle;
