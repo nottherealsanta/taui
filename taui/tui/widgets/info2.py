@@ -26,6 +26,18 @@ from taui.tui.widgets.questions_panel import QuestionsPanel, QuestionSpec
 
 type Completion = tuple[str, str, bool]  # (name, description, accepts_args)
 
+# Display labels for model-variant (reasoning effort) ids; mirrors the
+# standalone variant picker screen.
+_VARIANT_LABELS: dict[str, str] = {
+    "none": "None",
+    "minimal": "Minimal",
+    "low": "Low",
+    "medium": "Medium",
+    "high": "High",
+    "xhigh": "Extra-high",
+    "max": "Max",
+}
+
 
 @dataclass(slots=True)
 class ApprovalResult:
@@ -41,6 +53,7 @@ class Info2Mode(Enum):
     HIDDEN = auto()
     COMPLETIONS = auto()
     MODELS = auto()
+    VARIANTS = auto()
     AGENTS = auto()
     SKILLS = auto()
     PROMPTS = auto()
@@ -122,6 +135,13 @@ class Info2(ScrollableContainer):
             super().__init__()
             self.model_id = model_id
 
+    class VariantSelected(Message):
+        """A model variant (reasoning effort) was selected inline."""
+
+        def __init__(self, variant: str) -> None:
+            super().__init__()
+            self.variant = variant
+
     class AgentSelected(Message):
         """An agent was selected inline."""
 
@@ -160,6 +180,8 @@ class Info2(ScrollableContainer):
         self._mode: Info2Mode = Info2Mode.HIDDEN
         self._items: list[Completion] = []
         self._model_items: list[dict] = []
+        # Each entry is (value, label); the leading "" entry clears the variant.
+        self._variant_items: list[tuple[str, str]] = []
         self._agent_items: list = []  # list[AgentProfile]
         self._skill_items: list = []  # list[Skill]
         self._prompt_items: list = []  # list[Item]
@@ -221,6 +243,25 @@ class Info2(ScrollableContainer):
                 self.selected_index = i
                 break
         self._rebuild_models()
+        self.add_class("active")
+
+    def show_variants(self, variants: list[str], current: str) -> None:
+        """Show inline model-variant (reasoning effort) picker.
+
+        Always leads with a "(default)" entry that clears the variant.
+        """
+        self._mode = Info2Mode.VARIANTS
+        entries: list[tuple[str, str]] = [("", "(default — no variant)")]
+        for v in variants:
+            entries.append((v, _VARIANT_LABELS.get(v, v.title())))
+        self._variant_items = entries
+        self._current_marker = current
+        self.selected_index = 0
+        for i, (key, _) in enumerate(entries):
+            if key == current:
+                self.selected_index = i
+                break
+        self._rebuild_variants()
         self.add_class("active")
 
     def show_agents(self, agents: list, current: str) -> None:
@@ -307,6 +348,7 @@ class Info2(ScrollableContainer):
         self._mode = Info2Mode.HIDDEN
         self._items = []
         self._model_items = []
+        self._variant_items = []
         self._agent_items = []
         self._skill_items = []
         self._prompt_items = []
@@ -372,6 +414,9 @@ class Info2(ScrollableContainer):
             case Info2Mode.MODELS:
                 if self._model_items and 0 <= self.selected_index < len(self._model_items):
                     return str(self._model_items[self.selected_index]["id"])
+            case Info2Mode.VARIANTS:
+                if self._variant_items and 0 <= self.selected_index < len(self._variant_items):
+                    return self._variant_items[self.selected_index][0]
             case Info2Mode.AGENTS:
                 if self._agent_items and 0 <= self.selected_index < len(self._agent_items):
                     return self._agent_items[self.selected_index].id
@@ -422,6 +467,11 @@ class Info2(ScrollableContainer):
                 if value is not None:
                     self.post_message(self.ModelSelected(value))
                 self.hide()
+            case Info2Mode.VARIANTS:
+                value = self.current_value
+                if value is not None:
+                    self.post_message(self.VariantSelected(value))
+                self.hide()
             case Info2Mode.AGENTS:
                 value = self.current_value
                 if value is not None:
@@ -471,6 +521,8 @@ class Info2(ScrollableContainer):
                 return len(self._items)
             case Info2Mode.MODELS:
                 return len(self._model_items)
+            case Info2Mode.VARIANTS:
+                return len(self._variant_items)
             case Info2Mode.AGENTS:
                 return len(self._agent_items)
             case Info2Mode.SKILLS:
@@ -502,6 +554,14 @@ class Info2(ScrollableContainer):
         self._mount_filter_header()
         for i, model in enumerate(self._model_items):
             item = Info2Item(self._model_label(model))
+            if i == self.selected_index:
+                item.add_class("highlighted")
+            self.mount(item)
+
+    def _rebuild_variants(self) -> None:
+        self.remove_children()
+        for i, (key, label) in enumerate(self._variant_items):
+            item = Info2Item(self._variant_label(key, label))
             if i == self.selected_index:
                 item.add_class("highlighted")
             self.mount(item)
@@ -551,6 +611,13 @@ class Info2(ScrollableContainer):
         text = Text()
         text.append(f"{model_id:<45s}", style="bold cyan" if marker else "white")
         text.append(f"  {ctx:>6s} ctx{reasoning}{marker}", style="dim")
+        return text
+
+    def _variant_label(self, key: str, label: str) -> Text:
+        marker = " ◀" if key == self._current_marker else ""
+        text = Text()
+        text.append(f"{label:<24s}", style="bold cyan" if marker else "white")
+        text.append(marker, style="bold cyan")
         return text
 
     def _agent_label(self, agent) -> Text:

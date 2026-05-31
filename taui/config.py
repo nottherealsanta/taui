@@ -128,4 +128,14 @@ class Config:
                 from taui.llm_provider.models import get_default_model
                 cfg.model = get_default_model(cfg.provider)
 
+        # If no variant was set, restore the last-used one for this provider —
+        # but only if the resolved model actually accepts it.
+        if not cfg.model_variant and cfg.model:
+            from taui.llm_provider.config import load_last_variant
+            last_var = load_last_variant(cfg.provider)
+            if last_var:
+                from taui.llm_provider.models import get_model_variants
+                if last_var in get_model_variants(cfg.provider, cfg.model):
+                    cfg.model_variant = last_var
+
         return cfg

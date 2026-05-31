@@ -47,6 +47,27 @@ def load_last_model(provider: str) -> str | None:
     return config.get("last_model", {}).get(provider) or None
 
 
+def save_last_variant(provider: str, variant: str) -> None:
+    """Persist the last-used model variant (reasoning effort) for a provider.
+
+    An empty ``variant`` records that the user cleared the variant, so a fresh
+    session won't re-apply a stale one.
+    """
+    if not provider:
+        return
+    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    existing = load_config()
+    last = existing.setdefault("last_variant", {})
+    last[provider] = variant
+    CONFIG_PATH.write_text(_dict_to_toml(existing), encoding="utf-8")
+
+
+def load_last_variant(provider: str) -> str | None:
+    """Return the last-used variant for a provider, or None (incl. cleared)."""
+    config = load_config()
+    return config.get("last_variant", {}).get(provider) or None
+
+
 def save_last_agent_model(agent_id: str, provider: str, model: str) -> None:
     """Persist the last-used (provider, model) pair for a specific agent."""
     if not agent_id:

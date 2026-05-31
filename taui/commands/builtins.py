@@ -1067,6 +1067,13 @@ class VariantCommand:
 
 async def _persist_session_variant(session: Any, variant: str) -> None:
     """Best-effort metadata update for already-persisted sessions."""
+    # Remember the choice for the provider so fresh sessions pick it back up.
+    # This runs even for not-yet-persisted sessions (mirrors save_last_model).
+    try:
+        from taui.llm_provider.config import save_last_variant
+        save_last_variant(session.config.provider, variant)
+    except Exception:
+        pass
     if not getattr(session, "_session_persisted", False):
         return
     store = getattr(session, "_store", None)

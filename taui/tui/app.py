@@ -43,7 +43,6 @@ from taui.tui.screens.git_diff import GitDiffScreen
 from taui.tui.screens.pasted_content import PastedContentScreen, PasteResult
 from taui.tui.screens.session_picker import SessionPickerScreen
 from taui.tui.screens.theme_picker import ThemePickerScreen
-from taui.tui.screens.variant_picker import VariantPickerScreen
 from taui.tui.session_state import SessionManager, SessionState
 from taui.tui.theme import ALL_THEMES, TAUI_DARK
 from taui.tui.tool_controller import ToolController
@@ -1614,7 +1613,7 @@ class TauiApp(App[None]):
         info2.show_prompts(prompts)
 
     def _open_variant_picker(self) -> None:
-        """Open the modal model-variant picker, scoped to the current model."""
+        """Show the inline Info2 model-variant picker for the current model."""
         from taui.llm_provider.models import get_model_variants
 
         if self._session is not None:
@@ -1634,10 +1633,11 @@ class TauiApp(App[None]):
             )
             return
 
-        self.push_screen(
-            VariantPickerScreen(variants, current=current, model=model),
-            self._apply_variant,
-        )
+        try:
+            info2 = self.query_one(Info2)
+        except Exception:
+            return
+        info2.show_variants(variants, current=current)
 
     def _apply_variant(self, variant: str | None) -> None:
         if variant is None:
@@ -1648,6 +1648,27 @@ class TauiApp(App[None]):
                 self._session._loop._model_variant = variant
             except Exception:
                 pass
+            # Persist to this session's metadata so it survives a resume.
+            async def _persist() -> None:
+                await self._session._store.update_session(
+                    self._session.session_id, model_variant=variant
+                )
+            try:
+                self.run_worker(_persist(), exclusive=False)
+            except Exception:
+                pass
+        # Remember as last-used variant for the provider so fresh sessions
+        # pick it back up (mirrors how the model choice is remembered).
+        provider = (
+            self._session.config.provider
+            if self._session is not None
+            else self._config.provider
+        )
+        try:
+            from taui.llm_provider.config import save_last_variant
+            save_last_variant(provider, variant)
+        except Exception:
+            pass
         self._config.model_variant = variant
         self._update_status()
 
@@ -1721,6 +1742,10 @@ class TauiApp(App[None]):
     @on(Info2.ModelSelected)
     def handle_info2_model_selected(self, event: Info2.ModelSelected) -> None:
         self._apply_selected_model(event.model_id)
+
+    @on(Info2.VariantSelected)
+    def handle_info2_variant_selected(self, event: Info2.VariantSelected) -> None:
+        self._apply_variant(event.variant)
 
     @on(Info2.AgentSelected)
     def handle_info2_agent_selected(self, event: Info2.AgentSelected) -> None:
