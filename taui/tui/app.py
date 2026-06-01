@@ -900,7 +900,13 @@ class TauiApp(App[None]):
             self._apply_self_edit_profile(profile)
 
     def _apply_default_agent_profile_id(self) -> None:
-        """Set the agent_id from DEF profile without replacing the loop."""
+        """Set the agent_id and policy from DEF profile without replacing the loop.
+
+        Used by _resume_session to restore the DEF profile's auto_approve and
+        per-tool policy overrides on the existing executor — without rebuilding
+        the loop or touching the system prompt (which would clobber the resumed
+        conversation).
+        """
         if self._session is None:
             return
         try:
@@ -909,6 +915,31 @@ class TauiApp(App[None]):
             profile = None
         if profile is not None:
             self._session._loop.agent_id = profile.id
+
+            # Mirror the policy-only portion of _apply_self_edit_profile so that
+            # auto_approve and per-tool overrides survive a resume.
+            executor = getattr(self._session, "_executor", None)
+            if executor is None:
+                return
+            from taui.tools.executor import PolicyDecision
+
+            policy = executor.policy
+
+            # Reset per-tool overrides to the session base.
+            policy.set_overrides(
+                getattr(self._session, "_base_policy_overrides", {})
+            )
+
+            # Re-apply the profile's per-tool tool_config.
+            for tool_name, tc in profile.tool_config.items():
+                try:
+                    decision = PolicyDecision(tc.policy)
+                except ValueError:
+                    continue
+                policy.set(tool_name, decision)
+
+            # Apply the agent profile's auto-approve preference.
+            policy.auto_approve = bool(profile.auto_approve)
 
     def _reapply_agent_profile(self, agent_id: str) -> None:
         """Re-apply a saved agent profile by id — used after new_session
