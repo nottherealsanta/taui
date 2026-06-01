@@ -216,6 +216,7 @@ class MockMcpManager:
     def __init__(self) -> None:
         self._configs: dict[str, McpServerConfig] = {}
         self._clients: dict[str, MockMcpClient] = {}
+        self._fail_connect: bool = False  # when True, connect() always raises
 
     @property
     def server_names(self) -> list[str]:
@@ -231,6 +232,8 @@ class MockMcpManager:
         cfg = self._configs[name]
         if not cfg.enabled:
             raise ValueError(f"MCP server '{name}' is disabled")
+        if self._fail_connect:
+            raise ConnectionError(f"mock failure for '{name}'")
         client = MockMcpClient(name)
         self._clients[name] = client
         return client
@@ -404,6 +407,22 @@ class TestMcpToolTools:
         result = await tool.execute({"operation": "tools"})
         assert not result.error
         assert "No MCP servers configured" in result.content
+
+    async def test_tools_all_connections_fail(self):
+        """When all connect attempts fail, report the failure — not 'no tools'."""
+        tool, mgr = _make_mcp_tool(["github"])
+        mgr._fail_connect = True
+        result = await tool.execute({"operation": "tools"})
+        assert result.error
+        assert "Failed to connect" in result.content
+
+    async def test_tools_single_server_connect_fails(self):
+        """Single-server tools request with connect failure."""
+        tool, mgr = _make_mcp_tool(["github"])
+        mgr._fail_connect = True
+        result = await tool.execute({"operation": "tools", "server": "github"})
+        assert result.error
+        assert "Connection failed" in result.content
 
 
 class TestMcpToolCall:

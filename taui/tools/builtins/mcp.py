@@ -224,6 +224,10 @@ class McpTool:
 
         tools = self._manager.all_tools()
         if not tools:
+            if not self._manager.connected_servers:
+                return ToolResult.fail(
+                    "Failed to connect to any configured MCP servers."
+                )
             return ToolResult.ok("Connected servers expose no tools.")
 
         lines = [f"MCP tools ({len(tools)}):"]
