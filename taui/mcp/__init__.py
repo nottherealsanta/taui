@@ -155,7 +155,7 @@ class McpClient:
         if self._process:
             try:
                 self._process.terminate()
-                await asyncio.wait_for(self._process.wait(), timeout=5.0)
+                await asyncio.wait_for(self._process.wait(), timeout=1.0)
             except (TimeoutError, ProcessLookupError):
                 self._process.kill()
             self._process = None
@@ -621,13 +621,16 @@ class McpManager:
         return connected
 
     async def disconnect_all(self) -> None:
-        """Disconnect from all servers."""
-        for client in self._clients.values():
-            try:
-                await client.disconnect()
-            except Exception:
-                logger.debug("Error disconnecting MCP client", exc_info=True)
-        self._clients.clear()
+        """Disconnect from all servers (concurrently)."""
+        if self._clients:
+            results = await asyncio.gather(
+                *(c.disconnect() for c in self._clients.values()),
+                return_exceptions=True,
+            )
+            for r in results:
+                if isinstance(r, Exception):
+                    logger.debug("Error disconnecting MCP client", exc_info=r)
+            self._clients.clear()
 
     def get_client(self, name: str) -> McpClient | None:
         """Get a connected client by name."""

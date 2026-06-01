@@ -227,7 +227,7 @@ class TaskManager:
             if bg.asyncio_task is not None and not bg.asyncio_task.done():
                 bg.cancel_event.set()
                 bg.asyncio_task.cancel()
-        await self.wait_all(timeout=5.0)
+        await self.wait_all(timeout=2.0)
 
     # ── Helpers for the runner ────────────────────────────────────────────
 

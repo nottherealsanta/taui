@@ -3658,14 +3658,14 @@ class TauiApp(App[None]):
     async def action_quit_app(self) -> None:
         # Reset terminal title
         self._set_terminal_title("")
-        # Close all sessions
+        # Close all sessions concurrently
+        close_coros = []
         for sid in list(self._sessions.order):
             state = self._sessions.get(sid)
             if state is not None:
-                try:
-                    await state.session.close()
-                except Exception:
-                    pass
+                close_coros.append(state.session.close())
+        if close_coros:
+            await asyncio.gather(*close_coros, return_exceptions=True)
         self.exit()
 
     async def _reset_current_session(self) -> None:

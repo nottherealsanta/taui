@@ -988,22 +988,18 @@ class Session:
 
     async def close(self) -> None:
         """Clean up resources."""
-        try:
-            await self._task_manager.shutdown()
-        except Exception:
-            logger.debug("Error shutting down task manager", exc_info=True)
-        await close_builtin_extensions(self)
-        if hasattr(self, "_lsp_manager"):
-            try:
-                await self._lsp_manager.stop_all()
-            except Exception:
-                logger.debug("Error stopping LSP manager", exc_info=True)
+        # Run independent teardowns concurrently; each is wrapped so one
+        # failure doesn't abort the others (return_exceptions=True).
+        teardown_coros: list[Any] = [self._task_manager.shutdown()]
+        teardown_coros.append(close_builtin_extensions(self))
         bg_registry = getattr(self._executor, "_bg_registry", None)
         if bg_registry is not None:
-            try:
-                await bg_registry.shutdown()
-            except Exception:
-                logger.debug("Error shutting down bg processes", exc_info=True)
+            teardown_coros.append(bg_registry.shutdown())
+        results = await asyncio.gather(*teardown_coros, return_exceptions=True)
+        for r in results:
+            if isinstance(r, Exception):
+                logger.debug("Error during session teardown", exc_info=r)
+        # Store close last — needs DB flush after everything else is done.
         try:
             await self._store.close()
         except Exception:

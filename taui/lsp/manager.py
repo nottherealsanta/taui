@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from pathlib import Path
 from typing import Any
@@ -60,9 +61,15 @@ class LspManager:
         return client
 
     async def stop_all(self) -> None:
-        for client in self._clients.values():
-            await client.stop()
-        self._clients.clear()
+        if self._clients:
+            results = await asyncio.gather(
+                *(c.stop() for c in self._clients.values()),
+                return_exceptions=True,
+            )
+            for r in results:
+                if isinstance(r, Exception):
+                    log.debug("Error stopping LSP client", exc_info=r)
+            self._clients.clear()
 
     # ------------------------------------------------------------------
     # high-level operations

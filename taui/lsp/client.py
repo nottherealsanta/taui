@@ -68,13 +68,13 @@ class LspClient:
         if not self._proc:
             return
         try:
-            await self.request("shutdown", None, timeout=5.0)
+            await self.request("shutdown", None, timeout=2.0)
             await self.notify("exit", None)
         except Exception:
             pass
         try:
             self._proc.terminate()
-            await asyncio.wait_for(self._proc.wait(), timeout=3.0)
+            await asyncio.wait_for(self._proc.wait(), timeout=1.0)
         except Exception:
             self._proc.kill()
         if self._reader_task:
