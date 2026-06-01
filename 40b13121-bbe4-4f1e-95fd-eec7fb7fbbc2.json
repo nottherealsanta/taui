@@ -1,0 +1,23 @@
+{
+  "interaction": {
+    "id": "40b13121-bbe4-4f1e-95fd-eec7fb7fbbc2",
+    "conversation_id": "agent-session-default",
+    "parent_id": null,
+    "timestamp": "2026-06-01T01:28:13Z",
+    "author": "agent",
+    "user_prompt": "",
+    "model_name": "agent",
+    "model_cot": "",
+    "model_response": null,
+    "source_request_id": null
+  },
+  "context_items": [],
+  "tool_executions": [],
+  "artifact_links": [
+    {
+      "interaction_id": "40b13121-bbe4-4f1e-95fd-eec7fb7fbbc2",
+      "git_commit_hash": "de00fd90e9c19de0186ac95be756e355c014b1ac",
+      "link_type": "generated"
+    }
+  ]
+}
