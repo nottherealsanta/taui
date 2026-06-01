@@ -383,7 +383,7 @@ def _prompt_toolkit_select(models: list[dict], provider: str) -> str:
             tag = " reasoning" if m["reasoning"] else ""
             label = f"{m['name']}  ({ctx} ctx){tag}"
             if i == selected[0]:
-                lines.append(("bold fg:cyan", f"  ❯ {label}\n"))
+                lines.append(("bold fg:#f97316", f"  ❯ {label}\n"))
             else:
                 lines.append(("class:dim", f"    {label}\n"))
         lines.append(("", "\n"))

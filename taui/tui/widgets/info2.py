@@ -581,7 +581,7 @@ class Info2(ScrollableContainer):
         header = Static(
             Text.assemble(
                 ("> ", "dim"),
-                (self._filter_query, "bold cyan"),
+                (self._filter_query, "bold $primary"),
             )
         )
         self.mount(header)
@@ -609,15 +609,15 @@ class Info2(ScrollableContainer):
         reasoning = " reasoning" if model.get("reasoning") else ""
         marker = " ◀" if model_id == self._current_marker else ""
         text = Text()
-        text.append(f"{model_id:<45s}", style="bold cyan" if marker else "white")
+        text.append(f"{model_id:<45s}", style="bold $primary" if marker else "white")
         text.append(f"  {ctx:>6s} ctx{reasoning}{marker}", style="dim")
         return text
 
     def _variant_label(self, key: str, label: str) -> Text:
         marker = " ◀" if key == self._current_marker else ""
         text = Text()
-        text.append(f"{label:<24s}", style="bold cyan" if marker else "white")
-        text.append(marker, style="bold cyan")
+        text.append(f"{label:<24s}", style="bold $primary" if marker else "white")
+        text.append(marker, style="bold $primary")
         return text
 
     def _agent_label(self, agent) -> Text:
@@ -626,7 +626,7 @@ class Info2(ScrollableContainer):
         ) or "-"
         marker = " ◀" if agent.id.upper() == self._current_marker else ""
         text = Text()
-        text.append(f"{agent.id:<5s}", style="bold cyan" if marker else "white")
+        text.append(f"{agent.id:<5s}", style="bold $primary" if marker else "white")
         text.append(f"{agent.name:<24s}", style="white")
         text.append(f"  {model}{marker}", style="dim")
         return text
@@ -637,7 +637,7 @@ class Info2(ScrollableContainer):
         text = Text()
         text.append(
             f"{skill.name:<30s}",
-            style="bold cyan" if marker else "white",
+            style="bold $primary" if marker else "white",
         )
         text.append(f"  {skill.scope}{marker}", style="dim")
         return text

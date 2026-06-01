@@ -105,7 +105,7 @@ def prompt_provider_selection() -> str:
         for i, (key, label) in enumerate(providers):
             mark = "◉" if i in checked else "○"
             if i == cursor[0]:
-                lines.append(("bold fg:cyan", f"  ❯ {mark} {label}\n"))
+                lines.append(("bold fg:#f97316", f"  ❯ {mark} {label}\n"))
             else:
                 lines.append(("class:dim", f"    {mark} {label}\n"))
         lines.append(("", "\n"))
