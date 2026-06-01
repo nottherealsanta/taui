@@ -465,8 +465,48 @@ class TauiApp(App[None]):
         chat_input.display = True
         chat_input.focus()
 
+        # Auto-connect configured MCP servers in the background.
+        self.run_worker(
+            self._autoconnect_mcp(),
+            name="mcp_autoconnect",
+            group="startup",
+            exclusive=False,
+            exit_on_error=False,
+        )
+
         if self._config.session_id:
             await self._resume_session(self._config.session_id)
+
+    async def _autoconnect_mcp(self) -> None:
+        """Auto-connect all enabled MCP servers on startup."""
+        mgr = getattr(self._session, "_mcp_manager", None)
+        if mgr is None:
+            return
+        await mgr.connect_all()
+        self._refresh_mcp_ui()
+
+    def _refresh_mcp_ui(self) -> None:
+        """Re-render the MCP banner and sidebar after connection changes."""
+        try:
+            self._refresh_context_banner()
+        except Exception:
+            pass
+        try:
+            self._refresh_sidebars_if_visible()
+        except Exception:
+            pass
+
+    async def connect_mcp_server(self, name: str) -> None:
+        """Connect a single MCP server by name (called from McpModal)."""
+        mgr = getattr(self._session, "_mcp_manager", None)
+        if mgr is None:
+            self.notify("MCP system not configured.", severity="error")
+            return
+        try:
+            await mgr.connect(name)
+            self._refresh_mcp_ui()
+        except Exception as exc:
+            self.notify(f"Failed to connect '{name}': {exc}", severity="error")
 
     async def _add_session(self, session: Session) -> SessionState:
         """Create a SessionState for *session*, mount its chat log, and activate it."""
@@ -2351,6 +2391,7 @@ class TauiApp(App[None]):
                 mcp_payload,
                 label_text="MCP",
                 label_style=neutral_style,
+                mcp_manager=getattr(self._session, "_mcp_manager", None),
             )
         )
 
@@ -3237,6 +3278,9 @@ class TauiApp(App[None]):
             await chat_log.mount(
                 Static(f"[{style}]{result.output}[/{style}]", markup=True)
             )
+
+        if action == "mcp_refresh":
+            self._refresh_mcp_ui()
 
         if action == "compact_requested":
             await self._handle_compact(chat_log)

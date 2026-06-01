@@ -126,13 +126,20 @@ class _FakeMcpManager:
         all_servers: dict[str, list[str]],
     ) -> None:
         self.connected_servers = connected
+        self._all_servers = all_servers
         self._clients = {
             name: _FakeMcpClient(tools=[_FakeMcpTool(t) for t in tools])
             for name, tools in all_servers.items()
         }
 
+    @property
+    def server_names(self) -> list[str]:
+        return sorted(self._all_servers)
+
     def get_client(self, name: str):
-        return self._clients.get(name)
+        if name in self.connected_servers:
+            return self._clients.get(name)
+        return None
 
 
 def test_build_mcp_payload_only_connected():
@@ -175,3 +182,43 @@ def test_mcp_banner_empty_shows_placeholder():
     from taui.tui.widgets.mcp_banner import McpBanner
 
     assert "no MCP servers connected" in McpBanner({})._render_body()
+
+
+def test_mcp_modal_shows_unconnected_servers():
+    """McpModal with mcp_manager lists configured-but-unconnected servers."""
+    from taui.tui.widgets.mcp_banner import McpModal
+
+    mgr = _FakeMcpManager(
+        connected=["github"],
+        all_servers={
+            "github": ["search", "clone"],
+            "filesystem": ["read", "write"],
+        },
+    )
+    modal = McpModal({"github": ["clone", "search"]}, mcp_manager=mgr)
+    infos = modal._all_server_info()
+    names = [n for n, _, _ in infos]
+    connected_flags = {n: c for n, c, _ in infos}
+    assert "github" in names
+    assert "filesystem" in names
+    assert connected_flags["github"] is True
+    assert connected_flags["filesystem"] is False
+
+
+def test_mcp_modal_no_manager_falls_back():
+    """McpModal without mcp_manager only shows the payload servers."""
+    from taui.tui.widgets.mcp_banner import McpModal
+
+    modal = McpModal({"github": ["a", "b"]})
+    infos = modal._all_server_info()
+    assert len(infos) == 1
+    assert infos[0] == ("github", True, ["a", "b"])
+
+
+def test_mcp_banner_passes_manager_to_modal():
+    """McpBanner stores mcp_manager and passes it through."""
+    from taui.tui.widgets.mcp_banner import McpBanner
+
+    mgr = _FakeMcpManager(connected=[], all_servers={"x": []})
+    banner = McpBanner({}, mcp_manager=mgr)
+    assert banner._manager is mgr
