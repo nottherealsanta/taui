@@ -9,7 +9,6 @@ button in the modal.
 
 from __future__ import annotations
 
-import logging
 from typing import Any
 
 from textual import events
@@ -17,8 +16,6 @@ from textual.app import ComposeResult
 from textual.containers import Container, Horizontal, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import Button, Static
-
-logger = logging.getLogger(__name__)
 
 _MCP_DEFAULT_COLOR = "#a0a0a0"
 _MCP_EMPTY_COLOR = "#5a5a5a"
