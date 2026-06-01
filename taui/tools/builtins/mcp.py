@@ -2,7 +2,9 @@
 
 Provides the agent with access to external MCP servers.
 The agent can list servers, connect/disconnect, browse available
-tools, and invoke tools on connected servers.
+tools, and invoke tools on connected servers.  The ``tools`` and
+``call`` operations auto-connect configured servers on demand so
+an explicit ``connect`` step is never required.
 """
 
 from __future__ import annotations
@@ -18,23 +20,24 @@ class McpTool:
     """Interface to external MCP servers and their tools.
 
     Operations:
-        servers  — list configured MCP servers and their status
-        connect  — connect to a server
+        servers    — list configured MCP servers and their status
+        connect    — connect to a server
         disconnect — disconnect from a server
-        tools    — list tools from connected servers
-        call     — invoke a tool on a connected server
+        tools      — list tools (optionally for one server; auto-connects)
+        call       — invoke a tool on a server (auto-connects)
     """
 
     name: str = "mcp"
     description: str = (
         "Manage external MCP servers and invoke their tools. "
         "Operations: servers (list configured), connect, disconnect, "
-        "tools (list available), call (invoke a tool on a server)."
+        "tools (list available, optionally for one server; auto-connects), "
+        "call (invoke a tool on a server)."
     )
     category: ToolCategory = ToolCategory.AGENT
     guidelines: str = (
         "Use `mcp servers` to see what external tools are available. "
-        "Connect to a server before calling its tools. "
+        "You can call tools directly — servers are auto-connected on demand. "
         "MCP tools extend your capabilities beyond built-in tools."
     )
     schema: dict[str, Any] = field(default=None)  # type: ignore[assignment]
@@ -55,7 +58,10 @@ class McpTool:
                     },
                     "server": {
                         "type": "string",
-                        "description": "Server name (for connect/disconnect/call).",
+                        "description": (
+                            "Server name (for connect/disconnect/call, "
+                            "or to filter tools)."
+                        ),
                     },
                     "tool": {
                         "type": "string",
@@ -87,7 +93,7 @@ class McpTool:
             case "disconnect":
                 return await self._disconnect(arguments)
             case "tools":
-                return self._tools()
+                return await self._tools(arguments)
             case "call":
                 return await self._call(arguments)
             case _:
@@ -95,6 +101,29 @@ class McpTool:
                     f"Unknown operation '{op}'. "
                     "Use: servers, connect, disconnect, tools, call."
                 )
+
+    # ── helpers ────────────────────────────────────────────────────────────
+
+    async def _ensure_connected(self, server: str) -> str | None:
+        """Connect a configured server on demand.
+
+        Returns an error string, or ``None`` on success.
+        """
+        if server in self._manager.connected_servers:
+            return None
+        if server not in self._manager.server_names:
+            return f"Unknown MCP server: {server!r}"
+        try:
+            await self._manager.connect(server)
+            return None
+        except ValueError as e:  # disabled / unknown
+            return str(e)
+        except ConnectionError as e:
+            return f"Connection failed for '{server}': {e}"
+        except Exception as e:
+            return f"Failed to connect to '{server}': {e}"
+
+    # ── operations ─────────────────────────────────────────────────────────
 
     def _servers(self) -> ToolResult:
         """List configured MCP servers."""
@@ -151,32 +180,75 @@ class McpTool:
         except Exception as e:
             return ToolResult.fail(f"Error disconnecting from '{server}': {e}")
 
-    def _tools(self) -> ToolResult:
-        """List tools from all connected servers."""
+    async def _tools(self, arguments: dict[str, Any]) -> ToolResult:
+        """List tools — optionally filtered to a single server.
+
+        Auto-connects configured servers on demand so no prior ``connect``
+        is needed.
+        """
+        server = arguments.get("server")
+
+        if server:
+            # Single-server mode: auto-connect that one server.
+            err = await self._ensure_connected(server)
+            if err:
+                return ToolResult.fail(err)
+
+            client = self._manager.get_client(server)
+            if client is None:
+                return ToolResult.fail(f"Server '{server}' is not connected.")
+
+            tools = client.tools
+            if not tools:
+                return ToolResult.ok(f"Server '{server}' exposes no tools.")
+
+            lines = [f"MCP tools from [{server}] ({len(tools)}):"]
+            for t in tools:
+                desc = (
+                    t.description[:60] + "..."
+                    if len(t.description) > 60
+                    else t.description
+                )
+                lines.append(f"  - {t.name}: {desc}")
+            return ToolResult.ok("\n".join(lines), count=len(tools))
+
+        # All-servers mode: bring up every configured server.
+        names = self._manager.server_names
+        if not names:
+            return ToolResult.ok(
+                "No MCP servers configured.\n"
+                "Add servers to .taui/mcp.toml or ~/.taui/mcp.toml"
+            )
+
+        await self._manager.connect_all()
+
         tools = self._manager.all_tools()
         if not tools:
-            connected = self._manager.connected_servers
-            if not connected:
-                return ToolResult.ok(
-                    "No MCP servers connected. Use 'connect' first."
+            if not self._manager.connected_servers:
+                return ToolResult.fail(
+                    "Failed to connect to any configured MCP servers."
                 )
-            return ToolResult.ok("Connected servers have no tools.")
+            return ToolResult.ok("Connected servers expose no tools.")
 
         lines = [f"MCP tools ({len(tools)}):"]
         by_server: dict[str, list] = {}
         for t in tools:
             by_server.setdefault(t.server_name, []).append(t)
 
-        for server, server_tools in sorted(by_server.items()):
-            lines.append(f"\n  [{server}]")
+        for srv, server_tools in sorted(by_server.items()):
+            lines.append(f"\n  [{srv}]")
             for t in server_tools:
-                desc = t.description[:60] + "..." if len(t.description) > 60 else t.description
+                desc = (
+                    t.description[:60] + "..."
+                    if len(t.description) > 60
+                    else t.description
+                )
                 lines.append(f"    - {t.name}: {desc}")
 
         return ToolResult.ok("\n".join(lines), count=len(tools))
 
     async def _call(self, arguments: dict[str, Any]) -> ToolResult:
-        """Call a tool on a connected MCP server."""
+        """Call a tool on an MCP server (auto-connects on demand)."""
         server_name = arguments.get("server")
         tool_name = arguments.get("tool")
         tool_args = arguments.get("arguments", {})
@@ -184,8 +256,14 @@ class McpTool:
         if not isinstance(tool_name, str) or not tool_name.strip():
             return ToolResult.fail("'tool' name is required for call.")
 
-        # If server not specified, find it from tool name
-        if not server_name:
+        # If server specified, auto-connect it.
+        if server_name:
+            err = await self._ensure_connected(server_name)
+            if err:
+                return ToolResult.fail(err)
+        else:
+            # No server specified — connect all, then resolve by tool name.
+            await self._manager.connect_all()
             all_tools = self._manager.all_tools()
             matching = [t for t in all_tools if t.name == tool_name]
             if not matching:
