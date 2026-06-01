@@ -3656,17 +3656,37 @@ class TauiApp(App[None]):
     # ── Actions ───────────────────────────────────────────────────────
 
     async def action_quit_app(self) -> None:
-        # Reset terminal title
+        # Reset terminal title and exit immediately — the TUI alternate
+        # screen is torn down at once.  Heavyweight resource cleanup
+        # (MCP/LSP subprocesses, sessions) happens *after* the TUI is
+        # gone, inside shutdown_resources() called from the outer loop.
         self._set_terminal_title("")
-        # Close all sessions concurrently
+        self.exit()
+
+    async def shutdown_resources(self) -> None:
+        """Close all sessions / subprocesses.
+
+        Called **after** the TUI has exited (terminal restored) so the
+        user sees a brief status line in the normal terminal instead of
+        staring at a frozen full-screen app.
+
+        Must run on the *same* event loop that owns the MCP/LSP
+        subprocess handles — the caller is responsible for that.
+        """
         close_coros = []
         for sid in list(self._sessions.order):
             state = self._sessions.get(sid)
             if state is not None:
                 close_coros.append(state.session.close())
         if close_coros:
+            import sys
+
+            sys.stderr.write("Shutting down…\r")
+            sys.stderr.flush()
             await asyncio.gather(*close_coros, return_exceptions=True)
-        self.exit()
+            # Clear the status line
+            sys.stderr.write("\x1b[2K\r")
+            sys.stderr.flush()
 
     async def _reset_current_session(self) -> None:
         """Fast in-place reset of the active session.

@@ -26,7 +26,17 @@ def run_tui(
         server = DebugServer(app, socket_path=debug_socket)
         server.start()
     try:
-        app.run()
+        import asyncio
+
+        async def _run() -> None:
+            try:
+                await app.run_async()
+            finally:
+                # TUI is gone (terminal restored); clean up in the same
+                # event loop that owns the MCP/LSP subprocess handles.
+                await app.shutdown_resources()
+
+        asyncio.run(_run())
     finally:
         if server is not None:
             server.stop()
