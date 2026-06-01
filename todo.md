@@ -9,6 +9,8 @@
 - add more git tools (with auth access)
 - "/worktree" for user to quickly jump to a worktree (a session cannot change worktree, new session will be created with the worktree)
 - session_name tool not available after set
+- if cancelled before first tool call, then show the previous turn in the input
+
 
 ---
 
