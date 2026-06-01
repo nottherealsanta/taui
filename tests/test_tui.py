@@ -349,7 +349,10 @@ class TestTauiApp:
             def __init__(self, config):
                 self.config = config
 
-            def run(self):
+            async def run_async(self):
+                return None
+
+            async def shutdown_resources(self):
                 return None
 
         with patch.object(tui_module, "TauiApp", FakeApp):
@@ -365,7 +368,10 @@ class TestTauiApp:
             def __init__(self, config):
                 self.config = config
 
-            def run(self):
+            async def run_async(self):
+                return None
+
+            async def shutdown_resources(self):
                 return None
 
         with patch.object(tui_module, "TauiApp", FakeApp):
