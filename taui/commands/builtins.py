@@ -1179,6 +1179,94 @@ class TasksCommand:
         return CommandResult.ok("\n".join(lines))
 
 
+@dataclass(slots=True)
+class McpCommand:
+    """Manage MCP servers from the command line."""
+
+    name: str = "mcp"
+    description: str = "List, connect, or disconnect MCP servers"
+    accepts_args: bool = True
+    _get_session: Any = None
+
+    async def execute(self, ctx: CommandContext) -> CommandResult:
+        if not self._get_session:
+            return CommandResult.fail("No session.")
+        session = self._get_session()
+        mgr = getattr(session, "_mcp_manager", None)
+        if mgr is None:
+            return CommandResult.fail("MCP system not configured.")
+
+        sub = ctx.args[0].lower() if ctx.args else "list"
+
+        if sub in ("list", "ls", "status"):
+            return self._list(mgr)
+        if sub == "connect":
+            name = ctx.args[1] if len(ctx.args) > 1 else None
+            return await self._connect(mgr, name)
+        if sub == "disconnect":
+            if len(ctx.args) < 2:
+                return CommandResult.fail("Usage: /mcp disconnect <server>")
+            return await self._disconnect(mgr, ctx.args[1])
+        return CommandResult.fail(
+            f"Unknown subcommand '{sub}'.\n"
+            "Usage: /mcp [list|connect [name]|disconnect <name>]"
+        )
+
+    @staticmethod
+    def _list(mgr: Any) -> CommandResult:
+        names = mgr.server_names
+        if not names:
+            return CommandResult.ok(
+                "No MCP servers configured.\n"
+                "Add servers to .taui/mcp.toml or ~/.taui/mcp.toml"
+            )
+        connected = set(getattr(mgr, "connected_servers", []) or [])
+        lines = [f"MCP servers ({len(names)}):"]
+        for name in names:
+            client = mgr.get_client(name) if name in connected else None
+            tool_count = len(client.tools) if client else 0
+            status = f" [connected] ({tool_count} tools)" if name in connected else ""
+            lines.append(f"  {name}{status}")
+        return CommandResult.ok("\n".join(lines))
+
+    @staticmethod
+    async def _connect(mgr: Any, name: str | None) -> CommandResult:
+        if name is None:
+            connected = await mgr.connect_all()
+            if not connected:
+                return CommandResult.fail("No servers could be connected.")
+            return CommandResult.ok(
+                f"Connected: {', '.join(connected)}", action="mcp_refresh",
+            )
+        try:
+            client = await mgr.connect(name)
+            tool_names = [t.name for t in client.tools]
+            return CommandResult.ok(
+                f"Connected to '{name}' — {len(tool_names)} tools: "
+                f"{', '.join(tool_names)}",
+                action="mcp_refresh",
+            )
+        except ValueError as exc:
+            return CommandResult.fail(str(exc))
+        except ConnectionError as exc:
+            return CommandResult.fail(f"Connection failed: {exc}")
+        except Exception as exc:
+            return CommandResult.fail(f"Failed to connect '{name}': {exc}")
+
+    @staticmethod
+    async def _disconnect(mgr: Any, name: str) -> CommandResult:
+        client = mgr.get_client(name)
+        if client is None:
+            return CommandResult.fail(f"Server '{name}' is not connected.")
+        try:
+            await client.disconnect()
+            return CommandResult.ok(
+                f"Disconnected from '{name}'.", action="mcp_refresh",
+            )
+        except Exception as exc:
+            return CommandResult.fail(f"Error disconnecting from '{name}': {exc}")
+
+
 def register_builtins(
     registry: CommandRegistry,
     *,
@@ -1212,6 +1300,7 @@ def register_builtins(
     skills_cmd = SkillsCommand()
     prompts_cmd = PromptsCommand()
     tasks_cmd = TasksCommand()
+    mcp_cmd = McpCommand()
 
     if get_session:
         clear_cmd._get_loop = lambda: get_session()._loop
@@ -1230,6 +1319,7 @@ def register_builtins(
         skills_cmd._get_session = get_session
         prompts_cmd._get_session = get_session
         tasks_cmd._get_session = get_session
+        mcp_cmd._get_session = get_session
 
     if get_store:
         agents_cmd._get_store = get_store
@@ -1272,6 +1362,7 @@ def register_builtins(
     registry.register(UpdateProvidersModelsCommand())
     registry.register(skills_cmd)
     registry.register(prompts_cmd)
+    registry.register(mcp_cmd)
 
     registry.alias("h", "help")
     registry.alias("?", "help")

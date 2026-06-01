@@ -68,6 +68,7 @@ _FILE_DOMAINS: dict[str, set[str]] = {
     "test_lsp_tool.py": {"lsp", "tools"},
     "test_main.py": {"config"},
     "test_mcp.py": {"mcp"},
+    "test_mcp_command.py": {"commands", "mcp"},
     "test_memory.py": {"tools"},
     "test_message_kind.py": {"agent"},
     "test_models.py": {"config", "provider"},
