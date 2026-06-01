@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from taui.tools.base import ToolCategory, ToolResult
+from taui.tools.builtins.common import SKIP_DIRS
 
 
 @dataclass
@@ -100,11 +101,8 @@ class RepoOverviewTool:
         return ToolResult.ok("\n".join(parts))
 
 
-_SKIP_DIRS = {
-    ".git", ".hg", ".svn", "node_modules", "__pycache__", ".tox",
-    ".mypy_cache", ".pytest_cache", ".ruff_cache", "dist", "build",
-    ".eggs", ".taui", ".venv", "venv", "env", ".env",
-}
+# Re-use the shared skip set from common.py (single source of truth).
+_SKIP_DIRS = SKIP_DIRS
 
 _EXT_TO_LANG: dict[str, str] = {
     ".py": "Python", ".js": "JavaScript", ".ts": "TypeScript",

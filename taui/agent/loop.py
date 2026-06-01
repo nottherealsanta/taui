@@ -358,6 +358,16 @@ class AgentLoop:
 
         llm_result = await self._call_llm(with_tools=with_tools)
 
+        # Capture pre-append token estimate for calibration (A2 fix).
+        # The provider's usage.input_tokens reflects the messages *sent*
+        # (before the assistant reply), so we must estimate against the
+        # same set — i.e. before appending the assistant message.
+        _pre_append_estimate: int | None = None
+        if llm_result.usage and llm_result.usage.input_tokens:
+            _pre_append_estimate = estimate_total_tokens(
+                self._messages, self._tokenizer
+            )
+
         # Record assistant message
         assistant_msg = Message(
             role="assistant",
@@ -404,11 +414,12 @@ class AgentLoop:
                     usage_data.get("output_tokens", 0),
                 )
             await self._emit(EventType.USAGE, usage_data)
-            # Calibrate tokenizer based on actual input tokens from provider
+            # Calibrate tokenizer based on actual input tokens from provider.
+            # Use the pre-append estimate (computed before the assistant reply
+            # was added) so estimated and actual cover the same message set.
             actual_input = llm_result.usage.input_tokens
-            if actual_input and actual_input > 0:
-                estimated = estimate_total_tokens(self._messages, self._tokenizer)
-                self._tokenizer.calibrate(estimated, actual_input)
+            if actual_input and actual_input > 0 and _pre_append_estimate is not None:
+                self._tokenizer.calibrate(_pre_append_estimate, actual_input)
 
         # If no tool calls, we're done with this turn
         if not llm_result.tool_calls:

@@ -6,6 +6,7 @@ import asyncio
 import difflib
 import os
 import tempfile
+import textwrap
 import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -19,6 +20,14 @@ from taui.tools.file_tracker import FileTracker
 # LLMs are imprecise — they introduce smart quotes, whitespace changes,
 # and Unicode artifacts. The matching chain tries increasingly lenient
 # strategies until one finds a unique match.
+#
+# INVARIANT: every strategy returns a *span* (start, end) into the ORIGINAL
+# content so that ``content[start:end]`` is the exact text to be replaced.
+# This avoids the corruption bug where normalised positions were used
+# against the un-normalised content.
+
+# Return type for all finders: list of (start, end) spans into original content.
+Span = tuple[int, int]
 
 
 def _normalize_unicode(text: str) -> str:
@@ -39,67 +48,124 @@ def _normalize_unicode(text: str) -> str:
     return unicodedata.normalize("NFKC", text)
 
 
-def _find_exact(content: str, search: str) -> list[int]:
-    """Find all exact occurrences."""
-    positions: list[int] = []
+def _find_exact(content: str, search: str) -> list[Span]:
+    """Find all exact occurrences — spans into original content."""
+    spans: list[Span] = []
     start = 0
     while True:
         idx = content.find(search, start)
         if idx == -1:
             break
-        positions.append(idx)
+        spans.append((idx, idx + len(search)))
         start = idx + 1
-    return positions
+    return spans
 
 
-def _find_normalized(content: str, search: str) -> list[int]:
-    """Find with Unicode normalization."""
-    norm_content = _normalize_unicode(content)
+def _find_normalized(content: str, search: str) -> list[Span]:
+    """Find with Unicode normalization — returns spans into *original* content.
+
+    Uses a line-block scan: normalize each candidate block of lines from the
+    original and compare to the normalized search.  The returned span covers
+    the original lines that matched.
+    """
     norm_search = _normalize_unicode(search)
-    if norm_content == content and norm_search == search:
-        return []  # No difference from exact
-    return _find_exact(norm_content, norm_search)
+    # Quick bail: if normalizing changes nothing on both sides, exact already covered it.
+    if _normalize_unicode(content) == content and norm_search == search:
+        return []
+
+    return _line_block_scan(content, search, _normalize_unicode)
 
 
-def _find_whitespace_normalized(content: str, search: str) -> list[int]:
-    """Find with whitespace normalization (collapse runs, strip trailing)."""
+def _find_whitespace_normalized(content: str, search: str) -> list[Span]:
+    """Find with whitespace normalization (strip trailing whitespace per line).
+
+    Returns spans into *original* content via a line-block scan.
+    """
 
     def normalize_ws(text: str) -> str:
         lines = text.splitlines()
         return "\n".join(line.rstrip() for line in lines)
 
-    norm_content = normalize_ws(content)
-    norm_search = normalize_ws(search)
-    if norm_content == content and norm_search == search:
+    # Quick bail: no difference from exact.
+    if normalize_ws(content) == content and normalize_ws(search) == search:
         return []
-    return _find_exact(norm_content, norm_search)
+
+    return _line_block_scan(content, search, normalize_ws)
 
 
-def _find_indentation_flexible(content: str, search: str) -> list[int]:
-    """Find with flexible indentation (strip common leading whitespace)."""
-    import textwrap
+def _find_indentation_flexible(content: str, search: str) -> list[Span]:
+    """Find with flexible indentation (strip common leading whitespace).
 
+    Returns spans into *original* content via a line-block scan.
+    """
     dedented_search = textwrap.dedent(search)
     if dedented_search == search:
         return []
 
-    # Try to find the dedented version in dedented content blocks
+    def normalize_indent(text: str) -> str:
+        return textwrap.dedent(text)
+
+    return _line_block_scan(content, search, normalize_indent)
+
+
+# ── Line-block scanner (shared by all fuzzy strategies) ───────────────────────
+
+
+def _line_block_scan(
+    content: str,
+    search: str,
+    normalize: Any,
+) -> list[Span]:
+    """Scan *content* for blocks of lines that, when normalized, match the
+    normalized *search*.
+
+    Returns a list of ``(start, end)`` spans into the **original** content.
+    This is the key correctness invariant: positions always refer to the
+    un-normalised text so that ``content[start:end]`` is safe to splice.
+    """
     content_lines = content.splitlines(keepends=True)
-    search_lines = dedented_search.splitlines()
-    if not search_lines:
+    search_norm = normalize(search)
+    search_norm_lines = search_norm.splitlines()
+
+    if not search_norm_lines:
         return []
 
-    positions: list[int] = []
-    for i in range(len(content_lines) - len(search_lines) + 1):
-        block = content_lines[i : i + len(search_lines)]
-        block_dedented = textwrap.dedent("".join(block)).splitlines()
-        if block_dedented == search_lines:
-            positions.append(sum(len(line) for line in content_lines[:i]))
-    return positions
+    n_search = len(search_norm_lines)
+    spans: list[Span] = []
+
+    # Pre-compute cumulative offsets for each content line
+    offsets: list[int] = []
+    offset = 0
+    for line in content_lines:
+        offsets.append(offset)
+        offset += len(line)
+    # Sentinel: total length of content
+    offsets.append(offset)
+
+    for i in range(len(content_lines) - n_search + 1):
+        block_text = "".join(content_lines[i : i + n_search])
+        block_norm = normalize(block_text)
+        block_norm_lines = block_norm.splitlines()
+        if block_norm_lines == search_norm_lines:
+            span_start = offsets[i]
+            span_end = offsets[i + n_search]
+
+            # If the search text doesn't end with a line terminator but the
+            # matched block does (because splitlines strips them), trim the
+            # trailing line terminator from the span so the splice preserves it.
+            if search and search[-1] not in '\n\r':
+                if span_end > span_start and content[span_end - 1] == '\n':
+                    span_end -= 1
+                if span_end > span_start and content[span_end - 1] == '\r':
+                    span_end -= 1
+
+            spans.append((span_start, span_end))
+
+    return spans
 
 
-def find_match(content: str, search: str) -> tuple[int, str] | None:
-    """Try matching strategies in order. Returns (position, strategy_name) or None.
+def find_match(content: str, search: str) -> tuple[Span, str] | None:
+    """Try matching strategies in order. Returns ((start, end), strategy_name) or None.
 
     Only returns if exactly one match is found (unique).
     """
@@ -111,9 +177,9 @@ def find_match(content: str, search: str) -> tuple[int, str] | None:
     ]
 
     for name, finder in strategies:
-        positions = finder()
-        if len(positions) == 1:
-            return positions[0], name
+        spans = finder()
+        if len(spans) == 1:
+            return spans[0], name
 
     return None
 
@@ -269,8 +335,8 @@ class EditTool:
         except (PermissionError, OSError) as e:
             return ToolResult.fail(f"Cannot read {path}: {e}")
 
-        # Find all match positions
-        matches: list[tuple[int, str, str, str]] = []  # (pos, old, new, strategy)
+        # Find all match spans  —  each entry is (start, end, old_text, new_text, strategy)
+        matches: list[tuple[int, int, str, str, str]] = []
         for edit in edits:
             old_text = edit["old_text"]
             new_text = edit["new_text"]
@@ -302,14 +368,47 @@ class EditTool:
                     f"old_text preview: {old_text[:100]!r}"
                 )
 
-            pos, strategy = result
-            matches.append((pos, old_text, new_text, strategy))
+            span, strategy = result
+            start, end = span
 
-        # Check for overlapping edits
+            # Safety net: verify that the matched span, under the strategy's
+            # normalization, actually equals the normalised search text.
+            # Compare via splitlines() to stay consistent with the line-block
+            # scanner (which ignores trailing-newline differences).
+            matched_text = original[start:end]
+            if strategy == "exact":
+                # Exact must literally match
+                if matched_text != old_text:
+                    return ToolResult.fail(
+                        f"Internal match verification failed for edit "
+                        f"(strategy={strategy}). Please provide exact text."
+                    )
+            else:
+                # Fuzzy: compare under the matching normalisation (line-wise)
+                normalizers = {
+                    "unicode_normalized": _normalize_unicode,
+                    "whitespace_normalized": lambda t: "\n".join(
+                        line.rstrip() for line in t.splitlines()
+                    ),
+                    "indentation_flexible": textwrap.dedent,
+                }
+                norm_fn = normalizers.get(strategy)
+                if norm_fn and (
+                    norm_fn(matched_text).splitlines()
+                    != norm_fn(old_text).splitlines()
+                ):
+                    return ToolResult.fail(
+                        f"Internal match verification failed for edit "
+                        f"(strategy={strategy}). Please provide exact text."
+                    )
+
+            matches.append((start, end, old_text, new_text, strategy))
+
+        # Check for overlapping edits — using spans
         sorted_matches = sorted(matches, key=lambda m: m[0])
         for i in range(len(sorted_matches) - 1):
-            end_i = sorted_matches[i][0] + len(sorted_matches[i][1])
-            start_next = sorted_matches[i + 1][0]
+            end_i = sorted_matches[i][1]  # end of span i
+            start_next = sorted_matches[i + 1][0]  # start of span i+1
             if end_i > start_next:
                 return ToolResult.fail(
                     "Edits overlap — merge them into a single edit."
@@ -317,8 +416,8 @@ class EditTool:
 
         # Apply in reverse order so positions stay stable
         content = original
-        for pos, old_text, new_text, strategy in reversed(sorted_matches):
-            content = content[:pos] + new_text + content[pos + len(old_text) :]
+        for start, end, old_text, new_text, strategy in reversed(sorted_matches):
+            content = content[:start] + new_text + content[end:]
 
         # Atomic write
         try:
@@ -345,7 +444,7 @@ class EditTool:
         )
         diff_text = "".join(diff)
 
-        strategies_used = list({m[3] for m in matches})
+        strategies_used = list({m[4] for m in matches})
         if self._file_tracker is not None:
             self._file_tracker.update_after_write(path)
         return ToolResult.ok(

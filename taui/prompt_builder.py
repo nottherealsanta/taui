@@ -391,7 +391,8 @@ def _build_guidelines(registry) -> str:
         guidelines.append("Use bash for file operations like ls, rg, find")
     if has_bash and (has_grep or has_glob):
         guidelines.append(
-            "Prefer grep/glob tools over bash for file exploration (faster, respects .gitignore)"
+            "Prefer grep/glob tools over bash for file exploration "
+            "(faster, skips build/vendor dirs, honors .gitignore when ripgrep is installed)"
         )
     if has_bash:
         guidelines.append("Run tests after making changes when a test suite exists")

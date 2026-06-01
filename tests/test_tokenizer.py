@@ -51,6 +51,34 @@ class TestTokenizer:
         tok.calibrate(100, 0)
         assert tok.calibration_factor == 1.0
 
+    def test_estimate_chars(self):
+        """A3: estimate_chars converts a character count to tokens without allocating a string."""
+        tok = Tokenizer()
+        char_count = 1000
+        result = tok.estimate_chars(char_count)
+        # Should be approximately char_count // 4 + 1 (with calibration factor 1.0)
+        assert result == max(1, int((char_count // 4 + 1) * 1.0))
+
+    def test_estimate_chars_respects_calibration(self):
+        """estimate_chars must apply the calibration factor."""
+        tok = Tokenizer()
+        # Calibrate to factor ~2.0
+        for _ in range(20):
+            est = tok.estimate("test text")
+            tok.calibrate(est, est * 2)
+
+        result = tok.estimate_chars(1000)
+        # With factor ~2.0, result should be roughly 2 * (1000//4+1) ≈ 502
+        assert result > 400
+
+    def test_estimate_chars_vs_estimate_consistency(self):
+        """estimate_chars(len(text)) should be close to estimate(text) for default estimator."""
+        tok = Tokenizer()
+        text = "Hello world, this is a test sentence with some words."
+        est_text = tok.estimate(text)
+        est_chars = tok.estimate_chars(len(text))
+        assert est_text == est_chars
+
 
 class TestCreateTokenizer:
     def test_default(self):

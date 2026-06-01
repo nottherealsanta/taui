@@ -9,9 +9,10 @@ from typing import Any
 
 # Directories to skip during recursive operations
 SKIP_DIRS = frozenset({
-    ".git", "__pycache__", "node_modules", ".venv", "venv",
+    ".git", ".hg", ".svn", "__pycache__", "node_modules",
+    ".venv", "venv", "env", ".env",
     ".tox", ".mypy_cache", ".pytest_cache", ".ruff_cache",
-    "dist", "build", ".egg-info",
+    "dist", "build", ".egg-info", ".eggs", ".taui",
 })
 
 

@@ -31,24 +31,36 @@ COMPACTION_HARD_RATIO = 0.90
 
 # ── Token estimation ──────────────────────────────────────────────────────────
 
+# Conservative per-image token allowance.  Actual vision-model costs vary by
+# resolution, but 1 500 tokens is a safe middle-ground for budget tracking.
+IMAGE_TOKEN_ESTIMATE = 1_500
+
 
 def estimate_message_tokens(msg: Message, tokenizer: Tokenizer | None = None) -> int:
-    """Rough token estimate: ~4 chars per token, or via tokenizer if provided."""
-    total = len(msg.role)
+    """Rough token estimate: ~4 chars per token, or via tokenizer if provided.
+
+    Accounts for content, tool-call metadata, name, tool_call_id, **and images**.
+    """
+    total_chars = len(msg.role)
     if msg.content:
-        total += len(msg.content)
+        total_chars += len(msg.content)
     if msg.tool_calls:
         for tc in msg.tool_calls:
-            total += len(tc.name) + len(tc.call_id)
-            total += len(json.dumps(tc.arguments, sort_keys=True))
+            total_chars += len(tc.name) + len(tc.call_id)
+            total_chars += len(json.dumps(tc.arguments, sort_keys=True))
     if msg.tool_call_id:
-        total += len(msg.tool_call_id)
+        total_chars += len(msg.tool_call_id)
     if msg.name:
-        total += len(msg.name)
+        total_chars += len(msg.name)
+
+    # Image tokens — fixed per-image allowance
+    image_tokens = 0
+    if msg.images:
+        image_tokens = len(msg.images) * IMAGE_TOKEN_ESTIMATE
+
     if tokenizer is not None:
-        # Build a representative string and let the tokenizer estimate
-        return tokenizer.estimate(" " * total)
-    return max(1, total // 4 + 1)
+        return tokenizer.estimate_chars(total_chars) + image_tokens
+    return max(1, total_chars // 4 + 1) + image_tokens
 
 
 def estimate_total_tokens(messages: list[Message], tokenizer: Tokenizer | None = None) -> int:

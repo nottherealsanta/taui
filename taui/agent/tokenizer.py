@@ -24,6 +24,18 @@ class Tokenizer:
         raw = self._estimator(text)
         return max(1, int(raw * self._calibration_factor))
 
+    def estimate_chars(self, char_count: int) -> int:
+        """Estimate token count from a character count.
+
+        Applies the same calibration factor as ``estimate()`` but avoids
+        building a throwaway string.  Uses the default ~4 chars/token
+        formula regardless of any custom estimator — custom estimators
+        need the actual text.  The calibration factor compensates for
+        systematic bias either way.
+        """
+        raw = max(1, char_count // 4 + 1)
+        return max(1, int(raw * self._calibration_factor))
+
     def calibrate(self, estimated_tokens: int, actual_tokens: int) -> None:
         """Adjust estimation based on actual usage from the provider.
 

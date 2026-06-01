@@ -13,9 +13,10 @@ class TestFindMatch:
         content = "hello world\nfoo bar\nbaz"
         result = find_match(content, "foo bar")
         assert result is not None
-        pos, strategy = result
+        span, strategy = result
         assert strategy == "exact"
-        assert content[pos : pos + 7] == "foo bar"
+        start, end = span
+        assert content[start:end] == "foo bar"
 
     def test_no_match(self):
         assert find_match("hello world", "not here") is None
@@ -30,20 +31,160 @@ class TestFindMatch:
         search = "print(\u2018hello\u2019)"
         result = find_match(content, search)
         assert result is not None
-        _, strategy = result
+        span, strategy = result
         assert strategy == "unicode_normalized"
+        # The span must reference the *original* content
+        start, end = span
+        # search has no trailing newline, so span is trimmed
+        assert content[start:end] == "print('hello')"
 
     def test_whitespace_normalization(self):
         content = "def foo():  \n    pass\n"
         search = "def foo():\n    pass\n"
         result = find_match(content, search)
         assert result is not None
+        span, strategy = result
+        # Span must cover the original lines including trailing whitespace
+        start, end = span
+        assert content[start:end] == "def foo():  \n    pass\n"
 
     def test_smart_double_quotes(self):
         content = 'x = "hello"\n'
         search = "x = \u201chello\u201d"
         result = find_match(content, search)
         assert result is not None
+        span, _ = result
+        start, end = span
+        # search has no trailing newline, so span is trimmed
+        assert content[start:end] == 'x = "hello"'
+
+    def test_indentation_flexible_returns_correct_span(self):
+        content = "        def foo():\n            pass\n"
+        search = "    def foo():\n        pass\n"  # Different indentation level
+        result = find_match(content, search)
+        assert result is not None
+        span, strategy = result
+        assert strategy == "indentation_flexible"
+        start, end = span
+        # Must return the original indented text
+        assert content[start:end] == "        def foo():\n            pass\n"
+
+
+# ── Span-based corruption regression tests ────────────────────────────────────
+# These test cases previously corrupted the file because fuzzy strategies
+# returned positions into normalized strings which were then spliced
+# against original content.
+
+
+class TestSpanBasedCorrectnessRegression:
+    """Tests that previously-corrupting fuzzy edits now produce byte-correct files."""
+
+    async def test_smart_quotes_edit_byte_correct(self, tmp_path):
+        """File with ASCII quotes, old_text has smart quotes → must be byte-correct."""
+        f = tmp_path / "quotes.py"
+        original = "msg = 'hello world'\nprint(msg)\n"
+        f.write_text(original)
+
+        tool = EditTool(working_dir=tmp_path)
+        result = await tool.execute({
+            "path": "quotes.py",
+            "edits": [{
+                "old_text": "msg = \u2018hello world\u2019",  # smart quotes
+                "new_text": "msg = 'goodbye world'",
+            }],
+        })
+        assert not result.error, result.content
+        final = f.read_text()
+        assert final == "msg = 'goodbye world'\nprint(msg)\n"
+
+    async def test_trailing_whitespace_edit_byte_correct(self, tmp_path):
+        """File with trailing whitespace, search without it → byte-correct."""
+        f = tmp_path / "ws.py"
+        # Lines have trailing spaces
+        original = "def foo():  \n    return 42  \n"
+        f.write_text(original)
+
+        tool = EditTool(working_dir=tmp_path)
+        result = await tool.execute({
+            "path": "ws.py",
+            "edits": [{
+                "old_text": "def foo():\n    return 42\n",
+                "new_text": "def bar():\n    return 99\n",
+            }],
+        })
+        assert not result.error, result.content
+        final = f.read_text()
+        assert final == "def bar():\n    return 99\n"
+
+    async def test_indentation_mismatch_edit_byte_correct(self, tmp_path):
+        """Search with different indentation level than file → byte-correct."""
+        f = tmp_path / "indent.py"
+        original = "class Foo:\n    def bar(self):\n        return 1\n"
+        f.write_text(original)
+
+        tool = EditTool(working_dir=tmp_path)
+        # LLM sends old_text with 2-space indent (file has 4-space)
+        result = await tool.execute({
+            "path": "indent.py",
+            "edits": [{
+                "old_text": "  def bar(self):\n      return 1\n",
+                "new_text": "  def bar(self):\n      return 2\n",
+            }],
+        })
+        assert not result.error, result.content
+        final = f.read_text()
+        # The original indentation must be preserved in the surrounding context,
+        # and the replacement uses the original indentation level.
+        assert "class Foo:\n" in final
+        assert "return 2" in final
+
+    async def test_ellipsis_unicode_byte_correct(self, tmp_path):
+        """File has '...' (3 dots), search has '…' (ellipsis) → byte-correct."""
+        f = tmp_path / "ellip.py"
+        original = "# TODO: implement...\ndef func():\n    pass\n"
+        f.write_text(original)
+
+        tool = EditTool(working_dir=tmp_path)
+        result = await tool.execute({
+            "path": "ellip.py",
+            "edits": [{
+                "old_text": "# TODO: implement\u2026",  # Unicode ellipsis
+                "new_text": "# DONE: implemented",
+            }],
+        })
+        assert not result.error, result.content
+        final = f.read_text()
+        assert final == "# DONE: implemented\ndef func():\n    pass\n"
+
+    async def test_multi_edit_with_fuzzy_byte_correct(self, tmp_path):
+        """Multiple fuzzy edits in one call → all byte-correct, no corruption."""
+        f = tmp_path / "multi.py"
+        original = (
+            "msg1 = 'first'  \n"   # trailing space
+            "msg2 = 'second'  \n"  # trailing space
+            "print(msg1, msg2)\n"
+        )
+        f.write_text(original)
+
+        tool = EditTool(working_dir=tmp_path)
+        result = await tool.execute({
+            "path": "multi.py",
+            "edits": [
+                {
+                    "old_text": "msg1 = 'first'\n",   # no trailing space
+                    "new_text": "msg1 = 'ONE'\n",
+                },
+                {
+                    "old_text": "msg2 = 'second'\n",  # no trailing space
+                    "new_text": "msg2 = 'TWO'\n",
+                },
+            ],
+        })
+        assert not result.error, result.content
+        final = f.read_text()
+        assert "msg1 = 'ONE'" in final
+        assert "msg2 = 'TWO'" in final
+        assert "print(msg1, msg2)" in final
 
 
 # ── EditTool integration tests ────────────────────────────────────────────────

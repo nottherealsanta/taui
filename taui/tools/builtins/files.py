@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import fnmatch
 import os
 import re
+import shutil
 import tempfile
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -22,6 +25,25 @@ from taui.tools.file_tracker import FileTracker
 
 _MAX_LINE_CHARS = 2000
 
+# ── ripgrep detection (cached) ────────────────────────────────────────────────
+
+_rg_path: str | None | bool = False  # False = not yet checked
+
+
+def _get_rg() -> str | None:
+    """Return the path to ``rg`` if available, else ``None``.  Cached."""
+    global _rg_path
+    if _rg_path is False:
+        _rg_path = shutil.which("rg")
+    return _rg_path  # type: ignore[return-value]
+
+
+# Wall-clock timeout for subprocesses and the Python fallback search.
+_SEARCH_TIMEOUT_SECS = 15
+
+# Regex to parse rg output lines: path:lineno:content
+# Uses non-greedy match on path to handle Windows drive letters (e.g. C:\path:10:content)
+_RG_LINE_RE = re.compile(r'^(.+?):(\d+):(.*)$')
 
 # ── ReadTool ──────────────────────────────────────────────────────────────────
 
@@ -268,6 +290,63 @@ class GlobTool:
             return ToolResult.fail(f"Not a directory: {base}")
 
         pattern = arguments["pattern"]
+
+        # Try ripgrep first (respects .gitignore)
+        rg = _get_rg()
+        if rg is not None:
+            return await self._glob_rg(rg, base, pattern)
+
+        # Fallback to Python
+        return self._glob_python(base, pattern)
+
+    async def _glob_rg(self, rg: str, base: Path, pattern: str) -> ToolResult:
+        """Use ``rg --files`` with a glob filter — .gitignore-aware."""
+        cmd = [rg, "--files", "-g", pattern, "--", str(base)]
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=str(self.working_dir),
+            )
+            try:
+                stdout, _ = await asyncio.wait_for(
+                    proc.communicate(), timeout=_SEARCH_TIMEOUT_SECS
+                )
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.wait()
+                return ToolResult.fail(
+                    "glob search timed out; narrow the pattern or add a `path`."
+                )
+        except FileNotFoundError:
+            # rg vanished between detection and invocation — fall through
+            return self._glob_python(base, pattern)
+
+        raw_paths = stdout.decode("utf-8", errors="replace").splitlines()
+        if not raw_paths or (len(raw_paths) == 1 and not raw_paths[0].strip()):
+            return ToolResult.ok(f"No matches for pattern {pattern!r} in {base}")
+
+        # Resolve to Path objects for mtime sorting
+        path_objs: list[Path] = []
+        for rp in raw_paths:
+            rp = rp.strip()
+            if not rp:
+                continue
+            p = Path(rp)
+            if not p.is_absolute():
+                p = self.working_dir / p
+            path_objs.append(p)
+
+        # Sort by mtime, newest first
+        path_objs.sort(
+            key=lambda p: p.stat().st_mtime if p.exists() else 0, reverse=True
+        )
+
+        return self._format_glob_result(path_objs, pattern)
+
+    def _glob_python(self, base: Path, pattern: str) -> ToolResult:
+        """Pure-Python fallback (no .gitignore awareness)."""
         try:
             matches = [
                 p
@@ -277,12 +356,18 @@ class GlobTool:
         except (ValueError, OSError) as e:
             return ToolResult.fail(f"Glob error: {e}")
 
-        # Sort by mtime, newest first
-        matches.sort(key=lambda p: p.stat().st_mtime if p.exists() else 0, reverse=True)
+        matches.sort(
+            key=lambda p: p.stat().st_mtime if p.exists() else 0, reverse=True
+        )
 
         if not matches:
             return ToolResult.ok(f"No matches for pattern {pattern!r} in {base}")
 
+        return self._format_glob_result(matches, pattern)
+
+    def _format_glob_result(
+        self, matches: list[Path], pattern: str
+    ) -> ToolResult:
         max_shown = 200
         all_lines = [str(p.relative_to(self.working_dir)) for p in matches]
         shown_lines = all_lines[:max_shown]
@@ -363,19 +448,128 @@ class GrepTool:
         elif not base.is_dir():
             return ToolResult.fail(f"Path not found: {base}")
 
+        pattern = arguments["pattern"]
+        include = arguments.get("include")
+
+        # Try ripgrep first (respects .gitignore, immune to ReDoS)
+        rg = _get_rg()
+        if rg is not None and not single_file:
+            return await self._grep_rg(rg, base, pattern, include)
+
+        # Fallback to Python (single files always use Python, or when rg absent)
+        return self._grep_python(base, pattern, include, single_file)
+
+    async def _grep_rg(
+        self,
+        rg: str,
+        base: Path,
+        pattern: str,
+        include: str | None,
+    ) -> ToolResult:
+        """Use ``rg`` for .gitignore-aware, ReDoS-immune search."""
+        max_matches = 500
+        overflow_cap = max_matches * 4
+
+        # Build command: rg --line-number --no-heading --color never [-g include] -e pattern -- base
+        cmd: list[str] = [
+            rg,
+            "--line-number",
+            "--no-heading",
+            "--color",
+            "never",
+            "--max-count",
+            str(overflow_cap),
+        ]
+        if include:
+            cmd.extend(["-g", include])
+        cmd.extend(["-e", pattern, "--", str(base)])
+
         try:
-            regex = re.compile(arguments["pattern"])
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=str(self.working_dir),
+            )
+            try:
+                stdout, stderr = await asyncio.wait_for(
+                    proc.communicate(), timeout=_SEARCH_TIMEOUT_SECS
+                )
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.wait()
+                return ToolResult.fail(
+                    "grep search timed out; narrow the pattern or add `include`."
+                )
+        except FileNotFoundError:
+            # rg vanished — fall back to Python
+            return self._grep_python(base, pattern, include, single_file=False)
+
+        # rg exit code 1 = no matches, 2 = error
+        if proc.returncode == 2:
+            err = stderr.decode("utf-8", errors="replace").strip()
+            return ToolResult.fail(f"Invalid regex or rg error: {err}")
+
+        raw = stdout.decode("utf-8", errors="replace")
+        if not raw.strip():
+            return ToolResult.ok(
+                f"No matches for /{pattern}/ in {base}",
+                match_count=0,
+            )
+
+        # Parse rg output: path:lineno:line
+        matches: list[str] = []
+        files_matched: set[str] = set()
+        for line in raw.splitlines():
+            if not line:
+                continue
+            # Make paths relative to working_dir
+            try:
+                m = _RG_LINE_RE.match(line)
+                if m:
+                    fpath, lineno, content = m.group(1), m.group(2), m.group(3)
+                    # Make relative to working_dir
+                    try:
+                        rel = str(Path(fpath).relative_to(self.working_dir))
+                    except ValueError:
+                        rel = fpath
+                    display = content.strip()
+                    if len(display) > 200:
+                        display = display[:200] + "…"
+                    matches.append(f"{rel}:{lineno}| {display}")
+                    files_matched.add(rel)
+                else:
+                    matches.append(line)
+            except Exception:
+                matches.append(line)
+
+            if len(matches) >= overflow_cap:
+                break
+
+        return self._format_grep_result(matches, pattern, base, files_matched, max_matches, overflow_cap)
+
+    def _grep_python(
+        self,
+        base: Path,
+        pattern: str,
+        include: str | None,
+        single_file: bool,
+    ) -> ToolResult:
+        """Pure-Python fallback with a wall-clock budget to guard against ReDoS."""
+        try:
+            regex = re.compile(pattern)
         except re.error as e:
             return ToolResult.fail(f"Invalid regex: {e}")
 
-        include = arguments.get("include")
         matches: list[str] = []
         files_matched: set[str] = set()
         max_matches = 500
-        # Keep scanning briefly past the cap so we can hint at `total_hint`
-        # without unbounded memory blow-up.
         overflow_cap = max_matches * 4
         truncated = False
+
+        deadline = time.monotonic() + _SEARCH_TIMEOUT_SECS
+        files_since_check = 0
+        _TIME_CHECK_INTERVAL = 50  # check clock every N files
 
         if single_file:
             candidates = iter([base])
@@ -391,6 +585,16 @@ class GrepTool:
                 continue
             if is_binary(filepath):
                 continue
+
+            # Wall-clock budget check (every N files)
+            files_since_check += 1
+            if files_since_check >= _TIME_CHECK_INTERVAL:
+                files_since_check = 0
+                if time.monotonic() > deadline:
+                    return ToolResult.fail(
+                        "grep search exceeded time budget; narrow the pattern "
+                        "or add `include` to limit file types."
+                    )
 
             try:
                 text = filepath.read_text(errors="replace")
@@ -417,9 +621,24 @@ class GrepTool:
 
         if not matches:
             return ToolResult.ok(
-                f"No matches for /{arguments['pattern']}/ in {base}",
+                f"No matches for /{pattern}/ in {base}",
                 match_count=0,
             )
+
+        return self._format_grep_result(
+            matches, pattern, base, files_matched, max_matches, overflow_cap
+        )
+
+    def _format_grep_result(
+        self,
+        matches: list[str],
+        pattern: str,
+        base: Path,
+        files_matched: set[str],
+        max_matches: int,
+        overflow_cap: int,
+    ) -> ToolResult:
+        truncated = len(matches) > max_matches
 
         shown = matches[:max_matches]
         result = "\n".join(shown)

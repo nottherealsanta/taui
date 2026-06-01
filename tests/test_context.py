@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 
 from taui.agent.context import (
+    IMAGE_TOKEN_ESTIMATE,
     async_compact_messages,
     compact_messages,
     estimate_message_tokens,
@@ -38,6 +39,65 @@ class TestEstimateTokens:
         total = estimate_total_tokens(msgs)
         assert total > 0
         assert total == sum(estimate_message_tokens(m) for m in msgs)
+
+    def test_image_tokens_counted(self):
+        """A3: messages with images must estimate materially higher."""
+        msg_no_img = Message(role="user", content="Describe this")
+        msg_with_img = Message(
+            role="user",
+            content="Describe this",
+            images=["data:image/png;base64,abc123"],
+        )
+        est_no = estimate_message_tokens(msg_no_img)
+        est_with = estimate_message_tokens(msg_with_img)
+        assert est_with >= est_no + IMAGE_TOKEN_ESTIMATE
+
+    def test_multiple_images_counted(self):
+        msg = Message(
+            role="user",
+            content="Compare",
+            images=["data:img1", "data:img2", "data:img3"],
+        )
+        est = estimate_message_tokens(msg)
+        assert est >= 3 * IMAGE_TOKEN_ESTIMATE
+
+    def test_image_tokens_with_tokenizer(self):
+        """A3: image tokens added on top of tokenizer-estimated char tokens."""
+        tok = Tokenizer()
+        msg_no_img = Message(role="user", content="Hello")
+        msg_with_img = Message(
+            role="user", content="Hello", images=["data:x"]
+        )
+        est_no = estimate_message_tokens(msg_no_img, tok)
+        est_with = estimate_message_tokens(msg_with_img, tok)
+        assert est_with >= est_no + IMAGE_TOKEN_ESTIMATE
+
+    def test_no_space_string_allocation(self):
+        """A3: estimate_message_tokens must NOT build a ' ' * N string internally.
+
+        We verify indirectly by confirming the tokenizer path uses
+        estimate_chars (which takes an int) rather than estimate (which
+        takes a str).
+        """
+        calls: list[Any] = []
+
+        class SpyTokenizer(Tokenizer):
+            def estimate(self, text: str) -> int:
+                calls.append(("estimate", text))
+                return super().estimate(text)
+
+            def estimate_chars(self, char_count: int) -> int:
+                calls.append(("estimate_chars", char_count))
+                return super().estimate_chars(char_count)
+
+        tok = SpyTokenizer()
+        msg = Message(role="user", content="Hello world test")
+        estimate_message_tokens(msg, tok)
+
+        # estimate_chars should have been called, NOT estimate
+        method_names = [c[0] for c in calls]
+        assert "estimate_chars" in method_names
+        assert "estimate" not in method_names
 
 
 class TestCompaction:
