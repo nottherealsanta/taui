@@ -698,7 +698,7 @@ wheels = [
 
 [[package]]
 name = "taui"
-version = "0.8.3"
+version = "0.9"
 source = { editable = "." }
 dependencies = [
     { name = "aiosqlite" },
