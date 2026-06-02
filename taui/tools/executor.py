@@ -181,6 +181,10 @@ class ToolExecutor:
     def registry(self) -> ToolRegistry:
         return self._registry
 
+    @registry.setter
+    def registry(self, registry: ToolRegistry) -> None:
+        self._registry = registry
+
     @property
     def policy(self) -> ToolPolicy:
         return self._policy

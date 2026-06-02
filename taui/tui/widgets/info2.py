@@ -581,7 +581,7 @@ class Info2(ScrollableContainer):
         header = Static(
             Text.assemble(
                 ("> ", "dim"),
-                (self._filter_query, "bold $primary"),
+                (self._filter_query, self._marker_style()),
             )
         )
         self.mount(header)
@@ -602,6 +602,18 @@ class Info2(ScrollableContainer):
                 item.add_class("highlighted")
             self.mount(item)
 
+    def _marker_style(self) -> str:
+        """Resolve the theme's primary color for Rich Text styles.
+
+        Rich's style parser can't resolve Textual CSS variables like
+        ``$primary``, so we look up the active theme's color here.
+        """
+        try:
+            primary = self.app.theme_variables.get("primary")
+        except Exception:
+            primary = None
+        return f"bold {primary}" if primary else "bold white"
+
     def _model_label(self, model: dict) -> Text:
         model_id = str(model.get("id", ""))
         context = int(model.get("context", 0) or 0)
@@ -609,15 +621,16 @@ class Info2(ScrollableContainer):
         reasoning = " reasoning" if model.get("reasoning") else ""
         marker = " ◀" if model_id == self._current_marker else ""
         text = Text()
-        text.append(f"{model_id:<45s}", style="bold $primary" if marker else "white")
+        text.append(f"{model_id:<45s}", style=self._marker_style() if marker else "white")
         text.append(f"  {ctx:>6s} ctx{reasoning}{marker}", style="dim")
         return text
 
     def _variant_label(self, key: str, label: str) -> Text:
         marker = " ◀" if key == self._current_marker else ""
         text = Text()
-        text.append(f"{label:<24s}", style="bold $primary" if marker else "white")
-        text.append(marker, style="bold $primary")
+        primary = self._marker_style()
+        text.append(f"{label:<24s}", style=primary if marker else "white")
+        text.append(marker, style=primary)
         return text
 
     def _agent_label(self, agent) -> Text:
@@ -626,18 +639,17 @@ class Info2(ScrollableContainer):
         ) or "-"
         marker = " ◀" if agent.id.upper() == self._current_marker else ""
         text = Text()
-        text.append(f"{agent.id:<5s}", style="bold $primary" if marker else "white")
+        text.append(f"{agent.id:<5s}", style=self._marker_style() if marker else "white")
         text.append(f"{agent.name:<24s}", style="white")
         text.append(f"  {model}{marker}", style="dim")
         return text
 
-    @staticmethod
-    def _skill_label(skill) -> Text:
+    def _skill_label(self, skill) -> Text:
         marker = " ◀" if skill.loaded else ""
         text = Text()
         text.append(
             f"{skill.name:<30s}",
-            style="bold $primary" if marker else "white",
+            style=self._marker_style() if marker else "white",
         )
         text.append(f"  {skill.scope}{marker}", style="dim")
         return text
