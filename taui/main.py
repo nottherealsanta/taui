@@ -4,7 +4,82 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
+import shlex
+import subprocess
 from pathlib import Path
+
+
+def _build_resume_command(launcher_base: str, session_id: str) -> str:
+    """Assemble a resume command from a launcher base plus --session <id>."""
+    return f"{launcher_base} --session {shlex.quote(session_id)}"
+
+
+def _parse_uvx_launcher(tokens: list[str]) -> str | None:
+    """Recognize simple uvx launches from a parent command's argv tokens.
+
+    Accepts both ``uvx taui...`` and uv's normalized ``uv tool uvx taui...``
+    shapes. Returns "uvx taui" or "uvx taui@latest" only when the package token
+    is exactly ``taui`` or starts with ``taui@``.
+    """
+    if not tokens:
+        return None
+
+    first = os.path.basename(tokens[0])
+
+    if first == "uvx":
+        pkg_tokens = tokens[1:]
+    elif first == "uv":
+        # uv's normalized form: uv tool uvx taui...
+        if len(tokens) >= 3 and tokens[1] == "tool" and tokens[2] == "uvx":
+            pkg_tokens = tokens[3:]
+        else:
+            return None
+    else:
+        return None
+
+    if not pkg_tokens:
+        return None
+
+    package = pkg_tokens[0]
+    if package == "taui":
+        return "uvx taui"
+    if package.startswith("taui@"):
+        return f"uvx {package}"
+    return None
+
+
+def _detect_uvx_launcher() -> str | None:
+    """Detect a simple uvx launch by inspecting the parent process command line.
+
+    Returns "uvx taui" or "uvx taui@latest" for the recognized simple forms,
+    or None when detection fails, ps is unavailable, parsing fails, or the
+    launch shape is more complex.
+    """
+    try:
+        ppid = os.getppid()
+        completed = subprocess.run(
+            ["ps", "-o", "args=", "-p", str(ppid)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except Exception:
+        return None
+
+    if completed.returncode != 0:
+        return None
+
+    cmdline = completed.stdout.strip()
+    if not cmdline:
+        return None
+
+    try:
+        tokens = shlex.split(cmdline)
+    except ValueError:
+        return None
+
+    return _parse_uvx_launcher(tokens)
 
 
 def _setup_logging() -> None:
@@ -141,4 +216,6 @@ def main(argv: list[str] | None = None) -> None:
     if session_id:
         from rich.console import Console
 
-        Console().print(f"[dim]to continue session run:[/dim] uv run taui --session {session_id}")
+        launcher_base = _detect_uvx_launcher() or "uv run taui"
+        resume_command = _build_resume_command(launcher_base, session_id)
+        Console().print(f"[dim]to continue session run:[/dim] {resume_command}")
