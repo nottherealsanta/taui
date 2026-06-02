@@ -22,6 +22,13 @@ CACHE_DIR = Path.home() / ".cache" / "taui"
 CACHE_FILE = CACHE_DIR / "models.json"
 CACHE_TTL = 86400  # 24 hours
 
+# Learned reasoning-effort overrides keyed by "<provider>/<model_id>".
+# models.dev only publishes ``reasoning: bool`` (never the effort enum) and the
+# providers expose no discovery endpoint, so the only authoritative source is
+# what a provider accepts or rejects at request time. We record rejections here
+# so the variant picker stops offering values the provider refuses.
+VARIANT_OVERRIDE_FILE = CACHE_DIR / "variant_overrides.json"
+
 # Map taui provider names → models.dev provider IDs
 PROVIDER_MAP: dict[str, str] = {
     "copilot": "github-copilot",
@@ -77,6 +84,59 @@ def fetch_models(*, force: bool = False) -> dict:
             except Exception:
                 pass
         return {}
+
+
+def _load_variant_overrides() -> dict[str, list[str]]:
+    """Load learned per-model reasoning-effort overrides."""
+    try:
+        data = json.loads(VARIANT_OVERRIDE_FILE.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            return data
+    except Exception:
+        pass
+    return {}
+
+
+def _get_variant_override(provider: str, model_id: str) -> list[str] | None:
+    """Return a learned effort list for a model, or ``None`` if absent/stale.
+
+    Overrides expire after ``CACHE_TTL`` so a provider that *starts* accepting
+    ``reasoning_effort`` for a newly-released model (e.g. Copilot enabling it
+    for a model it initially rejected) is re-probed rather than disabled
+    forever. The runtime recovery in the provider guards against any failed
+    call during the gap.
+    """
+    entry = _load_variant_overrides().get(f"{provider}/{model_id}")
+    if not isinstance(entry, dict):
+        return None
+    if time.time() - entry.get("ts", 0) >= CACHE_TTL:
+        return None
+    efforts = entry.get("efforts")
+    return list(efforts) if isinstance(efforts, list) else None
+
+
+def record_supported_variants(
+    provider: str, model_id: str, supported: list[str]
+) -> None:
+    """Persist the provider's authoritative effort list for one model.
+
+    Called when a provider tells us (via a rejection) exactly which
+    reasoning-effort values a model accepts — the only place that truth is
+    available. An empty list means the model accepts no effort tier at all.
+    The entry is timestamped and expires (see ``_get_variant_override``).
+    """
+    if not model_id:
+        return
+    key = f"{provider}/{model_id}"
+    norm = [s.strip() for s in supported if s and s.strip()]
+    overrides = _load_variant_overrides()
+    overrides[key] = {"efforts": norm, "ts": time.time()}
+    try:
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        VARIANT_OVERRIDE_FILE.write_text(json.dumps(overrides), encoding="utf-8")
+        logger.debug("Recorded variant override %s=%s", key, norm)
+    except Exception as e:
+        logger.debug("Failed to persist variant override: %s", e)
 
 
 def list_models(provider: str, *, force_refresh: bool = False) -> list[dict]:
@@ -247,6 +307,10 @@ def compute_variants(
     """
     if not reasoning or not model_id:
         return []
+    # A recent provider rejection is authoritative — prefer it over our heuristic.
+    override = _get_variant_override(provider, model_id)
+    if override is not None:
+        return override
     if provider == "copilot":
         return _copilot_reasoning_efforts(model_id, release_date)
     if provider == "codex":

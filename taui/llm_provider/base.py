@@ -189,6 +189,17 @@ class BaseLLMProvider(ABC):
             return True
         return bool(_RETRYABLE_PATTERNS.search(body))
 
+    def recover_from_error(self, req: LLMRequest, status: int, body: str) -> bool:
+        """Repair ``req`` in place after an otherwise-fatal error so it can be
+        retried once.
+
+        Returns ``True`` if the request was modified and should be retried.
+        Base implementation never recovers; providers override to handle cases
+        where the only source of truth is the rejection itself (e.g. an
+        unsupported ``reasoning_effort`` value reported by the provider).
+        """
+        return False
+
     # ── High-level API ─────────────────────────────────────────────
 
     async def create_turn(
@@ -277,6 +288,17 @@ class BaseLLMProvider(ABC):
                     raise QuotaExceededError(
                         msg, status_code=status, body=body, resets_in_seconds=resets_in
                     ) from exc
+
+                # Provider rejected something we can repair (e.g. an
+                # unsupported reasoning_effort) → fix the request and retry once.
+                if self.recover_from_error(req, status, body):
+                    logger.info(
+                        "Adjusted request after HTTP %s; retrying (attempt %s/%s)",
+                        status,
+                        attempt + 1,
+                        MAX_RETRIES,
+                    )
+                    continue
 
                 # Not retryable → raise with body for debugging
                 if not self.is_retryable(status, body):

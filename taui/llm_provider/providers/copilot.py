@@ -18,6 +18,7 @@ from ..auth.copilot import (
     get_copilot_base_url,
 )
 from ..base import BaseLLMProvider
+from ..models import record_supported_variants
 from ..types import (
     LLMRequest,
     ProviderCapabilities,
@@ -29,6 +30,20 @@ from ..types import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_supported_efforts(message: str) -> list[str]:
+    """Extract the effort list from a Copilot ``invalid_reasoning_effort`` message.
+
+    Example: ``... supported values: low, medium, high`` → ``["low","medium","high"]``.
+    An empty tail (``supported values:``) yields ``[]`` (model accepts none).
+    """
+    marker = "supported values:"
+    idx = message.lower().rfind(marker)
+    if idx == -1:
+        return []
+    tail = message[idx + len(marker) :]
+    return [v.strip() for v in tail.split(",") if v.strip()]
 
 
 class CopilotProvider(BaseLLMProvider):
@@ -178,6 +193,36 @@ class CopilotProvider(BaseLLMProvider):
         if not events:
             return None
         return events[0] if len(events) == 1 else events
+
+    def recover_from_error(self, req: LLMRequest, status: int, body: str) -> bool:
+        """Strip an unsupported ``reasoning_effort`` and learn the valid set.
+
+        Copilot reports the accepted effort values only by rejecting a bad one
+        (``invalid_reasoning_effort``); that rejection is the sole source of
+        truth — models.dev does not publish it. We record it so the picker
+        self-corrects, then drop the param so this turn can proceed.
+        """
+        if status != 400 or "reasoning_effort" not in req.body:
+            return False
+        try:
+            err = json.loads(body).get("error", {})
+        except Exception:
+            return False
+        if err.get("code") != "invalid_reasoning_effort":
+            return False
+
+        supported = _parse_supported_efforts(err.get("message", ""))
+        model = str(req.body.get("model", ""))
+        record_supported_variants("copilot", model, supported)
+        rejected = req.body.pop("reasoning_effort", None)
+        logger.info(
+            "Copilot rejected reasoning_effort=%r for %s; supported=%s. "
+            "Retrying without it.",
+            rejected,
+            model,
+            supported,
+        )
+        return True
 
     def refresh_credentials(self) -> None:
         self.credentials = ensure_valid_token(self.credentials)
