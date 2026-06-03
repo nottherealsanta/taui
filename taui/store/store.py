@@ -146,7 +146,20 @@ class Store:
             return
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         _ensure_taui_gitignore(self.db_path.parent)
-        self._db = await aiosqlite.connect(self.db_path)
+        conn = aiosqlite.connect(self.db_path)
+        # aiosqlite runs each connection on a background worker thread that is
+        # *not* a daemon thread (aiosqlite 0.22). If a Store is ever left
+        # unclosed — a crash, a signal, a shutdown path that raises, or a test
+        # that drops the app without quitting — that thread keeps running and
+        # `threading._shutdown()` blocks forever joining it at interpreter exit.
+        # Mark the worker daemon *before* it starts (the thread is created in
+        # Connection.__init__ but only started when the Connection is awaited)
+        # so a missed close can never wedge process exit. Committed WAL
+        # transactions are already durable, so an abrupt teardown is safe.
+        worker = getattr(conn, "_thread", None)
+        if worker is not None and not worker.is_alive():
+            worker.daemon = True
+        self._db = await conn
         self._db.row_factory = aiosqlite.Row
         await self._db.execute("PRAGMA journal_mode = WAL")
         await self._db.execute("PRAGMA synchronous = NORMAL")

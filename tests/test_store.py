@@ -73,6 +73,29 @@ class TestStoreLifecycle:
         assert (taui / ".gitignore").read_text() == "store.db\n!extensions/\n"
         await store.close()
 
+    async def test_connection_worker_thread_is_daemon(self, tmp_path: Path):
+        """A connected Store must run its aiosqlite worker on a daemon thread.
+
+        aiosqlite's worker thread is non-daemon by default, so a Store that is
+        never closed (crash, signal, a shutdown path that raises, or a test that
+        drops the app without quitting) would keep the interpreter alive at exit:
+        ``threading._shutdown()`` joins it forever and hangs the process — and,
+        in CI, the entire test suite. ``Store.connect()`` marks the worker daemon
+        so a missed close can never wedge process exit.
+        """
+        store = Store(tmp_path)
+        await store.connect()
+        try:
+            worker = getattr(store.db, "_thread", None)
+            assert worker is not None, "aiosqlite Connection exposes no worker thread"
+            assert worker.is_alive()
+            assert worker.daemon is True, (
+                "aiosqlite worker thread must be daemon so a leaked Store cannot "
+                "hang interpreter shutdown"
+            )
+        finally:
+            await store.close()
+
 
 # ═══ Stream CRUD ══════════════════════════════════════════════════════════════
 
