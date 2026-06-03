@@ -683,7 +683,7 @@ class _ModelPicker(ModalScreen[str | None]):
     DEFAULT_CSS = f"""
     _ModelPicker {{
         align: center middle;
-        background: $background 70%;
+        background: $taui-scrim;
     }}
     #se-mp-dialog {{
         width: 60;
@@ -862,7 +862,7 @@ class _Editor(ModalScreen):
     DEFAULT_CSS = f"""
     _Editor {{
         align: center middle;
-        background: $background 70%;
+        background: $taui-scrim;
     }}
     #se-editor-dialog {{
         width: 90%;
@@ -1697,7 +1697,7 @@ class _ConfirmDelete(ModalScreen[bool]):
     DEFAULT_CSS = f"""
     _ConfirmDelete {{
         align: center middle;
-        background: $background 70%;
+        background: $taui-scrim;
     }}
     #se-confirm {{
         width: 60;
@@ -1766,7 +1766,7 @@ class _UnsavedChangesPrompt(ModalScreen[str | None]):
     DEFAULT_CSS = f"""
     _UnsavedChangesPrompt {{
         align: center middle;
-        background: $background 70%;
+        background: $taui-scrim;
     }}
     #se-unsaved-dialog {{
         width: 58;
@@ -1849,7 +1849,7 @@ class _PrefixEditor(ModalScreen[str | None]):
     DEFAULT_CSS = f"""
     _PrefixEditor {{
         align: center middle;
-        background: $background 70%;
+        background: $taui-scrim;
     }}
     #se-prefix-dialog {{
         width: 52;
@@ -1970,7 +1970,7 @@ class _StringEditor(ModalScreen[str | None]):
     DEFAULT_CSS = f"""
     _StringEditor {{
         align: center middle;
-        background: $background 70%;
+        background: $taui-scrim;
     }}
     #se-str-dialog {{
         width: 60;
@@ -3246,7 +3246,7 @@ class SelfEditModal(ModalScreen[str | None]):
     DEFAULT_CSS = f"""
     SelfEditModal {{
         align: center middle;
-        background: $background 70%;
+        background: $taui-scrim;
     }}
     #se-dialog {{
         width: 95%;

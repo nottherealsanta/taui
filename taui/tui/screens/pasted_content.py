@@ -11,7 +11,6 @@ from textual.events import Key
 from textual.screen import ModalScreen
 from textual.widgets import Button, Label, TextArea
 
-
 PasteResultAction = Literal["save", "insert"]
 
 
@@ -35,7 +34,7 @@ class PastedContentScreen(ModalScreen[PasteResult | None]):
     DEFAULT_CSS = """
     PastedContentScreen {
         align: center middle;
-        background: $background 70%;
+        background: $taui-scrim;
     }
     #pasted-dialog {
         width: 80%;
