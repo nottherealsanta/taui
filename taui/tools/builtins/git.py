@@ -43,7 +43,9 @@ class GitTool:
     guidelines: str = (
         "Use `git` for version control operations. Always check `status` "
         "before committing. Write a clear commit message. "
-        "Prefer small, focused commits."
+        "Prefer small, focused commits. Run network operations (fetch, pull, "
+        "push) only when the user asks; never push to a shared branch without "
+        "explicit confirmation."
     )
     schema: dict[str, Any] = field(default=None)  # type: ignore[assignment]
 
