@@ -390,6 +390,14 @@ class TestSelfEditBashAllowlist:
             assert not allowed, f"{cmd!r} should be blocked"
             assert "operators" in reason or "redirection" in reason
 
+    def test_blocks_newline_command_separator(self):
+        # The command runs through a shell; a newline would run a second command
+        # the allowlist never inspects (it only checks the first token).
+        for cmd in ("ls\nrm -rf x", "pwd\r\ntouch evil", "cat a\nrm b"):
+            allowed, reason = _is_self_edit_bash_command_allowed(cmd)
+            assert not allowed, f"{cmd!r} should be blocked"
+            assert "newlines" in reason or "operators" in reason
+
     def test_blocks_destructive_find_arguments(self):
         # `+` avoids the `;` operator check so we exercise the find-arg guard.
         for cmd in (
@@ -398,6 +406,11 @@ class TestSelfEditBashAllowlist:
             "find . -execdir rm {} +",
             "find . -ok rm {} +",
             "find . -okdir rm {} +",
+            # -f* actions write to a file.
+            "find . -fprintf out.txt %p",
+            "find . -fprint out.txt",
+            "find . -fprint0 out.txt",
+            "find . -fls out.txt",
         ):
             allowed, reason = _is_self_edit_bash_command_allowed(cmd)
             assert not allowed, f"{cmd!r} should be blocked"

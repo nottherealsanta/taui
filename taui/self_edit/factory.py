@@ -35,6 +35,11 @@ _SELF_EDIT_BASH_FORBIDDEN_FIND_ARGS = frozenset({
     "-execdir",
     "-ok",
     "-okdir",
+    # -f* actions write to a file, so they are not read-only either.
+    "-fprint",
+    "-fprint0",
+    "-fprintf",
+    "-fls",
 })
 
 _SKILLS_NOTE = (
@@ -343,8 +348,11 @@ def _count_mcp_servers(path: Path) -> int:
 def _is_self_edit_bash_command_allowed(command: str) -> tuple[bool, str]:
     if not command:
         return False, "Empty command."
-    if "$(" in command or any(char in command for char in ";&|<>`"):
-        return False, "Shell control operators and redirection are not allowed."
+    # The command runs through a shell, so a newline (or other separator) would
+    # smuggle a second command past the executable allowlist below, which only
+    # inspects the first token. Reject any separator/redirection/substitution.
+    if "$(" in command or any(char in command for char in ";&|<>`\n\r"):
+        return False, "Shell control operators, redirection, and newlines are not allowed."
     try:
         parts = shlex.split(command)
     except ValueError as exc:
