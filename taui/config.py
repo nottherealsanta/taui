@@ -50,6 +50,9 @@ class Config:
 
     # Tool policy
     auto_approve: bool = False  # session-level: skip approval for tools that would ask
+    # In self-edit (/i) mode, require approval for mutating tools (edit, write,
+    # install_skill) instead of auto-running them. Off by default.
+    self_edit_confirm_edits: bool = False
     tool_policy: dict[str, str] = field(default_factory=dict)  # per-tool overrides
     permission: dict[str, dict[str, str]] = field(default_factory=dict)  # pattern-based rules
 
@@ -109,7 +112,8 @@ class Config:
                 }
                 defaults.update(val)
                 kwargs["prefixes"] = defaults
-        for fld in ("notifications", "notify_on_turn_done", "notify_on_question"):
+        for fld in ("notifications", "notify_on_turn_done", "notify_on_question",
+                    "self_edit_confirm_edits"):
             if fld in taui_cfg:
                 kwargs[fld] = bool(taui_cfg[fld])
 

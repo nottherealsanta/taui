@@ -515,6 +515,12 @@ GENERAL_SETTINGS_SECTIONS: tuple[
                 "Skip approval for every tool call.",
                 bool,
             ),
+            (
+                "self_edit_confirm_edits",
+                "Self-Edit Confirm Edits",
+                "Require approval for edits while in self-edit (/i) mode.",
+                bool,
+            ),
         ],
     ),
 )
@@ -534,6 +540,7 @@ _GENERAL_SETTINGS_MAP: dict[str, tuple[str, type]] = {
     "notify_on_question": ("notify_on_question", bool),
     "verbose_tools": ("verbose_tools", bool),
     "auto_approve": ("auto_approve", bool),
+    "self_edit_confirm_edits": ("self_edit_confirm_edits", bool),
 }
 
 # Total number of general settings (used for the tab badge).
@@ -556,6 +563,7 @@ _GENERAL_DEFAULTS: dict[str, object] = {
     "notify_on_question": True,
     "verbose_tools": True,
     "auto_approve": False,
+    "self_edit_confirm_edits": False,
 }
 
 
@@ -570,7 +578,7 @@ def _load_general_values() -> dict[str, object]:
     values: dict[str, object] = dict(_GENERAL_DEFAULTS)
     for fld in ("max_turns", "sub_agent_max_turns", "provider", "model",
                 "notifications", "notify_on_turn_done", "notify_on_question",
-                "verbose_tools", "auto_approve"):
+                "verbose_tools", "auto_approve", "self_edit_confirm_edits"):
         if fld in taui_cfg:
             values[fld] = taui_cfg[fld]
     for fld in ("file_attach", "command"):

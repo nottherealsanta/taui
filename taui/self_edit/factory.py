@@ -25,6 +25,9 @@ from taui.tools.registry import ToolRegistry
 _SYSTEM_PROMPT_PATH = Path(__file__).parent / "prompts" / "self_edit_system.md"
 
 _SCOPED_TOOL_NAMES = ("read", "edit", "write", "bash")
+# Tools that mutate files/config; gated behind approval when the user opts into
+# confirm_edits. Everything else (read, the read-only bash facade) stays auto.
+_SELF_EDIT_MUTATING_TOOLS = frozenset({"edit", "write", "install_skill"})
 _SELF_EDIT_BASH_COMMANDS = frozenset({"cat", "find", "grep", "ls", "pwd", "rg"})
 _SELF_EDIT_BASH_FORBIDDEN_FIND_ARGS = frozenset({
     "-delete",
@@ -417,10 +420,28 @@ def build_self_edit_executor(
     base_registry: ToolRegistry,
     base_executor: ToolExecutor,
     project_working_dir: Path | None = None,
+    *,
+    confirm_edits: bool = False,
 ) -> ToolExecutor:
-    """Build a ToolExecutor scoped to self-edit tools with no approval prompts."""
+    """Build a ToolExecutor scoped to self-edit tools.
+
+    By default self-edit runs without approval prompts. With ``confirm_edits``
+    the mutating tools (edit, write, install_skill) require approval — surfaced
+    through the same approval flow as a normal session — while read-only tools
+    stay automatic.
+    """
     registry = build_scoped_tool_registry(base_registry, project_working_dir)
-    policy = ToolPolicy({name: PolicyDecision.AUTO for name in registry.names})
+    if confirm_edits:
+        policy = ToolPolicy({
+            name: (
+                PolicyDecision.CONFIRM
+                if name in _SELF_EDIT_MUTATING_TOOLS
+                else PolicyDecision.AUTO
+            )
+            for name in registry.names
+        })
+    else:
+        policy = ToolPolicy({name: PolicyDecision.AUTO for name in registry.names})
     return ToolExecutor(
         registry=registry,
         policy=policy,

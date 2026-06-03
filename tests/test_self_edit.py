@@ -75,6 +75,31 @@ def test_agents_include_defaults_and_save_prompt_file(tmp_path):
     assert "p" in loaded["ABC"].prompt_path.read_text(encoding="utf-8")
 
 
+def test_self_edit_confirm_edits_gates_mutating_tools(tmp_path):
+    """confirm_edits routes the mutating self-edit tools through approval."""
+    from taui.self_edit.factory import build_self_edit_executor
+    from taui.tools.executor import PolicyDecision, ToolExecutor, ToolPolicy
+
+    base = ToolRegistry()
+    base_executor = ToolExecutor(registry=base, policy=ToolPolicy())
+
+    # Default: self-edit runs without prompts.
+    auto = build_self_edit_executor(base, base_executor, tmp_path)
+    assert auto.policy.decide("edit") == PolicyDecision.AUTO
+    assert auto.policy.decide("write") == PolicyDecision.AUTO
+    assert auto.policy.decide("install_skill") == PolicyDecision.AUTO
+
+    # Opt-in: mutating tools require approval; read-only stays automatic.
+    confirm = build_self_edit_executor(
+        base, base_executor, tmp_path, confirm_edits=True
+    )
+    assert confirm.policy.decide("edit") == PolicyDecision.CONFIRM
+    assert confirm.policy.decide("write") == PolicyDecision.CONFIRM
+    assert confirm.policy.decide("install_skill") == PolicyDecision.CONFIRM
+    assert confirm.policy.decide("read") == PolicyDecision.AUTO
+    assert confirm.policy.decide("bash") == PolicyDecision.AUTO
+
+
 def test_extension_source_model():
     ext = ExtensionSource(
         name="mcp",
@@ -424,7 +449,9 @@ async def test_switch_self_edit_scope_flips_persists_and_rebuilds(tmp_path):
     base_executor = ToolExecutor(registry=base, policy=ToolPolicy())
 
     session = Session.__new__(Session)
-    session.config = SimpleNamespace(working_dir=tmp_path)
+    session.config = SimpleNamespace(
+        working_dir=tmp_path, self_edit_confirm_edits=False
+    )
     session._registry = base
     session._executor = base_executor
     session.self_edit_mode = True
@@ -458,7 +485,9 @@ async def test_switch_self_edit_scope_noop_when_not_in_self_edit(tmp_path):
     from taui.session import Session
 
     session = Session.__new__(Session)
-    session.config = SimpleNamespace(working_dir=tmp_path)
+    session.config = SimpleNamespace(
+        working_dir=tmp_path, self_edit_confirm_edits=False
+    )
     session.self_edit_mode = False
     session._self_edit_scope = ""
 
@@ -496,7 +525,9 @@ async def test_exit_self_edit_mode_hot_reloads_and_updates_prompt(tmp_path):
     calls: dict[str, int] = {"reload": 0, "mcp": 0, "rebuild": 0, "replay": 0}
 
     session = Session.__new__(Session)
-    session.config = SimpleNamespace(working_dir=tmp_path)
+    session.config = SimpleNamespace(
+        working_dir=tmp_path, self_edit_confirm_edits=False
+    )
     session._registry = _registry_with()
     session._executor = ToolExecutor(registry=session._registry, policy=ToolPolicy())
     session.self_edit_mode = True
@@ -549,7 +580,9 @@ async def test_rebuild_system_prompt_picks_up_extension_hook(tmp_path):
     from taui.session import Session
 
     session = Session.__new__(Session)
-    session.config = SimpleNamespace(working_dir=tmp_path)
+    session.config = SimpleNamespace(
+        working_dir=tmp_path, self_edit_confirm_edits=False
+    )
     session._registry = _registry_with()
     session.hooks = HookRegistry()
     session._system_prompt = ""

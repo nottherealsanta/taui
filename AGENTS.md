@@ -267,6 +267,12 @@ Self-edit should create or modify extension files, skills, commands, or tools th
 extension surface. Do not use self-edit as a reason to bypass core invariants in
 `AgentLoop`, `Store`, or `ToolExecutor`.
 
+Self-edit normally runs without approval prompts. Setting `self_edit_confirm_edits`
+(config, or the "Self-Edit Confirm Edits" toggle in general settings) routes the mutating
+self-edit tools (`edit`, `write`, `install_skill`) through the same approval flow as a
+normal session; read-only tools stay automatic. The toggle is applied in
+`build_self_edit_executor` (`taui/self_edit/factory.py`).
+
 `Ctrl+E` opens the self-edit modal (`taui/tui/screens/self_edit_modal.py`), a
 non-agent CRUD UI that edits the same surfaces (agents, skills, commands,
 tools, prompts, MCP servers) across global (`~/.taui/`, `~/.config/agents/`)

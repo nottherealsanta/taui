@@ -361,6 +361,7 @@ class Session:
             registry,
             executor,
             config.working_dir,
+            confirm_edits=config.self_edit_confirm_edits,
         )
         session._builtin_tool_names = builtin_tool_names
         session._builtin_tools = builtin_tools
@@ -554,6 +555,7 @@ class Session:
                 self._registry,
                 self._executor,
                 self.config.working_dir,
+                confirm_edits=self.config.self_edit_confirm_edits,
             )
             self._self_edit_scope = SelfEditStore(
                 self.config.working_dir
@@ -707,6 +709,7 @@ class Session:
                 self._registry,
                 self._executor,
                 self.config.working_dir,
+                confirm_edits=self.config.self_edit_confirm_edits,
             )
             prompt = self._self_edit_prompt
             executor = self._self_edit_executor or self._executor
@@ -1046,6 +1049,7 @@ class Session:
             self._registry,
             self._executor,
             self.config.working_dir,
+            confirm_edits=self.config.self_edit_confirm_edits,
         )
         self._loop._executor = self._self_edit_executor
         self._loop.update_system_prompt(self._self_edit_prompt)
