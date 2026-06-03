@@ -165,6 +165,10 @@ class SessionInfoSidebar(VerticalScroll):
         rows: list[Static] = []
         if session_name:
             rows.append(_SectionRow(Text(session_name, style="#e6edf3")))
+        if session_id:
+            id_text = Text()
+            id_text.append(session_id, style="#6e7681")
+            rows.append(_SectionRow(id_text))
 
         self._replace_children("session", rows)
 
