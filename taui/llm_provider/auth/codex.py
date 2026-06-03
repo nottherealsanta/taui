@@ -13,6 +13,7 @@ from dataclasses import dataclass
 import httpx
 
 from ..config import load_provider_config, save_provider_config
+from .errors import ProviderAuthRequired
 from .pkce import generate_pkce, race_callback_or_paste
 
 # ── Constants ──────────────────────────────────────────────────────────────────
@@ -178,8 +179,12 @@ def ensure_valid_token(creds: CodexCredentials) -> CodexCredentials:
     return creds
 
 
-def get_codex_credentials() -> CodexCredentials:
-    """Load saved credentials or trigger interactive login."""
+def get_codex_credentials(interactive: bool = True) -> CodexCredentials:
+    """Load saved credentials or (when ``interactive``) trigger browser login.
+
+    Session creation passes ``interactive=False`` so an unauthenticated launch
+    raises ProviderAuthRequired instead of blocking on a PKCE browser flow.
+    """
     saved = load_provider_config("codex")
     if saved:
         refresh_token = saved.get("refresh_token")
@@ -194,6 +199,13 @@ def get_codex_credentials() -> CodexCredentials:
                 )
                 return refresh_access_token(creds)
             except Exception as exc:
+                if not interactive:
+                    raise ProviderAuthRequired(
+                        "codex",
+                        f"Saved Codex token is invalid ({exc}). Run `taui --login`.",
+                    ) from exc
                 print(f"Saved Codex token invalid ({exc}). Re-authenticating...\n")
 
+    if not interactive:
+        raise ProviderAuthRequired("codex")
     return login()

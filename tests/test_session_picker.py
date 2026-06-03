@@ -85,7 +85,7 @@ class TestSessionPrompt:
         }
         text = _session_prompt(session, depth=0)
         plain = str(text)
-        assert "abc123" in plain
+        assert "Test session" in plain
         assert "├─" not in plain
 
     def test_child_has_prefix(self):

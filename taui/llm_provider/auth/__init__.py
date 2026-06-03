@@ -7,6 +7,7 @@ Re-exports credential types and provides get_credentials() factory.
 from ..config import load_provider_config
 from .codex import CodexCredentials, get_codex_credentials
 from .copilot import CopilotCredentials, get_copilot_credentials
+from .errors import ProviderAuthRequired
 
 
 def _get_provider_names() -> dict[str, str]:
@@ -168,6 +169,7 @@ __all__ = [
     "PROVIDER_NAMES",
     "CopilotCredentials",
     "CodexCredentials",
+    "ProviderAuthRequired",
     "get_copilot_credentials",
     "get_codex_credentials",
 ]

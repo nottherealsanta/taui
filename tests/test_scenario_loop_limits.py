@@ -14,7 +14,6 @@ from taui.store.stream import StreamClient
 from taui.tools.builtins import register_builtins
 from taui.tools.executor import PolicyDecision, ToolExecutor, ToolPolicy
 from taui.tools.registry import ToolRegistry
-
 from tests.scenarios import ScriptedProvider, ScriptedToolCall, Turn, scenarios
 
 
@@ -69,8 +68,8 @@ class TestMaxTurns:
             result = await session.send("loop forever")
             assert result.turns == 3
             assert result.state == AgentState.DONE
-            # Provider was called exactly max_turns times.
-            assert provider.call_count == 3
+            # max_turns tool-calling turns, then one tool-free wrap-up turn.
+            assert provider.call_count == 4
         finally:
             await session.close()
 

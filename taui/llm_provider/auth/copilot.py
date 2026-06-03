@@ -20,6 +20,7 @@ from dataclasses import dataclass
 import httpx
 
 from ..config import load_provider_config, save_provider_config
+from .errors import ProviderAuthRequired
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -243,13 +244,19 @@ def login(enterprise_domain: str | None = None) -> CopilotCredentials:
 # ── High-level credential getter ───────────────────────────────────────────────
 
 
-def get_copilot_credentials() -> CopilotCredentials:
+def get_copilot_credentials(interactive: bool = True) -> CopilotCredentials:
     """
-    Load saved credentials or trigger interactive login.
+    Load saved credentials or (when ``interactive``) trigger device-flow login.
 
     1. Load saved github_token from config
     2. If found: refresh_copilot_token(github_token) -> CopilotCredentials
-    3. If not found or refresh fails: login() -> CopilotCredentials
+    3. If not found or refresh fails:
+       - interactive: login() -> CopilotCredentials
+       - non-interactive: raise ProviderAuthRequired (never blocks)
+
+    Session creation passes ``interactive=False`` so an unauthenticated launch
+    surfaces a clear "run `taui --login`" error instead of silently blocking on
+    a device-flow prompt the user cannot see.
     """
     saved = load_provider_config("copilot")
     if saved:
@@ -263,6 +270,13 @@ def get_copilot_credentials() -> CopilotCredentials:
                     "Check your network or run `taui --login` when GitHub is reachable."
                 ) from exc
             except Exception as exc:
+                if not interactive:
+                    raise ProviderAuthRequired(
+                        "copilot",
+                        f"Saved Copilot token is invalid ({exc}). Run `taui --login`.",
+                    ) from exc
                 print(f"Saved token invalid ({exc}). Re-authenticating...\n")
 
+    if not interactive:
+        raise ProviderAuthRequired("copilot")
     return login()

@@ -78,6 +78,7 @@ _FILE_DOMAINS: dict[str, set[str]] = {
     "test_permissions.py": {"permissions", "tools"},
     "test_prompt_builder.py": {"prompts"},
     "test_prompt_snapshot.py": {"prompts"},
+    "test_provider_auth.py": {"provider"},
     "test_provider_errors.py": {"provider"},
     "test_provider_scenarios.py": {"agent", "provider"},
     "test_question.py": {"tools"},

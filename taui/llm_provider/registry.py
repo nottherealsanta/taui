@@ -13,6 +13,7 @@ To add a new provider:
 
 from __future__ import annotations
 
+import inspect
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -25,12 +26,17 @@ logger = logging.getLogger(__name__)
 
 @dataclass(slots=True)
 class ProviderEntry:
-    """Registration entry for a provider."""
+    """Registration entry for a provider.
+
+    ``auth`` may optionally accept an ``interactive`` keyword. When ``False``
+    (used by session creation) it must not block on user input — it should
+    raise instead, so an unauthenticated launch fails fast with a clear message.
+    """
 
     name: str
     label: str
     factory: Callable[[Any], BaseLLMProvider]
-    auth: Callable[[], Any]
+    auth: Callable[..., Any]
     default_model: str
 
 
@@ -68,10 +74,32 @@ def get_provider_entry(name: str) -> ProviderEntry:
     return _REGISTRY[name]
 
 
-def create_provider(name: str) -> BaseLLMProvider:
-    """Create and authenticate a provider by name."""
+def _call_auth(auth: Callable[..., Any], *, interactive: bool) -> Any:
+    """Call a provider auth callable, passing ``interactive`` only if accepted.
+
+    Keeps backward compatibility with extension providers whose ``auth`` takes
+    no arguments (the original contract).
+    """
+    try:
+        params = inspect.signature(auth).parameters
+    except (TypeError, ValueError):
+        return auth()
+    accepts_interactive = "interactive" in params or any(
+        p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
+    )
+    return auth(interactive=interactive) if accepts_interactive else auth()
+
+
+def create_provider(name: str, *, interactive: bool = False) -> BaseLLMProvider:
+    """Create and authenticate a provider by name.
+
+    ``interactive`` defaults to ``False`` because this is the session-creation
+    path: it must surface a clear auth error rather than block on an
+    interactive login the user may not be able to see. The ``taui --login``
+    flow authenticates interactively before the TUI starts.
+    """
     entry = get_provider_entry(name)
-    creds = entry.auth()
+    creds = _call_auth(entry.auth, interactive=interactive)
     return entry.factory(creds)
 
 

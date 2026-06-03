@@ -157,8 +157,8 @@ class TestGeneralCategory:
         from taui.self_edit.inventory import GENERAL_SETTINGS_SECTIONS
 
         total = sum(len(rows) for _, rows in GENERAL_SETTINGS_SECTIONS)
-        # 4 prefixes + 3 agent + 3 notifications + 2 display
-        assert total == 12
+        # 4 prefixes + 4 agent + 3 notifications + 2 display
+        assert total == 13
 
     def test_save_general_setting_is_callable(self):
         from taui.self_edit.inventory import save_general_setting
@@ -461,11 +461,11 @@ class TestGeneralCounts:
         result = counts(tmp_path)
         assert "general" in result
 
-    def test_counts_general_global_equals_12(self, tmp_path):
+    def test_counts_general_global_equals_13(self, tmp_path):
         from taui.self_edit.inventory import counts
 
         result = counts(tmp_path)
-        assert result["general"]["global"] == 12
+        assert result["general"]["global"] == 13
 
     def test_counts_general_project_equals_0(self, tmp_path):
         from taui.self_edit.inventory import counts
