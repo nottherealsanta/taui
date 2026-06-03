@@ -111,6 +111,7 @@ _FILE_DOMAINS: dict[str, set[str]] = {
     "test_scenario_streaming.py": {"agent", "provider"},
     "test_scenario_tool_calls.py": {"agent", "provider", "tools"},
     "test_scenario_tui_interactions.py": {"tui"},
+    "test_schema_format.py": {"tools"},
     "test_self_edit.py": {"self_edit", "tui"},
     "test_self_edit_modal.py": {"self_edit", "tui"},
     "test_self_edit_modal_visual.py": {"self_edit", "tui"},
