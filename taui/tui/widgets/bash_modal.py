@@ -14,9 +14,9 @@ if TYPE_CHECKING:
     from taui.tui.widgets.tool_status import BashToolStatusWidget
 
 
+# Neutral gray that reads on both themes; the other status colors resolve
+# from the active theme at render time (Rich markup can't read $vars).
 _MUTED = "#8b949e"
-_VALUE = "#c9d1d9"
-_ERROR = "#f85149"
 
 
 class BashModal(ModalScreen[None]):
@@ -37,13 +37,13 @@ class BashModal(ModalScreen[None]):
         width: 100%;
         content-align: center middle;
         padding: 0 0 1 0;
-        color: cyan;
+        color: $primary;
         text-style: bold;
     }
     #bash-dialog .section-header {
         padding: 1 0 0 0;
         text-style: bold;
-        color: #58a6ff;
+        color: $accent;
     }
     #bash-dialog .section-body {
         padding: 0 0 0 2;
@@ -111,13 +111,23 @@ class BashModal(ModalScreen[None]):
             return
         scroll.scroll_end(animate=False)
 
+    def _theme_color(self, name: str, fallback: str) -> str:
+        """Resolve a concrete theme color for Rich markup (which can't read
+        ``$vars``). Falls back to the original GitHub-dark color."""
+        try:
+            return self.app.theme_variables.get(name) or fallback
+        except Exception:
+            return fallback
+
     def _status_markup(self) -> str:
         w = self._widget
         if w.is_running:
             return f"[{_MUTED}]running…[/{_MUTED}]"
         if w.is_failed:
-            return f"[{_ERROR}]failed[/{_ERROR}]"
-        return f"[{_VALUE}]done[/{_VALUE}]"
+            err = self._theme_color("error", "#f85149")
+            return f"[{err}]failed[/{err}]"
+        done = self._theme_color("foreground", "#c9d1d9")
+        return f"[{done}]done[/{done}]"
 
     def _output_text(self) -> str:
         lines = self._widget.expanded_lines(max_lines=2000)
