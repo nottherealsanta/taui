@@ -102,6 +102,7 @@ _FILE_DOMAINS: dict[str, set[str]] = {
     "test_provider_errors.py": {"provider"},
     "test_provider_scenarios.py": {"agent", "provider"},
     "test_question.py": {"tools"},
+    "test_repo_overview.py": {"tools"},
     "test_resume_e2e.py": {"session", "store"},
     "test_retry.py": {"agent"},
     "test_run_result.py": {"agent"},

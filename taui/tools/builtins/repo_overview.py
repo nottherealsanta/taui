@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -41,6 +42,12 @@ class RepoOverviewTool:
 
     async def execute(self, arguments: dict[str, Any]) -> ToolResult:
         max_depth = arguments.get("max_depth", 2)
+        # The survey walks the whole tree and shells out to git; the executor
+        # awaits tools on the event loop, so run it on a worker thread to keep
+        # the TUI responsive on large repos.
+        return await asyncio.to_thread(self._build_overview, max_depth)
+
+    def _build_overview(self, max_depth: int) -> ToolResult:
         parts: list[str] = []
 
         wd = self.working_dir
