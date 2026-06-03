@@ -296,8 +296,9 @@ class GlobTool:
         if rg is not None:
             return await self._glob_rg(rg, base, pattern)
 
-        # Fallback to Python
-        return self._glob_python(base, pattern)
+        # Fallback to Python (offloaded — rglob can be slow on big trees and
+        # the executor awaits tools on the event loop).
+        return await asyncio.to_thread(self._glob_python, base, pattern)
 
     async def _glob_rg(self, rg: str, base: Path, pattern: str) -> ToolResult:
         """Use ``rg --files`` with a glob filter — .gitignore-aware."""
@@ -321,7 +322,7 @@ class GlobTool:
                 )
         except FileNotFoundError:
             # rg vanished between detection and invocation — fall through
-            return self._glob_python(base, pattern)
+            return await asyncio.to_thread(self._glob_python, base, pattern)
 
         raw_paths = stdout.decode("utf-8", errors="replace").splitlines()
         if not raw_paths or (len(raw_paths) == 1 and not raw_paths[0].strip()):
@@ -456,8 +457,12 @@ class GrepTool:
         if rg is not None and not single_file:
             return await self._grep_rg(rg, base, pattern, include)
 
-        # Fallback to Python (single files always use Python, or when rg absent)
-        return self._grep_python(base, pattern, include, single_file)
+        # Fallback to Python (single files always use Python, or when rg absent).
+        # Offloaded: the pure-Python walk can run for its whole time budget and
+        # the executor awaits tools on the event loop.
+        return await asyncio.to_thread(
+            self._grep_python, base, pattern, include, single_file
+        )
 
     async def _grep_rg(
         self,
@@ -503,7 +508,9 @@ class GrepTool:
                 )
         except FileNotFoundError:
             # rg vanished — fall back to Python
-            return self._grep_python(base, pattern, include, single_file=False)
+            return await asyncio.to_thread(
+                self._grep_python, base, pattern, include, single_file=False
+            )
 
         # rg exit code 1 = no matches, 2 = error
         if proc.returncode == 2:
