@@ -7,6 +7,7 @@ from taui.agent.loop import AgentLoop
 from taui.agent.types import Message
 from taui.config import Config
 from taui.self_edit.factory import (
+    _is_self_edit_bash_command_allowed,
     build_scoped_tool_registry,
     build_self_edit_executor,
     build_self_edit_system_prompt,
@@ -347,6 +348,65 @@ async def test_scoped_bash_rejects_write_commands(tmp_path):
 
     assert result.error
     assert "bash is read-only" in result.content
+
+
+# ── self-edit bash allowlist (security boundary) ──────────────────────
+
+
+class TestSelfEditBashAllowlist:
+    """The self-edit bash facade must only ever run read-only inspection."""
+
+    def test_allows_read_only_commands(self):
+        for cmd in (
+            "ls",
+            "ls -la",
+            "pwd",
+            "cat file.py",
+            "grep -r foo .",
+            "rg foo",
+            "find . -name '*.py' -type f",
+        ):
+            allowed, reason = _is_self_edit_bash_command_allowed(cmd)
+            assert allowed, f"{cmd!r} should be allowed (reason: {reason})"
+
+    def test_blocks_non_allowlisted_executables(self):
+        for cmd in ("touch x", "rm x", "echo hi", "python x.py", "git status"):
+            allowed, _ = _is_self_edit_bash_command_allowed(cmd)
+            assert not allowed, f"{cmd!r} should be blocked"
+
+    def test_blocks_shell_operators_and_redirection(self):
+        # Command chaining, pipes, redirection, and substitution are how a
+        # read-only command could smuggle a write — all must be refused.
+        for cmd in (
+            "ls; rm -rf /",
+            "ls && rm x",
+            "ls | sh",
+            "cat x > y",
+            "cat < y",
+            "ls `whoami`",
+            "echo $(rm x)",
+        ):
+            allowed, reason = _is_self_edit_bash_command_allowed(cmd)
+            assert not allowed, f"{cmd!r} should be blocked"
+            assert "operators" in reason or "redirection" in reason
+
+    def test_blocks_destructive_find_arguments(self):
+        # `+` avoids the `;` operator check so we exercise the find-arg guard.
+        for cmd in (
+            "find . -delete",
+            "find . -exec rm {} +",
+            "find . -execdir rm {} +",
+            "find . -ok rm {} +",
+            "find . -okdir rm {} +",
+        ):
+            allowed, reason = _is_self_edit_bash_command_allowed(cmd)
+            assert not allowed, f"{cmd!r} should be blocked"
+            assert "find" in reason
+
+    def test_blocks_empty_command(self):
+        for cmd in ("", "   "):
+            allowed, _ = _is_self_edit_bash_command_allowed(cmd)
+            assert not allowed
 
 
 # ── wrap_tool_with_allowlist tests ────────────────────────────────────
