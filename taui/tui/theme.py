@@ -35,6 +35,17 @@ TAUI_DARK = Theme(
         "scrollbar-color-hover": "#3a3a3a",
         "scrollbar-color-active": "#5a5a5a",
         "scrollbar-background": "#070707",
+        # ── Modal / dialog chrome ──────────────────────────────────────
+        # Shared design tokens for every overlay (pickers, command palette,
+        # diff/inspector modals). Referencing these as `$taui-*` keeps the
+        # whole modal layer consistent and theme-aware instead of each
+        # screen hardcoding its own grays.
+        "taui-scrim": "#070707 70%",      # dimmed backdrop behind a modal
+        "taui-dialog-bg": "#0d0d0d",      # dialog container surface
+        "taui-field-bg": "#121212",       # inputs / option lists inside a dialog
+        "taui-border": "#2a2a2a",         # resting border / keyline
+        "taui-border-focus": "#5a5a5a",   # focused border
+        "taui-option-active": "#2a2a2a",  # highlighted option row
     },
 )
 
@@ -60,6 +71,16 @@ TAUI_LIGHT = Theme(
         "scrollbar-color-hover": "#afb8c1",
         "scrollbar-color-active": "#8c959f",
         "scrollbar-background": "#ffffff",
+        # ── Modal / dialog chrome ──────────────────────────────────────
+        # Light-theme counterparts of the dark tokens above. Defining them
+        # here is what makes every modal render correctly in light mode —
+        # previously each screen hardcoded dark grays and looked broken.
+        "taui-scrim": "#1f2328 40%",      # dark translucent scrim over light content
+        "taui-dialog-bg": "#ffffff",      # dialog container surface
+        "taui-field-bg": "#f6f8fa",       # inputs / option lists inside a dialog
+        "taui-border": "#d0d7de",         # resting border / keyline
+        "taui-border-focus": "#0969da",   # focused border
+        "taui-option-active": "#dde4ec",  # highlighted option row
     },
 )
 
