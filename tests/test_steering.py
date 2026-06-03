@@ -10,7 +10,6 @@ class TestDrainSteering:
 
     def _make_loop(self):
         """Create a minimal AgentLoop-like object with just the steering bits."""
-        from unittest.mock import MagicMock
 
         # We can't easily instantiate a full AgentLoop without all deps,
         # so test the logic directly by calling the method on a real loop
@@ -53,7 +52,10 @@ class TestDrainSteering:
         loop.steer("third instruction")
         loop._drain_steering()
         assert len(loop._messages) == 1
-        assert loop._messages[0].content == "first instruction\n\nsecond instruction\n\nthird instruction"
+        assert (
+            loop._messages[0].content
+            == "first instruction\n\nsecond instruction\n\nthird instruction"
+        )
         assert loop._messages[0].kind == "steer"
 
     def test_empty_queue_no_message(self):

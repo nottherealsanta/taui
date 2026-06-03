@@ -16,7 +16,6 @@ from taui.tools.builtins import register_builtins
 from taui.tools.executor import PolicyDecision, ToolExecutor, ToolPolicy
 from taui.tools.registry import ToolRegistry
 from taui.tools.truncation import TruncationStore
-
 from tests.scenarios import ScriptedProvider, ScriptedToolCall, Turn, scenarios
 
 

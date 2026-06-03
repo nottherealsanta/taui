@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 
 from taui.commands.registry import CommandRegistry
 from taui.extensions import Extension, ExtensionRegistry

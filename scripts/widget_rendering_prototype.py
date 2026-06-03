@@ -16,12 +16,10 @@ needing a Session, provider, or any of the agent loop machinery.
 from __future__ import annotations
 
 from rich.markup import escape
-from textual import on
 from textual.app import App, ComposeResult
 from textual.containers import Vertical, VerticalScroll
 from textual.widget import Widget
 from textual.widgets import Footer, Static
-
 
 # ── Turn container ────────────────────────────────────────────────────────
 

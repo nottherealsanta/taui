@@ -9,10 +9,10 @@ from __future__ import annotations
 import pytest
 from textual.events import Paste
 
-from tests.scenarios import scenarios
-from tests.scenarios.tui_harness import use_scripted_provider
 from taui.tui.widgets.attachments_bar import AttachmentsBar
 from taui.tui.widgets.chat_input import ChatInput
+from tests.scenarios import scenarios
+from tests.scenarios.tui_harness import use_scripted_provider
 
 
 def _make_app(monkeypatch, tmp_path):

@@ -4,13 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from types import SimpleNamespace
-from typing import Any
-
-import pytest
 
 from taui.commands.builtins import McpCommand
 from taui.commands.registry import CommandContext
-
 
 # ── Fakes ──────────────────────────────────────────────────────────────────
 

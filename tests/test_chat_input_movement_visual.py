@@ -14,7 +14,6 @@ from taui.tui.widgets.attachments_bar import AttachmentsBar
 from taui.tui.widgets.chat_input import ChatInput
 from taui.tui.widgets.info2 import Info2
 
-
 TERMINAL_SIZE = (60, 6)
 SEED_TEXT = "hello world foo bar"
 

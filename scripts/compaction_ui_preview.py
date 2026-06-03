@@ -18,10 +18,9 @@ from pathlib import Path
 from textual.app import App, ComposeResult
 from textual.containers import VerticalScroll
 
+from taui.session_replay import ReplayItem  # noqa: E402  (load after store init)
 from taui.tui.widgets.compaction_block import AbsorbedTurn, CompactionBlock
 from taui.tui.widgets.turn_container import TurnContainer
-from taui.session_replay import ReplayItem  # noqa: E402  (load after store init)
-
 
 _SUMMARY = """## Goal
 - Build the new compaction UI so the main chat reflects what's in context.

@@ -313,7 +313,7 @@ class GlobTool:
                 stdout, _ = await asyncio.wait_for(
                     proc.communicate(), timeout=_SEARCH_TIMEOUT_SECS
                 )
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 proc.kill()
                 await proc.wait()
                 return ToolResult.fail(
@@ -495,7 +495,7 @@ class GrepTool:
                 stdout, stderr = await asyncio.wait_for(
                     proc.communicate(), timeout=_SEARCH_TIMEOUT_SECS
                 )
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 proc.kill()
                 await proc.wait()
                 return ToolResult.fail(
@@ -546,7 +546,9 @@ class GrepTool:
             if len(matches) >= overflow_cap:
                 break
 
-        return self._format_grep_result(matches, pattern, base, files_matched, max_matches, overflow_cap)
+        return self._format_grep_result(
+            matches, pattern, base, files_matched, max_matches, overflow_cap
+        )
 
     def _grep_python(
         self,
@@ -565,7 +567,6 @@ class GrepTool:
         files_matched: set[str] = set()
         max_matches = 500
         overflow_cap = max_matches * 4
-        truncated = False
 
         deadline = time.monotonic() + _SEARCH_TIMEOUT_SECS
         files_since_check = 0
@@ -610,14 +611,9 @@ class GrepTool:
                     matches.append(f"{rel}:{lineno}| {display}")
                     files_matched.add(rel)
                     if len(matches) >= overflow_cap:
-                        truncated = True
                         break
             if len(matches) >= overflow_cap:
-                truncated = True
                 break
-
-        if len(matches) > max_matches:
-            truncated = True
 
         if not matches:
             return ToolResult.ok(

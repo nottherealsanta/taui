@@ -235,7 +235,7 @@ class AttachmentsBar(Widget):
             self._rebuild()
 
     @staticmethod
-    def _pill_label(item: "AttachmentsBar.Attachment", image_seq: int) -> str:
+    def _pill_label(item: AttachmentsBar.Attachment, image_seq: int) -> str:
         """Build the body label for a pill.
 
         - ``paste`` → ``pasted <k>k`` where k is ceil(tokens/1000), min 1.

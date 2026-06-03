@@ -10,7 +10,6 @@ import pytest
 
 from taui.tools.builtins.files import GlobTool, GrepTool
 
-
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 def _has_rg() -> bool:
@@ -157,7 +156,7 @@ class TestGrepToolFallback:
             files_mod._rg_path = None
             # Use an absurdly short timeout to trigger the guard
             files_mod._SEARCH_TIMEOUT_SECS = 0
-            result = await tool.execute({"pattern": "hello"})
+            await tool.execute({"pattern": "hello"})
             # Should either find results (fast enough) or hit the budget
             # In practice with timeout=0 it should trigger
             # (it only checks every 50 files, so with 1 file it may still succeed)

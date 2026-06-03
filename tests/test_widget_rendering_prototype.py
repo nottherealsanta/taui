@@ -13,9 +13,6 @@ To refresh baselines after an intentional change:
 
 from __future__ import annotations
 
-import asyncio
-
-import pytest
 from textual.pilot import Pilot
 
 from scripts.widget_rendering_prototype import (

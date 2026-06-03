@@ -10,7 +10,6 @@ from __future__ import annotations
 import re
 from typing import Any
 
-
 _MAX_INLINE_LEN = 150
 
 
@@ -329,10 +328,10 @@ def _fmt_out_write(arguments: dict[str, Any], output: str) -> list[str]:
 def _fmt_out_grep(arguments: dict[str, Any], output: str) -> list[str]:
     if not output.strip():
         return ["no matches"]
-    lines = [l for l in output.splitlines() if l.strip()]
+    lines = [ln for ln in output.splitlines() if ln.strip()]
     m = re.search(r"(\d+)\s+match(es)?", output, re.IGNORECASE)
     n = int(m.group(1)) if m else len(lines)
-    files = len({l.split(":", 1)[0] for l in lines if ":" in l})
+    files = len({ln.split(":", 1)[0] for ln in lines if ":" in ln})
     if files > 1:
         return [f"{n} matches in {files} files"]
     return [f"{n} match" + ("es" if n != 1 else "")]
@@ -341,7 +340,7 @@ def _fmt_out_grep(arguments: dict[str, Any], output: str) -> list[str]:
 def _fmt_out_glob(arguments: dict[str, Any], output: str) -> list[str]:
     if not output.strip():
         return ["no files"]
-    lines = [l for l in output.splitlines() if l.strip()]
+    lines = [ln for ln in output.splitlines() if ln.strip()]
     n = len(lines)
     return [f"{n} file" + ("s" if n != 1 else "")]
 
@@ -355,7 +354,7 @@ def _fmt_out_bash(arguments: dict[str, Any], output: str) -> list[str]:
 def _fmt_out_repo_overview(arguments: dict[str, Any], output: str) -> list[str]:
     lines = output.splitlines()
     if len(lines) <= 15:
-        return [l.rstrip() for l in lines if l.strip()]
+        return [ln.rstrip() for ln in lines if ln.strip()]
     return [f"{len(lines)} entries"]
 
 
@@ -374,15 +373,15 @@ def _fmt_out_git(arguments: dict[str, Any], output: str) -> list[str]:
         return ["(empty)"]
 
     if op == "status":
-        lines = [l for l in text.splitlines() if l.strip()]
+        lines = [ln for ln in text.splitlines() if ln.strip()]
         if not lines or "working tree clean" in text.lower():
             return ["clean"]
         # Porcelain v1: 2-char status code + space + filepath
         added = modified = deleted = renamed = untracked = 0
-        for l in lines:
-            if len(l) < 3:
+        for ln in lines:
+            if len(ln) < 3:
                 continue
-            code = l[:2]
+            code = ln[:2]
             if "?" in code:
                 untracked += 1
             elif "A" in code:
@@ -406,8 +405,8 @@ def _fmt_out_git(arguments: dict[str, Any], output: str) -> list[str]:
             parts.append(f"?{untracked}")
         summary = " ".join(parts) or f"{len(lines)} changes"
         out = [summary]
-        for l in lines[:5]:
-            out.append(l)
+        for ln in lines[:5]:
+            out.append(ln)
         if len(lines) > 5:
             out.append(f"… {len(lines) - 5} more")
         return out
@@ -427,7 +426,7 @@ def _fmt_out_git(arguments: dict[str, Any], output: str) -> list[str]:
         return [" · ".join(parts)]
 
     if op == "log":
-        lines = [l for l in text.splitlines() if l.strip()]
+        lines = [ln for ln in text.splitlines() if ln.strip()]
         head = lines[:5]
         tail = (
             [f"… {len(lines) - 5} more"] if len(lines) > 5 else []
@@ -438,8 +437,8 @@ def _fmt_out_git(arguments: dict[str, Any], output: str) -> list[str]:
         return [text.strip() or "(detached)"]
 
     if op == "branch_list":
-        lines = [l for l in text.splitlines() if l.strip()]
-        cur = next((l for l in lines if l.startswith("*")), "")
+        lines = [ln for ln in text.splitlines() if ln.strip()]
+        cur = next((ln for ln in lines if ln.startswith("*")), "")
         n = len(lines)
         out = [f"{n} branch" + ("es" if n != 1 else "")]
         if cur:
@@ -447,20 +446,20 @@ def _fmt_out_git(arguments: dict[str, Any], output: str) -> list[str]:
         return out
 
     if op == "stash_list":
-        lines = [l for l in text.splitlines() if l.strip()]
+        lines = [ln for ln in text.splitlines() if ln.strip()]
         if not lines:
             return ["no stashes"]
         return [f"{len(lines)} stash" + ("es" if len(lines) != 1 else "")]
 
     if op in ("commit", "add", "checkout", "stash_push", "stash_pop", "show", "blame"):
-        lines = [l for l in text.splitlines() if l.strip()]
+        lines = [ln for ln in text.splitlines() if ln.strip()]
         head = lines[:6]
         if len(lines) > 6:
             head.append(f"… {len(lines) - 6} more")
         return head
 
     # Fallback
-    lines = [l for l in text.splitlines() if l.strip()]
+    lines = [ln for ln in text.splitlines() if ln.strip()]
     if len(lines) <= 5:
         return lines
     return lines[:5] + [f"… {len(lines) - 5} more"]
@@ -493,7 +492,7 @@ def _fmt_out_task(arguments: dict[str, Any], output: str) -> list[str]:
         return [text.splitlines()[0]] if text.splitlines() else []
 
     # add/update/complete/remove/clear return a one-line result.
-    first = next((l for l in text.splitlines() if l.strip()), "")
+    first = next((ln for ln in text.splitlines() if ln.strip()), "")
     return [first] if first else []
 
 
@@ -503,14 +502,14 @@ def _fmt_out_memory(arguments: dict[str, Any], output: str) -> list[str]:
     if not text.strip():
         return []
     if op == "list":
-        lines = [l for l in text.splitlines() if l.strip()]
+        lines = [ln for ln in text.splitlines() if ln.strip()]
         n = len(lines)
         return [f"{n} entries" if n != 1 else "1 entry"]
     if op == "read":
         lines = text.splitlines()
         return [f"{len(lines)} lines, {len(text):,} bytes"]
     # save/delete: first non-empty line is the success message.
-    first = next((l for l in text.splitlines() if l.strip()), "")
+    first = next((ln for ln in text.splitlines() if ln.strip()), "")
     return [first] if first else []
 
 
@@ -520,12 +519,12 @@ def _fmt_out_skills(arguments: dict[str, Any], output: str) -> list[str]:
     if not text.strip():
         return []
     if op in ("list", "status"):
-        lines = [l for l in text.splitlines() if l.strip()]
+        lines = [ln for ln in text.splitlines() if ln.strip()]
         head = lines[:6]
         if len(lines) > 6:
             head.append(f"… {len(lines) - 6} more")
         return head
-    first = next((l for l in text.splitlines() if l.strip()), "")
+    first = next((ln for ln in text.splitlines() if ln.strip()), "")
     return [first] if first else []
 
 
@@ -533,7 +532,7 @@ def _fmt_out_worktree(arguments: dict[str, Any], output: str) -> list[str]:
     text = output or ""
     if not text.strip():
         return []
-    lines = [l for l in text.splitlines() if l.strip()]
+    lines = [ln for ln in text.splitlines() if ln.strip()]
     head = lines[:4]
     if len(lines) > 4:
         head.append(f"… {len(lines) - 4} more")
@@ -546,11 +545,11 @@ def _fmt_out_mcp(arguments: dict[str, Any], output: str) -> list[str]:
     if not text.strip():
         return []
     if op in ("servers", "tools"):
-        lines = [l for l in text.splitlines() if l.strip()]
+        lines = [ln for ln in text.splitlines() if ln.strip()]
         n = len(lines)
         label = "server" if op == "servers" else "tool"
         return [f"{n} {label}" + ("s" if n != 1 else "")]
-    first = next((l for l in text.splitlines() if l.strip()), "")
+    first = next((ln for ln in text.splitlines() if ln.strip()), "")
     return [_trunc(first, _MAX_INLINE_LEN)] if first else []
 
 

@@ -22,7 +22,6 @@ from taui.store.stream import StreamClient
 from taui.tools.builtins import register_builtins
 from taui.tools.executor import PolicyDecision, ToolExecutor, ToolPolicy
 from taui.tools.registry import ToolRegistry
-
 from tests.scenarios import ScriptedProvider, ScriptedToolCall, Turn, scenarios
 
 

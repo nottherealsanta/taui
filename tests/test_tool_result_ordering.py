@@ -13,7 +13,7 @@ import time
 from taui.agent.loop import _assert_tool_call_groups
 from taui.agent.types import Message
 from taui.llm_provider.types import ProviderToolCall
-from taui.session_replay import ReplayTranscript, _normalize_tool_call_groups, replay_events
+from taui.session_replay import _normalize_tool_call_groups, replay_events
 from taui.store.events import Event, EventType
 
 
@@ -196,7 +196,11 @@ class TestReplayEventsToolOrdering:
     def test_modern_stream_correct_order(self):
         """Modern stream with ASSISTANT_MESSAGE.tool_calls and immediate results."""
         events = [
-            _event(EventType.USER_MESSAGE, {"text": "hi"}, offset=0),
+            _event(
+                EventType.USER_MESSAGE,
+                {"text": "hi"},
+                offset=0,
+            ),
             _event(
                 EventType.ASSISTANT_MESSAGE,
                 {
@@ -207,9 +211,21 @@ class TestReplayEventsToolOrdering:
                 },
                 offset=1,
             ),
-            _event(EventType.TOOL_CALL, {"call_id": "c1", "name": "echo", "arguments": {"text": "hello"}}, offset=2),
-            _event(EventType.TOOL_RESULT, {"call_id": "c1", "name": "echo", "content": "hello", "error": False}, offset=3),
-            _event(EventType.ASSISTANT_MESSAGE, {"text": "done", "tool_calls": []}, offset=4),
+            _event(
+                EventType.TOOL_CALL,
+                {"call_id": "c1", "name": "echo", "arguments": {"text": "hello"}},
+                offset=2,
+            ),
+            _event(
+                EventType.TOOL_RESULT,
+                {"call_id": "c1", "name": "echo", "content": "hello", "error": False},
+                offset=3,
+            ),
+            _event(
+                EventType.ASSISTANT_MESSAGE,
+                {"text": "done", "tool_calls": []},
+                offset=4,
+            ),
         ]
         transcript = replay_events(events)
         roles = [(m.role, m.tool_call_id) for m in transcript.messages]
@@ -223,10 +239,26 @@ class TestReplayEventsToolOrdering:
     def test_legacy_stream_tool_call_result_pairs(self):
         """Legacy stream with only TOOL_CALL/TOOL_RESULT pairs."""
         events = [
-            _event(EventType.USER_MESSAGE, {"text": "hi"}, offset=0),
-            _event(EventType.TOOL_CALL, {"call_id": "c1", "name": "echo", "arguments": {}}, offset=1),
-            _event(EventType.TOOL_RESULT, {"call_id": "c1", "name": "echo", "content": "hello"}, offset=2),
-            _event(EventType.ASSISTANT_MESSAGE, {"text": "done", "tool_calls": []}, offset=3),
+            _event(
+                EventType.USER_MESSAGE,
+                {"text": "hi"},
+                offset=0,
+            ),
+            _event(
+                EventType.TOOL_CALL,
+                {"call_id": "c1", "name": "echo", "arguments": {}},
+                offset=1,
+            ),
+            _event(
+                EventType.TOOL_RESULT,
+                {"call_id": "c1", "name": "echo", "content": "hello"},
+                offset=2,
+            ),
+            _event(
+                EventType.ASSISTANT_MESSAGE,
+                {"text": "done", "tool_calls": []},
+                offset=3,
+            ),
         ]
         transcript = replay_events(events)
         roles = [(m.role, m.tool_call_id) for m in transcript.messages]
@@ -240,7 +272,11 @@ class TestReplayEventsToolOrdering:
     def test_delayed_result_in_stream(self):
         """Tool result delayed by intervening events gets moved to correct position."""
         events = [
-            _event(EventType.USER_MESSAGE, {"text": "hi"}, offset=0),
+            _event(
+                EventType.USER_MESSAGE,
+                {"text": "hi"},
+                offset=0,
+            ),
             _event(
                 EventType.ASSISTANT_MESSAGE,
                 {
@@ -251,12 +287,28 @@ class TestReplayEventsToolOrdering:
                 },
                 offset=1,
             ),
-            _event(EventType.TOOL_CALL, {"call_id": "c1", "name": "echo", "arguments": {}}, offset=2),
+            _event(
+                EventType.TOOL_CALL,
+                {"call_id": "c1", "name": "echo", "arguments": {}},
+                offset=2,
+            ),
             # Intervening usage/error event causes an extra message between
-            _event(EventType.USAGE, {"input_tokens": 100, "output_tokens": 50}, offset=3),
+            _event(
+                EventType.USAGE,
+                {"input_tokens": 100, "output_tokens": 50},
+                offset=3,
+            ),
             # Imagine the tool result comes after some other event...
-            _event(EventType.TOOL_RESULT, {"call_id": "c1", "name": "echo", "content": "hello"}, offset=4),
-            _event(EventType.ASSISTANT_MESSAGE, {"text": "done", "tool_calls": []}, offset=5),
+            _event(
+                EventType.TOOL_RESULT,
+                {"call_id": "c1", "name": "echo", "content": "hello"},
+                offset=4,
+            ),
+            _event(
+                EventType.ASSISTANT_MESSAGE,
+                {"text": "done", "tool_calls": []},
+                offset=5,
+            ),
         ]
         transcript = replay_events(events)
         msgs = transcript.messages
@@ -269,7 +321,11 @@ class TestReplayEventsToolOrdering:
     def test_missing_result_in_stream(self):
         """Stream with tool call but no result gets a synthetic result."""
         events = [
-            _event(EventType.USER_MESSAGE, {"text": "hi"}, offset=0),
+            _event(
+                EventType.USER_MESSAGE,
+                {"text": "hi"},
+                offset=0,
+            ),
             _event(
                 EventType.ASSISTANT_MESSAGE,
                 {
@@ -280,9 +336,17 @@ class TestReplayEventsToolOrdering:
                 },
                 offset=1,
             ),
-            _event(EventType.TOOL_CALL, {"call_id": "c1", "name": "echo", "arguments": {}}, offset=2),
+            _event(
+                EventType.TOOL_CALL,
+                {"call_id": "c1", "name": "echo", "arguments": {}},
+                offset=2,
+            ),
             # No TOOL_RESULT at all
-            _event(EventType.ASSISTANT_MESSAGE, {"text": "error happened", "tool_calls": []}, offset=3),
+            _event(
+                EventType.ASSISTANT_MESSAGE,
+                {"text": "error happened", "tool_calls": []},
+                offset=3,
+            ),
         ]
         transcript = replay_events(events)
         msgs = transcript.messages
@@ -294,7 +358,11 @@ class TestReplayEventsToolOrdering:
     def test_items_preserve_stream_order(self):
         """ReplayItems preserve original stream event order for TUI rendering."""
         events = [
-            _event(EventType.USER_MESSAGE, {"text": "hi"}, offset=0),
+            _event(
+                EventType.USER_MESSAGE,
+                {"text": "hi"},
+                offset=0,
+            ),
             _event(
                 EventType.ASSISTANT_MESSAGE,
                 {
@@ -305,10 +373,26 @@ class TestReplayEventsToolOrdering:
                 },
                 offset=1,
             ),
-            _event(EventType.TOOL_CALL, {"call_id": "c1", "name": "echo", "arguments": {}}, offset=2),
-            _event(EventType.USAGE, {"input_tokens": 100, "output_tokens": 50}, offset=3),
-            _event(EventType.TOOL_RESULT, {"call_id": "c1", "name": "echo", "content": "hello"}, offset=4),
-            _event(EventType.ASSISTANT_MESSAGE, {"text": "done", "tool_calls": []}, offset=5),
+            _event(
+                EventType.TOOL_CALL,
+                {"call_id": "c1", "name": "echo", "arguments": {}},
+                offset=2,
+            ),
+            _event(
+                EventType.USAGE,
+                {"input_tokens": 100, "output_tokens": 50},
+                offset=3,
+            ),
+            _event(
+                EventType.TOOL_RESULT,
+                {"call_id": "c1", "name": "echo", "content": "hello"},
+                offset=4,
+            ),
+            _event(
+                EventType.ASSISTANT_MESSAGE,
+                {"text": "done", "tool_calls": []},
+                offset=5,
+            ),
         ]
         transcript = replay_events(events)
         kinds = [item.kind for item in transcript.items]
@@ -328,7 +412,11 @@ class TestAssertToolCallGroups:
                 "role": "assistant",
                 "content": None,
                 "tool_calls": [
-                    {"id": "c1", "type": "function", "function": {"name": "echo", "arguments": "{}"}},
+                    {
+                        "id": "c1",
+                        "type": "function",
+                        "function": {"name": "echo", "arguments": "{}"},
+                    },
                 ],
             },
             {"role": "tool", "tool_call_id": "c1", "content": "ok"},
@@ -345,7 +433,11 @@ class TestAssertToolCallGroups:
                 "role": "assistant",
                 "content": None,
                 "tool_calls": [
-                    {"id": "c1", "type": "function", "function": {"name": "echo", "arguments": "{}"}},
+                    {
+                        "id": "c1",
+                        "type": "function",
+                        "function": {"name": "echo", "arguments": "{}"},
+                    },
                 ],
             },
             {"role": "user", "content": "extra"},
@@ -367,7 +459,11 @@ class TestAssertToolCallGroups:
                 "role": "assistant",
                 "content": None,
                 "tool_calls": [
-                    {"id": "c1", "type": "function", "function": {"name": "echo", "arguments": "{}"}},
+                    {
+                        "id": "c1",
+                        "type": "function",
+                        "function": {"name": "echo", "arguments": "{}"},
+                    },
                 ],
             },
             {"role": "assistant", "content": "done"},

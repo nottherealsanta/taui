@@ -22,7 +22,6 @@ from taui.store.store import Store
 from taui.store.stream import StreamClient
 from taui.tools.executor import ToolExecutor, ToolPolicy
 from taui.tools.registry import ToolRegistry
-
 from tests.scenarios import ScriptedProvider, Turn, scenarios
 
 

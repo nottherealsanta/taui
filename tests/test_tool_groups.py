@@ -29,7 +29,6 @@ from taui.tools.builtins import (
 from taui.tools.groups import resolve_groups_for_names
 from taui.tools.registry import ToolRegistry
 
-
 # ── tool_group() helper ────────────────────────────────────────────────
 
 
@@ -152,9 +151,8 @@ def test_resolve_groups_with_working_dir_resolves_extension_groups(
 def test_all_tool_names_includes_extension_tool_names(tmp_path) -> None:
     """``all_tool_names`` should list the actual registered tool names from
     extensions (e.g. ``notebook_read``), not the file stem (``notebook``)."""
-    from test import user_extension
-
     from taui.self_edit import inventory
+    from test import user_extension
 
     ext_dir = tmp_path / ".taui" / "extensions"
     ext_dir.mkdir(parents=True)
