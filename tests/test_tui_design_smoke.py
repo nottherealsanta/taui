@@ -991,3 +991,31 @@ def test_no_theme_blind_css_color_names():
     assert not offenders, (
         f"theme-blind CSS color names found (use $primary/$accent/etc.): {offenders}"
     )
+
+
+# ── Light theme actually renders ────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_app_renders_in_light_theme(tmp_path, monkeypatch):
+    """The whole app must mount and render in the light theme with a light
+    background — every modal/banner color is now driven by theme tokens, so a
+    leftover dark-only surface would show up here as a near-black screen
+    background under the light theme."""
+    app = _make_app(monkeypatch, tmp_path)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await _wait_until_ready(pilot)
+        app.theme = "taui-light"
+        for _ in range(4):
+            await pilot.pause()
+
+        assert app.current_theme.name == "taui-light"
+        # The screen background must resolve to the light theme's background,
+        # not a hardcoded dark value.
+        bg = app.theme_variables.get("background")
+        assert str(bg).lower() in ("#ffffff", "#fff"), (
+            f"light theme background did not apply: {bg!r}"
+        )
+        # The shared modal tokens must resolve to their light values.
+        assert str(app.theme_variables.get("taui-dialog-bg")).lower() == "#ffffff"
+        await _close_cleanly(pilot)
