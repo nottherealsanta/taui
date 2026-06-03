@@ -101,6 +101,8 @@ provider = "copilot"
 model = "claude-sonnet-4.5"
 max_turns = 50
 verbose_tools = true
+# Require approval for edits made in self-edit (/i) mode (off by default).
+self_edit_confirm_edits = false
 
 [taui.tool_policy]
 bash = "confirm"
