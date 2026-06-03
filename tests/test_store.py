@@ -53,6 +53,26 @@ class TestStoreLifecycle:
         await store.close()
         await store.close()  # second close is no-op
 
+    async def test_connect_writes_taui_gitignore(self, tmp_path: Path):
+        """The .taui dir should get a '*' .gitignore so the local store is
+        never committed."""
+        store = Store(tmp_path)
+        await store.connect()
+        gitignore = tmp_path / ".taui" / ".gitignore"
+        assert gitignore.exists()
+        assert gitignore.read_text() == "*\n"
+        await store.close()
+
+    async def test_connect_preserves_existing_gitignore(self, tmp_path: Path):
+        """A user-authored .taui/.gitignore must not be overwritten."""
+        taui = tmp_path / ".taui"
+        taui.mkdir()
+        (taui / ".gitignore").write_text("store.db\n!extensions/\n")
+        store = Store(tmp_path)
+        await store.connect()
+        assert (taui / ".gitignore").read_text() == "store.db\n!extensions/\n"
+        await store.close()
+
 
 # ═══ Stream CRUD ══════════════════════════════════════════════════════════════
 

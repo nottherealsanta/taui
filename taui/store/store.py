@@ -25,6 +25,24 @@ from taui.store.events import Event, EventType
 logger = logging.getLogger(__name__)
 
 
+def _ensure_taui_gitignore(taui_dir: Path) -> None:
+    """Drop a ``.gitignore`` of ``*`` into the ``.taui`` directory.
+
+    The directory holds purely local state — the SQLite store (with full
+    session history), its WAL/SHM sidecars, and caches — that should never be
+    committed to the user's repo. Created once and never overwritten, so a
+    user who hand-edits it (e.g. to commit ``.taui/extensions``) keeps control.
+    """
+    gitignore = taui_dir / ".gitignore"
+    if gitignore.exists():
+        return
+    try:
+        gitignore.write_text("*\n")
+    except OSError:
+        # Best-effort: never let an unwritable workspace break the store.
+        pass
+
+
 # ── Schema ────────────────────────────────────────────────────────────────────
 
 _SCHEMA = """\
@@ -127,6 +145,7 @@ class Store:
         if self._db is not None:
             return
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        _ensure_taui_gitignore(self.db_path.parent)
         self._db = await aiosqlite.connect(self.db_path)
         self._db.row_factory = aiosqlite.Row
         await self._db.execute("PRAGMA journal_mode = WAL")
