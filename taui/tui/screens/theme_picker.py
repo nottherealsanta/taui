@@ -78,7 +78,7 @@ class ThemePickerScreen(ModalScreen[str | None]):
                 ],
                 id="theme-options",
             )
-            yield Label("Enter to select, Esc to cancel", classes="hint")
+            yield Label("Enter select · Esc cancel", classes="hint")
 
     def on_mount(self) -> None:
         options = self.query_one("#theme-options", OptionList)

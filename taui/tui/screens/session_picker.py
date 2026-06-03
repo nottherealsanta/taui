@@ -137,7 +137,7 @@ class SessionPickerScreen(ModalScreen[str | None]):
                         markup=False,
                     )
             yield Label(
-                "Enter to resume, p to preview, Esc to cancel",
+                "Enter resume · p preview · Esc cancel",
                 classes="hint",
             )
 
