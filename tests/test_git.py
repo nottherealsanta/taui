@@ -108,6 +108,30 @@ class TestGitTool:
         assert result.error
         assert "ref" in result.content
 
+    async def test_rejects_option_like_ref(self, git_tool):
+        # ref="--output=..." would otherwise turn an auto-approved `git diff`
+        # into a file write, bypassing the write-approval gate.
+        result = await git_tool.execute(
+            {"operation": "diff", "args": {"ref": "--output=/tmp/evil"}}
+        )
+        assert result.error
+        assert "must not start with '-'" in result.content
+
+    async def test_rejects_option_like_branch_and_remote(self, git_tool):
+        for field in ("branch", "remote", "base"):
+            result = await git_tool.execute(
+                {"operation": "push", "args": {field: "--upload-pack=x"}}
+            )
+            assert result.error, field
+            assert "must not start with '-'" in result.content
+
+    async def test_rejects_option_like_file_in_list(self, git_tool):
+        result = await git_tool.execute(
+            {"operation": "add", "args": {"files": ["ok.py", "--evil"]}}
+        )
+        assert result.error
+        assert "must not start with '-'" in result.content
+
 
 def _git(cwd, *args):
     import subprocess

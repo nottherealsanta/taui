@@ -90,6 +90,14 @@ class GitTool:
         if not isinstance(args, dict):
             args = {}
 
+        # Reject option-like values in positional fields. Without this, an
+        # agent could smuggle a git flag through an auto-approved read op —
+        # e.g. ref="--output=/path" turns `git diff` into a file write, side-
+        # stepping the approval gate on the write/network operations. Valid
+        # refs, branches, and remotes never start with "-".
+        if (rejected := _reject_option_like(args)) is not None:
+            return ToolResult.fail(rejected)
+
         handler = _HANDLERS.get(operation)
         if handler is None:
             return ToolResult.fail(f"No handler for '{operation}'.")
@@ -98,6 +106,25 @@ class GitTool:
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
+
+
+def _reject_option_like(args: dict[str, Any]) -> str | None:
+    """Return an error if any positional arg looks like a git option.
+
+    Guards against argument injection (e.g. a ref of ``--output=/path``).
+    """
+    for key in ("ref", "branch", "remote", "base", "file"):
+        value = args.get(key)
+        if isinstance(value, str) and value.startswith("-"):
+            return f"'{key}' must not start with '-': {value!r}"
+    files = args.get("files")
+    if isinstance(files, str) and files.startswith("-"):
+        return f"file path must not start with '-': {files!r}"
+    if isinstance(files, list):
+        bad = [f for f in files if isinstance(f, str) and f.startswith("-")]
+        if bad:
+            return f"file paths must not start with '-': {bad}"
+    return None
 
 
 async def _run_git(
