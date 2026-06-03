@@ -1830,7 +1830,8 @@ class TestInfo2:
             waiter = asyncio.create_task(info2.wait_for_approval())
             await pilot.pause()
 
-            info2.selected_index = 1
+            # Options are: 0 = allow once, 1 = allow for session, 2 = deny.
+            info2.selected_index = 2
             info2.accept()
             result = await waiter
 

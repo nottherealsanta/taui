@@ -180,4 +180,20 @@ def _isolate_config(tmp_path: Path):
         )
         stack.enter_context(patch("taui.skills.SkillRegistry.GLOBAL_DIRS", fake_skill_dirs))
         stack.enter_context(patch("taui.self_edit.store.SelfEditStore.GLOBAL_DIR", fake_taui))
+        # Tests must never start a real interactive provider login: it blocks on
+        # a device-flow poll that cannot be cancelled, hanging the whole suite at
+        # teardown. The session path is already non-interactive; this seals the
+        # remaining direct paths. Tests that exercise login mock it themselves.
+        stack.enter_context(
+            patch(
+                "taui.llm_provider.auth.copilot.login",
+                side_effect=RuntimeError("interactive copilot login is disabled in tests"),
+            )
+        )
+        stack.enter_context(
+            patch(
+                "taui.llm_provider.auth.codex.login",
+                side_effect=RuntimeError("interactive codex login is disabled in tests"),
+            )
+        )
         yield
