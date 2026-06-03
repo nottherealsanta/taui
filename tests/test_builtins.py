@@ -108,6 +108,39 @@ class TestWriteTool:
         assert result.error is False
         assert (workspace / "hello.py").read_text() == "new content\n"
 
+    async def test_write_preserves_existing_mode(self, workspace: Path):
+        """Overwriting an executable file must keep its +x bit (atomic write
+        previously dropped the mode to 0600 via mkstemp + rename)."""
+        import os
+        import stat as stat_mod
+
+        target = workspace / "script.sh"
+        target.write_text("#!/bin/sh\necho a\n")
+        os.chmod(target, 0o755)
+
+        tool = WriteTool(working_dir=workspace)
+        result = await tool.execute(
+            {"path": "script.sh", "content": "#!/bin/sh\necho b\n"}
+        )
+        assert result.error is False
+        mode = stat_mod.S_IMODE(target.stat().st_mode)
+        assert mode == 0o755, f"expected mode preserved as 0o755, got {oct(mode)}"
+
+    async def test_write_new_file_uses_default_mode(self, workspace: Path):
+        """A newly written file gets the umask-default mode, not mkstemp's 0600,
+        so generated files are readable like any normally-created file."""
+        import stat as stat_mod
+
+        from taui.tools.builtins.common import _DEFAULT_FILE_MODE
+
+        tool = WriteTool(working_dir=workspace)
+        result = await tool.execute({"path": "fresh.txt", "content": "data\n"})
+        assert result.error is False
+        mode = stat_mod.S_IMODE((workspace / "fresh.txt").stat().st_mode)
+        assert mode == _DEFAULT_FILE_MODE, (
+            f"new file mode {oct(mode)} != default {oct(_DEFAULT_FILE_MODE)}"
+        )
+
     async def test_write_rejects_escape(self, workspace: Path):
         tool = WriteTool(working_dir=workspace)
         result = await tool.execute({

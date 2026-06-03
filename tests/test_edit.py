@@ -229,6 +229,32 @@ class TestEditTool:
         assert not result.error
         assert 'Hi, {name}!' in sample_file.read_text()
 
+    async def test_preserves_executable_mode(self, edit_tool, working_dir):
+        """Editing an executable script must keep its +x bit.
+
+        The atomic write used to mkstemp (0600) then rename over the target,
+        which dropped the original mode to 0600 — silently making scripts and
+        git hooks non-executable. atomic_write_text now copies the mode across.
+        """
+        import os
+        import stat as stat_mod
+
+        script = working_dir / "run.sh"
+        script.write_text("#!/bin/sh\necho original\n")
+        os.chmod(script, 0o755)
+
+        result = await edit_tool.execute(
+            {
+                "path": "run.sh",
+                "edits": [{"old_text": "echo original", "new_text": "echo edited"}],
+            }
+        )
+        assert not result.error
+        assert "echo edited" in script.read_text()
+        mode = stat_mod.S_IMODE(script.stat().st_mode)
+        assert mode == 0o755, f"expected mode preserved as 0o755, got {oct(mode)}"
+        assert mode & 0o111, "executable bit must survive an edit"
+
     async def test_multi_edit(self, edit_tool, sample_file):
         result = await edit_tool.execute(
             {

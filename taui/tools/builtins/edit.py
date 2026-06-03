@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import difflib
-import os
-import tempfile
 import textwrap
 import unicodedata
 from dataclasses import dataclass, field
@@ -13,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from taui.tools.base import ToolCategory, ToolResult
-from taui.tools.builtins.common import resolve_path
+from taui.tools.builtins.common import atomic_write_text, resolve_path
 from taui.tools.file_tracker import FileTracker
 
 # ── Fuzzy matching chain ──────────────────────────────────────────────────────
@@ -419,18 +417,9 @@ class EditTool:
         for start, end, old_text, new_text, strategy in reversed(sorted_matches):
             content = content[:start] + new_text + content[end:]
 
-        # Atomic write
+        # Atomic write — preserves the file's existing mode (e.g. the +x bit).
         try:
-            fd, tmp = tempfile.mkstemp(
-                dir=path.parent, suffix=".tmp", prefix=".taui_edit_"
-            )
-            try:
-                with os.fdopen(fd, "w") as f:
-                    f.write(content)
-                Path(tmp).replace(path)
-            except Exception:
-                Path(tmp).unlink(missing_ok=True)
-                raise
+            atomic_write_text(path, content)
         except (PermissionError, OSError) as e:
             return ToolResult.fail(f"Cannot write {path}: {e}")
 

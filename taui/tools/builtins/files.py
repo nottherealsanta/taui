@@ -4,10 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import fnmatch
-import os
 import re
 import shutil
-import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -17,6 +15,7 @@ from taui.tools.base import ToolCategory, ToolResult
 from taui.tools.builtins.common import (
     SKIP_DIRS,
     TruncationEnvelope,
+    atomic_write_text,
     is_binary,
     resolve_path,
     suggest_similar,
@@ -214,18 +213,8 @@ class WriteTool:
 
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
-
-            # Atomic write: temp file then rename
-            fd, tmp = tempfile.mkstemp(
-                dir=path.parent, suffix=".tmp", prefix=".taui_write_"
-            )
-            try:
-                with os.fdopen(fd, "w") as f:
-                    f.write(content)
-                Path(tmp).replace(path)
-            except Exception:
-                Path(tmp).unlink(missing_ok=True)
-                raise
+            # Atomic write — preserves an existing file's mode (e.g. the +x bit).
+            atomic_write_text(path, content)
         except PermissionError:
             return ToolResult.fail(f"Permission denied: {path}")
         except OSError as e:

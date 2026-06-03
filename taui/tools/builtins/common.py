@@ -3,9 +3,20 @@
 from __future__ import annotations
 
 import difflib
+import os
+import stat
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+# Process umask, sampled once at import (single-threaded) so new files written
+# atomically get the normal default mode instead of tempfile.mkstemp's 0600.
+# Reading the umask is inherently a set-then-restore, so we do it exactly once
+# rather than racing the process-global value on every write.
+_UMASK = os.umask(0)
+os.umask(_UMASK)
+_DEFAULT_FILE_MODE = 0o666 & ~_UMASK
 
 # Directories to skip during recursive operations
 SKIP_DIRS = frozenset({
@@ -30,6 +41,54 @@ def resolve_path(working_dir: Path, raw: str) -> Path:
             f"Path {str(p)!r} is outside the workspace {str(wd)!r}"
         ) from None
     return p
+
+
+def atomic_write_text(path: Path, content: str, *, encoding: str = "utf-8") -> None:
+    """Write *content* to *path* atomically, preserving the file's mode.
+
+    Writes to a temp file in the same directory and renames it over the
+    destination — atomic on POSIX, and it never leaves a half-written file.
+
+    When *path* already exists, its permission bits (and, best effort, its
+    owner/group) are copied onto the replacement. Without this, editing an
+    executable script silently drops its mode to 0600, because the rename
+    moves the temp file's inode — and ``tempfile.mkstemp`` creates 0600 files.
+    For a new file the process umask determines the mode, matching what a
+    normal ``open(path, "w")`` would produce.
+
+    The temp file is always cleaned up on failure. Errors (PermissionError,
+    OSError) propagate so callers can map them to a ToolResult.fail.
+    """
+    parent = path.parent
+    try:
+        existing_stat: os.stat_result | None = path.stat()
+    except OSError:
+        existing_stat = None
+
+    fd, tmp = tempfile.mkstemp(dir=parent, suffix=".tmp", prefix=".taui_write_")
+    tmp_path = Path(tmp)
+    try:
+        with os.fdopen(fd, "w", encoding=encoding) as f:
+            f.write(content)
+        if existing_stat is not None:
+            try:
+                os.chmod(tmp, stat.S_IMODE(existing_stat.st_mode))
+            except OSError:
+                pass
+            # Best effort — preserving owner/group needs privilege off-owner.
+            try:
+                os.chown(tmp, existing_stat.st_uid, existing_stat.st_gid)
+            except (OSError, AttributeError):
+                pass
+        else:
+            try:
+                os.chmod(tmp, _DEFAULT_FILE_MODE)
+            except OSError:
+                pass
+        tmp_path.replace(path)
+    except Exception:
+        tmp_path.unlink(missing_ok=True)
+        raise
 
 
 def is_binary(path: Path, sample_size: int = 8192) -> bool:
