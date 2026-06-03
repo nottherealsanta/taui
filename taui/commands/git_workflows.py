@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -30,25 +31,33 @@ class GitDiffCommand:
         if isinstance(options, str):
             return CommandResult.fail(options)
 
-        cwd = session.working_dir
-        diff = _git_diff(cwd, staged=options.staged, ref=options.ref)
-        if diff.error:
-            return CommandResult.fail(diff.output)
-        if not diff.output.strip():
-            label = _diff_scope_label(staged=options.staged, ref=options.ref)
-            return CommandResult.ok(f"No {label} changes.")
-
-        stat = _git_diff_stat(cwd, staged=options.staged, ref=options.ref)
-        files = _build_diff_files(cwd, staged=options.staged, ref=options.ref)
-        title = _diff_title(staged=options.staged, ref=options.ref)
-        summary = _format_diff_summary(title, stat.output, diff.output, files)
-        return CommandResult.ok(
-            summary,
-            action="open_diff_view",
-            title=title,
-            diff=diff.output,
-            files=files,
+        # Diffing a large tree spawns several git processes (including a
+        # `git show` per file); run them off the event loop so the TUI stays
+        # responsive.
+        return await asyncio.to_thread(
+            _diff_command_result, Path(session.working_dir), options
         )
+
+
+def _diff_command_result(cwd: Path, options: _DiffOptions) -> CommandResult:
+    diff = _git_diff(cwd, staged=options.staged, ref=options.ref)
+    if diff.error:
+        return CommandResult.fail(diff.output)
+    if not diff.output.strip():
+        label = _diff_scope_label(staged=options.staged, ref=options.ref)
+        return CommandResult.ok(f"No {label} changes.")
+
+    stat = _git_diff_stat(cwd, staged=options.staged, ref=options.ref)
+    files = _build_diff_files(cwd, staged=options.staged, ref=options.ref)
+    title = _diff_title(staged=options.staged, ref=options.ref)
+    summary = _format_diff_summary(title, stat.output, diff.output, files)
+    return CommandResult.ok(
+        summary,
+        action="open_diff_view",
+        title=title,
+        diff=diff.output,
+        files=files,
+    )
 
 
 @dataclass(slots=True)
@@ -144,12 +153,12 @@ class WorktreeCommand:
 
         sub = ctx.args[0].lower() if ctx.args else "list"
         if sub in ("list", "ls"):
-            return _worktree_list(cwd)
+            return await asyncio.to_thread(_worktree_list, cwd)
         if sub == "add":
             if len(ctx.args) < 2:
                 return CommandResult.fail("Usage: /worktree add <branch> [base]")
             base = ctx.args[2] if len(ctx.args) > 2 else None
-            return _worktree_add(cwd, ctx.args[1], base)
+            return await asyncio.to_thread(_worktree_add, cwd, ctx.args[1], base)
         return CommandResult.fail(
             f"Unknown /worktree subcommand: {sub}. Use 'list' or 'add'."
         )

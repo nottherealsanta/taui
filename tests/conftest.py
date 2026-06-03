@@ -81,6 +81,7 @@ _FILE_DOMAINS: dict[str, set[str]] = {
     "test_file_tracker.py": {"store"},
     "test_general_settings.py": {"config"},
     "test_git.py": {"git", "tools"},
+    "test_git_workflow_commands.py": {"commands", "git"},
     "test_grep_glob.py": {"tools"},
     "test_hooks.py": {"extensions"},
     "test_lsp.py": {"lsp"},
