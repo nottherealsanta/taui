@@ -1250,6 +1250,13 @@ class Session:
                 logger.debug(
                     "Failed to save session name", exc_info=True,
                 )
+            # The session is named exactly once, near the start. Drop the tool
+            # so the agent can't call it again and it stops taking up a slot in
+            # every subsequent request's tool schemas.
+            try:
+                self._registry.unregister("session_name")
+            except ValueError:
+                pass
 
         tool._set_name = set_name
 

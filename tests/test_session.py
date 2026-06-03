@@ -74,6 +74,52 @@ class TestSessionWiring:
 
         await session.close()
 
+    async def test_session_name_tool_dropped_after_set(self, tmp_path):
+        """Once it has named the session, session_name is removed from the
+        registry so the agent can't call it again and it stops appearing in
+        every later request's tool schemas."""
+        from taui.agent.loop import AgentLoop
+        from taui.store.store import Store
+        from taui.store.stream import StreamClient
+        from taui.tools.executor import ToolExecutor, ToolPolicy
+
+        config = Config(working_dir=tmp_path)
+        provider = MockProvider()
+        registry = ToolRegistry()
+        register_builtins(registry)
+        executor = ToolExecutor(registry=registry, policy=ToolPolicy())
+        store = Store(tmp_path)
+        await store.connect()
+        stream = StreamClient(store)
+        loop = AgentLoop(
+            llm=provider,
+            executor=executor,
+            stream=stream,
+            system_prompt=config.system_prompt,
+            model=config.model,
+        )
+        session = Session(
+            config=config,
+            provider=provider,
+            registry=registry,
+            executor=executor,
+            store=store,
+            stream=stream,
+            loop=loop,
+        )
+        try:
+            session._wire_session_name_tool()
+            assert "session_name" in registry
+
+            tool = registry.get("session_name")
+            result = await tool.execute({"name": "fix the parser"})
+
+            assert not result.error
+            assert session.description == "fix the parser"
+            assert "session_name" not in registry
+        finally:
+            await session.close()
+
     async def test_resume_replays_tool_history(self, tmp_path):
         from taui.agent.loop import AgentLoop
         from taui.store.store import Store
