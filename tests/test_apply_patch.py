@@ -177,6 +177,25 @@ class TestApplyPatchTool:
         assert not result.error
         assert (tmp_path / "new_file.py").exists()
 
+    async def test_rejects_path_escape(self, tmp_path):
+        # A patch header like `+++ b/../escape.txt` must not write outside the
+        # workspace.
+        work = tmp_path / "work"
+        work.mkdir()
+        tool = ApplyPatchTool()
+        tool.working_dir = work
+
+        patch = (
+            "--- /dev/null\n"
+            "+++ b/../escape.txt\n"
+            "@@ -0,0 +1,1 @@\n"
+            "+pwned\n"
+        )
+        result = await tool.execute({"patch": patch})
+        assert result.error
+        assert "outside the workspace" in result.content
+        assert not (tmp_path / "escape.txt").exists()
+
     async def test_multi_file_patch(self, tmp_path):
         (tmp_path / "a.py").write_text("old\n")
         (tmp_path / "b.py").write_text("old\n")

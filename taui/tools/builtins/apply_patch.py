@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from taui.tools.base import ToolCategory, ToolResult
+from taui.tools.builtins.common import resolve_path
 
 
 @dataclass
@@ -65,7 +66,12 @@ class ApplyPatchTool:
         results = []
 
         for file_path, file_hunks in hunks.items():
-            path = base / file_path
+            # Keep patched files inside the workspace; a patch header like
+            # `--- a/../../etc/x` would otherwise write outside it.
+            try:
+                path = resolve_path(base, file_path)
+            except ValueError as exc:
+                return ToolResult.fail(str(exc))
 
             if self._path_guard:
                 guard_result = self._path_guard(path)
