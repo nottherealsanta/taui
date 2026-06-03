@@ -77,7 +77,7 @@ class SubAgentModal(ModalScreen[None]):
     #sub-agent-dialog .section-header {
         padding: 1 0 0 0;
         text-style: bold;
-        color: #58a6ff;
+        color: $accent;
     }
     #sub-agent-dialog .section-body {
         padding: 0 0 0 2;
