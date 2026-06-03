@@ -964,3 +964,30 @@ def test_banner_widgets_use_theme_accents_not_oneoff_colors():
         assert "#d2a8ff" not in src, (
             f"{module.__name__} still hardcodes #d2a8ff; use $accent instead"
         )
+
+
+# ── No theme-blind CSS color names anywhere in the TUI ──────────────────
+
+
+def test_no_theme_blind_css_color_names():
+    """Literal CSS color names like ``cyan`` ignore the active theme and
+    vanish against a light background (cyan is ~invisible on white). Modal
+    titles and similar accents must use theme variables (e.g. ``$primary``)
+    so they render in both themes."""
+    import re
+    from pathlib import Path
+
+    tui_dir = Path(__file__).resolve().parents[1] / "taui" / "tui"
+    banned = re.compile(r"(?:color|background):\s*(cyan|magenta)\b")
+    offenders: dict[str, list[str]] = {}
+    for path in sorted(tui_dir.rglob("*.py")):
+        hits = banned.findall(path.read_text())
+        if hits:
+            offenders[str(path.relative_to(tui_dir))] = hits
+    for path in sorted(tui_dir.rglob("*.tcss")):
+        hits = banned.findall(path.read_text())
+        if hits:
+            offenders[str(path.relative_to(tui_dir))] = hits
+    assert not offenders, (
+        f"theme-blind CSS color names found (use $primary/$accent/etc.): {offenders}"
+    )

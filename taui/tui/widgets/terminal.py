@@ -21,7 +21,7 @@ class TerminalOutput(Widget):
         background: $surface;
     }
     TerminalOutput .term-cmd {
-        color: green;
+        color: $success;
         padding: 0;
     }
     TerminalOutput .term-output {
@@ -29,7 +29,7 @@ class TerminalOutput(Widget):
         padding: 0;
     }
     TerminalOutput .term-error {
-        color: red;
+        color: $error;
         padding: 0;
     }
     """

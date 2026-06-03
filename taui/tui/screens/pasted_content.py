@@ -45,7 +45,7 @@ class PastedContentScreen(ModalScreen[PasteResult | None]):
     }
     #pasted-dialog .dialog-title {
         width: 1fr;
-        color: cyan;
+        color: $primary;
         text-style: bold;
     }
     #pasted-dialog .header-row {

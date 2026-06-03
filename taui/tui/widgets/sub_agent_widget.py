@@ -65,7 +65,7 @@ class SubAgentModal(ModalScreen[None]):
     #sub-agent-dialog .modal-title {
         width: 100%;
         padding: 0 0 1 0;
-        color: cyan;
+        color: $primary;
         text-style: bold;
     }
     #sub-agent-dialog .meta {
