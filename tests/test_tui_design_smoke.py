@@ -844,3 +844,123 @@ def test_tool_status_uses_unified_gray_palette():
     # Gray palette should be present
     assert "#8b949e" in src
     assert "#6e7681" in src
+
+
+# ── Modal design tokens: every overlay shares one theme-aware palette ────
+
+
+def _modal_css() -> dict[str, str]:
+    """DEFAULT_CSS of every modal that belongs to the shared design system,
+    plus the command-palette rules from app.tcss."""
+    from pathlib import Path
+
+    from taui.tui.screens._picker_base import FuzzyPickerScreen
+    from taui.tui.screens.compaction_inspector import CompactionInspectorScreen
+    from taui.tui.screens.session_picker import SessionPickerScreen
+    from taui.tui.screens.theme_picker import ThemePickerScreen
+
+    css = {
+        "FuzzyPickerScreen": FuzzyPickerScreen.DEFAULT_CSS,
+        "ThemePickerScreen": ThemePickerScreen.DEFAULT_CSS,
+        "SessionPickerScreen": SessionPickerScreen.DEFAULT_CSS,
+        "CompactionInspectorScreen": CompactionInspectorScreen.DEFAULT_CSS,
+    }
+    tcss = Path(__file__).resolve().parents[1] / "taui" / "tui" / "app.tcss"
+    text = tcss.read_text()
+    start = text.index("CommandPalette {")
+    css["app.tcss CommandPalette"] = text[start:]
+    return css
+
+
+#: The deliberate, theme-neutral *content* grays (GitHub-style) reused for
+#: secondary/tertiary text. They read correctly on both light and dark and are
+#: pinned by the tool-status / info-sidebar tests, so they are exempt from the
+#: chrome-token rule below.
+_SANCTIONED_CONTENT_GRAYS = {"#8b949e", "#6e7681"}
+
+
+def test_modal_chrome_has_no_hardcoded_hex():
+    """Every modal in the shared design system must drive its *chrome*
+    (surfaces, borders, backdrops) from ``$taui-*`` tokens, never raw hex —
+    that is what keeps the overlay layer consistent and working in both light
+    and dark themes. Only the sanctioned neutral content grays are allowed."""
+    import re
+
+    offenders: dict[str, list[str]] = {}
+    for name, css in _modal_css().items():
+        hits = [
+            h
+            for h in re.findall(r"#[0-9a-fA-F]{6}", css)
+            if h.lower() not in _SANCTIONED_CONTENT_GRAYS
+        ]
+        if hits:
+            offenders[name] = hits
+    assert not offenders, (
+        f"hardcoded chrome colors found in modal CSS (use $taui-* tokens): {offenders}"
+    )
+
+
+def test_fuzzy_pickers_share_the_base_stylesheet():
+    """The four fuzzy pickers must not re-declare their own DEFAULT_CSS —
+    they inherit the single tokenized stylesheet from FuzzyPickerScreen, so
+    they cannot drift apart again."""
+    from taui.tui.screens._picker_base import FuzzyPickerScreen
+    from taui.tui.screens.agent_picker import AgentPickerScreen
+    from taui.tui.screens.model_picker import ModelPickerScreen
+    from taui.tui.screens.prompt_picker import PromptPickerScreen
+    from taui.tui.screens.skill_picker import SkillPickerScreen
+
+    for cls in (
+        ModelPickerScreen,
+        AgentPickerScreen,
+        SkillPickerScreen,
+        PromptPickerScreen,
+    ):
+        assert "DEFAULT_CSS" not in cls.__dict__, (
+            f"{cls.__name__} redeclares DEFAULT_CSS; it should inherit "
+            f"FuzzyPickerScreen's so the pickers stay visually identical"
+        )
+        assert cls.DEFAULT_CSS is FuzzyPickerScreen.DEFAULT_CSS
+
+
+def test_modal_tokens_defined_in_both_themes():
+    """Each ``$taui-*`` token referenced by the modal CSS must exist in both
+    the dark and light themes, so no overlay renders with an unresolved
+    variable in either theme."""
+    import re
+
+    from taui.tui.theme import TAUI_DARK, TAUI_LIGHT
+
+    referenced: set[str] = set()
+    for css in _modal_css().values():
+        referenced.update(re.findall(r"\$(taui-[a-z-]+)", css))
+
+    assert referenced, "expected modal CSS to reference $taui-* tokens"
+    for theme in (TAUI_DARK, TAUI_LIGHT):
+        missing = referenced - set(theme.variables)
+        assert not missing, (
+            f"{theme.name} is missing modal tokens referenced in CSS: {missing}"
+        )
+
+
+# ── Banner widgets: accent colors come from the theme, not one-offs ──────
+
+
+def test_banner_widgets_use_theme_accents_not_oneoff_colors():
+    """The mcp / skills / tool-group / system-prompt banners must take their
+    title and emphasis colors from the theme (``$primary`` / ``$accent``)
+    rather than the old one-off ``#ff9e64`` orange and ``#d2a8ff`` purple,
+    so they match the rest of the app and stay readable in the light theme."""
+    import inspect
+
+    from taui.tui.widgets import mcp_banner, skills_banner, system_prompt, tool_groups_banner
+
+    for module in (mcp_banner, skills_banner, tool_groups_banner, system_prompt):
+        src = inspect.getsource(module)
+        assert "#ff9e64" not in src, (
+            f"{module.__name__} still hardcodes the one-off orange #ff9e64; "
+            f"use $primary so it matches the theme and works in light mode"
+        )
+        assert "#d2a8ff" not in src, (
+            f"{module.__name__} still hardcodes #d2a8ff; use $accent instead"
+        )
