@@ -10,7 +10,26 @@ from contextlib import ExitStack
 from pathlib import Path
 from unittest.mock import patch
 
+import aiosqlite.core as _aiosqlite_core
 import pytest
+
+# aiosqlite runs every connection on a background worker thread that it creates
+# *without* daemon=True. A test that forgets to close its Store leaks that
+# thread, and threading._shutdown joins non-daemon threads with no timeout — so
+# a single unclosed connection wedges the whole pytest process at exit (this was
+# an intermittent multi-minute "hang" after the suite had already finished).
+# Force the worker threads daemon for the test run so an unclosed test Store can
+# never block interpreter shutdown. Production code closes its stores explicitly.
+_RealAiosqliteThread = _aiosqlite_core.Thread
+
+
+class _DaemonAiosqliteThread(_RealAiosqliteThread):  # type: ignore[valid-type,misc]
+    def __init__(self, *args, **kwargs):
+        kwargs.setdefault("daemon", True)
+        super().__init__(*args, **kwargs)
+
+
+_aiosqlite_core.Thread = _DaemonAiosqliteThread
 
 _DOMAIN_MARKERS = {
     "agent",
