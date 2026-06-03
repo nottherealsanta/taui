@@ -11,6 +11,7 @@ from taui.commands.git_workflows import (
     GitCommitCommand,
     GitDiffCommand,
     GitReviewCommand,
+    WorktreeCommand,
 )
 from taui.commands.registry import CommandContext, CommandRegistry, CommandResult
 
@@ -1296,6 +1297,7 @@ def register_builtins(
     verbose_cmd = VerboseCommand()
     debug_cmd = DebugCommand()
     diff_cmd = GitDiffCommand()
+    worktree_cmd = WorktreeCommand()
     variant_cmd = VariantCommand()
     skills_cmd = SkillsCommand()
     prompts_cmd = PromptsCommand()
@@ -1315,6 +1317,7 @@ def register_builtins(
         export_cmd._get_session = get_session
         verbose_cmd._get_session = get_session
         diff_cmd._get_session = get_session
+        worktree_cmd._get_session = get_session
         variant_cmd._get_session = get_session
         skills_cmd._get_session = get_session
         prompts_cmd._get_session = get_session
@@ -1352,6 +1355,7 @@ def register_builtins(
     registry.register(copy_cmd)
     registry.register(export_cmd)
     registry.register(diff_cmd)
+    registry.register(worktree_cmd)
     registry.register(GitReviewCommand())
     registry.register(GitCommitCommand())
     registry.register(HotkeysCommand())

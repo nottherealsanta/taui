@@ -7,12 +7,14 @@ Done:
 - [x] if cancelled before first tool call, then show the previous turn in the input
 - [x] add more git tools (with auth access)  (fetch, pull, push, branch_create)
 - [x] in agent - self-edit - toggle for edit requires user permission  (self_edit_confirm_edits)
+- [x] "/worktree" command — list git worktrees and `add <branch>`. (In-app jump still
+      opens a fresh session via `taui -d <path>`; live session-switching across
+      worktrees would need the app to drop its single-working_dir assumption.)
 
 Open:
 - maybe tools need not have two scopes
 - monty
 - maybe worktree should not be a tool, just bash it
-- "/worktree" for user to quickly jump to a worktree (a session cannot change worktree, new session will be created with the worktree)
 
 
 ---

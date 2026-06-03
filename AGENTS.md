@@ -193,6 +193,7 @@ Current commands include:
 - `/ext-mode`
 - `/sessions`
 - `/new`
+- `/worktree` (list git worktrees, or `add <branch>`)
 - `/reload`
 - `/login`
 - `/logout`

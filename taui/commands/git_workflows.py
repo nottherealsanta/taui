@@ -119,6 +119,118 @@ class GitCommitCommand:
         )
 
 
+@dataclass(slots=True)
+class WorktreeCommand:
+    """List git worktrees, or create a new one.
+
+    A session stays anchored to the directory it launched in, so this command
+    doesn't switch the running session — `add` creates the worktree on disk and
+    tells you how to open it (`taui -d <path>`), which starts a fresh session
+    there.
+    """
+
+    name: str = "worktree"
+    description: str = "List git worktrees, or add one (/worktree [add <branch> [base]])"
+    accepts_args: bool = True
+    _get_session: Any = None
+
+    async def execute(self, ctx: CommandContext) -> CommandResult:
+        if self._get_session is None:
+            return CommandResult.fail("Session not available.")
+        session = self._get_session()
+        if session is None:
+            return CommandResult.fail("Session not available.")
+        cwd = Path(session.working_dir)
+
+        sub = ctx.args[0].lower() if ctx.args else "list"
+        if sub in ("list", "ls"):
+            return _worktree_list(cwd)
+        if sub == "add":
+            if len(ctx.args) < 2:
+                return CommandResult.fail("Usage: /worktree add <branch> [base]")
+            base = ctx.args[2] if len(ctx.args) > 2 else None
+            return _worktree_add(cwd, ctx.args[1], base)
+        return CommandResult.fail(
+            f"Unknown /worktree subcommand: {sub}. Use 'list' or 'add'."
+        )
+
+
+def _parse_worktree_porcelain(text: str) -> list[dict[str, str | None]]:
+    """Parse `git worktree list --porcelain` into one dict per worktree."""
+    entries: list[dict[str, str | None]] = []
+    cur: dict[str, str | None] = {}
+    for line in text.splitlines():
+        if not line.strip():
+            if cur:
+                entries.append(cur)
+                cur = {}
+            continue
+        if line.startswith("worktree "):
+            cur = {"path": line[len("worktree ") :]}
+        elif line.startswith("HEAD "):
+            cur["head"] = line[len("HEAD ") :]
+        elif line.startswith("branch "):
+            ref = line[len("branch ") :]
+            if ref.startswith("refs/heads/"):
+                ref = ref[len("refs/heads/") :]
+            cur["branch"] = ref
+        elif line.strip() == "detached":
+            cur["branch"] = None
+    if cur:
+        entries.append(cur)
+    return entries
+
+
+def _worktree_list(cwd: Path) -> CommandResult:
+    out = _run_git(cwd, ["worktree", "list", "--porcelain"])
+    if out.error:
+        return CommandResult.fail(out.output.strip() or "git worktree list failed.")
+    entries = _parse_worktree_porcelain(out.output)
+    if not entries:
+        return CommandResult.ok("No worktrees.", worktrees=[])
+    try:
+        here = str(cwd.resolve())
+    except OSError:
+        here = str(cwd)
+    lines = ["Worktrees:"]
+    for e in entries:
+        marker = "*" if e.get("path") == here else " "
+        branch = e.get("branch") or "(detached)"
+        lines.append(f" {marker} {e.get('path')}  [{branch}]")
+    return CommandResult.ok("\n".join(lines), worktrees=entries)
+
+
+def _worktree_add(cwd: Path, branch: str, base: str | None) -> CommandResult:
+    branch = branch.strip()
+    if not branch:
+        return CommandResult.fail("Usage: /worktree add <branch> [base]")
+    safe = branch.replace("/", "-").replace(" ", "-")
+    target = cwd / ".worktrees" / safe
+    if target.exists():
+        return CommandResult.fail(f"Path already exists: {target}")
+
+    branch_exists = not _run_git(
+        cwd, ["rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"]
+    ).error
+    if branch_exists:
+        cmd = ["worktree", "add", str(target), branch]
+    else:
+        cmd = ["worktree", "add", "-b", branch, str(target)]
+        if base:
+            cmd.append(base)
+
+    out = _run_git(cwd, cmd)
+    if out.error:
+        return CommandResult.fail(out.output.strip() or "git worktree add failed.")
+    return CommandResult.ok(
+        f"Created worktree for '{branch}' at {target}\n"
+        f"Open it in a new session with:  taui -d {target}",
+        action="worktree_added",
+        worktree_path=str(target),
+        branch=branch,
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class _DiffOptions:
     staged: bool = False

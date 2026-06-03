@@ -64,6 +64,7 @@ Important slash commands are registered in `taui/commands/builtins.py:858`.
 | `/sessions` | Open the session picker modal or resume a session |
 | `/new [message]` | Start a new session |
 | `/compact`, `/context` | Manage or inspect context |
+| `/worktree [add <branch>]` | List git worktrees, or create one |
 | `/extensions`, `/reload`, `/ext-mode` | Inspect and reload extensions |
 | `/i [message]` | Enter self-edit mode |
 | `/copy`, `/export` | Copy context or export a session |

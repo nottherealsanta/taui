@@ -137,6 +137,7 @@ _FILE_DOMAINS: dict[str, set[str]] = {
     "test_webfetch.py": {"tools", "webfetch"},
     "test_widget_rendering_prototype.py": {"tui"},
     "test_worktree.py": {"tools", "worktree"},
+    "test_worktree_command.py": {"commands", "worktree"},
 }
 
 
