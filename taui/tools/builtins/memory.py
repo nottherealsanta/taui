@@ -74,8 +74,10 @@ class MemoryTool:
         if not safe or safe.startswith("."):
             safe = "_" + safe
         path = (self._memory_dir / safe).with_suffix(".md")
-        # Verify it's within the memory directory
-        if not str(path.resolve()).startswith(str(self._memory_dir.resolve())):
+        # Verify it's within the memory directory. Use a real path-containment
+        # check rather than a string prefix (which would treat a sibling like
+        # `<dir>-evil` as inside).
+        if not path.resolve().is_relative_to(self._memory_dir.resolve()):
             raise ValueError("Invalid key: path traversal detected")
         return path
 
