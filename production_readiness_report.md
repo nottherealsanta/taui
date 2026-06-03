@@ -70,7 +70,8 @@ The agent-facing tool boundaries were reviewed and hardened:
 - The self-edit file allowlist and the file tools' `resolve_path` both canonicalize via
   `Path.resolve()` (following symlinks and `..`) before the containment check.
 
-Open decision: `webfetch` performs no SSRF filtering (auto-approved, follows redirects).
-Blocking private/loopback hosts would break the legitimate dev use of fetching a local
-server, while a literal metadata-IP block is trivially bypassed via DNS/redirect — so the
-right policy (and its utility trade-off) is left to the maintainer rather than imposed.
+`webfetch` blocks non-http(s) schemes and link-local targets (the cloud-metadata range
+169.254.0.0/16 / fe80::/10, e.g. 169.254.169.254) on both the initial URL and the
+post-redirect URL, so a redirect can't leak metadata-server credentials. Loopback and
+private hosts stay allowed on purpose, because fetching a local dev server is a legitimate
+use. A stricter private-host policy (and its dev trade-off) remains the maintainer's call.
