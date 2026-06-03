@@ -51,7 +51,7 @@ class McpModal(ModalScreen[None]):
         scrollbar-size-vertical: 1;
     }
     #mcp-modal-dialog .mcp-server {
-        color: #56d4dd;
+        color: $taui-cyan;
         text-style: bold;
         padding: 1 0 0 0;
     }

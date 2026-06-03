@@ -46,6 +46,7 @@ TAUI_DARK = Theme(
         "taui-border": "#2a2a2a",         # resting border / keyline
         "taui-border-focus": "#5a5a5a",   # focused border
         "taui-option-active": "#2a2a2a",  # highlighted option row
+        "taui-cyan": "#56d4dd",           # category/group header accent (mcp, tools)
     },
 )
 
@@ -81,6 +82,7 @@ TAUI_LIGHT = Theme(
         "taui-border": "#d0d7de",         # resting border / keyline
         "taui-border-focus": "#0969da",   # focused border
         "taui-option-active": "#dde4ec",  # highlighted option row
+        "taui-cyan": "#0e7490",           # category/group header accent (mcp, tools)
     },
 )
 
