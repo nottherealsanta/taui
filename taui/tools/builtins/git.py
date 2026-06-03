@@ -15,9 +15,15 @@ _READ_OPS = frozenset({
     "branch_list", "branch_current", "stash_list",
 })
 _WRITE_OPS = frozenset({
-    "commit", "add", "checkout", "stash_push", "stash_pop",
+    "commit", "add", "checkout", "branch_create", "stash_push", "stash_pop",
 })
-_ALL_OPS = _READ_OPS | _WRITE_OPS
+# Network operations: change refs and reach a remote, so they always need
+# approval and get a longer timeout. Auth is handled transparently by the
+# user's git credential helper / SSH agent.
+_NETWORK_OPS = frozenset({"fetch", "pull", "push"})
+_ALL_OPS = _READ_OPS | _WRITE_OPS | _NETWORK_OPS
+
+_NETWORK_TIMEOUT = 120
 
 
 @dataclass
@@ -28,7 +34,9 @@ class GitTool:
     description: str = (
         "Run git operations. Read: status, diff, log, show, blame, "
         "branch_list, branch_current, stash_list. "
-        "Write (require approval): commit, add, checkout, stash_push, stash_pop."
+        "Write (require approval): commit, add, checkout, branch_create, "
+        "stash_push, stash_pop. "
+        "Network (require approval): fetch, pull, push."
     )
     category: ToolCategory = ToolCategory.GIT
     working_dir: Path = field(default_factory=Path.cwd)
@@ -53,7 +61,8 @@ class GitTool:
                         "description": (
                             "Git operation: status, diff, log, show, blame, "
                             "branch_list, branch_current, stash_list, commit, "
-                            "add, checkout, stash_push, stash_pop"
+                            "add, checkout, branch_create, stash_push, "
+                            "stash_pop, fetch, pull, push"
                         ),
                     },
                     "args": {
@@ -90,16 +99,26 @@ class GitTool:
 
 
 async def _run_git(
-    cmd: list[str], cwd: Path, max_output: int = 50_000
+    cmd: list[str], cwd: Path, max_output: int = 50_000, timeout: float = 30
 ) -> tuple[str, int]:
-    """Run a git command and return (output, exit_code)."""
+    """Run a git command and return (output, exit_code).
+
+    Network operations (fetch/pull/push) pass a longer ``timeout``. On timeout
+    the subprocess is killed so it can't linger after we stop waiting on it.
+    """
     proc = await asyncio.create_subprocess_exec(
         "git", *cmd,
         cwd=str(cwd),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
     )
-    stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=30)
+    try:
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except TimeoutError:
+        proc.kill()
+        await proc.wait()
+        op = cmd[0] if cmd else "command"
+        return f"git {op} timed out after {timeout:g}s", 1
     output = stdout.decode("utf-8", errors="replace")
     if len(output) > max_output:
         output = output[:max_output] + "\n\n[output truncated]"
@@ -285,6 +304,74 @@ async def _stash_pop(args: dict, cwd: Path) -> ToolResult:
     return ToolResult.ok(output)
 
 
+async def _branch_create(args: dict, cwd: Path) -> ToolResult:
+    name = args.get("name")
+    if not isinstance(name, str) or not name.strip():
+        return ToolResult.fail("branch_create requires a non-empty 'name'.")
+    name = name.strip()
+    # Default to switching to the new branch (checkout -b); pass checkout=False
+    # to only create it.
+    switch = args.get("checkout", True)
+    base = args.get("base")
+    if switch:
+        cmd = ["checkout", "-b", name]
+    else:
+        cmd = ["branch", name]
+    if isinstance(base, str) and base:
+        cmd.append(base)
+    output, rc = await _run_git(cmd, cwd)
+    if rc != 0:
+        return ToolResult.fail(f"git branch_create failed: {output}")
+    return ToolResult.ok(output or f"Created branch '{name}'.", branch=name)
+
+
+async def _fetch(args: dict, cwd: Path) -> ToolResult:
+    cmd = ["fetch"]
+    remote = args.get("remote")
+    if isinstance(remote, str) and remote:
+        cmd.append(remote)
+    elif args.get("all"):
+        cmd.append("--all")
+    if args.get("prune"):
+        cmd.append("--prune")
+    output, rc = await _run_git(cmd, cwd, timeout=_NETWORK_TIMEOUT)
+    if rc != 0:
+        return ToolResult.fail(f"git fetch failed: {output}")
+    return ToolResult.ok(output or "Fetched.")
+
+
+async def _pull(args: dict, cwd: Path) -> ToolResult:
+    cmd = ["pull"]
+    if args.get("rebase"):
+        cmd.append("--rebase")
+    remote = args.get("remote")
+    branch = args.get("branch")
+    if isinstance(remote, str) and remote:
+        cmd.append(remote)
+        if isinstance(branch, str) and branch:
+            cmd.append(branch)
+    output, rc = await _run_git(cmd, cwd, timeout=_NETWORK_TIMEOUT)
+    if rc != 0:
+        return ToolResult.fail(f"git pull failed: {output}")
+    return ToolResult.ok(output or "Already up to date.")
+
+
+async def _push(args: dict, cwd: Path) -> ToolResult:
+    cmd = ["push"]
+    if args.get("set_upstream"):
+        cmd.append("-u")
+    remote = args.get("remote")
+    branch = args.get("branch")
+    if isinstance(remote, str) and remote:
+        cmd.append(remote)
+        if isinstance(branch, str) and branch:
+            cmd.append(branch)
+    output, rc = await _run_git(cmd, cwd, timeout=_NETWORK_TIMEOUT)
+    if rc != 0:
+        return ToolResult.fail(f"git push failed: {output}")
+    return ToolResult.ok(output or "Pushed.")
+
+
 _HANDLERS = {
     "status": _status,
     "diff": _diff,
@@ -297,6 +384,10 @@ _HANDLERS = {
     "commit": _commit,
     "add": _add,
     "checkout": _checkout,
+    "branch_create": _branch_create,
     "stash_push": _stash_push,
     "stash_pop": _stash_pop,
+    "fetch": _fetch,
+    "pull": _pull,
+    "push": _push,
 }
