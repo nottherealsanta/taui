@@ -730,6 +730,11 @@ class TestTauiApp:
         app = TauiApp(Config(working_dir=tmp_path))
         app._session = FakeSession()
         app._update_status = MagicMock()  # type: ignore[method-assign]
+        # _apply_selected_model schedules a persist worker; with no running app
+        # that coroutine would leak ("never awaited"). Close it instead.
+        app.run_worker = MagicMock(  # type: ignore[method-assign]
+            side_effect=lambda coro, *a, **k: coro.close()
+        )
 
         app._apply_selected_model("gpt-5.5")
 
