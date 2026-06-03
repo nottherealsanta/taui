@@ -2604,6 +2604,11 @@ class TauiApp(App[None]):
         st.streamed_text = False
         st.assistant_text_buf = ""
         st.reply_footer = None
+        # Remember this turn's prompt and the tool-call count at its start so a
+        # cancel-before-any-tool can hand the message back to the input.
+        st.current_user_text = text
+        st.user_cancelled = False
+        st.turn_start_tool_count = st.tool_ctrl.tool_call_count
         await self._begin_reply_footer(st)
 
         old_session_executor = None
@@ -2695,6 +2700,9 @@ class TauiApp(App[None]):
                 st.current_turn.append_replay_item(
                     ReplayItem(kind="error", text="Request cancelled.")
                 )
+            # Cancelled before doing any work (no tool ran this turn): hand the
+            # message back so the user can tweak and resend without retyping.
+            self._maybe_restore_cancelled_input(st)
         except Exception as exc:
             await self._mount_in_reply(
                 Static(f"[red]Error: {exc}[/red]", markup=True),
@@ -3800,6 +3808,30 @@ class TauiApp(App[None]):
         self._wire_callbacks()
         self._update_status()
 
+    def _maybe_restore_cancelled_input(self, st: SessionState) -> None:
+        """After an explicit cancel that did no work, put the message back.
+
+        Only fires when the user actively cancelled (Ctrl+C / Esc) this turn
+        before any tool ran, for the active session, and the input is empty —
+        so a half-typed follow-up or a tab-close cancel is never clobbered.
+        """
+        if not st.user_cancelled:
+            return
+        st.user_cancelled = False
+        made_tool_call = st.tool_ctrl.tool_call_count > st.turn_start_tool_count
+        if made_tool_call or not st.current_user_text.strip():
+            return
+        if st is not self._sessions.active:
+            return
+        try:
+            ci = self.query_one("#chat-input", ChatInput)
+            if ci.text.strip():
+                return
+            self._refill_input(st.current_user_text)
+            ci.focus()
+        except Exception:
+            pass
+
     async def action_cancel_request(self) -> None:
         state = self._sessions.active
         if state is not None and state.approval_ctrl.has_active_panel():
@@ -3807,6 +3839,9 @@ class TauiApp(App[None]):
         if state is not None:
             state.approval_ctrl.cancel_active_approval()
         if state is not None and state.is_processing:
+            # Mark this as an explicit user cancel so the send worker can offer
+            # the un-acted-on message back (vs. a cancel from tab/session close).
+            state.user_cancelled = True
             # Clear queues for the active session only
             state.queued.clear()
             if state.session:

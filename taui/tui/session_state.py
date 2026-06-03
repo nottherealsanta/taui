@@ -27,6 +27,14 @@ class SessionState:
     # Busy / processing flag for this session
     is_processing: bool = False
 
+    # The user message that started the current turn, whether the user
+    # explicitly cancelled it (Ctrl+C / Esc), and the tool-call count at the
+    # turn's start. Together these let us restore an un-acted-on message back
+    # into the input when cancelled before any tool ran this turn.
+    current_user_text: str = ""
+    user_cancelled: bool = False
+    turn_start_tool_count: int = 0
+
     # Streaming turn state
     current_response: AgentResponse | None = None
     current_reasoning: object | None = None  # Static widget

@@ -50,6 +50,13 @@ class ToolController:
         self._inner_to_sub_agent: dict[str, SubAgentWidget] = {}
         self._tool_replay_turns: dict[str, TurnContainer] = {}
 
+    @property
+    def tool_call_count(self) -> int:
+        """Total tool calls registered this session (monotonic; reset only on
+        a full session ``reset()``). Snapshot it at a turn's start to tell
+        whether any tool ran during that turn."""
+        return self._tool_counter
+
     def reset_section(self) -> None:
         self._current_tool_section = None
 

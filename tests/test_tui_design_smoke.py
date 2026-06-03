@@ -1019,3 +1019,81 @@ async def test_app_renders_in_light_theme(tmp_path, monkeypatch):
         # The shared modal tokens must resolve to their light values.
         assert str(app.theme_variables.get("taui-dialog-bg")).lower() == "#ffffff"
         await _close_cleanly(pilot)
+
+
+# ── Cancel-before-tool restores the message into the input ───────────────
+
+
+@pytest.mark.asyncio
+async def test_cancel_before_tool_call_restores_input(tmp_path, monkeypatch):
+    """An explicit cancel that did no work (no tool ran) hands the message
+    back to the input so the user can tweak and resend."""
+    from taui.tui.widgets.chat_input import ChatInput
+
+    app = _make_app(monkeypatch, tmp_path)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await _wait_until_ready(pilot)
+        st = app._sessions.active
+        ci = app.query_one("#chat-input", ChatInput)
+        ci.clear()
+
+        # Simulate: a turn started with "draft message", no tool ran, user hit Ctrl+C.
+        st.current_user_text = "draft message"
+        st.user_cancelled = True
+        st.turn_start_tool_count = st.tool_ctrl.tool_call_count
+
+        app._maybe_restore_cancelled_input(st)
+        await pilot.pause()
+        assert ci.text.strip() == "draft message"
+        # The flag is consumed so a later non-cancel cleanup won't re-fill.
+        assert st.user_cancelled is False
+        await _close_cleanly(pilot)
+
+
+@pytest.mark.asyncio
+async def test_cancel_after_tool_call_does_not_restore_input(tmp_path, monkeypatch):
+    """If a tool already ran this turn, a cancel must NOT clobber the input —
+    the conversation has progressed."""
+    from taui.tui.widgets.chat_input import ChatInput
+
+    app = _make_app(monkeypatch, tmp_path)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await _wait_until_ready(pilot)
+        st = app._sessions.active
+        ci = app.query_one("#chat-input", ChatInput)
+        ci.clear()
+
+        st.current_user_text = "draft message"
+        st.user_cancelled = True
+        # A tool ran: start count is one less than the current count.
+        st.turn_start_tool_count = st.tool_ctrl.tool_call_count
+        st.tool_ctrl._tool_counter += 1  # noqa: SLF001 — simulate a tool call
+
+        app._maybe_restore_cancelled_input(st)
+        await pilot.pause()
+        assert ci.text.strip() == ""
+        await _close_cleanly(pilot)
+
+
+@pytest.mark.asyncio
+async def test_cancel_does_not_clobber_typed_text(tmp_path, monkeypatch):
+    """If the user has already started typing a new message, the restore must
+    not overwrite it."""
+    from taui.tui.widgets.chat_input import ChatInput
+
+    app = _make_app(monkeypatch, tmp_path)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await _wait_until_ready(pilot)
+        st = app._sessions.active
+        ci = app.query_one("#chat-input", ChatInput)
+        ci.clear()
+        ci.insert("a new thought")
+
+        st.current_user_text = "draft message"
+        st.user_cancelled = True
+        st.turn_start_tool_count = st.tool_ctrl.tool_call_count
+
+        app._maybe_restore_cancelled_input(st)
+        await pilot.pause()
+        assert ci.text.strip() == "a new thought"
+        await _close_cleanly(pilot)
