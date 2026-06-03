@@ -54,3 +54,23 @@ the committed baselines were rendered in a different environment (font metrics d
 They are useful as a local visual-diff tool but should not be `--snapshot-update`-d and
 committed from an arbitrary machine. Treat them as a separate, environment-pinned gate
 (ideally regenerated in CI), not as functional regressions.
+
+## Tool Sandboxing / Security
+
+The agent-facing tool boundaries were reviewed and hardened:
+
+- Self-edit's read-only bash facade no longer lets a newline (or CR) smuggle a second
+  command past the first-token allowlist, and treats find's file-writing actions
+  (`-fprint*`/`-fls`) as non-read-only.
+- The git tool rejects option-like `ref`/`branch`/`remote`/`base`/`file` values, so an
+  auto-approved read op can't be turned into a write via an injected flag
+  (e.g. `git diff --output=...`).
+- The skill installer's `git clone` uses `--` to end option parsing, so a source can't be
+  misread as a git flag. (It already used list-form subprocess — no shell.)
+- The self-edit file allowlist and the file tools' `resolve_path` both canonicalize via
+  `Path.resolve()` (following symlinks and `..`) before the containment check.
+
+Open decision: `webfetch` performs no SSRF filtering (auto-approved, follows redirects).
+Blocking private/loopback hosts would break the legitimate dev use of fetching a local
+server, while a literal metadata-IP block is trivially bypassed via DNS/redirect — so the
+right policy (and its utility trade-off) is left to the maintainer rather than imposed.
