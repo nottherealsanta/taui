@@ -54,7 +54,11 @@ class ChatInput(TextArea):
         margin: 0;
         background: transparent;
         color: $text;
-        scrollbar-size: 0 0;
+        /* A thin vertical scrollbar appears only once the draft grows past
+           the 8-line cap, so the user can see there is more text off-screen.
+           Theme scrollbar colors keep it legible in both themes. */
+        scrollbar-size-vertical: 1;
+        scrollbar-size-horizontal: 0;
         & .text-area--cursor-line {
             background: transparent;
         }

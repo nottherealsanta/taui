@@ -1097,3 +1097,32 @@ async def test_cancel_does_not_clobber_typed_text(tmp_path, monkeypatch):
         await pilot.pause()
         assert ci.text.strip() == "a new thought"
         await _close_cleanly(pilot)
+
+
+# ── Long drafts show a scrollbar so the user knows there's more ──────────
+
+
+@pytest.mark.asyncio
+async def test_long_input_shows_scrollbar(tmp_path, monkeypatch):
+    """A short draft has no scrollbar; a draft past the height cap shows the
+    vertical scrollbar so the off-screen text is discoverable."""
+    from taui.tui.widgets.chat_input import ChatInput
+
+    app = _make_app(monkeypatch, tmp_path)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await _wait_until_ready(pilot)
+        ci = app.query_one("#chat-input", ChatInput)
+        ci.focus()
+
+        ci.text = "one\ntwo"
+        for _ in range(3):
+            await pilot.pause()
+        assert ci.show_vertical_scrollbar is False
+
+        ci.text = "\n".join(f"line {i}" for i in range(14))
+        for _ in range(4):
+            await pilot.pause()
+        assert ci.show_vertical_scrollbar is True, (
+            "a draft taller than the input cap should show a scrollbar"
+        )
+        await _close_cleanly(pilot)
