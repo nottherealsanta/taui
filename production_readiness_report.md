@@ -67,8 +67,14 @@ The agent-facing tool boundaries were reviewed and hardened:
   (e.g. `git diff --output=...`).
 - The skill installer's `git clone` uses `--` to end option parsing, so a source can't be
   misread as a git flag. (It already used list-form subprocess — no shell.)
+- `apply_patch` now routes its target through `resolve_path`, so a patch header like
+  `+++ b/../../etc/x` can no longer write outside the workspace (it previously had no
+  containment check, unlike `write`/`edit`).
 - The self-edit file allowlist and the file tools' `resolve_path` both canonicalize via
-  `Path.resolve()` (following symlinks and `..`) before the containment check.
+  `Path.resolve()` (following symlinks and `..`) before the containment check. The `memory`
+  tool sanitizes its key and re-checks containment. `mcp` only connects to user-configured
+  servers (no agent-supplied command), and `peek` reads from the truncation store, not the
+  filesystem.
 
 `webfetch` blocks non-http(s) schemes and link-local targets (the cloud-metadata range
 169.254.0.0/16 / fe80::/10, e.g. 169.254.169.254) on both the initial URL and the
