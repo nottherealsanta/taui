@@ -44,6 +44,7 @@ TAUI_DARK = Theme(
         "taui-dialog-bg": "#0d0d0d",      # dialog container surface
         "taui-field-bg": "#121212",       # inputs / option lists inside a dialog
         "taui-border": "#2a2a2a",         # resting border / keyline
+        "taui-border-subtle": "#1e1e1e",  # faint frame border / section divider
         "taui-border-focus": "#5a5a5a",   # focused border
         "taui-option-active": "#2a2a2a",  # highlighted option row
         "taui-cyan": "#56d4dd",           # category/group header accent (mcp, tools)
@@ -80,6 +81,7 @@ TAUI_LIGHT = Theme(
         "taui-dialog-bg": "#ffffff",      # dialog container surface
         "taui-field-bg": "#f6f8fa",       # inputs / option lists inside a dialog
         "taui-border": "#d0d7de",         # resting border / keyline
+        "taui-border-subtle": "#d0d7de",  # faint frame border / section divider
         "taui-border-focus": "#0969da",   # focused border
         "taui-option-active": "#dde4ec",  # highlighted option row
         "taui-cyan": "#0e7490",           # category/group header accent (mcp, tools)

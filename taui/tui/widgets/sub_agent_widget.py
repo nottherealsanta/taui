@@ -58,7 +58,7 @@ class SubAgentModal(ModalScreen[None]):
         width: 92%;
         height: 92%;
         background: $surface;
-        border: thick $surface-lighten-1;
+        border: thick $taui-border-subtle;
         padding: 1 2;
         layout: vertical;
     }
@@ -72,7 +72,7 @@ class SubAgentModal(ModalScreen[None]):
         width: 100%;
         height: auto;
         padding: 0 0 1 0;
-        border-bottom: solid $surface-lighten-1;
+        border-bottom: solid $taui-border-subtle;
     }
     #sub-agent-dialog .section-header {
         padding: 1 0 0 0;
@@ -89,7 +89,7 @@ class SubAgentModal(ModalScreen[None]):
     }
     #sub-agent-dialog #activity-scroll {
         height: 1fr;
-        border: solid $surface-lighten-1;
+        border: solid $taui-border-subtle;
         padding: 0 1;
     }
     #sub-agent-dialog #sysprompt-section {
@@ -100,7 +100,7 @@ class SubAgentModal(ModalScreen[None]):
     #sub-agent-dialog #sysprompt-scroll {
         height: auto;
         max-height: 10;
-        border: solid $surface-lighten-1;
+        border: solid $taui-border-subtle;
         padding: 0 1;
     }
     #sub-agent-dialog .button-container {

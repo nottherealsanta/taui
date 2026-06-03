@@ -40,7 +40,7 @@ class PastedContentScreen(ModalScreen[PasteResult | None]):
         width: 80%;
         height: 80%;
         background: $surface;
-        border: thick $surface-lighten-1;
+        border: thick $taui-border-subtle;
         padding: 1;
     }
     #pasted-dialog .dialog-title {
@@ -69,7 +69,7 @@ class PastedContentScreen(ModalScreen[PasteResult | None]):
     #pasted-content-area {
         height: 1fr;
         width: 100%;
-        border: solid $surface-lighten-1;
+        border: solid $taui-border-subtle;
     }
     """
 

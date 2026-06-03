@@ -22,7 +22,7 @@ class SystemPromptModal(ModalScreen[None]):
         width: 90%;
         height: 90%;
         background: $surface;
-        border: thick $surface-lighten-1;
+        border: thick $taui-border-subtle;
         padding: 1 2;
     }
     #system-prompt-dialog .dialog-title {
@@ -34,7 +34,7 @@ class SystemPromptModal(ModalScreen[None]):
     }
     #system-prompt-dialog #system-prompt-scroll {
         height: 1fr;
-        border-top: solid $surface-lighten-1;
+        border-top: solid $taui-border-subtle;
         padding: 1 0 0 0;
     }
     #system-prompt-dialog .button-container {

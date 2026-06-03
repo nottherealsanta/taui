@@ -51,7 +51,7 @@ class SessionInfoSidebar(VerticalScroll):
         height: 100%;
         display: none;
         background: $surface;
-        border-left: solid $surface-lighten-1;
+        border-left: solid $taui-border-subtle;
         padding: 0 1;
         scrollbar-size-vertical: 1;
         scrollbar-size-horizontal: 1;

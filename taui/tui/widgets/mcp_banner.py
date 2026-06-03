@@ -34,7 +34,7 @@ class McpModal(ModalScreen[None]):
         width: 80%;
         height: 80%;
         background: $surface;
-        border: thick $surface-lighten-1;
+        border: thick $taui-border-subtle;
         padding: 1 2;
     }
     #mcp-modal-dialog .dialog-title {
@@ -46,7 +46,7 @@ class McpModal(ModalScreen[None]):
     }
     #mcp-modal-dialog #mcp-scroll {
         height: 1fr;
-        border-top: solid $surface-lighten-1;
+        border-top: solid $taui-border-subtle;
         padding: 1 0 0 0;
         scrollbar-size-vertical: 1;
     }

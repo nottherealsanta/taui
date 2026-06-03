@@ -113,7 +113,7 @@ class GitDiffScreen(ModalScreen[None]):
         width: 96%;
         height: 92%;
         background: $surface;
-        border: thick $surface-lighten-1;
+        border: thick $taui-border-subtle;
         padding: 1;
     }
     #git-diff-dialog .dialog-title {
@@ -161,7 +161,7 @@ class GitDiffScreen(ModalScreen[None]):
     }
     #git-diff-dialog .diff-body {
         height: auto;
-        border-left: solid $surface-lighten-1;
+        border-left: solid $taui-border-subtle;
         margin: 0 0 0 1;
     }
     #git-diff-dialog Markdown {

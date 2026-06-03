@@ -23,7 +23,7 @@ class ContextBreakdownScreen(ModalScreen[None]):
         width: 90%;
         height: 90%;
         background: $surface;
-        border: thick $surface-lighten-1;
+        border: thick $taui-border-subtle;
         padding: 1 2;
     }
     #context-dialog .dialog-title {
@@ -61,7 +61,7 @@ class ContextBreakdownScreen(ModalScreen[None]):
     }
     #context-dialog #context-tree-scroll {
         height: 1fr;
-        border-top: solid $surface-lighten-1;
+        border-top: solid $taui-border-subtle;
         padding: 1 0 0 0;
     }
     #context-dialog Tree {

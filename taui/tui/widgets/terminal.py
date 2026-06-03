@@ -17,7 +17,7 @@ class TerminalOutput(Widget):
         max-height: 20;
         padding: 0 1;
         margin: 0 0 0 3;
-        border: solid $surface-lighten-1;
+        border: solid $taui-border-subtle;
         background: $surface;
     }
     TerminalOutput .term-cmd {

@@ -61,7 +61,7 @@ class ToolsModal(ModalScreen[None]):
         width: 80%;
         height: 80%;
         background: $surface;
-        border: thick $surface-lighten-1;
+        border: thick $taui-border-subtle;
         padding: 1 2;
     }
     #tools-modal-dialog .dialog-title {
@@ -73,7 +73,7 @@ class ToolsModal(ModalScreen[None]):
     }
     #tools-modal-dialog #tm-scroll {
         height: 1fr;
-        border-top: solid $surface-lighten-1;
+        border-top: solid $taui-border-subtle;
         padding: 1 0 0 0;
         scrollbar-size-vertical: 1;
     }

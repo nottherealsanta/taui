@@ -67,7 +67,7 @@ class Sidebar(Vertical):
         height: 100%;
         display: none;
         background: $surface;
-        border-right: solid $surface-lighten-1;
+        border-right: solid $taui-border-subtle;
         padding: 0;
     }
     Sidebar.visible {

@@ -23,7 +23,7 @@ class ReasoningModal(ModalScreen[None]):
         width: 90%;
         height: 90%;
         background: $surface;
-        border: thick $surface-lighten-1;
+        border: thick $taui-border-subtle;
         padding: 1 2;
     }
     #reasoning-dialog .dialog-title {
@@ -35,7 +35,7 @@ class ReasoningModal(ModalScreen[None]):
     }
     #reasoning-dialog #reasoning-scroll {
         height: 1fr;
-        border-top: solid $surface-lighten-1;
+        border-top: solid $taui-border-subtle;
         padding: 1 0 0 0;
     }
     #reasoning-dialog #reasoning-body {
