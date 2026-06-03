@@ -11,6 +11,8 @@ Button {
     dock: top;
     height: 1;
     width: 100%;
+    /* Neutral mid-gray that reads on both themes — like the content-gray
+       palette, this is intentionally theme-independent. */
     color: #555555;
     padding: 0 1 0 0;
     margin: 0 1 0 0;
@@ -26,7 +28,7 @@ Button {
 }
 #chat-container {
     height: auto;
-    background: #1a1a1a;
+    background: $background-lighten-1;
     margin: 0 2;
     padding: 0;
 }
@@ -58,7 +60,7 @@ Button {
     width: 1fr;
     height: 1fr;
     content-align: center middle;
-    color: #313131;
+    color: $text-disabled;
 }
 #activity-progress {
     dock: bottom;
@@ -169,11 +171,10 @@ MarkdownTableContent > .header {
     color: $primary;
     text-style: bold;
 }
-/* Command palette — neutral palette inspired by the self-edit modal.
-   Borders and surfaces use plain grays so nothing competes with the
-   focused list highlight. */
+/* Command palette — shares the modal design tokens ($taui-*) with every
+   picker so the whole overlay layer is one consistent, theme-aware surface. */
 CommandPalette {
-    background: #070707 70%;
+    background: $taui-scrim;
 }
 CommandPalette > Vertical {
     width: 82;
@@ -181,47 +182,47 @@ CommandPalette > Vertical {
     height: auto;
     max-height: 74%;
     margin-top: 2;
-    background: #0d0d0d;
-    border: round #2a2a2a;
+    background: $taui-dialog-bg;
+    border: round $taui-border;
     padding: 0;
 }
 CommandPalette #--input {
-    background: #121212;
-    color: #e8e8e8;
-    border: solid #2a2a2a;
+    background: $taui-field-bg;
+    color: $foreground;
+    border: solid $taui-border;
     padding: 0 1;
 }
 CommandPalette #--input.--list-visible {
-    border-bottom: solid #2a2a2a;
+    border-bottom: solid $taui-border;
 }
 CommandPalette #--input:focus {
-    border: solid #5a5a5a;
+    border: solid $taui-border-focus;
 }
 CommandPalette #--results {
     overlay: none;
     height: auto;
     max-height: 18;
-    background: #0d0d0d;
+    background: $taui-dialog-bg;
 }
 CommandPalette CommandList {
     height: auto;
     max-height: 16;
-    background: #0d0d0d;
-    color: #c8c8c8;
+    background: $taui-dialog-bg;
+    color: $text;
     border: none;
 }
 CommandPalette CommandList > .option-list--option-highlighted {
-    background: #2a2a2a;
-    color: #e8e8e8;
+    background: $taui-option-active;
+    color: $foreground;
     text-style: bold;
 }
 CommandPalette LoadingIndicator {
-    border-bottom: solid #2a2a2a;
+    border-bottom: solid $taui-border;
 }
 CommandPalette > .command-palette--help-text {
-    color: #707070;
+    color: $text-muted;
 }
 CommandPalette > .command-palette--highlight {
-    color: #e8e8e8;
+    color: $foreground;
     text-style: bold;
 }

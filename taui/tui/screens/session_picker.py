@@ -24,14 +24,14 @@ class SessionPickerScreen(ModalScreen[str | None]):
     DEFAULT_CSS = """
     SessionPickerScreen {
         align: center middle;
-        background: $background 70%;
+        background: $taui-scrim;
     }
     #session-picker-dialog {
         width: 120;
         max-width: 95%;
         height: auto;
         max-height: 86%;
-        background: #0d0d0d;
+        background: $taui-dialog-bg;
         border: none;
         padding: 0;
     }
@@ -47,11 +47,11 @@ class SessionPickerScreen(ModalScreen[str | None]):
     }
     #session-search {
         width: 1fr;
-        background: #121212;
-        border: solid #2a2a2a;
+        background: $taui-field-bg;
+        border: solid $taui-border;
     }
     #session-search:focus {
-        border: solid #5a5a5a;
+        border: solid $taui-border-focus;
     }
     #session-content-toggle {
         width: auto;
@@ -59,7 +59,7 @@ class SessionPickerScreen(ModalScreen[str | None]):
         height: 3;
         margin: 0 0 0 1;
         content-align: center middle;
-        color: #6e7681;
+        color: $text-muted;
     }
     #session-picker-body {
         height: 20;
@@ -67,16 +67,16 @@ class SessionPickerScreen(ModalScreen[str | None]):
     #session-picker-dialog OptionList {
         width: 2fr;
         height: 100%;
-        background: #121212;
-        border: solid #2a2a2a;
-        color: #c8c8c8;
+        background: $taui-field-bg;
+        border: solid $taui-border;
+        color: $text;
     }
     #session-picker-dialog OptionList:focus {
-        border: solid #5a5a5a;
+        border: solid $taui-border-focus;
     }
     #session-picker-dialog .option-list--option-highlighted {
-        background: #2a2a2a;
-        color: #e8e8e8;
+        background: $taui-option-active;
+        color: $foreground;
         text-style: bold;
     }
     #session-preview-pane {
@@ -84,17 +84,17 @@ class SessionPickerScreen(ModalScreen[str | None]):
         height: 100%;
         margin: 0 0 0 1;
         padding: 0 1;
-        background: #121212;
-        border: solid #2a2a2a;
-        color: #c8c8c8;
+        background: $taui-field-bg;
+        border: solid $taui-border;
+        color: $text;
         scrollbar-size: 1 1;
     }
     #session-preview-pane:focus {
-        border: solid #5a5a5a;
+        border: solid $taui-border-focus;
     }
     #session-preview {
         width: 100%;
-        color: #c8c8c8;
+        color: $text;
     }
     #session-picker-dialog .hint {
         height: 1;

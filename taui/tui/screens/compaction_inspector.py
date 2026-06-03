@@ -44,13 +44,13 @@ class _AbsorbedTurnView(Vertical):
     _AbsorbedTurnView {
         height: auto;
         margin: 0 0 1 0;
-        border-left: solid #3a3a3a;
+        border-left: solid $taui-border;
         padding: 0 0 0 1;
     }
     _AbsorbedTurnView > .ci-user-text {
         height: auto;
         padding: 1 1 1 0;
-        color: #e6e6e6;
+        color: $foreground;
         text-style: bold;
     }
     _AbsorbedTurnView > .ci-body {
@@ -138,12 +138,13 @@ class CompactionInspectorScreen(ModalScreen[None]):
     DEFAULT_CSS = """
     CompactionInspectorScreen {
         align: center middle;
+        background: $taui-scrim;
     }
     #ci-dialog {
         width: 90%;
         height: 90%;
-        background: $surface;
-        border: thick #3a3a3a;
+        background: $taui-dialog-bg;
+        border: thick $taui-border;
         padding: 1 2;
     }
     #ci-dialog .ci-title {
@@ -166,19 +167,19 @@ class CompactionInspectorScreen(ModalScreen[None]):
     }
     #ci-dialog #ci-summary {
         height: 1fr;
-        border: solid #3a3a3a;
+        border: solid $taui-border;
         padding: 1;
-        background: #161616;
+        background: $panel;
     }
     #ci-dialog #ci-summary-text {
         height: auto;
-        color: #c9d1d9;
+        color: $text;
     }
     #ci-dialog #ci-turns {
         height: 1fr;
-        border: solid #3a3a3a;
+        border: solid $taui-border;
         padding: 1;
-        background: #0d0d0d;
+        background: $taui-field-bg;
     }
     #ci-dialog .ci-empty {
         color: #6e7681;
