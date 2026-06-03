@@ -54,13 +54,13 @@ class CompactionBlock(Static):
         height: 1;
         margin: 1 0 1 0;
         padding: 0 2;
-        color: #b0b0b0;
-        background: #2a2a2a;
+        color: $text-muted;
+        background: $taui-option-active;
         text-style: none;
     }
     CompactionBlock:hover {
-        background: #3a3a3a;
-        color: #e6edf3;
+        background: $taui-option-active;
+        color: $foreground;
     }
     """
 

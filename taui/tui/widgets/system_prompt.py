@@ -29,7 +29,7 @@ class SystemPromptModal(ModalScreen[None]):
         width: 100%;
         content-align: center middle;
         padding: 0 0 1 0;
-        color: #ff9e64;
+        color: $primary;
         text-style: bold;
     }
     #system-prompt-dialog #system-prompt-scroll {
@@ -82,8 +82,8 @@ class SystemPromptWidget(Container):
         color: #a0a0a0;
     }
     SystemPromptWidget:hover {
-        color: #e8e8e8;
-        background: #2a2a2a;
+        color: $foreground;
+        background: $taui-option-active;
     }
     SystemPromptWidget .sp-label {
         width: 100%;

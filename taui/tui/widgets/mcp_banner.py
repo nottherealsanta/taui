@@ -41,7 +41,7 @@ class McpModal(ModalScreen[None]):
         width: 100%;
         content-align: center middle;
         padding: 0 0 1 0;
-        color: #ff9e64;
+        color: $primary;
         text-style: bold;
     }
     #mcp-modal-dialog #mcp-scroll {
@@ -61,7 +61,7 @@ class McpModal(ModalScreen[None]):
         padding: 1 0 0 0;
     }
     #mcp-modal-dialog .mcp-tool-name {
-        color: #c9d1d9;
+        color: $text;
         padding: 0 0 0 2;
     }
     #mcp-modal-dialog .mcp-connect-row {
@@ -217,8 +217,8 @@ class McpBanner(Container):
         color: #a0a0a0;
     }
     McpBanner:hover {
-        background: #2a2a2a;
-        color: #e8e8e8;
+        background: $taui-option-active;
+        color: $foreground;
     }
     McpBanner .banner-label {
         width: 100%;

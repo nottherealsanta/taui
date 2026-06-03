@@ -68,7 +68,7 @@ class ToolsModal(ModalScreen[None]):
         width: 100%;
         content-align: center middle;
         padding: 0 0 1 0;
-        color: #ff9e64;
+        color: $primary;
         text-style: bold;
     }
     #tools-modal-dialog #tm-scroll {
@@ -83,13 +83,13 @@ class ToolsModal(ModalScreen[None]):
         padding: 1 0 0 0;
     }
     #tools-modal-dialog .tm-tool-name {
-        color: #c9d1d9;
+        color: $text;
         padding: 1 0 0 2;
         text-style: bold;
     }
     #tools-modal-dialog .tm-tool-name.-solo {
         padding: 1 0 0 0;
-        color: #d2a8ff;
+        color: $accent;
         text-style: bold;
     }
     #tools-modal-dialog .tm-tool-name.-inactive {
@@ -294,8 +294,8 @@ class ToolGroupsBanner(Container):
         color: #a0a0a0;
     }
     ToolGroupsBanner:hover {
-        background: #2a2a2a;
-        color: #e8e8e8;
+        background: $taui-option-active;
+        color: $foreground;
     }
     ToolGroupsBanner .banner-label {
         width: 100%;

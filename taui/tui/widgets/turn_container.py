@@ -40,7 +40,7 @@ class _Chevron(Static):
         text-style: bold;
     }
     _Chevron:hover {
-        color: #e6edf3;
+        color: $foreground;
         background: $surface-lighten-1;
     }
     """
@@ -71,13 +71,13 @@ class TurnContainer(Vertical):
     TurnContainer > .turn-header {
         height: auto;
         layout: horizontal;
-        background: #141414;
+        background: $panel;
         margin: 0;
     }
     TurnContainer > .turn-header > .user-text {
         width: 1fr;
         padding: 1 2 1 0;
-        color: #e6e6e6;
+        color: $foreground;
     }
     TurnContainer > .turn-summary {
         height: 1;

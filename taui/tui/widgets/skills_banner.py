@@ -37,7 +37,7 @@ class SkillsModal(ModalScreen[None]):
         width: 100%;
         content-align: center middle;
         padding: 0 0 1 0;
-        color: #ff9e64;
+        color: $primary;
         text-style: bold;
     }
     #skills-modal-dialog #sm-scroll {
@@ -47,7 +47,7 @@ class SkillsModal(ModalScreen[None]):
         scrollbar-size-vertical: 1;
     }
     #skills-modal-dialog .sm-skill-name {
-        color: #d2a8ff;
+        color: $accent;
         text-style: bold;
         padding: 1 0 0 0;
     }
@@ -60,7 +60,7 @@ class SkillsModal(ModalScreen[None]):
         padding: 0 0 0 2;
     }
     #skills-modal-dialog .sm-skill-desc {
-        color: #c9d1d9;
+        color: $text;
         padding: 0 0 0 2;
     }
     #skills-modal-dialog .button-container {
@@ -160,8 +160,8 @@ class SkillsBanner(Container):
         color: #a0a0a0;
     }
     SkillsBanner:hover {
-        background: #2a2a2a;
-        color: #e8e8e8;
+        background: $taui-option-active;
+        color: $foreground;
     }
     SkillsBanner .banner-label {
         width: 100%;
