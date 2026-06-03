@@ -57,6 +57,14 @@ class _DiffFilePanel(Container):
             await self._body.mount(self._build_diff_widget())
             self._mounted_diff = True
 
+    def _theme_color(self, name: str, fallback: str) -> str:
+        """Resolve a concrete theme color for Rich markup (which can't read
+        ``$vars``). Falls back to the original GitHub-dark color."""
+        try:
+            return self.app.theme_variables.get(name) or fallback
+        except Exception:
+            return fallback
+
     def _row_markup(self) -> str:
         path = self._file.get("path", "")
         status = _status_label(self._file.get("status", ""))
@@ -66,11 +74,14 @@ class _DiffFilePanel(Container):
             path=path,
         )
         chevron = "▾" if self._expanded else "▸"
+        chev_c = self._theme_color("primary", "#58a6ff")
+        add_c = self._theme_color("success", "#7ee787")
+        rem_c = self._theme_color("error", "#ff7b72")
         return (
-            f"[#58a6ff]{chevron}[/#58a6ff] "
+            f"[{chev_c}]{chevron}[/{chev_c}] "
             f"[bold]{escape(path)}[/bold] "
             f"[dim]{escape(status)}[/dim] "
-            f"[#7ee787]+{added}[/#7ee787] [#ff7b72]-{removed}[/#ff7b72]"
+            f"[{add_c}]+{added}[/{add_c}] [{rem_c}]-{removed}[/{rem_c}]"
         )
 
     def _build_diff_widget(self) -> Widget:
@@ -107,7 +118,7 @@ class GitDiffScreen(ModalScreen[None]):
     }
     #git-diff-dialog .dialog-title {
         width: 1fr;
-        color: cyan;
+        color: $primary;
         text-style: bold;
     }
     #git-diff-dialog .header-row {
