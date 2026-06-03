@@ -314,9 +314,11 @@ def _git_clone(url: str, dest: Path, ref: str | None) -> None:
     """Shallow-clone ``url`` into ``dest``; fall back to full clone for SHAs."""
     base = ["git", "clone", "--depth", "1", "--quiet"]
     attempts: list[list[str]] = []
+    # ``--`` ends option parsing so a source that resolves to a "-"-leading
+    # string can't be misread by git as a flag (e.g. --upload-pack=...).
     if ref:
-        attempts.append([*base, "--branch", ref, url, str(dest)])
-    attempts.append([*base, url, str(dest)])
+        attempts.append([*base, "--branch", ref, "--", url, str(dest)])
+    attempts.append([*base, "--", url, str(dest)])
 
     last_err = ""
     for i, cmd in enumerate(attempts):

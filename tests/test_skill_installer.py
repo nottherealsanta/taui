@@ -15,6 +15,7 @@ from taui.skills import (
     parse_sources,
 )
 from taui.skills.installer import (
+    _git_clone,
     find_skill_dirs,
     parse_scope_flags,
     skills_root,
@@ -382,3 +383,45 @@ class TestInstallGit:
                 working_dir=tmp_path / "work",
                 scope="project",
             )
+
+
+# ═══ git clone argument-injection guard ═══════════════════════════════════════
+
+
+class TestGitCloneHardening:
+    """`--` must terminate option parsing so a clone url can't act as a flag."""
+
+    class _OK:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def test_double_dash_precedes_url(self, tmp_path, monkeypatch):
+        import taui.skills.installer as inst
+
+        calls: list[list[str]] = []
+        monkeypatch.setattr(
+            inst.subprocess, "run",
+            lambda cmd, **kw: (calls.append(cmd), self._OK())[1],
+        )
+        _git_clone("-x://evil", tmp_path / "dest", None)
+
+        assert calls, "git clone was not invoked"
+        cmd = calls[0]
+        assert "--" in cmd
+        # The url is the token right after the end-of-options marker.
+        assert cmd[cmd.index("--") + 1] == "-x://evil"
+
+    def test_double_dash_with_ref(self, tmp_path, monkeypatch):
+        import taui.skills.installer as inst
+
+        calls: list[list[str]] = []
+        monkeypatch.setattr(
+            inst.subprocess, "run",
+            lambda cmd, **kw: (calls.append(cmd), self._OK())[1],
+        )
+        _git_clone("https://example.com/r.git", tmp_path / "d", "main")
+
+        cmd = calls[0]
+        assert cmd[cmd.index("--branch") + 1] == "main"
+        assert cmd[cmd.index("--") + 1] == "https://example.com/r.git"
