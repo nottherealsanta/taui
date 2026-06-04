@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from taui.tools.base import ToolCategory, ToolResult
-from taui.tools.builtins.common import resolve_path
+from taui.tools.builtins.common import atomic_write_text, resolve_path
 
 
 @dataclass
@@ -63,8 +63,12 @@ class ApplyPatchTool:
             return ToolResult.fail("No hunks found in patch.")
 
         base = self.working_dir or Path(".")
-        results = []
 
+        # Phase 1 — validate every file and compute its full new content without
+        # writing anything. A multi-file patch is therefore all-or-nothing on the
+        # common failure (a hunk that doesn't apply): a later file failing can no
+        # longer leave earlier files half-patched.
+        planned: list[tuple[Path, str, str, bool]] = []  # (path, label, content, is_new)
         for file_path, file_hunks in hunks.items():
             # Keep patched files inside the workspace; a patch header like
             # `--- a/../../etc/x` would otherwise write outside it.
@@ -84,22 +88,32 @@ class ApplyPatchTool:
                     return ToolResult.fail(error)
 
             if not path.exists():
-                content = _apply_hunks_to_new(file_hunks)
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text(content)
-                results.append(f"Created {file_path}")
+                planned.append((path, file_path, _apply_hunks_to_new(file_hunks), True))
             else:
-                original = path.read_text()
+                try:
+                    original = path.read_text()
+                except OSError as e:
+                    return ToolResult.fail(f"Cannot read {file_path}: {e}")
                 lines = original.splitlines(keepends=True)
                 try:
                     new_lines = _apply_hunks(lines, file_hunks)
                 except ValueError as e:
                     return ToolResult.fail(f"Failed to apply patch to {file_path}: {e}")
-                path.write_text("".join(new_lines))
-                results.append(f"Patched {file_path}")
+                planned.append((path, file_path, "".join(new_lines), False))
 
+        # Phase 2 — every hunk applied cleanly; commit each file atomically
+        # (temp write + rename) so a crash can't leave a truncated file.
+        results = []
+        for path, file_path, content, is_new in planned:
+            try:
+                if is_new:
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                atomic_write_text(path, content)
+            except OSError as e:
+                return ToolResult.fail(f"Cannot write {file_path}: {e}")
             if self._file_tracker:
                 self._file_tracker.update_after_write(path)
+            results.append(f"{'Created' if is_new else 'Patched'} {file_path}")
 
         return ToolResult.ok("\n".join(results))
 

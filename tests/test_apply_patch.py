@@ -219,6 +219,59 @@ class TestApplyPatchTool:
         assert "new_a" in (tmp_path / "a.py").read_text()
         assert "new_b" in (tmp_path / "b.py").read_text()
 
+    async def test_multi_file_failure_is_atomic(self, tmp_path):
+        """If a later file in a multi-file patch fails to apply, earlier files
+        must be left untouched — the patch is all-or-nothing."""
+        (tmp_path / "a.py").write_text("old\n")
+        (tmp_path / "b.py").write_text("actual\n")
+        tool = ApplyPatchTool()
+        tool.working_dir = tmp_path
+
+        patch = (
+            # a.py applies cleanly...
+            "--- a/a.py\n"
+            "+++ b/a.py\n"
+            "@@ -1,1 +1,1 @@\n"
+            "-old\n"
+            "+new_a\n"
+            # ...but b.py's context does not match, so the whole patch fails.
+            "--- a/b.py\n"
+            "+++ b/b.py\n"
+            "@@ -1,1 +1,1 @@\n"
+            "-wrong\n"
+            "+new_b\n"
+        )
+        result = await tool.execute({"patch": patch})
+        assert result.error
+        # a.py must NOT have been written despite appearing first in the patch.
+        assert (tmp_path / "a.py").read_text() == "old\n"
+        assert (tmp_path / "b.py").read_text() == "actual\n"
+
+    async def test_patch_preserves_file_mode(self, tmp_path):
+        """Patching an executable script must keep its +x bit (atomic write
+        preserves the existing file's mode)."""
+        import os
+        import stat as stat_mod
+
+        script = tmp_path / "run.sh"
+        script.write_text("#!/bin/sh\nold\n")
+        os.chmod(script, 0o755)
+        tool = ApplyPatchTool()
+        tool.working_dir = tmp_path
+
+        patch = (
+            "--- a/run.sh\n"
+            "+++ b/run.sh\n"
+            "@@ -1,2 +1,2 @@\n"
+            " #!/bin/sh\n"
+            "-old\n"
+            "+new\n"
+        )
+        result = await tool.execute({"patch": patch})
+        assert not result.error
+        mode = stat_mod.S_IMODE(script.stat().st_mode)
+        assert mode == 0o755, f"expected mode preserved as 0o755, got {oct(mode)}"
+
     async def test_bad_patch_context_returns_fail(self, tmp_path):
         (tmp_path / "file.py").write_text("actual content\n")
         tool = ApplyPatchTool()
