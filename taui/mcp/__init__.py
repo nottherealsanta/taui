@@ -157,7 +157,14 @@ class McpClient:
                 self._process.terminate()
                 await asyncio.wait_for(self._process.wait(), timeout=1.0)
             except (TimeoutError, ProcessLookupError):
-                self._process.kill()
+                # terminate timed out, or the process is already gone. Force
+                # kill and reap it, tolerating a process that has since exited
+                # so disconnect() never raises from this cleanup path.
+                try:
+                    self._process.kill()
+                    await self._process.wait()
+                except (ProcessLookupError, OSError):
+                    pass
             self._process = None
         # Cancel pending requests
         for fut in self._pending.values():
