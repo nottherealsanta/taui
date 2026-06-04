@@ -21,10 +21,28 @@ class TruncationStore:
 
     DEFAULT_MAX_INLINE_BYTES = 8 * 1024  # 8 KiB
     DEFAULT_PEEK_WINDOW = 4 * 1024  # 4 KiB per peek
+    # Cap retained full outputs so a long session can't grow memory without
+    # bound — every truncated read/grep/bash output keeps its entire content
+    # here. The agent peeks recent output, so evicting the oldest is safe;
+    # peek() already degrades gracefully (returns None) for an evicted handle.
+    DEFAULT_MAX_ENTRIES = 256
 
-    def __init__(self, max_inline_bytes: int = DEFAULT_MAX_INLINE_BYTES) -> None:
+    def __init__(
+        self,
+        max_inline_bytes: int = DEFAULT_MAX_INLINE_BYTES,
+        *,
+        max_entries: int = DEFAULT_MAX_ENTRIES,
+    ) -> None:
         self._max_inline_bytes = max_inline_bytes
+        self._max_entries = max(1, max_entries)
         self._store: dict[str, TruncatedOutput] = {}
+
+    def _insert(self, entry: TruncatedOutput) -> None:
+        """Insert an entry, evicting the oldest once over the cap (FIFO)."""
+        self._store[entry.handle] = entry
+        while len(self._store) > self._max_entries:
+            oldest = next(iter(self._store))
+            del self._store[oldest]
 
     def store(self, content: str, tool_name: str = "") -> str:
         """Store full content behind a fresh handle. Returns the handle.
@@ -33,11 +51,13 @@ class TruncationStore:
         wants the agent to be able to peek into the full underlying output.
         """
         handle = f"tr_{uuid.uuid4().hex[:8]}"
-        self._store[handle] = TruncatedOutput(
-            handle=handle,
-            tool_name=tool_name,
-            full_content=content,
-            truncated_preview="",
+        self._insert(
+            TruncatedOutput(
+                handle=handle,
+                tool_name=tool_name,
+                full_content=content,
+                truncated_preview="",
+            )
         )
         return handle
 
@@ -63,11 +83,13 @@ class TruncationStore:
             f'use peek tool with handle="{handle}" offset=0]'
         )
 
-        self._store[handle] = TruncatedOutput(
-            handle=handle,
-            tool_name=tool_name,
-            full_content=content,
-            truncated_preview=truncated_preview,
+        self._insert(
+            TruncatedOutput(
+                handle=handle,
+                tool_name=tool_name,
+                full_content=content,
+                truncated_preview=truncated_preview,
+            )
         )
 
         return truncated_preview

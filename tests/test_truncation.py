@@ -80,6 +80,27 @@ class TestTruncationStore:
         assert store.peek(h1, offset=0, limit=50) is not None
         assert store.peek(h2, offset=0, limit=50) is not None
 
+    def test_store_is_bounded_evicting_oldest(self):
+        """A long session must not grow the store without bound: once the cap
+        is exceeded the oldest entries are evicted (peek then returns None),
+        while the most recent handles stay live."""
+        store = TruncationStore(max_inline_bytes=10, max_entries=3)
+        handles = [store.store("x" * 100, tool_name=f"t{i}") for i in range(5)]
+
+        assert len(store.handles) == 3
+        # The two oldest were evicted.
+        assert store.peek(handles[0]) is None
+        assert store.peek(handles[1]) is None
+        # The three most recent survive.
+        assert store.peek(handles[2]) is not None
+        assert store.peek(handles[4]) is not None
+
+    def test_maybe_truncate_also_respects_cap(self):
+        store = TruncationStore(max_inline_bytes=10, max_entries=2)
+        for i in range(4):
+            store.maybe_truncate("y" * 100, tool_name=f"t{i}")
+        assert len(store.handles) == 2
+
 
 class TestPeekTool:
     @pytest.mark.asyncio
