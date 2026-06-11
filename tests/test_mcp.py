@@ -510,6 +510,171 @@ class TestMcpToolCall:
         assert "Unknown" in result.content
 
 
+class TestMcpToolInspect:
+    async def test_inspect_returns_full_schema(self):
+        """inspect returns name, description, and JSON input schema for a tool."""
+        tool, mgr = _make_mcp_tool(["github"])
+        await mgr.connect("github")
+        result = await tool.execute(
+            {"operation": "inspect", "server": "github", "tool": "list_repos"}
+        )
+        assert not result.error
+        assert "list_repos" in result.content
+        assert "List repositories" in result.content
+        assert "Input schema" in result.content
+
+    async def test_inspect_auto_connect(self):
+        """inspect auto-connects the server — no prior connect required."""
+        tool, _ = _make_mcp_tool(["github"])
+        result = await tool.execute(
+            {"operation": "inspect", "server": "github", "tool": "list_repos"}
+        )
+        assert not result.error
+        assert "list_repos" in result.content
+
+    async def test_inspect_unknown_tool_lists_available(self):
+        """inspect with a bad tool name errors and lists the available tools."""
+        tool, _ = _make_mcp_tool(["github"])
+        result = await tool.execute(
+            {"operation": "inspect", "server": "github", "tool": "nope"}
+        )
+        assert result.error
+        assert "nope" in result.content
+        assert "list_repos" in result.content  # lists available tools
+
+    async def test_inspect_unknown_server(self):
+        tool, _ = _make_mcp_tool(["github"])
+        result = await tool.execute(
+            {"operation": "inspect", "server": "nope", "tool": "list_repos"}
+        )
+        assert result.error
+        assert "Unknown" in result.content
+
+    async def test_inspect_missing_server(self):
+        tool, _ = _make_mcp_tool(["github"])
+        result = await tool.execute({"operation": "inspect", "tool": "list_repos"})
+        assert result.error
+        assert "server" in result.content.lower()
+
+    async def test_inspect_missing_tool(self):
+        tool, _ = _make_mcp_tool(["github"])
+        result = await tool.execute({"operation": "inspect", "server": "github"})
+        assert result.error
+        assert "tool" in result.content.lower()
+
+    async def test_inspect_schema_is_valid_json(self):
+        """The input schema section in inspect output can be parsed back as JSON."""
+        import json
+
+        tool, _ = _make_mcp_tool(["github"])
+        result = await tool.execute(
+            {"operation": "inspect", "server": "github", "tool": "list_repos"}
+        )
+        assert not result.error
+        # Extract the JSON block (everything after "Input schema:\n")
+        _, _, schema_part = result.content.partition("Input schema:\n")
+        parsed = json.loads(schema_part.strip())
+        assert parsed == {"type": "object", "properties": {}}
+
+    async def test_inspect_connect_fails(self):
+        tool, mgr = _make_mcp_tool(["github"])
+        mgr._fail_connect = True
+        result = await tool.execute(
+            {"operation": "inspect", "server": "github", "tool": "list_repos"}
+        )
+        assert result.error
+
+
+class TestMcpToolSearch:
+    async def test_search_finds_by_name(self):
+        tool, mgr = _make_mcp_tool(["github"])
+        await mgr.connect("github")
+        result = await tool.execute({"operation": "search", "query": "repos"})
+        assert not result.error
+        assert "list_repos" in result.content
+
+    async def test_search_finds_by_description(self):
+        tool, mgr = _make_mcp_tool(["github"])
+        await mgr.connect("github")
+        result = await tool.execute({"operation": "search", "query": "repositories"})
+        assert not result.error
+        assert "list_repos" in result.content
+
+    async def test_search_case_insensitive(self):
+        tool, mgr = _make_mcp_tool(["github"])
+        await mgr.connect("github")
+        result = await tool.execute({"operation": "search", "query": "REPOS"})
+        assert not result.error
+        assert "list_repos" in result.content
+
+    async def test_search_auto_connect(self):
+        """search auto-connects all configured servers — no prior connect needed."""
+        tool, _ = _make_mcp_tool(["github"])
+        result = await tool.execute({"operation": "search", "query": "repos"})
+        assert not result.error
+        assert "list_repos" in result.content
+
+    async def test_search_scoped_to_server(self):
+        """search with server= restricts results to that server."""
+        tool, mgr = _make_mcp_tool(["github", "filesystem"])
+        # Add a unique tool on filesystem so we can confirm scoping works.
+        client = await mgr.connect("filesystem")
+        client._tools.append(
+            McpToolInfo(
+                name="read_file",
+                description="Read a file from disk",
+                input_schema={"type": "object", "properties": {}},
+                server_name="filesystem",
+            )
+        )
+        result = await tool.execute(
+            {"operation": "search", "query": "file", "server": "filesystem"}
+        )
+        assert not result.error
+        assert "read_file" in result.content
+        assert "list_repos" not in result.content
+
+    async def test_search_no_matches(self):
+        tool, mgr = _make_mcp_tool(["github"])
+        await mgr.connect("github")
+        result = await tool.execute({"operation": "search", "query": "zzznomatch"})
+        assert not result.error  # graceful, not an error
+        assert "No tools matching" in result.content
+
+    async def test_search_no_servers_configured(self):
+        tool, _ = _make_mcp_tool()
+        result = await tool.execute({"operation": "search", "query": "anything"})
+        assert not result.error
+        assert "No MCP servers configured" in result.content
+
+    async def test_search_all_connections_fail(self):
+        tool, mgr = _make_mcp_tool(["github"])
+        mgr._fail_connect = True
+        result = await tool.execute({"operation": "search", "query": "repos"})
+        assert result.error
+        assert "Failed to connect" in result.content
+
+    async def test_search_unknown_server(self):
+        tool, _ = _make_mcp_tool(["github"])
+        result = await tool.execute({"operation": "search", "query": "repos", "server": "nope"})
+        assert result.error
+        assert "Unknown" in result.content
+
+    async def test_search_missing_query(self):
+        tool, _ = _make_mcp_tool(["github"])
+        result = await tool.execute({"operation": "search"})
+        assert result.error
+        assert "query" in result.content.lower()
+
+    async def test_search_output_format(self):
+        """search output uses 'server/tool — description' format."""
+        tool, mgr = _make_mcp_tool(["github"])
+        await mgr.connect("github")
+        result = await tool.execute({"operation": "search", "query": "repos"})
+        assert not result.error
+        assert "github/list_repos — List repositories" in result.content
+
+
 class TestMcpToolErrors:
     async def test_no_manager(self):
         tool = McpTool()

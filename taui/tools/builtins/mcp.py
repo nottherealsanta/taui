@@ -2,13 +2,14 @@
 
 Provides the agent with access to external MCP servers.
 The agent can list servers, connect/disconnect, browse available
-tools, and invoke tools on connected servers.  The ``tools`` and
-``call`` operations auto-connect configured servers on demand so
-an explicit ``connect`` step is never required.
+tools, and invoke tools on connected servers.  The ``tools``, ``call``,
+``inspect``, and ``search`` operations auto-connect configured servers
+on demand so an explicit ``connect`` step is never required.
 """
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -25,6 +26,8 @@ class McpTool:
         disconnect — disconnect from a server
         tools      — list tools (optionally for one server; auto-connects)
         call       — invoke a tool on a server (auto-connects)
+        inspect    — show full schema for a single tool (auto-connects)
+        search     — keyword search across tool names/descriptions (auto-connects)
     """
 
     name: str = "mcp"
@@ -32,12 +35,16 @@ class McpTool:
         "Manage external MCP servers and invoke their tools. "
         "Operations: servers (list configured), connect, disconnect, "
         "tools (list available, optionally for one server; auto-connects), "
-        "call (invoke a tool on a server)."
+        "call (invoke a tool on a server), "
+        "inspect (full schema for one tool; requires server+tool), "
+        "search (keyword search over tool names/descriptions; optionally scoped to server)."
     )
     category: ToolCategory = ToolCategory.AGENT
     guidelines: str = (
         "Use `mcp servers` to see what external tools are available. "
         "You can call tools directly — servers are auto-connected on demand. "
+        "Use `inspect` to get the full input schema for a specific tool before calling it. "
+        "Use `search` to find tools by keyword across all connected servers. "
         "MCP tools extend your capabilities beyond built-in tools."
     )
     schema: dict[str, Any] = field(default=None)  # type: ignore[assignment]
@@ -52,24 +59,42 @@ class McpTool:
                 "properties": {
                     "operation": {
                         "type": "string",
+                        "enum": [
+                            "servers",
+                            "connect",
+                            "disconnect",
+                            "tools",
+                            "call",
+                            "inspect",
+                            "search",
+                        ],
                         "description": (
-                            "Operation: servers, connect, disconnect, tools, call."
+                            "Operation: servers, connect, disconnect, tools, call, "
+                            "inspect (full schema for one tool), "
+                            "search (keyword search over tool names/descriptions)."
                         ),
                     },
                     "server": {
                         "type": "string",
                         "description": (
-                            "Server name (for connect/disconnect/call, "
-                            "or to filter tools)."
+                            "Server name (for connect/disconnect/call/inspect, "
+                            "or to filter tools/search)."
                         ),
                     },
                     "tool": {
                         "type": "string",
-                        "description": "Tool name (for call operation).",
+                        "description": "Tool name (for call and inspect operations).",
                     },
                     "arguments": {
                         "type": "object",
                         "description": "Arguments for the tool call.",
+                    },
+                    "query": {
+                        "type": "string",
+                        "description": (
+                            "Keyword query for the search operation "
+                            "(case-insensitive match against tool names and descriptions)."
+                        ),
                     },
                 },
                 "required": ["operation"],
@@ -79,7 +104,8 @@ class McpTool:
         op = arguments.get("operation")
         if not isinstance(op, str):
             return ToolResult.fail(
-                "'operation' is required (servers, connect, disconnect, tools, call)."
+                "'operation' is required "
+                "(servers, connect, disconnect, tools, call, inspect, search)."
             )
 
         if self._manager is None:
@@ -96,10 +122,14 @@ class McpTool:
                 return await self._tools(arguments)
             case "call":
                 return await self._call(arguments)
+            case "inspect":
+                return await self._inspect(arguments)
+            case "search":
+                return await self._search(arguments)
             case _:
                 return ToolResult.fail(
                     f"Unknown operation '{op}'. "
-                    "Use: servers, connect, disconnect, tools, call."
+                    "Use: servers, connect, disconnect, tools, call, inspect, search."
                 )
 
     # ── helpers ────────────────────────────────────────────────────────────
@@ -301,3 +331,94 @@ class McpTool:
                 server=server_name,
                 tool=tool_name,
             )
+
+    async def _inspect(self, arguments: dict[str, Any]) -> ToolResult:
+        """Return the full schema for a single tool on a given server."""
+        server = arguments.get("server")
+        tool_name = arguments.get("tool")
+
+        if not isinstance(server, str) or not server.strip():
+            return ToolResult.fail("'server' name is required for inspect.")
+        if not isinstance(tool_name, str) or not tool_name.strip():
+            return ToolResult.fail("'tool' name is required for inspect.")
+
+        err = await self._ensure_connected(server)
+        if err:
+            return ToolResult.fail(err)
+
+        client = self._manager.get_client(server)
+        if client is None:
+            return ToolResult.fail(f"Server '{server}' is not connected.")
+
+        tools = client.tools
+        match = next((t for t in tools if t.name == tool_name), None)
+        if match is None:
+            available = ", ".join(t.name for t in tools) if tools else "(none)"
+            return ToolResult.fail(
+                f"Tool '{tool_name}' not found on server '{server}'. "
+                f"Available tools: {available}"
+            )
+
+        schema_str = json.dumps(match.input_schema, indent=2)
+        lines = [
+            f"Tool: {match.name}",
+            f"Server: {server}",
+            f"Description: {match.description}",
+            "Input schema:",
+            schema_str,
+        ]
+        return ToolResult.ok("\n".join(lines), server=server, tool=tool_name)
+
+    async def _search(self, arguments: dict[str, Any]) -> ToolResult:
+        """Case-insensitive keyword search over tool names and descriptions.
+
+        Auto-connects all configured servers (or just the specified server).
+        Returns matching tools as ``server/tool — first line of description``.
+        """
+        query = arguments.get("query")
+        server = arguments.get("server")
+
+        if not isinstance(query, str) or not query.strip():
+            return ToolResult.fail("'query' string is required for search.")
+
+        needle = query.lower()
+
+        if server:
+            # Scope to one server.
+            err = await self._ensure_connected(server)
+            if err:
+                return ToolResult.fail(err)
+            client = self._manager.get_client(server)
+            if client is None:
+                return ToolResult.fail(f"Server '{server}' is not connected.")
+            candidates = client.tools
+        else:
+            # All servers — mirror the behaviour of the `tools` operation.
+            names = self._manager.server_names
+            if not names:
+                return ToolResult.ok(
+                    "No MCP servers configured.\n"
+                    "Add servers to .taui/mcp.toml or ~/.taui/mcp.toml"
+                )
+            await self._manager.connect_all()
+            candidates = self._manager.all_tools()
+            if not candidates and not self._manager.connected_servers:
+                return ToolResult.fail(
+                    "Failed to connect to any configured MCP servers."
+                )
+
+        matches = [
+            t
+            for t in candidates
+            if needle in t.name.lower() or needle in t.description.lower()
+        ]
+
+        if not matches:
+            scope = f" on server '{server}'" if server else ""
+            return ToolResult.ok(f"No tools matching '{query}'{scope}.")
+
+        lines = [f"Tools matching '{query}' ({len(matches)}):"]
+        for t in matches:
+            first_line = t.description.split("\n")[0]
+            lines.append(f"  {t.server_name}/{t.name} — {first_line}")
+        return ToolResult.ok("\n".join(lines), count=len(matches))
