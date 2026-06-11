@@ -39,7 +39,8 @@ class SkillsTool:
 
     # Injected by Session.create()
     _skill_registry: SkillRegistry | None = None
-    _inject_message: Any = None  # async (content: str) -> None
+    _inject_message: Any = None  # async (content: str, skill_name: str) -> None
+    _remove_message: Any = None  # (skill_name: str) -> None
 
     def __post_init__(self):
         if self.schema is None:
@@ -128,7 +129,7 @@ class SkillsTool:
         # Inject the skill content as a system message
         if self._inject_message:
             await self._inject_message(
-                f"[Skill: {skill_name}]\n\n{content}"
+                f"[Skill: {skill_name}]\n\n{content}", skill_name
             )
 
         return ToolResult.ok(
@@ -152,9 +153,11 @@ class SkillsTool:
             return ToolResult.ok(f"Skill '{skill_name}' is not loaded.")
 
         skill.loaded = False
+        if self._remove_message:
+            self._remove_message(skill_name)
         return ToolResult.ok(
             f"Unloaded skill '{skill_name}'. "
-            f"Its instructions remain in conversation history but are no longer active.",
+            f"Its instructions have been removed from the conversation.",
             skill=skill_name,
         )
 

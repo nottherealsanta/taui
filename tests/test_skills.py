@@ -236,10 +236,10 @@ class TestSkillsToolList:
 
 class TestSkillsToolLoad:
     async def test_load_skill(self, tmp_path: Path):
-        injected: list[str] = []
+        injected: list[tuple[str, str]] = []
 
-        async def capture_inject(content: str):
-            injected.append(content)
+        async def capture_inject(content: str, skill_name: str):
+            injected.append((content, skill_name))
 
         tool = _make_skills_tool(tmp_path, {"testing": "# Testing Skill\n\nWrite good tests."})
         tool._inject_message = capture_inject
@@ -249,7 +249,8 @@ class TestSkillsToolLoad:
         assert "Loaded" in result.content
         assert result.metadata["skill"] == "testing"
         assert len(injected) == 1
-        assert "Testing Skill" in injected[0]
+        assert "Testing Skill" in injected[0][0]
+        assert injected[0][1] == "testing"
 
     async def test_load_already_loaded(self, tmp_path: Path):
         tool = _make_skills_tool(tmp_path, {"testing": "content"})
@@ -287,7 +288,74 @@ class TestSkillsToolUnload:
         result = await tool.execute({"operation": "unload", "skill": "testing"})
         assert not result.error
         assert "Unloaded" in result.content
+        assert "removed" in result.content
         assert not tool._skill_registry.get("testing").loaded
+
+    async def test_unload_removes_injected_message(self, tmp_path: Path):
+        """Unloading a skill removes its injected system message from history."""
+        messages: list[tuple[str, str]] = []  # (content, skill_name)
+
+        async def inject(content: str, skill_name: str) -> None:
+            messages.append((content, skill_name))
+
+        removed: list[str] = []
+
+        def remove(skill_name: str) -> None:
+            removed.append(skill_name)
+            # Simulate the session filtering: drop entries matching this skill
+            messages[:] = [(c, n) for c, n in messages if n != skill_name]
+
+        tool = _make_skills_tool(tmp_path, {"testing": "# Test\nDo stuff."})
+        tool._inject_message = inject
+        tool._remove_message = remove
+
+        # Load the skill — message is injected
+        await tool.execute({"operation": "load", "skill": "testing"})
+        assert len(messages) == 1
+        assert messages[0][1] == "testing"
+
+        # Unload — the injected message must be removed
+        result = await tool.execute({"operation": "unload", "skill": "testing"})
+        assert not result.error
+        assert removed == ["testing"]
+        assert messages == []
+
+    async def test_unload_without_remove_callback(self, tmp_path: Path):
+        """Unload works gracefully when _remove_message is not wired (no callback)."""
+        tool = _make_skills_tool(tmp_path, {"testing": "content"})
+        tool._skill_registry.get("testing").loaded = True
+        # _remove_message is None by default — should not raise
+        result = await tool.execute({"operation": "unload", "skill": "testing"})
+        assert not result.error
+        assert not tool._skill_registry.get("testing").loaded
+
+    async def test_reload_reinjects_message(self, tmp_path: Path):
+        """Load → unload → load re-injects the skill message exactly once."""
+        messages: list[tuple[str, str]] = []
+
+        async def inject(content: str, skill_name: str) -> None:
+            messages.append((content, skill_name))
+
+        def remove(skill_name: str) -> None:
+            messages[:] = [(c, n) for c, n in messages if n != skill_name]
+
+        tool = _make_skills_tool(tmp_path, {"testing": "# Test\nCapabilities."})
+        tool._inject_message = inject
+        tool._remove_message = remove
+
+        # First load
+        await tool.execute({"operation": "load", "skill": "testing"})
+        assert len(messages) == 1
+
+        # Unload removes the message
+        await tool.execute({"operation": "unload", "skill": "testing"})
+        assert len(messages) == 0
+
+        # Reload re-injects the message
+        await tool.execute({"operation": "load", "skill": "testing"})
+        assert len(messages) == 1
+        assert messages[0][1] == "testing"
+        assert tool._skill_registry.get("testing").loaded
 
     async def test_unload_not_loaded(self, tmp_path: Path):
         tool = _make_skills_tool(tmp_path, {"testing": "content"})

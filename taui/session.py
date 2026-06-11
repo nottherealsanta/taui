@@ -1375,10 +1375,19 @@ class Session:
         except ValueError:
             return
 
-        async def inject_skill_message(content: str) -> None:
-            self._loop._messages.append(Message(role="system", content=content))
+        async def inject_skill_message(content: str, skill_name: str) -> None:
+            self._loop._messages.append(
+                Message(role="system", content=content, name=f"skill:{skill_name}")
+            )
+
+        def remove_skill_message(skill_name: str) -> None:
+            tag = f"skill:{skill_name}"
+            self._loop._messages = [
+                m for m in self._loop._messages if m.name != tag
+            ]
 
         skills_tool._inject_message = inject_skill_message
+        skills_tool._remove_message = remove_skill_message
 
         def process_result(name: str, call_id: str, content: str) -> str:
             result = ToolResult.ok(content)
