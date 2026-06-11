@@ -2,23 +2,24 @@
 
 Use this checklist when publishing a new Taui release to PyPI.
 
-Release metadata lives in `pyproject.toml:3`; the console script entry point is
-`pyproject.toml:35`; `--version` is handled by `taui/main.py:65`.
+Release metadata lives under `[project]` in `pyproject.toml`; the console script entry
+point is `[project.scripts]` in the same file; `--version` is resolved at runtime from
+package metadata in `taui/main.py` (importlib.metadata), so no source edit is needed.
 
 ## 1. Bump And Commit Version
 
 Update the version in:
 
-- `pyproject.toml:3`
-- `uv.lock:689`
-- `AGENTS.md:11`
+- `pyproject.toml` (`[project] version`)
+- `uv.lock` — run `uv lock` after the pyproject edit rather than editing by hand
+- `AGENTS.md` (the `Version:` line under "Project")
 
 Then verify and commit:
 
 ```bash
 uv run python -m pytest tests/ -q
 uv run python -c 'from taui.main import main; main(["--version"])'
-git add pyproject.toml uv.lock taui/main.py AGENTS.md
+git add pyproject.toml uv.lock AGENTS.md
 git commit -m "Bump version to <version>"
 ```
 
