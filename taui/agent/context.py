@@ -80,6 +80,13 @@ def _preserved_indexes(messages: list[Message]) -> set[int]:
             preserve.add(i)
             break
 
+    # Skill instructions are exempt from pruning (Agent Skills spec).
+    # A loaded skill is injected as a system message with name="skill:<name>".
+    # Losing it silently degrades the agent, so preserve every such message.
+    for i, m in enumerate(messages):
+        if getattr(m, "name", None) and isinstance(m.name, str) and m.name.startswith("skill:"):
+            preserve.add(i)
+
     # Latest real user message (prefer kind="user" over "contextual"/"steer")
     for i in range(len(messages) - 1, -1, -1):
         if messages[i].role == "user" and getattr(messages[i], "kind", "user") == "user":

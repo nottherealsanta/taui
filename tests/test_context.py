@@ -12,6 +12,7 @@ from taui.agent.context import (
     compact_messages,
     estimate_message_tokens,
     estimate_total_tokens,
+    manual_compact,
     prune_tool_outputs,
     select_head_and_tail,
 )
@@ -438,3 +439,89 @@ class TestAsyncCompactMessages:
         # Should have been compacted synchronously with the sync marker
         assert len(msgs) < original_count
         assert any("compacted" in (m.content or "").lower() for m in msgs)
+
+
+class TestSkillMessagePreservation:
+    """Skill-tagged system messages must survive all compaction paths."""
+
+    def _make_conversation_with_skill(self) -> list[Message]:
+        """Long conversation with a skill system message injected early."""
+        msgs: list[Message] = [
+            Message(role="system", content="You are a helpful assistant."),
+            # Skill message injected early — must survive aggressive compaction
+            Message(
+                role="system",
+                content="Skill instructions: do X. " * 20,
+                name="skill:my-skill",
+            ),
+        ]
+        for i in range(60):
+            msgs.append(Message(role="user", content=f"User message {i} " * 50))
+            msgs.append(Message(role="assistant", content=f"Assistant reply {i} " * 50))
+        msgs.append(Message(role="user", content="FINAL QUESTION"))
+        return msgs
+
+    def test_skill_message_survives_compact_messages(self):
+        """A skill-tagged system message early in a long conversation is not dropped."""
+        msgs = self._make_conversation_with_skill()
+        removed = compact_messages(msgs, max_input_tokens=2_000)
+        assert removed > 0, "Expected messages to be removed"
+        skill_msgs = [m for m in msgs if getattr(m, "name", None) == "skill:my-skill"]
+        assert len(skill_msgs) == 1, "Skill message must survive compaction"
+        assert skill_msgs[0].content is not None
+        assert "Skill instructions" in skill_msgs[0].content
+
+    def test_ordinary_old_messages_around_skill_are_dropped(self):
+        """Ordinary messages around the skill message are still dropped."""
+        msgs = self._make_conversation_with_skill()
+        original_count = len(msgs)
+        removed = compact_messages(msgs, max_input_tokens=2_000)
+        assert removed > 0
+        assert len(msgs) < original_count
+
+    def test_skill_message_survives_manual_compact(self):
+        """manual_compact (more aggressive) also preserves skill-tagged messages."""
+        msgs = self._make_conversation_with_skill()
+        removed = manual_compact(msgs, max_input_tokens=2_000)
+        assert removed > 0, "Expected messages to be removed"
+        skill_msgs = [m for m in msgs if getattr(m, "name", None) == "skill:my-skill"]
+        assert len(skill_msgs) == 1, "Skill message must survive manual compaction"
+
+    def test_multiple_skill_messages_all_preserved(self):
+        """Multiple skill messages with different names are all preserved."""
+        msgs = [
+            Message(role="system", content="Base system prompt."),
+            Message(role="system", content="Skill A instructions. " * 10, name="skill:skill-a"),
+            Message(role="system", content="Skill B instructions. " * 10, name="skill:skill-b"),
+        ]
+        for i in range(60):
+            msgs.append(Message(role="user", content=f"User message {i} " * 50))
+            msgs.append(Message(role="assistant", content=f"Reply {i} " * 50))
+        msgs.append(Message(role="user", content="FINAL"))
+
+        removed = compact_messages(msgs, max_input_tokens=2_000)
+        assert removed > 0
+        skill_names = {
+            m.name for m in msgs
+            if getattr(m, "name", None) and m.name.startswith("skill:")
+        }
+        assert "skill:skill-a" in skill_names, "skill-a must survive"
+        assert "skill:skill-b" in skill_names, "skill-b must survive"
+
+    def test_non_skill_system_message_with_name_not_overprotected(self):
+        """A system message whose name does NOT start with 'skill:' is not over-preserved."""
+        msgs = [
+            Message(role="system", content="Base system."),
+            # This has a name but not a skill: prefix — should be droppable
+            Message(role="system", content="Some other named msg. " * 20, name="other:thing"),
+        ]
+        for i in range(60):
+            msgs.append(Message(role="user", content=f"User message {i} " * 50))
+            msgs.append(Message(role="assistant", content=f"Reply {i} " * 50))
+        msgs.append(Message(role="user", content="FINAL"))
+
+        removed = compact_messages(msgs, max_input_tokens=2_000)
+        assert removed > 0
+        # The non-skill named message may be dropped; the skill: prefix rule
+        # does not protect it.  Just verify compaction ran without errors.
+        assert any(m.role == "system" for m in msgs)  # base system still present

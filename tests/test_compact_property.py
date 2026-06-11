@@ -111,3 +111,24 @@ class TestCompactMessagesInvariant:
         msgs: list[Message] = []
         removed = compact_messages(msgs, max_input_tokens=100)
         assert removed == 0
+
+    def test_skill_messages_always_preserved(self):
+        """Skill-tagged system messages survive compaction at any budget."""
+        for seed in range(20):
+            random.seed(seed)
+            n = random.randint(3, 12)
+            msgs = _make_conversation(n)
+            # Inject a skill message right after the system prompt
+            skill_msg = Message(
+                role="system",
+                content="Skill instructions: follow these rules carefully. " * 10,
+                name="skill:test-skill",
+            )
+            msgs.insert(1, skill_msg)
+            budget = random.randint(300, 3000)
+            compact_messages(msgs, max_input_tokens=budget, soft_ratio=0.4, hard_ratio=0.7)
+            skill_msgs = [m for m in msgs if getattr(m, "name", None) == "skill:test-skill"]
+            assert len(skill_msgs) == 1, (
+                f"Skill message dropped at seed={seed}, n={n}, budget={budget}"
+            )
+            _assert_tool_pairing(msgs)
