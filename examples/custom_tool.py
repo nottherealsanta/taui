@@ -19,7 +19,7 @@ class LineCountTool:
     description: str = "Count lines in a file."
     category: ToolCategory = ToolCategory.FILE_READ
     working_dir: Path = field(default_factory=Path.cwd)
-    schema: dict[str, Any] = field(default=None)
+    schema: dict[str, Any] | None = field(default=None)
 
     def __post_init__(self) -> None:
         if self.schema is None:
