@@ -49,7 +49,13 @@ class SkillsTool:
                 "properties": {
                     "operation": {
                         "type": "string",
-                        "description": "Operation: list, load, unload, status.",
+                        "enum": ["list", "load", "unload", "status"],
+                        "description": (
+                            "Operation: list (discover available skills), "
+                            "load (inject skill instructions), "
+                            "unload (remove a loaded skill), "
+                            "status (show loaded skills)."
+                        ),
                     },
                     "skill": {
                         "type": "string",

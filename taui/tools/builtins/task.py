@@ -38,7 +38,11 @@ class TaskTool:
                     "operation": {
                         "type": "string",
                         "enum": ["list", "add", "update", "complete", "remove", "clear"],
-                        "description": "The operation to perform.",
+                        "description": (
+                            "Operation: list, add (create a task), "
+                            "update (change status/priority/notes/title), "
+                            "complete (mark done), remove (delete one), clear (remove all)."
+                        ),
                     },
                     "task_id": {
                         "type": "string",
@@ -88,7 +92,10 @@ class TaskTool:
         elif op == "clear":
             return self._clear_tasks()
         else:
-            return ToolResult.fail(f"Unknown operation: {op}")
+            return ToolResult.fail(
+                f"Unknown operation '{op}'. "
+                "Use: list, add, update, complete, remove, clear."
+            )
 
     def _list_tasks(self) -> ToolResult:
         if not self._tasks:
@@ -113,7 +120,7 @@ class TaskTool:
     def _add_task(self, args: dict[str, Any]) -> ToolResult:
         title = args.get("title")
         if not title:
-            return ToolResult.fail("Task title is required for 'add'.")
+            return ToolResult.fail("'title' is required for add.")
 
         task = {
             "id": self._next_id(),
@@ -128,7 +135,7 @@ class TaskTool:
     def _update_task(self, args: dict[str, Any]) -> ToolResult:
         task_id = args.get("task_id")
         if not task_id:
-            return ToolResult.fail("task_id is required for 'update'.")
+            return ToolResult.fail("'task_id' is required for update.")
 
         for t in self._tasks:
             if t["id"] == task_id:
@@ -147,7 +154,7 @@ class TaskTool:
     def _complete_task(self, args: dict[str, Any]) -> ToolResult:
         task_id = args.get("task_id")
         if not task_id:
-            return ToolResult.fail("task_id is required for 'complete'.")
+            return ToolResult.fail("'task_id' is required for complete.")
 
         for t in self._tasks:
             if t["id"] == task_id:
@@ -159,7 +166,7 @@ class TaskTool:
     def _remove_task(self, args: dict[str, Any]) -> ToolResult:
         task_id = args.get("task_id")
         if not task_id:
-            return ToolResult.fail("task_id is required for 'remove'.")
+            return ToolResult.fail("'task_id' is required for remove.")
 
         original_count = len(self._tasks)
         self._tasks = [t for t in self._tasks if t["id"] != task_id]

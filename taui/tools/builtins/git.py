@@ -60,11 +60,19 @@ class GitTool:
                 "properties": {
                     "operation": {
                         "type": "string",
+                        "enum": [
+                            "status", "diff", "log", "show", "blame",
+                            "branch_list", "branch_current", "stash_list",
+                            "commit", "add", "checkout", "branch_create",
+                            "stash_push", "stash_pop",
+                            "fetch", "pull", "push",
+                        ],
                         "description": (
-                            "Git operation: status, diff, log, show, blame, "
-                            "branch_list, branch_current, stash_list, commit, "
-                            "add, checkout, branch_create, stash_push, "
-                            "stash_pop, fetch, pull, push"
+                            "Git operation. Read: status, diff, log, show, blame, "
+                            "branch_list, branch_current, stash_list. "
+                            "Write (require approval): commit, add, checkout, "
+                            "branch_create, stash_push, stash_pop. "
+                            "Network (require approval): fetch, pull, push."
                         ),
                     },
                     "args": {
@@ -78,7 +86,12 @@ class GitTool:
     async def execute(self, arguments: dict[str, Any]) -> ToolResult:
         operation = arguments.get("operation")
         if not isinstance(operation, str):
-            return ToolResult.fail("'operation' must be a string.")
+            return ToolResult.fail(
+                "'operation' is required "
+                "(status, diff, log, show, blame, branch_list, branch_current, "
+                "stash_list, commit, add, checkout, branch_create, stash_push, "
+                "stash_pop, fetch, pull, push)."
+            )
 
         if operation not in _ALL_OPS:
             return ToolResult.fail(

@@ -46,7 +46,8 @@ class MemoryTool:
                 "properties": {
                     "operation": {
                         "type": "string",
-                        "description": "Operation: save, read, list, delete.",
+                        "enum": ["save", "read", "list", "delete"],
+                        "description": "Operation: save (create/overwrite), read, list, delete.",
                     },
                     "key": {
                         "type": "string",
