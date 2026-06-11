@@ -1,13 +1,13 @@
 # Taui - Technical Deep Dive
 
-**taui** (v0.8.2) is a customizable agentic coding interface - a full-screen Textual TUI for AI-assisted development. It's an event-sourced, extensible agent harness with built-in tools for file operations, bash execution, git workflows, code editing, web fetching, and more.
+**taui** (v0.9) is a customizable agentic coding interface - a full-screen Textual TUI for AI-assisted development. It's an event-sourced, extensible agent harness with built-in tools for file operations, bash execution, git workflows, code editing, web fetching, and more.
 
 ## Project Stats
-- **~151 Python source files**
+- **~154 Python source files**
 - **~3,700 LOC in root taui/ module**
-- **~4,200 LOC just in the TUI app (app.py)**
+- **~4,460 LOC just in the TUI app (app.py)**
 - **Requires Python 3.13+**
-- **Alpha status (v0.8.2)** with active development
+- **Alpha status (v0.9)** with active development
 
 ---
 
@@ -15,12 +15,12 @@
 
 ### Core Components
 
-#### 1. Main Entry Point (`taui/main.py:29, :90`)
-- CLI arg parsing for provider, model, directory, session resumption, debug mode
+#### 1. Main Entry Point (`taui/main.py:104, :180`)
+- CLI arg parsing for provider, model, directory, session resumption, debug mode, debug socket
 - Logging setup to `~/.taui/.logs`
 - Launches `TauiApp` (the Textual TUI)
 
-#### 2. Session (`taui/session.py:139`) - Composition Root
+#### 2. Session (`taui/session.py:66`) - Composition Root
 The wiring point that brings everything together:
 - **Owns:** provider, tool registry, executor, agent loop, event store
 - **Key Methods:**
@@ -31,7 +31,7 @@ The wiring point that brings everything together:
 - **Modes:** normal, self-edit, extensions-mode
 - **Tracks:** costs with `CostTracker`
 
-#### 3. AgentLoop (`taui/agent/loop.py:93`) - Core Agent Logic
+#### 3. AgentLoop (`taui/agent/loop.py:99`) - Core Agent Logic
 The **think → tool → observe cycle**:
 - **States:** IDLE, THINKING, TOOL_EXECUTION, DONE, ERROR
 - **Async streaming** with callbacks for live output
@@ -44,8 +44,8 @@ The **think → tool → observe cycle**:
 - **Results:** `TurnResult` + `RunResult` with usage/cost tracking
 - **Configurable:** max turn limit (default 50)
 
-#### 4. TUI App (`taui/tui/app.py:206`)
-Textual-based full-screen interface (~4,200 LOC):
+#### 4. TUI App (`taui/tui/app.py:65`)
+Textual-based full-screen interface (~4,460 LOC):
 - **Key Widgets:**
   - `ChatInput` - message input with history
   - `AgentResponse` - streaming response display
@@ -58,20 +58,20 @@ Textual-based full-screen interface (~4,200 LOC):
 - **Multi-Session Support:** via `SessionManager` (new in recent commits)
 - **Theming:** CSS-based with multiple color schemes (`app.tcss`)
 
-#### 5. Event Store (`taui/store/store.py:97`)
+#### 5. Event Store (`taui/store/store.py:113`)
 **SQLite append-only event log** (default: `.taui/store.db`):
 - **Schema:** `streams`, `events`, `sessions` tables
-- **Event Types:** USER_MESSAGE, ASSISTANT_MESSAGE, TOOL_CALL, TOOL_RESULT, APPROVAL_NEEDED, QUESTION, REASONING_DELTA, TEXT_DELTA, USAGE, COMPACTION_NOTICE
+- **Event Types:** STREAM_START, STREAM_END, STATE_CHANGE, USER_MESSAGE, ASSISTANT_MESSAGE, SYSTEM_MESSAGE, TOOL_CALL, TOOL_RESULT, TOKEN, QUESTION, ANSWER, USAGE, ERROR, COMPACTION, WORKTREE, TASK
 - **Stream Model:** per session with parent_id for sub-agents
 - **Immutable:** append-only with offset uniqueness
 - **Replay:** `StreamClient` projects events back into conversations
 - **Features:** Turn grouping, live tailing, session persistence
 
 #### 6. Tool System (`taui/tools/`)
-- **Base Protocol:** `Tool` interface in `base.py:52`
+- **Base Protocol:** `Tool` interface in `base.py:72`
 - **Categories:** FILE_READ, FILE_WRITE, SEARCH, SHELL, GIT, AGENT, MEMORY, QUESTION
 - **Registry:** `ToolRegistry` with grouping support
-- **Executor:** `ToolExecutor` with policy-based approval gate
+- **Executor:** `ToolExecutor` with policy-based approval gate (`taui/tools/executor.py:152`)
 - **Streaming:** Context var for live output callbacks
 
 ### Data Flow
@@ -86,10 +86,10 @@ AgentLoop.run() starts new stream
 LLM Provider (Copilot/Codex) streamed response
     ↓
 Provider parser converts StreamEvents:
-    - TEXT_DELTA: model thinking/response
-    - REASONING_DELTA: reasoning token stream
-    - TOOL_CALL: function call from model
-    - USAGE: token counts + costs
+    - text_delta: model thinking/response
+    - reasoning_delta: reasoning token stream
+    - tool_call_done: function call from model
+    - usage: token counts + costs
     ↓
 ToolExecutor.execute()
     - Policy decision (AUTO/CONFIRM/DENY)
@@ -118,7 +118,7 @@ UI callbacks: on_text_delta, on_tool_call, on_tool_result, on_approval
 - **variants.py** - AgentVariant profiles (model, prompt, tool restrictions, read-only mode)
 
 ### `taui/llm_provider/` - LLM Integration
-- **base.py** - BaseProvider protocol with streaming, auth refresh
+- **base.py** - BaseLLMProvider abstract class with streaming, auth refresh
 - **types.py** - ProviderToolCall, ProviderTurnResult, StreamEvent, ProviderCapabilities
 - **providers/copilot.py** - GitHub Copilot implementation
 - **providers/codex.py** - OpenAI Codex implementation
@@ -131,20 +131,22 @@ UI callbacks: on_text_delta, on_tool_call, on_tool_result, on_approval
 - **base.py** - ToolResult, Tool protocol, output delta callbacks
 - **registry.py** - ToolRegistry with grouping
 - **executor.py** - ToolExecutor with PolicyDecision (AUTO/CONFIRM/DENY)
-- **builtins/** - 15+ built-in tools:
+- **builtins/** - 20+ built-in tools:
   - **files.py** - read, write, glob, grep
   - **edit.py** - structured code editing
   - **apply_patch.py** - unified diff patching
-  - **bash.py** - shell execution with live output
+  - **bash.py** - shell execution with live output (BashTool, BashStatusTool, BashKillTool)
   - **git.py** - git operations
   - **question.py** - ask user with structured options
   - **memory.py** - persistent key-value store
+  - **peek.py** - retrieve windows from truncated tool outputs
   - **sub_agent.py** - spawn scoped agent instances
-  - **task.py** - background task management
+  - **task.py** and **tasks/** - background task management (TaskTool, TaskCreateTool, TaskGetTool, TaskListTool, TaskOutputTool, TaskStopTool, TaskUpdateTool)
   - **webfetch.py** - fetch URL content
+  - **worktree.py** - git worktree management
   - **lsp.py** - Language Server Protocol integration
-  - **mcp.py** - Model Context Protocol client
-  - **skills.py** - trigger Markdown workflows
+  - **mcp.py** - Model Context Protocol client (with inspect and search operations)
+  - **skills.py** - load, unload, and trigger Markdown workflows
   - **repo_overview.py** - project structure summary
   - **session_name.py** - name current session
 
@@ -154,7 +156,7 @@ UI callbacks: on_text_delta, on_tool_call, on_tool_result, on_approval
 - **events.py** - EventType enum and Event dataclass
 
 ### `taui/extensions/` - Plugin System
-- **__init__.py** - ExtensionRegistry and loading machinery
+- **__init__.py** - ExtensionContext, ExtensionRegistry, and loading machinery
 - **builtins.py** - built-in extension hooks
 - **Extension Points:**
   - `ctx.tools` - register custom tools
@@ -167,18 +169,21 @@ UI callbacks: on_text_delta, on_tool_call, on_tool_result, on_approval
   - `ctx.providers` - register provider metadata
 
 ### `taui/commands/` - Slash Commands
-**26+ command implementations** including:
-- `/help`, `/model`, `/provider`, `/agents`, `/sessions`, `/new`
-- `/compact`, `/context` - context management
-- `/extensions`, `/reload` - extension management
-- `/i` - self-edit mode
+**30+ command implementations** including:
+- `/help`, `/model`, `/variant`, `/provider`, `/agents`, `/sessions`, `/new`
+- `/compact`, `/context`, `/clear` - context management
+- `/extensions`, `/reload`, `/ext-mode` - extension management
+- `/i` (`/self-edit`) - self-edit mode
+- `/skills`, `/prompts` - skill and prompt workflows
 - `/copy`, `/export` - session export
 - `/cost` - token cost display
 - `/tasks` - background task listing
+- `/mcp` - MCP server management
+- `/login`, `/logout` - provider authentication
 - `/theme`, `/debug`, `/hotkeys`, etc.
 
 ### `taui/tui/` - User Interface
-- **app.py** - Main TauiApp (4,200+ LOC)
+- **app.py** - Main TauiApp (4,460+ LOC)
 - **widgets/** - Reusable UI components
 - **screens/** - Modal overlays (context, theme, variant selection)
 - **session_state.py** - SessionManager for multi-session support
@@ -191,7 +196,7 @@ UI callbacks: on_text_delta, on_tool_call, on_tool_result, on_approval
 - Enables agents to customize themselves
 
 ### `taui/permissions.py` - Permission DSL
-- **Rule** dataclass with (tool, pattern) → (allow/ask/deny)
+- **PermissionRule** dataclass with (tool, pattern) → (allow/ask/deny)
 - **PermissionRuleset** with pattern matching and specificity ordering
 - Evaluation layers: agent → project → global
 - Subjects extracted per-tool (file_path, bash command, etc.)
@@ -199,11 +204,14 @@ UI callbacks: on_text_delta, on_tool_call, on_tool_result, on_approval
 
 ### `taui/config.py` - Configuration
 - **Config** dataclass with:
-  - provider, model, max_turns, verbose_tools
+  - provider, model, model_variant, max_turns, sub_agent_max_turns, verbose_tools
   - tool_policy (per-tool defaults)
   - permission (pattern rules)
   - working_dir, session_id
-- Loads from `.taui/config.toml`, `~/.taui/config.toml`, project root
+  - theme, keybindings, extension_dirs, prefixes, notifications
+  - self_edit_confirm_edits
+- All file config — credentials, last-used state, and `[taui]` settings — loads from
+  the single `~/.config/taui/config.toml`; CLI/env overrides win at `Config.load()`
 
 ### `taui/prompt_builder.py` - System Prompt
 - Discovers project context from:
@@ -226,7 +234,7 @@ UI callbacks: on_text_delta, on_tool_call, on_tool_result, on_approval
 - **McpClient** - stdio JSON-RPC to subprocess
 - **McpHttpClient** - HTTP/SSE transport alternative
 - **McpManager** - manages multiple servers
-- Config via `.taui/mcp.toml` or `~/.config/taui/mcp.toml`
+- Config via `.taui/mcp.toml` (project), `~/.taui/mcp.toml` (global), or `~/.config/taui/mcp.toml` (legacy)
 - Tools prefixed with `mcp__<server>__<name>`
 
 ### `taui/lsp/` - Language Server Integration
@@ -246,8 +254,9 @@ UI callbacks: on_text_delta, on_tool_call, on_tool_result, on_approval
 
 ### `taui/skills/` - Markdown Workflows
 - `SKILL.md` files with agent prompts
-- Lazy loading and caching
-- Used by agents for specialized workflows
+- Discovered from `.taui/skills/`, `~/.taui/skills/`, `.agents/skills/`, `~/.config/agents/skills/`
+- Lazy loading and caching via `SkillRegistry`
+- Skills tool supports load, unload (with message removal), and status operations
 
 ---
 
@@ -293,10 +302,9 @@ UI callbacks: on_text_delta, on_tool_call, on_tool_result, on_approval
 
 ## Configuration
 
-### TOML Config Files (merged order)
-1. Project root: `pyproject.toml` with `[taui]` table
-2. Project: `.taui/config.toml`
-3. User: `~/.taui/config.toml`
+### TOML Config File
+- Single file: `~/.config/taui/config.toml` — provider credentials under
+  `[providers.<name>]`, last-used model/variant state, and settings under `[taui]`
 
 ### Config Example
 ```toml
@@ -330,7 +338,7 @@ read = { "*" = "allow" }
 grep = { "*" = "allow" }
 ```
 
-### MCP Servers (`.taui/mcp.toml`)
+### MCP Servers (`.taui/mcp.toml` or `~/.taui/mcp.toml`)
 ```toml
 [servers.filesystem]
 command = ["npx", "-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
@@ -383,7 +391,7 @@ uv run python -m pytest tests/test_tui_visual.py --snapshot-update  # Update sna
 - **Automatic:** Token estimation before each provider call
 - Preserves essential messages (user request, system prompt)
 - Drops oldest non-essential messages when over budget
-- `CompactionNotice` event records when it happens
+- `COMPACTION` event records when it happens
 - Manual `/compact` command
 - User can see what was compacted
 
@@ -492,7 +500,8 @@ taui -p copilot -m claude-sonnet-4.5    # Pick provider/model
 taui -d /path/to/project                # Set working directory
 taui --session <session_id>             # Resume prior session
 taui --login                            # Authenticate providers
-taui --debug                            # Start with MCP debug server
+taui --debug                            # Start with embedded MCP debug server
+taui --debug-socket /tmp/taui.sock      # Custom Unix socket for debug server
 taui --version                          # Show version
 ```
 
